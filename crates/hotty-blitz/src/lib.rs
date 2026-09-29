@@ -377,6 +377,9 @@ impl Host {
                     "scale": m.scale,
                     "scheme": if self.config.theme.dark { "dark" } else { "light" },
                     "limits": { "resources": self.store.quota },
+                    // No network (SPEC §7.2): this host fetches nothing but
+                    // cid: resources and data: URLs.
+                    "net": {},
                 });
                 Ok((Vec::new(), Some(caps.to_string().into_bytes())))
             }

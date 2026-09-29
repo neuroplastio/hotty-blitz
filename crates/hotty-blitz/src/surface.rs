@@ -117,6 +117,36 @@ pub(crate) struct Surface {
     focus_value: Option<(NodeId, String)>,
     buttons: MouseEventButtons,
     started: std::time::Instant,
+    /// The document's base URL (SPEC §7.3), when it declares an absolute
+    /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
+    /// this host fetches nothing from the network.
+    base: Option<url::Url>,
+}
+
+/// A document's first `<base href>`, when it is an absolute http(s) URL.
+fn declared_base(doc: &HtmlDocument) -> Option<url::Url> {
+    let doc = doc.inner();
+    let id = doc.query_selector("base[href]").ok().flatten()?;
+    let href = doc
+        .get_node(id)?
+        .attrs()?
+        .iter()
+        .find(|a| &*a.name.local == "href")?
+        .value
+        .clone();
+    let u = url::Url::parse(&href).ok()?;
+    matches!(u.scheme(), "http" | "https").then_some(u)
+}
+
+/// A link's `url` (SPEC §9): its href resolved against the document's base,
+/// or none when that would be under hotty.invalid.
+fn link_url(base: &Option<url::Url>, href: &str) -> Option<String> {
+    let u = match base {
+        Some(b) => b.join(href).ok()?,
+        None => url::Url::parse(href).ok()?,
+    };
+    let s = u.to_string();
+    (!s.starts_with(BASE_URL)).then_some(s)
 }
 
 impl Surface {
@@ -145,6 +175,7 @@ impl Surface {
             ..Default::default()
         };
         let doc = HtmlDocument::from_html(html, doc_config);
+        let base = declared_base(&doc);
         let parse_doc = HtmlDocument::from_html(
             "",
             DocumentConfig {
@@ -175,6 +206,7 @@ impl Surface {
             keyboard: false,
             focus_value: None,
             buttons: MouseEventButtons::None,
+            base,
             started: std::time::Instant::now(),
         }
     }
@@ -753,7 +785,10 @@ impl Surface {
             self.doc.get_hover_node_id(),
             self.doc.get_focussed_node_id(),
         );
-        let mut rec = Recorder::default();
+        let mut rec = Recorder {
+            base: self.base.clone(),
+            ..Recorder::default()
+        };
         {
             let doc: &mut dyn Document = &mut self.doc;
             let mut driver = EventDriver::new(doc, &mut rec);
@@ -784,7 +819,13 @@ impl Surface {
             self.finish_change(&mut events);
             self.snapshot_focus();
         }
-        events.retain(|e| !e.target.is_empty() || matches!(e.kind, "focus" | "blur"));
+        // Events name their element, except focus, blur, and a link without
+        // an id: its href is the handle (SPEC §9).
+        events.retain(|e| {
+            !e.target.is_empty()
+                || matches!(e.kind, "focus" | "blur")
+                || (e.kind == "click" && e.detail.get("href").is_some())
+        });
         if is_press {
             self.damage.full = true;
         } else {
@@ -892,6 +933,8 @@ enum Control {
 struct Recorder {
     events: Vec<Event>,
     form: Option<NodeId>,
+    /// The document's base URL, for links' `url`.
+    base: Option<url::Url>,
 }
 
 impl EventHandler for &mut Recorder {
@@ -940,9 +983,18 @@ impl EventHandler for &mut Recorder {
                     if !reportable {
                         continue;
                     }
-                    if let Some(target) = attr(id, "id") {
+                    // A link reports without an id: its href is the handle
+                    // (SPEC §9), and the target is then empty.
+                    let href = attr(id, "href");
+                    let link = t == "a" && href.is_some();
+                    let target = attr(id, "id");
+                    if target.is_some() || link {
+                        let target = target.unwrap_or_default();
                         let mut detail = serde_json::Map::new();
-                        if let Some(href) = attr(id, "href") {
+                        if let Some(href) = href {
+                            if link && let Some(url) = link_url(&self.base, &href) {
+                                detail.insert("url".into(), url.into());
+                            }
                             detail.insert("href".into(), href.into());
                         }
                         if let Some(v) = attr(id, "value") {

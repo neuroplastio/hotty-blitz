@@ -194,6 +194,54 @@ fn clicking_a_button_reports_its_id() {
 }
 
 #[test]
+fn links_report_href_and_url_with_or_without_an_id() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "l"), ("q", "2")],
+        r#"<base href="https://example.com/blog/"><style>body{margin:0} a{display:block;height:40px}</style>
+<a href="../about">About</a><a id=ext href="https://other.org/x">Other</a>"#,
+    ));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "l"),
+            ("c", "20"),
+            ("r", "5"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    let click = |h: &mut Host, y: f32| {
+        let mut fx = h.pointer("l", PointerKind::Down, 10.0, y, Mods::default());
+        fx.extend(h.pointer("l", PointerKind::Up, 10.0, y, Mods::default()));
+        replies(&fx)
+            .into_iter()
+            .find(|c| c.get("e") == Some("click"))
+            .expect("a click event")
+    };
+    let first = click(&mut h, 10.0);
+    assert_eq!(first.get("t"), Some(""));
+    let detail: serde_json::Value = serde_json::from_slice(&first.payload).unwrap();
+    assert_eq!(
+        detail,
+        serde_json::json!({"href": "../about", "url": "https://example.com/about"})
+    );
+    let second = click(&mut h, 50.0);
+    assert_eq!(second.get("t"), Some("ext"));
+    let detail: serde_json::Value = serde_json::from_slice(&second.payload).unwrap();
+    assert_eq!(
+        detail,
+        serde_json::json!({"href": "https://other.org/x", "url": "https://other.org/x"})
+    );
+
+    // This host fetches nothing from the network (SPEC §7.2), and says so.
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
+    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    assert_eq!(caps["net"], serde_json::json!({}));
+}
+
+#[test]
 fn keys_the_surface_does_not_use_go_to_the_program() {
     let mut h = host();
     place_form(&mut h);
