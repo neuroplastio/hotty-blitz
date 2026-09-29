@@ -1,0 +1,10 @@
+[package]
+name = "hotty-wire"
+description = "The HOTTY envelope: OSC 7279 scanning, chunk reassembly and encoding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+flate2.workspace = true

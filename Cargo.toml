@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/hotty-wire", "crates/hotty-blitz", "crates/hotty"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/neuroplastio/hotty-blitz"
+
+[workspace.dependencies]
+hotty-wire = { path = "crates/hotty-wire" }
+hotty-blitz = { path = "crates/hotty-blitz" }
+
+# Blitz is pinned by commit. Upgrade in a leg of its own.
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg", "system-fonts", "floats", "woff"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
+anyrender = "0.13.0"
+anyrender_vello_cpu = { version = "0.17.0", default-features = false, features = ["filters"] }
+
+base64 = "0.22"
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17"
+
+# The Blitz fork (../blitz, branch `hotty`, made by scripts/blitz-fork.sh
+# from the patches in blitz/): construction, layout and rounding stop where a
+# change stops, so a patch costs O(depth) instead of O(N).
+[patch."https://github.com/DioxusLabs/blitz"]
+blitz-dom = { path = "../blitz/packages/blitz-dom" }
+blitz-html = { path = "../blitz/packages/blitz-html" }
+blitz-paint = { path = "../blitz/packages/blitz-paint" }
+blitz-traits = { path = "../blitz/packages/blitz-traits" }
+debug_timer = { path = "../blitz/packages/debug_timer" }
+stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
+
+[profile.release]
+lto = "thin"
+debug = false
+# Unwinding, so a panic inside a terminal (the C ABI) can be caught at the
+# boundary instead of taking the terminal down with it.
+
+[profile.bench]
+inherits = "release"

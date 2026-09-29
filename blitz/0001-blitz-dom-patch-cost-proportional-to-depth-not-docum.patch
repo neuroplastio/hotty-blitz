@@ -1,0 +1,955 @@
+From 58c7cda9e9491a28181f96108a8ba5f421f64e96 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 11:03:38 +0200
+Subject: [PATCH] blitz-dom: patch cost proportional to depth, not document
+ size
+
+Four changes to make an incremental resolve cost what the change touches:
+
+- Construction skips elements whose subtree carries no damage (their
+  layout children and layout_parent links are still valid), instead of
+  walking the whole tree every resolve.
+- The layout cache grows per node (LayoutCache, same matching rules as
+  taffy's Cache). A content-sized container k levels deep is measured
+  under about 3 + 5k distinct constraints per pass, so taffy's 9 entries
+  evicted each other in a cycle and every unchanged sibling of the
+  changed path missed, cascading down its subtree.
+- Rounding is incremental: set_unrounded_layout records nodes whose
+  layout changed (inline layout records its root), and only those, plus
+  the subtrees of moved nodes, are rounded again. Debug builds check the
+  result against taffy::round_layout.
+- Speculative relayout boundaries: a changed flex or grid item is asked
+  again every question its container asked it last time (the cache now
+  keeps full inputs); when every answer matches, the container keeps its
+  old cache instead of laying out all its items again.
+
+Measured (release, one changed cell per frame): in a tree of
+groups of 8, resolve goes from 68.8 ms to 0.016 ms at 262,144 cells; in
+a flat 50,000-cell flex grid, from 28 ms to 5.8 ms.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs         |  21 +++
+ packages/blitz-dom/src/layout/cache.rs     | 210 +++++++++++++++++++++
+ packages/blitz-dom/src/layout/damage.rs    |  45 ++++-
+ packages/blitz-dom/src/layout/inline.rs    |   6 +
+ packages/blitz-dom/src/layout/mod.rs       |  10 +-
+ packages/blitz-dom/src/layout/round.rs     | 190 +++++++++++++++++++
+ packages/blitz-dom/src/layout/speculate.rs | 169 +++++++++++++++++
+ packages/blitz-dom/src/node/element.rs     |   7 +-
+ packages/blitz-dom/src/node/mod.rs         |   2 +-
+ packages/blitz-dom/src/node/node.rs        |   8 +-
+ packages/blitz-dom/src/resolve.rs          |  31 ++-
+ 11 files changed, 687 insertions(+), 12 deletions(-)
+ create mode 100644 packages/blitz-dom/src/layout/cache.rs
+ create mode 100644 packages/blitz-dom/src/layout/round.rs
+ create mode 100644 packages/blitz-dom/src/layout/speculate.rs
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 0fe19120..72048f8d 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -213,6 +213,21 @@ pub struct BaseDocument {
+     /// every node is treated as damaged on every `resolve`, so the same damage
+     /// pipeline reconstructs and relays out the whole tree.
+     pub(crate) incremental_layout: bool,
++    /// Nodes whose unrounded layout changed since the last rounding pass, and
++    /// whether their location changed (see `layout::round`).
++    pub(crate) round_dirty: Vec<(NodeId, bool)>,
++    /// Whether the whole tree has been rounded once, which incremental
++    /// rounding builds on.
++    pub(crate) rounded_once: bool,
++    /// Layout caches cleared by this resolve's damage, kept for
++    /// `speculate_layout` (see `layout::speculate`).
++    pub(crate) evicted_caches: HashMap<NodeId, crate::node::LayoutCache>,
++    /// Every node whose layout cache this resolve's damage cleared.
++    pub(crate) invalidated: Vec<NodeId>,
++    /// Nodes whose own content or style needs relayout (not only a child's).
++    pub(crate) own_relayout: HashSet<NodeId>,
++    /// Nodes whose layout children changed in this resolve's construction.
++    pub(crate) restructured: HashSet<NodeId>,
+     /// How deeply this document is nested within other documents
+     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
+     pub(crate) subdocument_depth: usize,
+@@ -450,6 +465,12 @@ impl BaseDocument {
+             pending_device_changes: DeviceChanges::empty(),
+             style_threading: config.style_threading,
+             incremental_layout: config.incremental.unwrap_or(true),
++            round_dirty: Vec::new(),
++            rounded_once: false,
++            evicted_caches: HashMap::new(),
++            invalidated: Vec::new(),
++            own_relayout: HashSet::new(),
++            restructured: HashSet::new(),
+             subdocument_depth: config.subdocument_depth,
+             devtool_settings: DevtoolSettings::default(),
+             url: base_url,
+diff --git a/packages/blitz-dom/src/layout/cache.rs b/packages/blitz-dom/src/layout/cache.rs
+new file mode 100644
+index 00000000..733d0a61
+--- /dev/null
++++ b/packages/blitz-dom/src/layout/cache.rs
+@@ -0,0 +1,210 @@
++//! A layout cache that grows to the number of measurements a node receives.
++//!
++//! Taffy's `Cache` keeps 9 measure entries per node. A content-sized
++//! container nested k levels deep is measured under about 3 + 5k distinct
++//! constraints in one layout pass (each ancestor's intrinsic sizing pass adds
++//! its own set). Past the second level those entries evict each other in a
++//! cycle, so an incremental relayout misses on every unchanged sibling of the
++//! changed path, and the misses cascade down the siblings' subtrees: a change
++//! to one cell costs O(N).
++//!
++//! This cache matches entries exactly as Taffy's does (the key below is
++//! Taffy's `CacheKey`, taffy 8fab2bd `src/tree/cache.rs`) and differs only in
++//! capacity: measure entries grow as a node needs them, up to `MAX_ENTRIES`,
++//! and a node measured once costs no allocation.
++//!
++//! It also keeps each request's full input, so that `speculate` can ask a
++//! changed node everything its parent asked it last time.
++
++// The float bit patterns below are grouped as sign, exponent, mantissa.
++#![allow(clippy::unusual_byte_groupings)]
++
++use taffy::{AvailableSpace, CollapsibleMarginSet, LayoutInput, LayoutOutput, RequestedAxis};
++use taffy::{RunMode, Size};
++
++/// Past this many entries, the oldest entry is replaced.
++const MAX_ENTRIES: usize = 64;
++
++const INFINITY_BITS: u32 = 0b_0_11111111_00000000000000000000000_u32;
++const NEG_INFINITY_BITS: u32 = 0b_1_11111111_00000000000000000000000_u32;
++const SIGN_BIT_1: u64 = 1u64 << 63;
++const SIGN_BIT_2: u64 = 1u64 << 31;
++const BOTH_SIGN_BITS_MASK: u64 = SIGN_BIT_1 | SIGN_BIT_2;
++const NON_SIGN_BITS_MASK: u64 = !BOTH_SIGN_BITS_MASK;
++const X_AXIS_VALUE_MASK: u64 = (u32::MAX as u64) << 32;
++
++fn option_key(input: Option<f32>) -> u32 {
++    input.map(f32::to_bits).unwrap_or(INFINITY_BITS)
++}
++
++fn available_space_key(input: AvailableSpace) -> u32 {
++    match input {
++        AvailableSpace::Definite(value) => (-value).to_bits(),
++        AvailableSpace::MinContent => NEG_INFINITY_BITS,
++        AvailableSpace::MaxContent => INFINITY_BITS,
++    }
++}
++
++fn mixed_key(kd: Option<f32>, avs: AvailableSpace) -> u32 {
++    kd.map(f32::to_bits)
++        .unwrap_or_else(|| available_space_key(avs))
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct Key {
++    kd_available_space: u64,
++    parent_size: u64,
++    known_dimensions_are_definite: Size<bool>,
++}
++
++impl Key {
++    fn new(input: &LayoutInput) -> Self {
++        let axis_bits = match input.axis {
++            RequestedAxis::Horizontal => SIGN_BIT_1,
++            RequestedAxis::Vertical => SIGN_BIT_2,
++            RequestedAxis::Both => SIGN_BIT_1 | SIGN_BIT_2,
++        };
++        let kd = input.known_dimensions;
++        let avs = input.available_space;
++        let parent = (option_key(input.parent_size.width) as u64) << 32
++            | option_key(input.parent_size.height) as u64;
++        Self {
++            kd_available_space: (mixed_key(kd.width, avs.width) as u64) << 32
++                | mixed_key(kd.height, avs.height) as u64,
++            parent_size: (parent & NON_SIGN_BITS_MASK) | axis_bits,
++            known_dimensions_are_definite: input
++                .known_dimensions_are_definite
++                .zip_map(kd, |is_definite, kd| is_definite || kd.is_none()),
++        }
++    }
++
++    fn x_axis_parent_size(&self) -> u64 {
++        self.parent_size & (X_AXIS_VALUE_MASK & NON_SIGN_BITS_MASK)
++    }
++
++    fn axis_bits(&self) -> u64 {
++        self.parent_size & BOTH_SIGN_BITS_MASK
++    }
++
++    /// Whether an entry stored under `self` answers a lookup for `other`.
++    fn measures(&self, other: &Key) -> bool {
++        self.kd_available_space == other.kd_available_space
++            && self.known_dimensions_are_definite == other.known_dimensions_are_definite
++            && self.x_axis_parent_size() == other.x_axis_parent_size()
++            && (self.axis_bits() == BOTH_SIGN_BITS_MASK || self.axis_bits() == other.axis_bits())
++    }
++}
++
++#[derive(Debug, Clone)]
++pub struct LayoutCache {
++    final_layout: Option<(Key, LayoutInput, LayoutOutput)>,
++    measures: Vec<(Key, LayoutInput, Size<f32>)>,
++    /// The entry to replace next once `measures` is full.
++    next: usize,
++    /// A request was answered but not kept (the cache was full, or the
++    /// result carried margin-collapse metadata), so the entries are not
++    /// everything the node was asked.
++    incomplete: bool,
++}
++
++impl Default for LayoutCache {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl LayoutCache {
++    pub const fn new() -> Self {
++        Self {
++            final_layout: None,
++            measures: Vec::new(),
++            next: 0,
++            incomplete: false,
++        }
++    }
++
++    pub fn get(&self, input: &LayoutInput) -> Option<LayoutOutput> {
++        let key = Key::new(input);
++        match input.run_mode {
++            RunMode::PerformLayout => self
++                .final_layout
++                .as_ref()
++                .filter(|(k, _, _)| *k == key)
++                .map(|(_, _, output)| output.clone()),
++            RunMode::ComputeSize => self
++                .measures
++                .iter()
++                .find(|(k, _, _)| k.measures(&key))
++                .map(|(_, _, size)| LayoutOutput::from_outer_size(*size)),
++            RunMode::PerformHiddenLayout => None,
++        }
++    }
++
++    pub fn store(&mut self, input: &LayoutInput, output: LayoutOutput) {
++        let key = Key::new(input);
++        match input.run_mode {
++            RunMode::PerformLayout => self.final_layout = Some((key, *input, output)),
++            RunMode::ComputeSize => {
++                // A hit is rebuilt from the size alone, which drops the
++                // margin-collapse metadata, so results carrying it are not
++                // cached (as in Taffy).
++                if output.margins_can_collapse_through
++                    || output.top_margin != CollapsibleMarginSet::ZERO
++                    || output.bottom_margin != CollapsibleMarginSet::ZERO
++                {
++                    self.incomplete = true;
++                    return;
++                }
++                if let Some(entry) = self.measures.iter_mut().find(|(k, _, _)| *k == key) {
++                    entry.2 = output.size;
++                } else if self.measures.len() < MAX_ENTRIES {
++                    self.measures.push((key, *input, output.size));
++                } else {
++                    self.measures[self.next] = (key, *input, output.size);
++                    self.next = (self.next + 1) % MAX_ENTRIES;
++                    self.incomplete = true;
++                }
++            }
++            RunMode::PerformHiddenLayout => {}
++        }
++    }
++
++    pub fn clear(&mut self) {
++        self.final_layout = None;
++        self.measures.clear();
++        self.next = 0;
++        self.incomplete = false;
++    }
++
++    /// Every request kept, with its answer: measurements first, then the
++    /// final layout. `None` when the cache is empty or incomplete.
++    pub(crate) fn requests(&self) -> Option<Vec<(LayoutInput, Answer)>> {
++        if self.incomplete || (self.final_layout.is_none() && self.measures.is_empty()) {
++            return None;
++        }
++        let measures = self
++            .measures
++            .iter()
++            .map(|(_, input, size)| (*input, Answer::Size(*size)));
++        let layout = self
++            .final_layout
++            .iter()
++            .map(|(_, input, output)| (*input, Answer::Layout(output.clone())));
++        Some(measures.chain(layout).collect())
++    }
++}
++
++/// What a node answered to one request.
++pub(crate) enum Answer {
++    Size(Size<f32>),
++    Layout(LayoutOutput),
++}
++
++impl Answer {
++    pub(crate) fn matches(&self, output: &LayoutOutput) -> bool {
++        match self {
++            Answer::Size(size) => output.size == *size,
++            Answer::Layout(old) => output == old,
++        }
++    }
++}
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index 082c9549..90b9dc23 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -59,6 +59,9 @@ impl BaseDocument {
+             return RestyleDamage::empty();
+         };
+ 
++        // What this node itself needs, before its children's damage joins.
++        let own = damage;
++
+         // Skip subtrees which contain no damage. Anonymous nodes are never
+         // skipped themselves because damage marking walks the DOM parent
+         // chain, which bypasses anonymous boxes: a damaged node's flagged
+@@ -116,8 +119,8 @@ impl BaseDocument {
+         // If the node or any of it's children have been mutated or their layout styles
+         // have changed, then we should clear it's layout cache.
+         let mut invalidate_anonymous_ancestors = false;
+-        if damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX) {
+-            node.invalidate_layout_cache();
++        let relayout = damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX);
++        if relayout {
+             invalidate_anonymous_ancestors = true;
+             damage.remove(ONLY_RELAYOUT);
+         }
+@@ -125,6 +128,11 @@ impl BaseDocument {
+         // Store damage for current node
+         node.set_damage(damage);
+ 
++        if relayout {
++            let own = reorder || own.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC);
++            self.evict_layout_cache(node_id, own);
++        }
++
+         // Anonymous boxes between this node and its nearest element ancestor
+         // are not visited by the DOM walk, so invalidate them here by walking
+         // `layout_parent`. Stop at the first non-anonymous node: elements are
+@@ -145,7 +153,10 @@ impl BaseDocument {
+                     break;
+                 }
+                 ancestor.invalidate_layout_cache();
+-                current = ancestor.layout_parent.get();
++                if self.speculating() {
++                    self.invalidated.push(current.unwrap());
++                }
++                current = self.nodes[current.unwrap()].layout_parent.get();
+             }
+         }
+ 
+@@ -170,6 +181,34 @@ impl BaseDocument {
+         damage_for_parent
+     }
+ 
++    /// Whether this resolve keeps evicted layout caches for
++    /// `speculate_layout`: only incremental relayouts of a laid-out tree.
++    pub(crate) fn speculating(&self) -> bool {
++        self.incremental_layout && self.rounded_once
++    }
++
++    /// Clear a node's layout cache for relayout, keeping the old one for
++    /// `speculate_layout`. `own` says the node itself changed, not only a
++    /// descendant.
++    fn evict_layout_cache(&mut self, node_id: NodeId, own: bool) {
++        let speculating = self.speculating();
++        let node = &mut self.nodes[node_id];
++        let old = node
++            .try_layout_data_mut()
++            .filter(|_| speculating)
++            .map(|l| std::mem::take(&mut l.cache));
++        node.invalidate_layout_cache();
++        if speculating {
++            self.invalidated.push(node_id);
++            if own {
++                self.own_relayout.insert(node_id);
++            }
++            if let Some(old) = old {
++                self.evicted_caches.insert(node_id, old);
++            }
++        }
++    }
++
+     /// Mark every node in the document with `ALL_DAMAGE` (non-incremental
+     /// mode). Iterates the node slotmap directly rather than walking the tree,
+     /// which is cheaper and also reaches pseudo-elements and anonymous boxes
+diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
+index e384a811..8fbf8930 100644
+--- a/packages/blitz-dom/src/layout/inline.rs
++++ b/packages/blitz-dom/src/layout/inline.rs
+@@ -35,6 +35,12 @@ impl BaseDocument {
+             run_mode,
+             ..
+         } = inputs;
++        // Inline layout writes the layouts of its boxes directly, bypassing
++        // `set_unrounded_layout`, so re-round the whole inline root.
++        if run_mode == RunMode::PerformLayout {
++            self.round_dirty.push((node_id, true));
++        }
++
+         let style = self.nodes[node_id].layout_style();
+ 
+         // Pull these out earlier to avoid borrowing issues
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 01ee0357..2102dfd1 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -20,12 +20,15 @@ use taffy::{
+     compute_grid_layout, compute_leaf_layout, compute_oof_layout, prelude::*,
+ };
+ 
++pub(crate) mod cache;
+ pub(crate) mod construct;
+ pub(crate) mod damage;
+ pub(crate) mod inline;
+ pub(crate) mod list;
+ pub(crate) mod paint_tree;
+ pub(crate) mod replaced;
++pub(crate) mod round;
++pub(crate) mod speculate;
+ pub(crate) mod table;
+ 
+ use self::replaced::{
+@@ -460,7 +463,12 @@ impl LayoutPartialTree for BaseDocument {
+     }
+ 
+     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
+-        *self.node_from_id_mut(node_id).unrounded_layout_mut() = *layout;
++        let slot = self.node_from_id_mut(node_id).unrounded_layout_mut();
++        if *slot != *layout {
++            let moved = slot.location != layout.location;
++            *slot = *layout;
++            self.round_dirty.push((dom_node_id(node_id), moved));
++        }
+     }
+ 
+     fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
+diff --git a/packages/blitz-dom/src/layout/round.rs b/packages/blitz-dom/src/layout/round.rs
+new file mode 100644
+index 00000000..f5d90b82
+--- /dev/null
++++ b/packages/blitz-dom/src/layout/round.rs
+@@ -0,0 +1,190 @@
++//! Incremental layout rounding.
++//!
++//! `taffy::round_layout` rewrites the final layout of every node on every
++//! resolve, which makes a change to one node cost O(N). A node's final layout
++//! depends only on its own unrounded layout and the cumulative (unrounded)
++//! position of its rounding parent. So after an incremental relayout, only two
++//! kinds of node need rounding again:
++//!
++//! - nodes whose unrounded layout changed (recorded by `set_unrounded_layout`),
++//! - every descendant of a node whose location changed, because their
++//!   cumulative position moved with it.
++//!
++//! Inline layout writes the layouts of its boxes directly, so an inline root
++//! that was laid out is recorded as moved and its subtree is rounded again.
++//!
++//! The pass walks from the root down the paths to recorded nodes only, in the
++//! same order as `taffy::round_layout` (in-flow children, then the out-of-flow
++//! boxes hoisted to their containing block), and produces the same result.
++
++use std::collections::HashMap;
++
++use blitz_traits::node_id::NodeId;
++use taffy::{Layout, RoundTree as _, TraversePartialTree as _};
++
++#[cfg(debug_assertions)]
++use crate::node::NodeData;
++use crate::{BaseDocument, dom_node_id};
++
++/// The node's own layout changed.
++const NODE: u8 = 1;
++/// The node moved: round its whole subtree.
++const SUBTREE: u8 = 2;
++/// A recorded node lies below this one.
++const PATH: u8 = 4;
++
++impl BaseDocument {
++    /// Round the layout of the tree at `root` after `compute_root_layout`.
++    pub(crate) fn round_layout(&mut self, root: taffy::NodeId) {
++        let dirty = std::mem::take(&mut self.round_dirty);
++        // A first layout, or a relayout that touched a large share of the
++        // tree (a resize), is cheaper to round in one plain pass.
++        if !self.rounded_once || dirty.len() * 4 > self.nodes.len() {
++            self.rounded_once = true;
++            taffy::round_layout(self, root);
++            return;
++        }
++        if dirty.is_empty() {
++            return;
++        }
++
++        let mut marks: HashMap<NodeId, u8> = HashMap::with_capacity(dirty.len() * 4);
++        for (id, moved) in dirty {
++            *marks.entry(id).or_default() |= if moved { SUBTREE } else { NODE };
++            // Walk up the layout tree. An out-of-flow box is rounded from its
++            // containing block, which is an ancestor on this chain, so the
++            // walk marks the containing block's path too.
++            let mut parent = self.nodes.get(id).and_then(|n| n.layout_parent.get());
++            while let Some(p) = parent {
++                let mark = marks.entry(p).or_default();
++                if *mark & PATH != 0 {
++                    break;
++                }
++                *mark |= PATH;
++                parent = self.nodes.get(p).and_then(|n| n.layout_parent.get());
++            }
++        }
++
++        round_marked(self, root, 0.0, 0.0, &marks);
++
++        #[cfg(debug_assertions)]
++        self.assert_rounding_complete(root);
++    }
++
++    /// Check the incremental result against a plain rounding pass.
++    #[cfg(debug_assertions)]
++    fn assert_rounding_complete(&mut self, root: taffy::NodeId) {
++        let incremental: Vec<(NodeId, Layout)> = self
++            .nodes
++            .iter()
++            .filter(|(_, n)| {
++                matches!(
++                    n.data,
++                    NodeData::Element(_) | NodeData::AnonymousBlock(_) | NodeData::Document(_)
++                )
++            })
++            .map(|(id, n)| (id, *n.final_layout()))
++            .collect();
++        taffy::round_layout(self, root);
++        for (id, layout) in incremental {
++            let full = self.nodes[id].final_layout();
++            assert!(
++                *full == layout,
++                "incremental rounding diverged at {id:?}: {layout:?} vs {full:?}"
++            );
++        }
++    }
++}
++
++fn round_marked(
++    doc: &mut BaseDocument,
++    node: taffy::NodeId,
++    parent_x: f32,
++    parent_y: f32,
++    marks: &HashMap<NodeId, u8>,
++) {
++    let mark = marks.get(&dom_node_id(node)).copied().unwrap_or(0);
++    if mark & SUBTREE != 0 {
++        round_subtree(doc, node, parent_x, parent_y);
++        return;
++    }
++    let unrounded = doc.get_unrounded_layout(node);
++    if mark & NODE != 0 {
++        round_one(doc, node, &unrounded, parent_x, parent_y);
++    }
++    if mark & PATH == 0 {
++        return;
++    }
++    let x = parent_x + unrounded.location.x;
++    let y = parent_y + unrounded.location.y;
++    let marked = |child: taffy::NodeId| marks.contains_key(&dom_node_id(child));
++    for index in 0..doc.child_count(node) {
++        let child = doc.get_child_id(node, index);
++        if marked(child) && !doc.is_out_of_flow(child) {
++            round_marked(doc, child, x, y, marks);
++        }
++    }
++    for index in 0..doc.hoisted_child_count(node) {
++        let child = doc.get_hoisted_child_id(node, index);
++        if marked(child) {
++            round_marked(doc, child, x, y, marks);
++        }
++    }
++}
++
++/// What `taffy::round_layout` does, from a node whose rounding parent sits at
++/// the given cumulative position.
++fn round_subtree(doc: &mut BaseDocument, node: taffy::NodeId, parent_x: f32, parent_y: f32) {
++    let unrounded = doc.get_unrounded_layout(node);
++    round_one(doc, node, &unrounded, parent_x, parent_y);
++    let x = parent_x + unrounded.location.x;
++    let y = parent_y + unrounded.location.y;
++    for index in 0..doc.child_count(node) {
++        let child = doc.get_child_id(node, index);
++        if !doc.is_out_of_flow(child) {
++            round_subtree(doc, child, x, y);
++        }
++    }
++    for index in 0..doc.hoisted_child_count(node) {
++        let child = doc.get_hoisted_child_id(node, index);
++        round_subtree(doc, child, x, y);
++    }
++}
++
++#[inline(always)]
++fn round(value: f32) -> f32 {
++    (value + 0.5).floor()
++}
++
++/// Taffy's rounding of one node (`taffy::compute::round_layout`, 8fab2bd).
++fn round_one(
++    doc: &mut BaseDocument,
++    node: taffy::NodeId,
++    u: &Layout,
++    parent_x: f32,
++    parent_y: f32,
++) {
++    let mut layout = *u;
++    let x = parent_x + u.location.x;
++    let y = parent_y + u.location.y;
++    layout.location.x = round(x) - round(parent_x);
++    layout.location.y = round(y) - round(parent_y);
++    layout.size.width = round(x + u.size.width) - round(x);
++    layout.size.height = round(y + u.size.height) - round(y);
++    layout.scrollbar_size.width = round(u.scrollbar_size.width);
++    layout.scrollbar_size.height = round(u.scrollbar_size.height);
++    layout.border.left = round(x + u.border.left) - round(x);
++    layout.border.right = round(x + u.size.width) - round(x + u.size.width - u.border.right);
++    layout.border.top = round(y + u.border.top) - round(y);
++    layout.border.bottom = round(y + u.size.height) - round(y + u.size.height - u.border.bottom);
++    layout.padding.left = round(x + u.padding.left) - round(x);
++    layout.padding.right = round(x + u.size.width) - round(x + u.size.width - u.padding.right);
++    layout.padding.top = round(y + u.padding.top) - round(y);
++    layout.padding.bottom = round(y + u.size.height) - round(y + u.size.height - u.padding.bottom);
++    let o = u.scrollable_overflow_rect;
++    layout.scrollable_overflow_rect.left = round(x + o.left) - round(x);
++    layout.scrollable_overflow_rect.right = round(x + o.right) - round(x);
++    layout.scrollable_overflow_rect.top = round(y + o.top) - round(y);
++    layout.scrollable_overflow_rect.bottom = round(y + o.bottom) - round(y);
++    doc.set_final_layout(node, &layout);
++}
+diff --git a/packages/blitz-dom/src/layout/speculate.rs b/packages/blitz-dom/src/layout/speculate.rs
+new file mode 100644
+index 00000000..8cdd2eef
+--- /dev/null
++++ b/packages/blitz-dom/src/layout/speculate.rs
+@@ -0,0 +1,169 @@
++//! Speculative relayout boundaries.
++//!
++//! Damage clears the layout cache of every ancestor of a changed node, so the
++//! ancestors all lay out again. Each one runs its algorithm over all its
++//! children (cached, but a flex container with N items still does N items'
++//! work), and one changed cell in a long list costs O(N).
++//!
++//! A flex or grid item is an independent formatting context: its container
++//! sees it only through what it answers to the inputs the container passes.
++//! So when a changed item, asked again every question its container asked it
++//! last time, gives the same answers, the container's layout cannot have
++//! changed either. The container keeps its old cache, and the same test
++//! applies one level up. The result is identical to a full relayout; the
++//! work stops where answers stop changing.
++//!
++//! A container keeps its old cache when:
++//! - it is a flex or grid container (whose children are independent items),
++//! - its own content and style did not need relayout, only a child's,
++//! - construction left its layout children as they were,
++//! - every child whose cache was cleared gave the same answers.
++
++use std::collections::HashSet;
++
++use blitz_traits::node_id::NodeId;
++use style::values::specified::box_::DisplayInside;
++use taffy::{CoreStyle as _, LayoutOutput, LayoutPartialTree as _};
++
++use super::cache::Answer;
++use super::replaced::is_replaced_element;
++use crate::{BaseDocument, taffy_node_id};
++
++impl BaseDocument {
++    /// Run before `compute_root_layout`, after construction.
++    pub(crate) fn speculate_layout(&mut self) {
++        let mut evicted = std::mem::take(&mut self.evicted_caches);
++        let invalidated = std::mem::take(&mut self.invalidated);
++        let own = std::mem::take(&mut self.own_relayout);
++        let restructured = std::mem::take(&mut self.restructured);
++        if evicted.is_empty() {
++            return;
++        }
++        // A changed out-of-flow box is laid out by its containing block, not
++        // by its parent, which this reasoning does not follow. (Unchanged
++        // ones are safe: an item passes their static positions up in its
++        // output, which is compared.)
++        let out_of_flow = invalidated
++            .iter()
++            .any(|&id| self.nodes.get(id).is_some_and(|n| n.is_out_of_flow()));
++        if out_of_flow {
++            return;
++        }
++
++        let mut order: Vec<(usize, NodeId)> = invalidated
++            .iter()
++            .filter(|&&id| self.nodes.contains_key(id))
++            .map(|&id| (self.box_depth(id), id))
++            .collect();
++        // Children before their containers.
++        order.sort_unstable_by(|a, b| b.cmp(a));
++        order.dedup();
++
++        // Containers with a child that answers differently (or unknowably).
++        let mut unsettled: HashSet<NodeId> = HashSet::new();
++        for (_, id) in order {
++            let settled = match evicted.remove(&id) {
++                Some(old)
++                    if !own.contains(&id)
++                        && !restructured.contains(&id)
++                        && !unsettled.contains(&id)
++                        && old.requests().is_some()
++                        && self.is_flex_or_grid(id) =>
++                {
++                    // Nothing that feeds this container's layout changed.
++                    *self.nodes[id].cache_mut() = old;
++                    true
++                }
++                Some(old) if self.is_item(id) => self.answers_as_before(id, &old),
++                _ => false,
++            };
++            if !settled {
++                let node = &self.nodes[id];
++                unsettled.extend(node.layout_parent.get());
++                unsettled.extend(node.parent);
++            }
++        }
++    }
++
++    /// Ask a node every question it was asked last time; true when every
++    /// answer is the same. The final layout goes last, so the subtree ends up
++    /// laid out as its container expects.
++    fn answers_as_before(&mut self, id: NodeId, old: &super::cache::LayoutCache) -> bool {
++        let Some(requests) = old.requests() else {
++            return false;
++        };
++        let node = taffy_node_id(id);
++        for (input, answer) in requests {
++            let output = self.compute_child_layout(node, input);
++            if answer.matches(&output) {
++                continue;
++            }
++            // A container ignores the content overflow of a child that
++            // clips or contains it, apart from copying it into the child's
++            // own layout, which is done here instead.
++            let Answer::Layout(old) = &answer else {
++                return false;
++            };
++            let same_box = LayoutOutput {
++                scrollable_overflow_rect: old.scrollable_overflow_rect,
++                ..output.clone()
++            } == *old;
++            if !same_box || !self.overflow_is_private(id) {
++                return false;
++            }
++            let layout = self.nodes[id].unrounded_layout_mut();
++            layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
++            self.round_dirty.push((id, false));
++        }
++        true
++    }
++
++    /// Whether a node's content overflow stays out of its container's
++    /// (taffy's `compute_scrollable_overflow_contribution`).
++    fn overflow_is_private(&self, id: NodeId) -> bool {
++        let style = self.nodes[id].layout_style();
++        let overflow = style.overflow();
++        overflow.x.is_scroll_container()
++            || overflow.y.is_scroll_container()
++            || style.contain().contains_scrollable_overflow()
++    }
++
++    /// A container that lays its children out as independent items.
++    fn is_flex_or_grid(&self, id: NodeId) -> bool {
++        let node = &self.nodes[id];
++        let Some(element) = node.element_data() else {
++            return false;
++        };
++        !node.flags.is_inline_root()
++            && !node.flags.is_table_root()
++            && !is_replaced_element(&element.name.local)
++            && !matches!(&*element.name.local, "input" | "textarea" | "select")
++            && node.primary_styles().is_some_and(|s| {
++                matches!(
++                    s.clone_display().inside(),
++                    DisplayInside::Flex | DisplayInside::Grid
++                )
++            })
++    }
++
++    /// A flex or grid item: laid out alone by `compute_child_layout`.
++    fn is_item(&self, id: NodeId) -> bool {
++        let node = &self.nodes[id];
++        !node.is_anonymous()
++            && node.element_data().is_some()
++            && node
++                .layout_parent
++                .get()
++                .is_some_and(|p| !self.nodes[p].is_anonymous() && self.is_flex_or_grid(p))
++    }
++
++    fn box_depth(&self, id: NodeId) -> usize {
++        let mut depth = 0;
++        let mut current = Some(id);
++        while let Some(n) = current.and_then(|id| self.nodes.get(id)) {
++            depth += 1;
++            current = n.layout_parent.get().or(n.parent);
++        }
++        depth
++    }
++}
+diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
+index 501da7b6..bcbfdc48 100644
+--- a/packages/blitz-dom/src/node/element.rs
++++ b/packages/blitz-dom/src/node/element.rs
+@@ -1,3 +1,4 @@
++pub use crate::layout::cache::LayoutCache;
+ use blitz_traits::node_id::NodeId;
+ use cssparser::ParserInput;
+ use kurbo::{Affine, Rect as KurboRect};
+@@ -21,7 +22,7 @@ use style::{
+ };
+ use style_dom::ElementState;
+ use style_traits::ParsingMode;
+-use taffy::{Cache, prelude::Layout};
++use taffy::prelude::Layout;
+ use thin_vec::ThinVec;
+ use url::Url;
+ 
+@@ -124,7 +125,7 @@ pub struct ElementData {
+ /// nodes on text-heavy pages never allocate one.
+ #[derive(Debug, Clone)]
+ pub struct LayoutData {
+-    pub cache: Cache,
++    pub cache: LayoutCache,
+     pub unrounded_layout: Layout,
+     pub final_layout: Layout,
+     pub scroll_offset: crate::Point<f64>,
+@@ -134,7 +135,7 @@ pub struct LayoutData {
+ impl LayoutData {
+     pub const fn new() -> Self {
+         Self {
+-            cache: Cache::new(),
++            cache: LayoutCache::new(),
+             unrounded_layout: Layout::new(),
+             final_layout: Layout::new(),
+             scroll_offset: crate::Point::ZERO,
+diff --git a/packages/blitz-dom/src/node/mod.rs b/packages/blitz-dom/src/node/mod.rs
+index 01214795..2c82c9a2 100644
+--- a/packages/blitz-dom/src/node/mod.rs
++++ b/packages/blitz-dom/src/node/mod.rs
+@@ -17,7 +17,7 @@ pub use custom_widget::{
+     ComputedStyles, CustomWidgetData, CustomWidgetStatus, ProxyRenderContext, Widget,
+ };
+ pub use element::{
+-    CanvasData, DocumentData, ElementData, ImageData, ImageResourceData, LayoutData,
++    CanvasData, DocumentData, ElementData, ImageData, ImageResourceData, LayoutCache, LayoutData,
+     ListItemLayout, ListItemLayoutPosition, Marker, RasterImageData, SpecialElementData,
+     SpecialElementType, Status,
+ };
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index a098a9b8..4bd4d561 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -34,7 +34,9 @@ use style::values::generics::transform::{Scale, Translate};
+ use style::values::specified::box_::{DisplayInside, DisplayOutside};
+ use style_dom::ElementState;
+ use style_traits::values::ToCss;
+-use taffy::{Cache, prelude::Layout};
++use taffy::prelude::Layout;
++
++use super::element::LayoutCache;
+ use thin_vec::ThinVec;
+ 
+ use super::stylo_data::{ComputedStyleRef, StyloData};
+@@ -250,12 +252,12 @@ impl Node {
+     }
+ 
+     #[inline]
+-    pub fn cache(&self) -> &Cache {
++    pub fn cache(&self) -> &LayoutCache {
+         &self.layout_data().cache
+     }
+ 
+     #[inline]
+-    pub fn cache_mut(&mut self) -> &mut Cache {
++    pub fn cache_mut(&mut self) -> &mut LayoutCache {
+         &mut self.layout_data_mut().cache
+     }
+ 
+diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
+index 7eac5d7a..ceba815b 100644
+--- a/packages/blitz-dom/src/resolve.rs
++++ b/packages/blitz-dom/src/resolve.rs
+@@ -256,6 +256,20 @@ impl BaseDocument {
+                 return;
+             }
+ 
++            // An element whose subtree carries no damage keeps the layout
++            // children (and their `layout_parent`s) it was given last time.
++            // Anonymous boxes are always walked, as `propagate_damage_flags`
++            // does, because damage marking bypasses them.
++            {
++                let node = &doc.nodes[node_id];
++                if node.damage().is_some_and(|d| d.is_empty())
++                    && !node.has_damaged_descendants()
++                    && !node.is_anonymous()
++                {
++                    return;
++                }
++            }
++
+             let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
+             let _flags = doc.nodes[node_id].flags;
+ 
+@@ -266,7 +280,13 @@ impl BaseDocument {
+                 // previous construction round. They live only in the slab, so
+                 // reconstructing without freeing them would leak a slab entry per
+                 // anonymous block per reconstruction.
++                // Layout children as they were, to tell whether this
++                // reconstruction changed them (see `layout::speculate`).
++                let old_children = doc
++                    .speculating()
++                    .then(|| doc.nodes[node_id].layout_children.borrow().clone());
+                 let old_anonymous_blocks = std::mem::take(&mut doc.nodes[node_id].anonymous_blocks);
++                let had_anonymous_blocks = !old_anonymous_blocks.is_empty();
+                 for anon_id in old_anonymous_blocks {
+                     doc.deallocate_anonymous_block(anon_id);
+                 }
+@@ -289,6 +309,14 @@ impl BaseDocument {
+                     }
+                 }
+ 
++                if let Some(old) = old_children {
++                    let same = old.as_deref() == Some(&layout_children[..])
++                        && doc.nodes[node_id].anonymous_blocks.is_empty();
++                    if !same || had_anonymous_blocks {
++                        doc.restructured.insert(node_id);
++                    }
++                }
++
+                 *doc.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
+                 // *doc.nodes[node_id].paint_children.borrow_mut() = Some(layout_children);
+ 
+@@ -441,8 +469,9 @@ impl BaseDocument {
+ 
+         // println!("\n\nRESOLVE LAYOUT\n===========\n");
+ 
++        self.speculate_layout();
+         taffy::compute_root_layout(self, root_element_id, available_space);
+-        taffy::round_layout(self, root_element_id);
++        self.round_layout(root_element_id);
+ 
+         // println!("\n\n");
+         // taffy::print_tree(self, root_node_id)
+-- 
+2.55.0
+

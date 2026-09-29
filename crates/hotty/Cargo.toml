@@ -1,0 +1,21 @@
+[package]
+name = "hotty"
+description = "hotty: render and show HOTTY surfaces, and `hotty run`, the kitty graphics polyfill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hotty-wire.workspace = true
+hotty-blitz.workspace = true
+base64.workspace = true
+flate2.workspace = true
+png.workspace = true
+serde_json.workspace = true
+nix = { version = "0.30", features = ["term", "process", "signal", "fs", "mman", "ioctl", "poll"] }
+libc = "0.2"
+signal-hook = "0.3"
+vt100 = "0.16"
+
+[features]
+phase-times = ["hotty-blitz/phase-times"]

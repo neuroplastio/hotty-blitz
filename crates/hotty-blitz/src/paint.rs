@@ -1,0 +1,438 @@
+//! Painting only what changed.
+//!
+//! A patch's cost must scale with what it changes, not with the surface. So a
+//! surface keeps its frame, works out from layout (not by diffing pixels)
+//! which rectangles a batch of changes touched, and repaints only those,
+//! each into a render target the size of the rectangle.
+//!
+//! Blitz's `paint_scene` offset shifts content for embedding rather than
+//! selecting a window, so [`Window`] wraps the scene painter and translates
+//! everything by the rectangle's origin: vello_cpu then rasterises only the
+//! rectangle's pixels.
+
+use crate::Rect;
+use anyrender::{PaintRef, PaintScene, RenderContext};
+use kurbo::{Affine, Shape, Stroke};
+use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
+
+/// A scene painter that shows the document through a `w`×`h` window at
+/// (x, y). Drawing that falls entirely outside the window is dropped here,
+/// before the rasteriser sees it: Blitz culls against the whole viewport, so
+/// without this every window would cost as much as the full frame.
+pub struct Window<'a, S: PaintScene> {
+    pub inner: &'a mut S,
+    pub shift: Affine,
+    bounds: kurbo::Rect,
+    /// Draw calls kept and dropped, for the benchmark.
+    pub kept: u32,
+    pub dropped: u32,
+}
+
+impl<'a, S: PaintScene> Window<'a, S> {
+    pub fn new(inner: &'a mut S, x: u32, y: u32, w: u32, h: u32) -> Self {
+        Window {
+            inner,
+            shift: Affine::translate((-(x as f64), -(y as f64))),
+            bounds: kurbo::Rect::new(0.0, 0.0, w as f64, h as f64),
+            kept: 0,
+            dropped: 0,
+        }
+    }
+
+    /// Whether a box (in window coordinates) can touch the window.
+    fn visible(&mut self, bbox: kurbo::Rect) -> bool {
+        let hit = bbox.x1 >= self.bounds.x0
+            && bbox.x0 <= self.bounds.x1
+            && bbox.y1 >= self.bounds.y0
+            && bbox.y0 <= self.bounds.y1;
+        if hit {
+            self.kept += 1;
+        } else {
+            self.dropped += 1;
+        }
+        hit
+    }
+}
+
+impl<S: PaintScene> RenderContext for Window<'_, S> {
+    fn try_register_custom_resource(
+        &mut self,
+        resource: Box<dyn std::any::Any>,
+    ) -> Result<anyrender::ResourceId, anyrender::RegisterResourceError> {
+        self.inner.try_register_custom_resource(resource)
+    }
+
+    fn unregister_resource(&mut self, resource_id: anyrender::ResourceId) {
+        self.inner.unregister_resource(resource_id)
+    }
+
+    fn renderer_specific_context(&self) -> Option<Box<dyn std::any::Any>> {
+        self.inner.renderer_specific_context()
+    }
+}
+
+impl<S: PaintScene> PaintScene for Window<'_, S> {
+    fn reset(&mut self) {
+        self.inner.reset()
+    }
+
+    fn push_layer(
+        &mut self,
+        blend: impl Into<BlendMode>,
+        alpha: f32,
+        transform: Affine,
+        clip: &impl Shape,
+        filter: Option<std::sync::Arc<anyrender::Filter>>,
+        backdrop_filter: Option<std::sync::Arc<anyrender::Filter>>,
+    ) {
+        self.inner.push_layer(
+            blend,
+            alpha,
+            self.shift * transform,
+            clip,
+            filter,
+            backdrop_filter,
+        )
+    }
+
+    fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
+        self.inner.push_clip_layer(self.shift * transform, clip)
+    }
+
+    fn pop_layer(&mut self) {
+        self.inner.pop_layer()
+    }
+
+    fn stroke<'b>(
+        &mut self,
+        style: &Stroke,
+        transform: Affine,
+        brush: impl Into<PaintRef<'b>>,
+        brush_transform: Option<Affine>,
+        shape: &impl Shape,
+    ) {
+        let t = self.shift * transform;
+        let bbox = t
+            .transform_rect_bbox(shape.bounding_box())
+            .inflate(style.width, style.width);
+        if self.visible(bbox) {
+            self.inner.stroke(style, t, brush, brush_transform, shape)
+        }
+    }
+
+    fn fill<'b>(
+        &mut self,
+        style: Fill,
+        transform: Affine,
+        brush: impl Into<PaintRef<'b>>,
+        brush_transform: Option<Affine>,
+        shape: &impl Shape,
+    ) {
+        let t = self.shift * transform;
+        let bbox = t
+            .transform_rect_bbox(shape.bounding_box())
+            .inflate(1.0, 1.0);
+        if self.visible(bbox) {
+            self.inner.fill(style, t, brush, brush_transform, shape)
+        }
+    }
+
+    fn draw_glyphs<'b, 's: 'b>(
+        &'s mut self,
+        font: &'b FontData,
+        font_size: f32,
+        hint: bool,
+        normalized_coords: &'b [anyrender::NormalizedCoord],
+        embolden: kurbo::Vec2,
+        style: impl Into<StyleRef<'b>>,
+        brush: impl Into<PaintRef<'b>>,
+        brush_alpha: f32,
+        transform: Affine,
+        glyph_transform: Option<Affine>,
+        glyphs: impl Iterator<Item = anyrender::Glyph> + Clone,
+    ) {
+        let t = self.shift * transform;
+        // Glyph origins bound the run; a font size of slack on every side
+        // covers ascenders, descenders and advance.
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for g in glyphs.clone() {
+            x0 = x0.min(g.x as f64);
+            x1 = x1.max(g.x as f64);
+            y0 = y0.min(g.y as f64);
+            y1 = y1.max(g.y as f64);
+        }
+        if x0 > x1 {
+            return;
+        }
+        let pad = font_size as f64 * 1.5;
+        let run = kurbo::Rect::new(x0 - pad, y0 - pad, x1 + pad, y1 + pad);
+        let run = match glyph_transform {
+            Some(gt) => gt.transform_rect_bbox(run),
+            None => run,
+        };
+        if !self.visible(t.transform_rect_bbox(run)) {
+            return;
+        }
+        self.inner.draw_glyphs(
+            font,
+            font_size,
+            hint,
+            normalized_coords,
+            embolden,
+            style,
+            brush,
+            brush_alpha,
+            t,
+            glyph_transform,
+            glyphs,
+        )
+    }
+
+    fn draw_box_shadow(
+        &mut self,
+        transform: Affine,
+        rect: kurbo::Rect,
+        brush: Color,
+        radius: f64,
+        std_dev: f64,
+    ) {
+        let t = self.shift * transform;
+        let spread = radius + 3.0 * std_dev;
+        if self.visible(t.transform_rect_bbox(rect).inflate(spread, spread)) {
+            self.inner.draw_box_shadow(t, rect, brush, radius, std_dev)
+        }
+    }
+}
+
+/// A rectangle in device pixels, as floats while it is being built.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DevRect {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
+impl DevRect {
+    pub fn union(self, o: DevRect) -> DevRect {
+        DevRect {
+            x0: self.x0.min(o.x0),
+            y0: self.y0.min(o.y0),
+            x1: self.x1.max(o.x1),
+            y1: self.y1.max(o.y1),
+        }
+    }
+
+    /// Grown by `m` on every side, snapped outward to whole pixels and
+    /// clamped to a `w`×`h` surface. `None` if nothing is left.
+    pub fn to_rect(self, m: f64, w: u32, h: u32) -> Option<Rect> {
+        let x0 = (self.x0 - m).floor().max(0.0) as u32;
+        let y0 = (self.y0 - m).floor().max(0.0) as u32;
+        let x1 = ((self.x1 + m).ceil().max(0.0) as u32).min(w);
+        let y1 = ((self.y1 + m).ceil().max(0.0) as u32).min(h);
+        (x1 > x0 && y1 > y0).then(|| Rect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        })
+    }
+}
+
+/// Merges overlapping (or nearly touching) rectangles, then, while there are
+/// more than `max`, the pair whose union adds the least area. The result
+/// covers the input and stays close to its area, so paint cost keeps
+/// tracking what changed. Quadratic in the number of rectangles, which a
+/// frame keeps small.
+pub fn merge(mut rects: Vec<Rect>, slack: u32, max: usize) -> Vec<Rect> {
+    let union = |a: Rect, b: Rect| {
+        let x = a.x.min(b.x);
+        let y = a.y.min(b.y);
+        Rect {
+            x,
+            y,
+            w: (a.x + a.w).max(b.x + b.w) - x,
+            h: (a.y + a.h).max(b.y + b.h) - y,
+        }
+    };
+    let area = |r: Rect| r.w as u64 * r.h as u64;
+    let near = |a: &Rect, b: &Rect| {
+        a.x <= b.x + b.w + slack
+            && b.x <= a.x + a.w + slack
+            && a.y <= b.y + b.h + slack
+            && b.y <= a.y + a.h + slack
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        'outer: for i in 0..rects.len() {
+            for j in i + 1..rects.len() {
+                if near(&rects[i], &rects[j]) {
+                    rects[i] = union(rects[i], rects[j]);
+                    rects.swap_remove(j);
+                    changed = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+    while rects.len() > max {
+        let mut best = (0, 1, u64::MAX);
+        for i in 0..rects.len() {
+            for j in i + 1..rects.len() {
+                let u = union(rects[i], rects[j]);
+                let cost = area(u) - area(rects[i]) - area(rects[j]);
+                if cost < best.2 {
+                    best = (i, j, cost);
+                }
+            }
+        }
+        rects[best.0] = union(rects[best.0], rects[best.1]);
+        rects.swap_remove(best.1);
+    }
+    rects
+}
+
+/// Where a node paints, in device pixels: its border box plus its overflow.
+/// Text nodes paint inside their parent element's box.
+pub fn extent(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) -> Option<DevRect> {
+    let node = doc.get_node(id)?;
+    if !node.is_element() {
+        return extent(doc, node.parent?, scale);
+    }
+    let r = doc.get_client_bounding_rect(id)?;
+    let (x, y) = (r.x * scale, r.y * scale);
+    let mut d = DevRect {
+        x0: x,
+        y0: y,
+        x1: x + r.width * scale,
+        y1: y + r.height * scale,
+    };
+    let ov = node.scrollable_overflow();
+    if ov.width() > 0.0 && ov.height() > 0.0 {
+        d = d.union(DevRect {
+            x0: x + ov.x0,
+            y0: y + ov.y0,
+            x1: x + ov.x1,
+            y1: y + ov.y1,
+        });
+    }
+    Some(d)
+}
+
+/// The box whose layout places a node: its layout parent, which is not
+/// always its DOM parent (a table cell's is the table, not the row), or the
+/// DOM parent for inline content, which has no layout parent.
+fn container(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId) -> Option<blitz_dom::NodeId> {
+    let node = doc.get_node(id)?;
+    node.layout_parent.get().or(node.parent)
+}
+
+/// What changed since the last render, worked out from layout.
+///
+/// `touch` records a node's extent (and its ancestors') as last painted,
+/// before anything moves. After the next layout, `take` returns the touched
+/// nodes' old and new extents; wherever a node's box changed, siblings may
+/// have moved too, so the extent of the box that lays them out is taken as
+/// well, and so on up only as far as boxes keep changing. The cost is the
+/// size of the change times the depth of the tree, never the size of the
+/// surface.
+#[derive(Default)]
+pub struct Tracker {
+    /// Repaint everything (first frame, resize, new stylesheet, clicks).
+    pub full: bool,
+    touched: Vec<blitz_dom::NodeId>,
+    old: std::collections::HashMap<blitz_dom::NodeId, (Option<DevRect>, Option<blitz_dom::NodeId>)>,
+}
+
+impl Tracker {
+    /// A tracker that starts by repainting everything.
+    pub fn full() -> Tracker {
+        Tracker {
+            full: true,
+            ..Tracker::default()
+        }
+    }
+
+    pub fn touch(&mut self, doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) {
+        if self.full {
+            return;
+        }
+        self.touched.push(id);
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            if self.old.contains_key(&n) {
+                break; // its ancestors are recorded too
+            }
+            let parent = container(doc, n);
+            self.old.insert(n, (extent(doc, n, scale), parent));
+            cur = parent;
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.full && self.touched.is_empty()
+    }
+
+    /// Damage after layout, grown by `margin` (shadows, outlines,
+    /// antialiasing), clamped to the surface, merged.
+    pub fn take(
+        &mut self,
+        doc: &blitz_dom::BaseDocument,
+        scale: f64,
+        w: u32,
+        h: u32,
+        margin: f64,
+    ) -> Vec<Rect> {
+        let mut out = Vec::new();
+        let mut done = std::collections::HashSet::new();
+        let touched = std::mem::take(&mut self.touched);
+        for t in touched {
+            let mut n = t;
+            let mut first = true;
+            loop {
+                if !done.insert(n) && !first {
+                    break;
+                }
+                let (old, parent) = self.old.get(&n).copied().unwrap_or((None, None));
+                let new = extent(doc, n, scale);
+                for r in [old, new].into_iter().flatten() {
+                    out.extend(r.to_rect(margin, w, h));
+                }
+                let moved = match (old, new) {
+                    (Some(a), Some(b)) => {
+                        (a.x0 - b.x0).abs() > 0.5
+                            || (a.y0 - b.y0).abs() > 0.5
+                            || (a.x1 - b.x1).abs() > 0.5
+                            || (a.y1 - b.y1).abs() > 0.5
+                    }
+                    (None, None) => false,
+                    _ => true,
+                };
+                // A node without a box of its own (a table row, which Blitz
+                // lays out as part of the table's grid) bounds nothing.
+                let boxless = new.is_some_and(|r| r.x1 - r.x0 < 0.5 || r.y1 - r.y0 < 0.5);
+                // An absolutely positioned box moves nothing else: its old and
+                // new extents are all the damage (a game's sprites).
+                let out_of_flow = doc.get_node(n).is_some_and(|x| x.is_out_of_flow());
+                first = false;
+                match (
+                    (moved && !out_of_flow) || boxless,
+                    parent.or_else(|| container(doc, n)),
+                ) {
+                    (true, Some(p)) => n = p,
+                    _ => break,
+                }
+            }
+        }
+        self.old.clear();
+        self.full = false;
+        merge(out, 16, 64)
+    }
+
+    pub fn clear(&mut self) {
+        self.touched.clear();
+        self.old.clear();
+        self.full = false;
+    }
+}

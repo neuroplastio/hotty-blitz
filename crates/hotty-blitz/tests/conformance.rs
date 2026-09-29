@@ -1,0 +1,167 @@
+//! The shared conformance vectors (conformance/README.md), run against
+//! hotty-blitz. The xterm.js addon runs the same file.
+
+use hotty_blitz::{Config, Effect, Host};
+use hotty_wire::{Command, Control, Event, Scanner};
+use serde_json::Value;
+
+fn vectors() -> Value {
+    // The vectors live in the HOTTY repository: HOTTY_DIR, or a checkout next
+    // to this one (../hotty, or ../../hotty/main in the worktree layout).
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::var_os("HOTTY_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            [root.join("../hotty"), root.join("../../hotty/main")]
+                .into_iter()
+                .find(|c| c.join("SPEC.md").exists())
+        })
+        .expect(
+            "no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository",
+        );
+    let path = dir.join("conformance/vectors.json");
+    serde_json::from_str(&std::fs::read_to_string(&path).expect("conformance/vectors.json"))
+        .unwrap()
+}
+
+fn decode(bytes: &[u8]) -> (Vec<Command>, usize) {
+    let mut commands = Vec::new();
+    let mut invalid = 0;
+    let mut s = Scanner::new();
+    s.feed(bytes, &mut |ev| match ev {
+        Event::Command(c) => commands.push(c),
+        Event::Invalid(_) => invalid += 1,
+        _ => {}
+    });
+    (commands, invalid)
+}
+
+/// Failures, one line each, so a run reports every disagreement at once.
+fn run_step(host: &mut Host, step: &Value) -> Result<(), String> {
+    if let Some(ctl) = step.get("send") {
+        let mut control = Control::default();
+        for (k, v) in ctl.as_object().unwrap() {
+            control.set(k, v.as_str().unwrap());
+        }
+        let payload = step.get("payload").and_then(Value::as_str).unwrap_or("");
+        // Through the wire, as a program sends it.
+        let (cmds, _) = decode(&hotty_wire::encode(&control, payload.as_bytes()));
+        let mut replies = Vec::new();
+        for cmd in &cmds {
+            for e in host.handle(cmd) {
+                if let Effect::Reply(b) = e {
+                    replies.extend(decode(&b).0);
+                }
+            }
+        }
+        match step.get("reply") {
+            None => Ok(()),
+            Some(Value::Null) if replies.is_empty() => Ok(()),
+            Some(Value::Null) => Err(format!(
+                "expected no reply, got {:?}",
+                replies[0].control.encode()
+            )),
+            Some(want) => {
+                let got = replies.first().ok_or("expected a reply, got none")?;
+                let body: Value = serde_json::from_slice(&got.payload).unwrap_or(Value::Null);
+                for (k, v) in want.as_object().unwrap() {
+                    let have = match k.as_str() {
+                        "code" | "detail" => {
+                            body.get(k).and_then(Value::as_str).map(str::to_string)
+                        }
+                        _ => got.get(k).map(str::to_string),
+                    };
+                    if have.as_deref() != v.as_str() {
+                        return Err(format!(
+                            "reply {k}: want {v}, got {have:?} ({})",
+                            got.control.encode()
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
+    } else if let Some(at) = step.get("inspect") {
+        let (s, id) = (at[0].as_str().unwrap(), at[1].as_str().unwrap());
+        let got = host.inspect(s, id);
+        match (step.get("expect"), got) {
+            (Some(Value::Null), None) => Ok(()),
+            (Some(Value::Null), Some(g)) => Err(format!("#{id}: want no element, got {g}")),
+            (Some(_), None) => Err(format!("#{id}: no such element")),
+            (Some(want), Some(g)) => {
+                for (k, v) in want.as_object().unwrap() {
+                    if g.get(k) != Some(v) {
+                        return Err(format!(
+                            "#{id} {k}: want {v}, got {}",
+                            g.get(k).unwrap_or(&Value::Null)
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            (None, _) => Err("inspect without expect".into()),
+        }
+    } else {
+        Err(format!("unknown step {step}"))
+    }
+}
+
+#[test]
+fn protocol_vectors() {
+    let v = vectors();
+    let mut failures = Vec::new();
+    for vector in v["vectors"].as_array().unwrap() {
+        let mut host = Host::new(Config::default());
+        for (i, step) in vector["steps"].as_array().unwrap().iter().enumerate() {
+            if let Err(e) = run_step(&mut host, step) {
+                failures.push(format!(
+                    "{} (step {}): {e}",
+                    vector["name"].as_str().unwrap(),
+                    i + 1
+                ));
+                break;
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} vector(s) failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn wire_vectors() {
+    let v = vectors();
+    let mut failures = Vec::new();
+    for w in v["wire"].as_array().unwrap() {
+        let name = w["name"].as_str().unwrap();
+        let (cmds, invalid) = decode(w["stream"].as_str().unwrap().as_bytes());
+        let want = w["commands"].as_array().unwrap();
+        if cmds.len() != want.len() || invalid != w["invalid"].as_u64().unwrap() as usize {
+            failures.push(format!(
+                "{name}: {} commands and {invalid} invalid",
+                cmds.len()
+            ));
+            continue;
+        }
+        for (c, want) in cmds.iter().zip(want) {
+            for (k, v) in want["control"].as_object().unwrap() {
+                if c.get(k) != v.as_str() {
+                    failures.push(format!("{name}: {k} is {:?}", c.get(k)));
+                }
+            }
+            if c.get("m").is_some() || c.get("o").is_some() {
+                failures.push(format!("{name}: m or o survived decoding"));
+            }
+            if c.payload_str().ok() != want["payload"].as_str() {
+                failures.push(format!(
+                    "{name}: payload {:?}",
+                    String::from_utf8_lossy(&c.payload)
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
