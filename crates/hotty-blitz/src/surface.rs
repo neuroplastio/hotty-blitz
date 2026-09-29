@@ -174,15 +174,18 @@ impl Surface {
             net_provider: Some(Arc::new(net::Provider(store))),
             navigation_provider: Some(nav.clone()),
             html_parser_provider: Some(Arc::new(HtmlProvider)),
-            font_ctx: Some(font_ctx),
+            font_ctx: Some(font_ctx.clone()),
             ..Default::default()
         };
         let doc = HtmlDocument::from_html(html, doc_config);
         let base = declared_base(&doc);
+        // The shared font context: without one, a document scans the
+        // system's fonts, which cost every new surface ~12 ms.
         let parse_doc = HtmlDocument::from_html(
             "",
             DocumentConfig {
                 html_parser_provider: Some(Arc::new(HtmlProvider)),
+                font_ctx: Some(font_ctx),
                 ..Default::default()
             },
         );
