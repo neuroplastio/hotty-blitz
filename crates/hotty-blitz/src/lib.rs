@@ -118,16 +118,33 @@ impl Default for Config {
 pub enum Effect {
     /// Bytes for the program's input: replies and events.
     Reply(Vec<u8>),
-    /// Place `surface` at the current output position (the cursor), over
-    /// `cols`×`rows` cells. Its pixels come from [`Host::render_dirty`].
+    /// Place `surface` at the current output position (the cursor): the
+    /// surface is `cols`×`rows` cells, and the placement shows `window` of
+    /// it (SPEC §5.2), over the window's cells. Its pixels come from
+    /// [`Host::render_dirty`] when the surface changed; an adapter that no
+    /// longer has them asks again with [`Host::redeliver`].
     Place {
         surface: String,
         cols: u16,
         rows: u16,
+        window: Window,
         move_cursor: bool,
     },
+    /// The surface is hidden (SPEC §5.4): remove its placement. Its document
+    /// stays; an adapter that keeps the pixels can show it again without them.
+    Hide { surface: String },
     /// The surface is gone; remove its placement.
     Delete { surface: String },
+}
+
+/// The part of a surface a placement shows, in cells from its top-left
+/// corner (SPEC §5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +251,15 @@ impl Host {
     /// conformance vectors (conformance/README.md).
     pub fn inspect(&self, surface: &str, id: &str) -> Option<serde_json::Value> {
         self.surfaces.get(surface)?.inspect(id)
+    }
+
+    /// The next render delivers `surface`'s whole frame, changed or not: for
+    /// an adapter that must show it anew and no longer has its pixels.
+    pub fn redeliver(&mut self, surface: &str) {
+        if let Some(s) = self.surfaces.get_mut(surface).filter(|s| s.placed) {
+            s.redeliver = true;
+            s.dirty = true;
+        }
     }
 
     pub fn has_dirty(&self) -> bool {
@@ -436,17 +462,16 @@ impl Host {
                 if rows == 0 || rows > 1000 {
                     return Err(("EINVAL", "r out of range".into()));
                 }
+                let window = window(cmd, cols, rows)?;
                 s.set_size(cols, rows);
                 s.auto_rows = auto;
                 s.placed = true;
                 s.dirty = true;
-                // The Place effect's pixels come from the next render, even
-                // when the surface is placed again unchanged (a move).
-                s.redeliver = true;
                 effects.push(Effect::Place {
                     surface: name,
                     cols,
                     rows,
+                    window,
                     move_cursor: cmd.get("C") != Some("1"),
                 });
                 Ok((
@@ -501,6 +526,24 @@ impl Host {
                         effects.extend(self.remove_surface(&name));
                     }
                     None => effects.extend(self.reset()),
+                }
+                Ok((Vec::new(), None))
+            }
+            "hide" => {
+                let name = surface_name()?.to_string();
+                let s = self
+                    .surfaces
+                    .get_mut(&name)
+                    .ok_or(("ENOENT", format!("no surface {name}")))?;
+                // The keyboard goes back to the terminal, as with a=blur.
+                if s.has_focus() {
+                    for e in s.blur() {
+                        effects.push(Effect::Reply(e.encode(&name)));
+                    }
+                }
+                if s.placed {
+                    s.placed = false;
+                    effects.push(Effect::Hide { surface: name });
                 }
                 Ok((Vec::new(), None))
             }
@@ -607,4 +650,22 @@ fn reply(
         control.set(&k, v);
     }
     hotty_wire::encode(&control, body.as_deref().unwrap_or_default())
+}
+
+/// A place command's window (SPEC §5.2): `x`, `y`, `w`, `h` in cells, by
+/// default the whole surface. One that leaves the surface, or has no cells,
+/// is EINVAL.
+fn window(cmd: &Command, cols: u16, rows: u16) -> Result<Window, (&'static str, String)> {
+    let get = |k: &str, default: u16| -> Result<u16, (&'static str, String)> {
+        cmd.get(k)
+            .map(|v| v.parse::<u16>().map_err(|_| ("EINVAL", format!("bad {k}"))))
+            .unwrap_or(Ok(default))
+    };
+    let (x, y) = (get("x", 0)?, get("y", 0)?);
+    let w = get("w", cols.saturating_sub(x))?;
+    let h = get("h", rows.saturating_sub(y))?;
+    if w == 0 || h == 0 || x as u32 + w as u32 > cols as u32 || y as u32 + h as u32 > rows as u32 {
+        return Err(("EINVAL", "the window is not inside the surface".into()));
+    }
+    Ok(Window { x, y, w, h })
 }

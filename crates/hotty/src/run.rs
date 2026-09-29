@@ -175,6 +175,7 @@ impl Shim {
                     surface,
                     cols,
                     rows,
+                    window,
                     move_cursor,
                 } => {
                     // A new image per placement: the old placeholder cells
@@ -191,11 +192,16 @@ impl Shim {
                             on_alt: self.alt,
                         },
                     );
+                    // A new image needs every pixel, changed or not.
+                    self.host.redeliver(&surface);
                     self.flush_renders(out, false);
-                    kitty::placeholders(out, id, cols, rows, move_cursor);
+                    kitty::placeholders(out, id, window, move_cursor);
                     self.input.placed(&surface, id);
                 }
-                Effect::Delete { surface } => {
+                // Hidden or gone, the terminal's image goes: placing the
+                // surface again makes a new one from the document, which
+                // stays in the host while it is hidden.
+                Effect::Delete { surface } | Effect::Hide { surface } => {
                     self.delete(&surface, out);
                     self.input.removed(&surface);
                 }

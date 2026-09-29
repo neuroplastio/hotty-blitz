@@ -26,18 +26,28 @@ pub struct HottyEffects {
     pub ctx: *mut c_void,
     /// Bytes for the program's input.
     pub reply: Option<extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize)>,
-    /// Place `surface` at the cursor over `cols`×`rows` cells.
+    /// Place `surface` at the cursor: it is `cols`×`rows` cells, and the
+    /// placement shows the window `x`, `y`, `w`×`h` of it, over `w`×`h`
+    /// cells (SPEC §5.2). An adapter without the surface's pixels asks for
+    /// them with `hotty_host_redeliver`.
     pub place: Option<
         extern "C" fn(
             ctx: *mut c_void,
             surface: *const c_char,
             cols: u16,
             rows: u16,
+            x: u16,
+            y: u16,
+            w: u16,
+            h: u16,
             move_cursor: bool,
         ),
     >,
-    /// Remove `surface`'s placement.
+    /// Remove `surface`'s placement: the surface is gone.
     pub remove: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char)>,
+    /// Remove `surface`'s placement and keep what shows it again cheaply: the
+    /// surface is hidden (SPEC §5.4) and its document stays.
+    pub hide: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char)>,
 }
 
 #[repr(C)]
@@ -136,14 +146,20 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                 surface,
                 cols,
                 rows,
+                window: w,
                 move_cursor,
             } => {
                 if let (Some(f), Ok(name)) = (fx.place, CString::new(surface)) {
-                    f(fx.ctx, name.as_ptr(), cols, rows, move_cursor);
+                    f(fx.ctx, name.as_ptr(), cols, rows, w.x, w.y, w.w, w.h, move_cursor);
                 }
             }
             Effect::Delete { surface } => {
                 if let (Some(f), Ok(name)) = (fx.remove, CString::new(surface)) {
+                    f(fx.ctx, name.as_ptr());
+                }
+            }
+            Effect::Hide { surface } => {
+                if let (Some(f), Ok(name)) = (fx.hide, CString::new(surface)) {
                     f(fx.ctx, name.as_ptr());
                 }
             }
@@ -235,6 +251,19 @@ pub unsafe extern "C" fn hotty_host_osc(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_has_dirty(h: *const HottyHost) -> bool {
     unsafe { h.as_ref() }.is_some_and(|h| h.host.has_dirty())
+}
+
+/// The next render delivers `surface`'s whole frame, changed or not: for an
+/// adapter that must show it anew and no longer has its pixels.
+///
+/// # Safety
+/// `h` must be valid; `surface` a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_redeliver(h: *mut HottyHost, surface: *const c_char) {
+    let Some(surface) = (unsafe { name(surface) }) else {
+        return;
+    };
+    guard(h, (), |h| h.host.redeliver(surface))
 }
 
 /// Renders every placed surface whose document changed.

@@ -78,21 +78,48 @@ fn auto_rows_fit_the_content_and_frames_are_cell_sized() {
 }
 
 #[test]
-fn placing_again_delivers_the_frame_even_if_nothing_changed() {
+fn placing_again_moves_without_a_frame_until_one_is_asked_for() {
     let mut h = host();
     h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p>still</p>"));
     let place = cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], "");
     h.handle(&place);
     assert_eq!(render(&mut h).len(), 1);
-    assert!(render(&mut h).is_empty());
-    // A move: the same document at the same size, placed again. The host
-    // shows it anew, so it needs the pixels, once.
+    // A move, or another window: the adapter already has the pixels.
     h.handle(&place);
+    assert!(render(&mut h).is_empty());
+    // An adapter that lost them (its terminal erased the image) asks again.
+    h.redeliver("x");
     assert_eq!(
         render(&mut h),
         vec![("x".to_string(), 300, 40, hotty_blitz::Damage::Full)]
     );
     assert!(render(&mut h).is_empty());
+}
+
+#[test]
+fn a_window_is_part_of_the_surface() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p>tall</p>"));
+    let place = |h: &mut Host, extra: &[(&str, &str)]| {
+        let mut pairs = vec![("a", "place"), ("s", "x"), ("c", "30"), ("r", "8")];
+        pairs.extend_from_slice(extra);
+        h.handle(&cmd(&pairs, "")).into_iter().find_map(|e| match e {
+            Effect::Place { cols, rows, window, .. } => Some((cols, rows, window)),
+            _ => None,
+        })
+    };
+    let win = |x, y, w, h| hotty_blitz::Window { x, y, w, h };
+    // The whole surface by default; a window to the edges from x and y.
+    assert_eq!(place(&mut h, &[]), Some((30, 8, win(0, 0, 30, 8))));
+    assert_eq!(place(&mut h, &[("y", "3")]), Some((30, 8, win(0, 3, 30, 5))));
+    assert_eq!(place(&mut h, &[("y", "2"), ("h", "4"), ("x", "5"), ("w", "10")]), Some((30, 8, win(5, 2, 10, 4))));
+    // The document keeps its size: the frame is the whole surface.
+    let frames = render(&mut h);
+    assert_eq!((frames[0].1, frames[0].2), (300, 160));
+    // Outside the surface, or no cells: EINVAL, and nothing is placed.
+    assert_eq!(place(&mut h, &[("y", "6"), ("h", "3")]), None);
+    assert_eq!(place(&mut h, &[("x", "30")]), None);
+    assert_eq!(place(&mut h, &[("w", "0")]), None);
 }
 
 #[test]
@@ -119,6 +146,28 @@ fn inline_svg_follows_its_preserve_aspect_ratio() {
     assert!(red_at("preserveAspectRatio='none'", 295));
     assert!(!red_at("", 5));
     assert!(red_at("", 150));
+}
+
+#[test]
+fn hide_removes_the_placement_and_keeps_the_document() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p id=p>one</p><input id=i>"));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+    render(&mut h);
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "i"), ("q", "2")], ""));
+    let fx = h.handle(&cmd(&[("a", "hide"), ("s", "x")], ""));
+    // The keyboard goes back to the terminal, and the placement goes.
+    assert!(fx.contains(&Effect::Hide { surface: "x".into() }), "{fx:?}");
+    assert!(replies(&fx).iter().any(|r| r.get("e") == Some("blur")));
+    assert_eq!(h.placement("x"), None);
+    // Hidden: patches apply, nothing renders.
+    h.handle(&cmd(&[("a", "patch"), ("s", "x"), ("op", "text"), ("t", "p"), ("q", "2")], "two"));
+    assert!(render(&mut h).is_empty());
+    assert_eq!(h.inspect("x", "p").unwrap()["text"], "two");
+    // Hiding again does nothing; placing again shows it as it is now.
+    assert!(!h.handle(&cmd(&[("a", "hide"), ("s", "x"), ("q", "2")], "")).iter().any(|e| matches!(e, Effect::Hide { .. })));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+    assert_eq!(render(&mut h).len(), 1);
 }
 
 #[test]

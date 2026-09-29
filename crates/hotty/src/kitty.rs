@@ -8,7 +8,7 @@
 use crate::diacritics::DIACRITICS;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use hotty_blitz::Rect;
+use hotty_blitz::{Rect, Window};
 use std::io::Write;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,11 +152,16 @@ impl Kitty {
     }
 }
 
-/// Prints the placeholder grid for image `id` at the cursor. With
-/// `move_cursor`, space is reserved first (scrolling if needed) and the cursor
-/// ends at the start of the line below; otherwise it is left where it was.
-pub fn placeholders(out: &mut Vec<u8>, id: u32, cols: u16, rows: u16, move_cursor: bool) {
-    let rows = rows.min(DIACRITICS.len() as u16);
+/// Prints the placeholder grid for `window` of image `id` at the cursor:
+/// each row's first cell names its image row and column, so the terminal
+/// shows that part of the image (SPEC §5.2). With `move_cursor`, space is
+/// reserved first (scrolling if needed) and the cursor ends at the start of
+/// the line below; otherwise it is left where it was.
+pub fn placeholders(out: &mut Vec<u8>, id: u32, window: Window, move_cursor: bool) {
+    let max = DIACRITICS.len() as u16;
+    let (x, y) = (window.x.min(max - 1), window.y.min(max - 1));
+    let rows = window.h.min(max - y);
+    let cols = window.w;
     if move_cursor {
         // Reserve the surface's rows and the line after it. LF keeps the
         // column and scrolls at the bottom margin; then come back up.
@@ -173,8 +178,8 @@ pub fn placeholders(out: &mut Vec<u8>, id: u32, cols: u16, rows: u16, move_curso
         }
         let _ = write!(out, "\x1b[38;2;{r};{g};{b}m");
         out.extend_from_slice('\u{10EEEE}'.encode_utf8(&mut cell).as_bytes());
-        out.extend_from_slice(DIACRITICS[row as usize].encode_utf8(&mut cell).as_bytes());
-        out.extend_from_slice(DIACRITICS[0].encode_utf8(&mut cell).as_bytes());
+        out.extend_from_slice(DIACRITICS[(y + row) as usize].encode_utf8(&mut cell).as_bytes());
+        out.extend_from_slice(DIACRITICS[x as usize].encode_utf8(&mut cell).as_bytes());
         for _ in 1..cols {
             // Row and column are inferred from the cell to the left.
             out.extend_from_slice('\u{10EEEE}'.encode_utf8(&mut cell).as_bytes());
