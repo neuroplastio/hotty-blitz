@@ -1,21 +1,36 @@
 # The Blitz fork
 
-`0001-blitz-dom-*.patch` is the whole fork: one commit on upstream Blitz
+The patches here are the whole fork: commits on upstream Blitz
 `674d7d2144585baa0f7368b8ad76371c93fe1b65`, the revision `Cargo.toml` pins.
 `Cargo.toml` swaps it in with `[patch."https://github.com/DioxusLabs/blitz"]`
 path dependencies on `../blitz`. Like the Ghostty fork, it stays local: a
 GitHub fork of a public repository would be public. Whether to offer these
 changes upstream is an open question.
 
+| patch | what |
+| --- | --- |
+| `0001-blitz-dom-*` | patch cost proportional to depth, not document size (below) |
+| `0002-blitz-paint-*` | inline SVG follows its `preserveAspectRatio` |
+
 ```
-scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patch
+scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
 make check                   # `make` runs the script when ../blitz is missing
 ```
 
-Removing the `[patch]` section goes back to upstream Blitz; everything still
-works, with patches costing O(N) again.
+Removing the `[patch]` section goes back to upstream Blitz. Everything still
+works, but patches cost O(N) again, and a stretched SVG (`preserveAspectRatio="none"`)
+is drawn narrow and centred.
 
-## What it changes
+## SVG: preserveAspectRatio
+
+Upstream paints every inline `<svg>` as `object-fit: contain`. A browser
+fits the viewBox to the element's box as its `preserveAspectRatio` says
+(SVG 2, 8.6): `none` stretches it, `slice` covers the box, and the default
+fits inside it. Charts drawn in a fixed viewBox and stretched to their box
+need `none`. hotty-blitz's `inline_svg_follows_its_preserve_aspect_ratio`
+checks it.
+
+## Patch cost: what it changes
 
 Upstream, one changed cell costs every phase of `resolve` a walk of the whole
 document. The fork makes each phase stop where the change stops:

@@ -102,6 +102,9 @@ pub(crate) struct Surface {
     pub auto_rows: bool,
     pub placed: bool,
     pub dirty: bool,
+    /// The next render delivers the whole frame, changed or not: the host
+    /// is showing the surface anew (a placement) and needs every pixel.
+    pub redeliver: bool,
     pub frame: Frame,
     /// Render contexts by bucketed size, so painting a rectangle does not
     /// allocate one (the fixed cost that dominated small patches).
@@ -191,6 +194,7 @@ impl Surface {
             auto_rows: false,
             placed: false,
             dirty: true,
+            redeliver: false,
             frame: Frame {
                 width: 0,
                 height: 0,
@@ -281,13 +285,15 @@ impl Surface {
         }
         let t1 = std::time::Instant::now();
         self.dirty = false;
+        let redeliver = std::mem::take(&mut self.redeliver);
         let full = self.damage.full || self.frame.width != w || self.frame.height != h;
         let scale = m.scale as f64;
         let rects = if full {
             self.damage.clear();
             vec![Rect { x: 0, y: 0, w, h }]
         } else if self.damage.is_empty() {
-            return None;
+            // Nothing to paint; a placement still gets the frame as it is.
+            return redeliver.then_some(Damage::Full);
         } else {
             let margin = (8.0 * scale).ceil();
             let rects = self.damage.take(&self.doc, scale, w, h, margin);
@@ -307,7 +313,7 @@ impl Surface {
         };
         let t2 = std::time::Instant::now();
         if rects.is_empty() {
-            return None;
+            return redeliver.then_some(Damage::Full);
         }
         if full {
             self.frame.rgba.clear();
@@ -326,7 +332,7 @@ impl Surface {
             diff_us: (t2 - t1).as_micros() as u32,
         };
         self.frame.generation += 1;
-        Some(if full {
+        Some(if full || redeliver {
             Damage::Full
         } else {
             Damage::Rects(rects)

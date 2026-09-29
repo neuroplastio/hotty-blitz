@@ -440,6 +440,9 @@ impl Host {
                 s.auto_rows = auto;
                 s.placed = true;
                 s.dirty = true;
+                // The Place effect's pixels come from the next render, even
+                // when the surface is placed again unchanged (a move).
+                s.redeliver = true;
                 effects.push(Effect::Place {
                     surface: name,
                     cols,

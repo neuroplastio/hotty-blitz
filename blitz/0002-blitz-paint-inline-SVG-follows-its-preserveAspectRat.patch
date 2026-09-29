@@ -1,0 +1,44 @@
+From 9e75940b11ce256fed60d1ac103d99393a4992f1 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 20:56:17 +0200
+Subject: [PATCH] blitz-paint: inline SVG follows its preserveAspectRatio
+
+An inline <svg> was always painted as object-fit: contain. A browser fits
+the viewBox to the element's box as preserveAspectRatio says (SVG 2,
+8.6): `none` stretches it, `slice` covers the box, and the default fits
+inside it. Charts drawn in a fixed viewBox and stretched to their box
+came out narrow and centred.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-paint/src/render.rs | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index e42d3acd..b0747d38 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -1090,7 +1090,19 @@ impl ElementCx<'_, '_> {
+             width: svg_size.width(),
+             height: svg_size.height(),
+         };
+-        let paint_size = compute_object_fit(container_size, Some(object_size), ObjectFit::Contain);
++        // The viewBox fits the element's box as its preserveAspectRatio says
++        // (SVG 2, 8.6): `none` stretches it to the box, `slice` covers the
++        // box, and the default (`meet`) fits inside it.
++        let fit = match self
++            .element
++            .attr(local_name!("preserveAspectRatio"))
++            .map(str::trim)
++        {
++            Some(v) if v.starts_with("none") => ObjectFit::Fill,
++            Some(v) if v.ends_with("slice") => ObjectFit::Cover,
++            _ => ObjectFit::Contain,
++        };
++        let paint_size = compute_object_fit(container_size, Some(object_size), fit);
+ 
+         // Compute object-position
+         let x_offset = object_position.horizontal.resolve(
+-- 
+2.55.0
+

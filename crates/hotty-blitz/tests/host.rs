@@ -78,6 +78,50 @@ fn auto_rows_fit_the_content_and_frames_are_cell_sized() {
 }
 
 #[test]
+fn placing_again_delivers_the_frame_even_if_nothing_changed() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p>still</p>"));
+    let place = cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], "");
+    h.handle(&place);
+    assert_eq!(render(&mut h).len(), 1);
+    assert!(render(&mut h).is_empty());
+    // A move: the same document at the same size, placed again. The host
+    // shows it anew, so it needs the pixels, once.
+    h.handle(&place);
+    assert_eq!(
+        render(&mut h),
+        vec![("x".to_string(), 300, 40, hotty_blitz::Damage::Full)]
+    );
+    assert!(render(&mut h).is_empty());
+}
+
+#[test]
+fn inline_svg_follows_its_preserve_aspect_ratio() {
+    // A square viewBox in a 300x40 box: `none` stretches it across the box,
+    // the default fits it inside, centred (SVG 2, 8.6).
+    let red_at = |par: &str, x: u32| {
+        let mut h = host();
+        h.handle(&cmd(
+            &[("a", "doc"), ("s", "x")],
+            &format!(
+                "<body style='margin:0'><svg viewBox='0 0 10 10' {par} \
+                 style='display:block;width:300px;height:40px'>\
+                 <rect width='10' height='10' fill='#ff0000'/></svg></body>"
+            ),
+        ));
+        h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+        render(&mut h);
+        let f = h.frame("x").unwrap();
+        let i = ((20 * f.width + x) * 4) as usize;
+        f.rgba[i] > 200 && f.rgba[i + 1] < 50
+    };
+    assert!(red_at("preserveAspectRatio='none'", 5));
+    assert!(red_at("preserveAspectRatio='none'", 295));
+    assert!(!red_at("", 5));
+    assert!(red_at("", 150));
+}
+
+#[test]
 fn a_text_patch_damages_only_part_of_the_frame() {
     let mut h = host();
     h.handle(&cmd(
