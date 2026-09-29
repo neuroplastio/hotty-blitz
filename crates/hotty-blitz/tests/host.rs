@@ -558,6 +558,74 @@ fn partial_repaint_matches_a_full_paint() {
     assert_eq!(differing, 0, "{differing} pixels differ from a full paint");
 }
 
+/// A link 20px tall across the top, then prose from y = 24.
+const PROSE: &str = "<style>body{margin:0;font:14px sans-serif}p{margin:4px}
+    a{display:block;height:20px}</style>
+    <a id=go href='/go'>a link</a>
+    <p>The first paragraph, long enough to wrap onto a second line here.</p>
+    <p>A second one, a little shorter.</p>
+    <p>And a third, below the rest.</p>";
+
+#[test]
+fn dragging_repaints_the_selection_as_it_grows() {
+    let place = |h: &mut Host| {
+        h.handle(&cmd(&[("a", "doc"), ("s", "x")], PROSE));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "8")],
+            "",
+        ));
+    };
+    let path = [(60.0, 32.0), (200.0, 50.0), (120.0, 75.0), (80.0, 95.0)];
+    let mods = Mods::default();
+    // Incremental: a frame after every step of the drag.
+    let mut inc = host();
+    place(&mut inc);
+    render(&mut inc);
+    let before = inc.frame("x").unwrap().rgba.clone();
+    inc.pointer("x", PointerKind::Down, 5.0, 32.0, mods);
+    render(&mut inc);
+    for (x, y) in path {
+        inc.pointer("x", PointerKind::Move, x, y, mods);
+        let frames = render(&mut inc);
+        assert_eq!(frames.len(), 1, "a step of the drag at ({x}, {y}) repaints");
+    }
+    // Reference: the same drag, painted once at the end (the press repaints
+    // everything; the first frame lays the document out to hit it).
+    let mut full = host();
+    place(&mut full);
+    render(&mut full);
+    full.pointer("x", PointerKind::Down, 5.0, 32.0, mods);
+    for (x, y) in path {
+        full.pointer("x", PointerKind::Move, x, y, mods);
+    }
+    render(&mut full);
+    let (a, b) = (inc.frame("x").unwrap(), full.frame("x").unwrap());
+    assert_ne!(a.rgba, before, "the drag selected something");
+    let differing = a
+        .rgba
+        .chunks(4)
+        .zip(b.rgba.chunks(4))
+        .filter(|(p, q)| p != q)
+        .count();
+    assert_eq!(differing, 0, "{differing} pixels differ from a full paint");
+}
+
+#[test]
+fn the_pointer_shape_follows_the_document() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "x")], PROSE));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "8")],
+        "",
+    ));
+    render(&mut h);
+    h.pointer("x", PointerKind::Move, 150.0, 10.0, Mods::default());
+    assert_eq!(h.cursor("x"), Some("pointer"));
+    h.pointer("x", PointerKind::Move, 20.0, 32.0, Mods::default());
+    assert_eq!(h.cursor("x"), Some("text"));
+    assert_eq!(h.cursor("nothing"), None);
+}
+
 /// A page with the layout modes an incremental relayout has to get right:
 /// nested content-sized flex-wrap (measured many ways per pass), fractional
 /// widths (rounding), grid, a float, a table and absolutely positioned boxes.

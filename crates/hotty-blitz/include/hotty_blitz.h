@@ -54,5 +54,9 @@ bool hotty_host_key(hotty_host *h, uint32_t key, const char *text, uint32_t mods
                      const hotty_effects *fx);
 void hotty_host_blur(hotty_host *h, const char *surface, const hotty_effects *fx);
 const char *hotty_host_focused(hotty_host *h);
+/* The pointer's shape over the surface after the last pointer event, as a
+ * CSS cursor name ("pointer", "text", ...), or NULL for the host's own.
+ * Valid until the next call. */
+const char *hotty_host_cursor(hotty_host *h, const char *surface);
 
 #endif

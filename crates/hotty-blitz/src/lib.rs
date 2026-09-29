@@ -622,6 +622,12 @@ impl Host {
         self.surfaces.get(surface).is_some_and(|s| s.has_focus())
     }
 
+    /// The pointer's shape over `surface` (Surface::cursor), for a host
+    /// that shows the pointer: a CSS `cursor` name.
+    pub fn cursor(&self, surface: &str) -> Option<&'static str> {
+        self.surfaces.get(surface)?.cursor()
+    }
+
     pub fn focused_surface(&self) -> Option<&str> {
         self.surfaces
             .iter()

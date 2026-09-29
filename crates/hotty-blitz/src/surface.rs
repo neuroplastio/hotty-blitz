@@ -515,6 +515,13 @@ impl Surface {
         self.keyboard
     }
 
+    /// The pointer's shape over what the pointer last moved onto, as a CSS
+    /// `cursor` name: the element's `cursor`, or `pointer` in a link, `text`
+    /// over text. None over nothing in particular.
+    pub fn cursor(&self) -> Option<&'static str> {
+        self.doc.get_cursor().map(|c| c.name())
+    }
+
     pub fn focus(&mut self, target: Option<&str>) -> Result<(), String> {
         let before = self.doc.get_focussed_node_id();
         match target {
@@ -793,6 +800,14 @@ impl Surface {
         // A press changes `:active` along the whole chain, and may toggle a
         // checkbox or a <details>: repaint everything (clicks are rare).
         let is_press = matches!(ui, UiEvent::PointerDown(_) | UiEvent::PointerUp(_));
+        // A drag extends the selection, which neither hover nor focus shows.
+        let dragging =
+            matches!(ui, UiEvent::PointerMove(_)) && self.buttons != MouseEventButtons::None;
+        let selected = if dragging {
+            self.doc.get_text_selection_ranges()
+        } else {
+            Vec::new()
+        };
         let before = (
             self.doc.get_hover_node_id(),
             self.doc.get_focussed_node_id(),
@@ -844,9 +859,24 @@ impl Surface {
             let after = (self.doc.get_hover_node_id(), focused);
             self.touch_chains(before.0, after.0);
             self.touch_chains(before.1, after.1);
+            let scale = self.viewport.2 as f64;
             if is_key && let Some(f) = after.1 {
-                let scale = self.viewport.2 as f64;
                 self.damage.touch(&self.doc, f, scale);
+            }
+            if dragging {
+                // The text whose highlight changed, and a text field's own
+                // selection (a drag inside the focused field).
+                let now = self.doc.get_text_selection_ranges();
+                let changed: Vec<NodeId> = selected
+                    .iter()
+                    .filter(|r| !now.contains(r))
+                    .chain(now.iter().filter(|r| !selected.contains(r)))
+                    .map(|r| r.0)
+                    .chain(after.1)
+                    .collect();
+                for n in changed {
+                    self.damage.touch(&self.doc, n, scale);
+                }
             }
         }
         events

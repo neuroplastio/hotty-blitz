@@ -2,10 +2,12 @@
 """A virtual pointer for the private headless display.
 
     vpointer.py <width> <height> move X Y [click] [move X Y click ...]
+    vpointer.py <width> <height> move X Y down move X Y ... up   (a drag)
 
 Speaks the Wayland wire protocol directly (no dependencies) to create a
 zwlr_virtual_pointer_v1 and move and click it in logical pixels of an output
-of the given size. `click` presses and releases the left button.
+of the given size. `click` presses and releases the left button; `down` and
+`up` are its halves, for a drag.
 """
 import os
 import socket
@@ -107,6 +109,10 @@ def main():
             c.send(pointer, 4)
             time.sleep(0.05)
             c.send(pointer, 2, struct.pack("<III", ms(), BTN_LEFT, 0))
+            c.send(pointer, 4)
+            i += 1
+        elif steps[i] in ("down", "up"):  # half a click, for drags
+            c.send(pointer, 2, struct.pack("<III", ms(), BTN_LEFT, int(steps[i] == "down")))
             c.send(pointer, 4)
             i += 1
         elif steps[i] == "sleep":

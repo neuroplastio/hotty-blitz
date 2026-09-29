@@ -84,6 +84,8 @@ pub struct HottyHost {
     scanner: Scanner,
     /// The name returned by `hotty_host_focused`, kept alive here.
     focused: Option<CString>,
+    /// The name returned by `hotty_host_cursor`.
+    cursor: Option<CString>,
 }
 
 /// Runs `f` on a live host, catching panics at the C boundary.
@@ -180,6 +182,7 @@ pub unsafe extern "C" fn hotty_host_new(cfg: *const HottyConfig) -> *mut HottyHo
         dead: false,
         scanner: Scanner::new(),
         focused: None,
+        cursor: None,
     }))
 }
 
@@ -440,5 +443,22 @@ pub unsafe extern "C" fn hotty_host_focused(h: *mut HottyHost) -> *const c_char 
     guard(h, std::ptr::null(), |h| {
         h.focused = h.host.focused_surface().and_then(|s| CString::new(s).ok());
         h.focused.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
+    })
+}
+
+/// The pointer's shape over `surface` after the last pointer event, as a CSS
+/// `cursor` name ("pointer", "text", ...), or NULL for the host's own.
+/// Valid until the next call.
+///
+/// # Safety
+/// `h` must be valid, `surface` NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_cursor(h: *mut HottyHost, surface: *const c_char) -> *const c_char {
+    let Some(surface) = (unsafe { name(surface) }) else {
+        return std::ptr::null();
+    };
+    guard(h, std::ptr::null(), |h| {
+        h.cursor = h.host.cursor(surface).and_then(|c| CString::new(c).ok());
+        h.cursor.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
     })
 }
