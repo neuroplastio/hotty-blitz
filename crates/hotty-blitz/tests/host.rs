@@ -171,6 +171,30 @@ fn hide_removes_the_placement_and_keeps_the_document() {
 }
 
 #[test]
+fn a_patch_to_an_element_whose_layout_box_is_gone_repaints_instead_of_panicking() {
+    // A tooltip shown on hover lays its <b> out in an anonymous box; hidden
+    // again, the box is freed while the <b>, not laid out, still points at
+    // it. A patch to the <b> before the next layout used to measure it
+    // through that box and panic (a chart's tooltips, in hotty-demo).
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0} .b{position:absolute;left:0;top:0;width:100px;height:100px}
+         .tip{display:none} .b:hover .tip{display:block}</style>
+         <div class=b><div class=tip><b id=t>12:00</b><div>row</div></div></div>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "10")], ""));
+    render(&mut h);
+    h.pointer("x", PointerKind::Move, 50.0, 50.0, Mods::default());
+    render(&mut h);
+    h.pointer("x", PointerKind::Leave, 0.0, 0.0, Mods::default());
+    render(&mut h);
+    let r = replies(&h.handle(&cmd(&[("a", "patch"), ("s", "x"), ("op", "text"), ("t", "t")], "12:01")));
+    assert_eq!(r[0].get("a"), Some("ok"));
+    assert_eq!(render(&mut h).len(), 1);
+}
+
+#[test]
 fn a_text_patch_damages_only_part_of_the_frame() {
     let mut h = host();
     h.handle(&cmd(

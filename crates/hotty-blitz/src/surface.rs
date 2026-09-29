@@ -744,6 +744,9 @@ impl Surface {
 
     /// Space or Enter on a button, link, checkbox or summary: a click at its centre.
     fn activate(&mut self, id: NodeId) -> Vec<Event> {
+        if !paint::intact(&self.doc, id) {
+            return Vec::new();
+        }
         let Some(r) = self.doc.get_client_bounding_rect(id) else {
             return Vec::new();
         };
@@ -1113,6 +1116,9 @@ fn push_row(rows: &mut [String], doc: &BaseDocument, element: NodeId, text: &str
     let Some(node) = doc.get_node(element) else {
         return;
     };
+    if !paint::intact(doc, element) {
+        return;
+    }
     let pos = node.absolute_position(0.0, 0.0);
     let row = ((pos.y * m.scale) / m.cell_h as f32).floor().max(0.0) as usize;
     if let Some(r) = rows.get_mut(row) {

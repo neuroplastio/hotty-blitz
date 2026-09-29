@@ -293,12 +293,36 @@ pub fn merge(mut rects: Vec<Rect>, slack: u32, max: usize) -> Vec<Rect> {
     rects
 }
 
+/// Whether a node's position can be computed now: every containing block
+/// up its chain still exists. Between a morph and the next layout, a node's
+/// cached layout can point at a box the morph removed (an anonymous block,
+/// a positioned ancestor), and Blitz's position walk unwraps it.
+pub fn intact(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId) -> bool {
+    let Some(mut node) = doc.get_node(id) else {
+        return false;
+    };
+    for _ in 0..4096 {
+        match node.containing_block() {
+            None => return true,
+            Some(c) => match doc.get_node(c) {
+                Some(p) => node = p,
+                None => return false,
+            },
+        }
+    }
+    false
+}
+
 /// Where a node paints, in device pixels: its border box plus its overflow.
-/// Text nodes paint inside their parent element's box.
+/// Text nodes paint inside their parent element's box. None if it has no
+/// box, or its position cannot be computed now (`intact`).
 pub fn extent(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) -> Option<DevRect> {
     let node = doc.get_node(id)?;
     if !node.is_element() {
         return extent(doc, node.parent?, scale);
+    }
+    if !intact(doc, id) {
+        return None;
     }
     let r = doc.get_client_bounding_rect(id)?;
     let (x, y) = (r.x * scale, r.y * scale);
@@ -363,6 +387,12 @@ impl Tracker {
         while let Some(n) = cur {
             if self.old.contains_key(&n) {
                 break; // its ancestors are recorded too
+            }
+            if doc.get_node(n).is_some_and(|node| node.is_element()) && !intact(doc, n) {
+                // Where it painted is unknown (a morph removed a box its
+                // layout points at): repaint everything.
+                self.full = true;
+                return;
             }
             let parent = container(doc, n);
             self.old.insert(n, (extent(doc, n, scale), parent));
