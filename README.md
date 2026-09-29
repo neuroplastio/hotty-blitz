@@ -29,9 +29,7 @@ surfaces as images (SPEC §14). It also works across SSH:
 
 A terminal can instead link `libhotty_blitz` through the C ABI and render
 surfaces natively: sharp at any zoom, no pixels on the wire, and local
-interaction. [hottyterm](https://github.com/neuroplastio/hottyterm), a fork of
-Ghostty, does this as a proof of concept of the protocol; it stops existing
-if Ghostty gains HOTTY support.
+interaction.
 
 ## Performance
 
