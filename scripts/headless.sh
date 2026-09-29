@@ -36,6 +36,7 @@ CFG
   after=$(ls "$XDG_RUNTIME_DIR" | grep -E '^wayland-[0-9]+$' || true)
   new=$(printf '%s\n%s\n' "$before" "$after" | sort | uniq -u | head -1)
   echo "${new:-?}" > "$CACHE/display"
+  pgrep -n -x sway > "$CACHE/pid" || true   # its IPC socket is sway-ipc.<uid>.<pid>.sock
   echo "headless sway on ${new:-?}"
   ;;
 stop)
