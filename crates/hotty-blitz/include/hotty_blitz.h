@@ -21,9 +21,12 @@ typedef struct {
   void *ctx;
   void (*reply)(void *ctx, const uint8_t *data, size_t len);
   /* The surface is cols x rows cells; the placement shows the window
-   * x, y, w x h of it, over w x h cells at the cursor (SPEC 5.2). */
+   * x, y, w x h of it, over w x h cells at the cursor, above or below
+   * overlapping placements by z (SPEC 5.2: greater above; among equals, the
+   * one whose surface was created later, a greater `created`, above). */
   void (*place)(void *ctx, const char *surface, uint16_t cols, uint16_t rows,
-                uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool move_cursor);
+                uint16_t x, uint16_t y, uint16_t w, uint16_t h, int32_t z, uint32_t created,
+                bool move_cursor);
   void (*remove)(void *ctx, const char *surface); /* the surface is gone */
   /* The surface is hidden (SPEC 5.4): remove its placement, and keep what
    * shows it again cheaply. Its document stays. */

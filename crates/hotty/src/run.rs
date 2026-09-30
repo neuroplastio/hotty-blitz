@@ -30,6 +30,10 @@ pub(crate) struct Meta {
     pub id: u32,
     pub cols: u16,
     pub rows: u16,
+    /// The placement's z (SPEC §5.2), for the virtual placement. Its cells
+    /// are placeholders, so what overlaps is settled by which was written
+    /// last, as any text is; z reaches the terminal all the same.
+    pub z: i16,
     /// Size of the frame last transmitted in full, if any.
     sent: Option<(u32, u32)>,
     on_alt: bool,
@@ -176,7 +180,9 @@ impl Shim {
                     cols,
                     rows,
                     window,
+                    z,
                     move_cursor,
+                    ..
                 } => {
                     // A new image per placement: the old placeholder cells
                     // then show nothing instead of a second copy.
@@ -188,6 +194,7 @@ impl Shim {
                             id,
                             cols,
                             rows,
+                            z,
                             sent: None,
                             on_alt: self.alt,
                         },
@@ -244,7 +251,7 @@ impl Shim {
                         frame.height,
                         &frame.straight(frame.full()),
                     );
-                    kitty.place_virtual(&mut buf, m.id, m.cols, m.rows);
+                    kitty.place_virtual(&mut buf, m.id, m.cols, m.rows, m.z);
                     m.sent = Some(size);
                 }
             }

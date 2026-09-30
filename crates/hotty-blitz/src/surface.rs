@@ -102,6 +102,10 @@ pub(crate) struct Surface {
     pub auto_rows: bool,
     pub placed: bool,
     pub dirty: bool,
+    /// Which surface this is in the order of creation (the `a=doc` that
+    /// created it, not one that replaced its document): among placements
+    /// with the same z, a later one is above (SPEC §5.2).
+    pub created: u32,
     /// The next render delivers the whole frame, changed or not: the host
     /// is showing the surface anew (a placement) and needs every pixel.
     pub redeliver: bool,
@@ -196,6 +200,7 @@ impl Surface {
             rows,
             auto_rows: false,
             placed: false,
+            created: 0,
             dirty: true,
             redeliver: false,
             frame: Frame {

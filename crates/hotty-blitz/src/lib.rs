@@ -120,7 +120,9 @@ pub enum Effect {
     Reply(Vec<u8>),
     /// Place `surface` at the current output position (the cursor): the
     /// surface is `cols`×`rows` cells, and the placement shows `window` of
-    /// it (SPEC §5.2), over the window's cells. Its pixels come from
+    /// it (SPEC §5.2), over the window's cells, above or below overlapping
+    /// placements by `z` (greater above; among equals, the one whose
+    /// surface was `created` later above). Its pixels come from
     /// [`Host::render_dirty`] when the surface changed; an adapter that no
     /// longer has them asks again with [`Host::redeliver`].
     Place {
@@ -128,6 +130,8 @@ pub enum Effect {
         cols: u16,
         rows: u16,
         window: Window,
+        z: i16,
+        created: u32,
         move_cursor: bool,
     },
     /// The surface is hidden (SPEC §5.4): remove its placement. Its document
@@ -161,6 +165,8 @@ pub struct Host {
     store: Arc<net::Store>,
     font_ctx: FontContext,
     surfaces: BTreeMap<String, surface::Surface>,
+    /// Surfaces created so far, for their order (SPEC §5.2).
+    created: u32,
     frame_log: Option<FrameLog>,
 }
 
@@ -204,6 +210,7 @@ impl Host {
             css,
             font_ctx: FontContext::default(),
             surfaces: BTreeMap::new(),
+            created: 0,
             frame_log: FrameLog::open(),
         }
     }
@@ -412,14 +419,16 @@ impl Host {
             "doc" => {
                 let name = surface_name()?.to_string();
                 let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
-                let (cols, rows, auto, placed) = self
-                    .surfaces
-                    .get(&name)
-                    .map(|s| (s.cols, s.rows, s.auto_rows, s.placed))
-                    .unwrap_or((80, 24, false, false));
-                if let Some(old) = self.surfaces.remove(&name) {
-                    self.store.forget_document(old.doc_id());
-                }
+                let (cols, rows, auto, placed, created) = match self.surfaces.remove(&name) {
+                    Some(old) => {
+                        self.store.forget_document(old.doc_id());
+                        (old.cols, old.rows, old.auto_rows, old.placed, old.created)
+                    }
+                    None => {
+                        self.created += 1;
+                        (80, 24, false, false, self.created)
+                    }
+                };
                 let mut s = surface::Surface::new(
                     html,
                     &self.config,
@@ -433,6 +442,7 @@ impl Host {
                 s.placed = placed;
                 s.auto_rows = auto;
                 s.rows = rows;
+                s.created = created;
                 self.surfaces.insert(name, s);
                 Ok((Vec::new(), None))
             }
@@ -463,6 +473,14 @@ impl Host {
                     return Err(("EINVAL", "r out of range".into()));
                 }
                 let window = window(cmd, cols, rows)?;
+                let z: i16 = match cmd.get("z") {
+                    None => 0,
+                    Some(v) => v
+                        .parse()
+                        .ok()
+                        .filter(|z| (-1000..=1000).contains(z))
+                        .ok_or(("EINVAL", "z is an integer from -1000 to 1000".to_string()))?,
+                };
                 s.set_size(cols, rows);
                 s.auto_rows = auto;
                 s.placed = true;
@@ -472,6 +490,8 @@ impl Host {
                     cols,
                     rows,
                     window,
+                    z,
+                    created: s.created,
                     move_cursor: cmd.get("C") != Some("1"),
                 });
                 Ok((

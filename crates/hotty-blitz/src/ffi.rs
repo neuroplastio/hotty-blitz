@@ -28,8 +28,10 @@ pub struct HottyEffects {
     pub reply: Option<extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize)>,
     /// Place `surface` at the cursor: it is `cols`×`rows` cells, and the
     /// placement shows the window `x`, `y`, `w`×`h` of it, over `w`×`h`
-    /// cells (SPEC §5.2). An adapter without the surface's pixels asks for
-    /// them with `hotty_host_redeliver`.
+    /// cells, above or below overlapping placements by `z` (SPEC §5.2:
+    /// greater above; among equals, the one whose surface was `created`
+    /// later above). An adapter without the surface's pixels asks for them
+    /// with `hotty_host_redeliver`.
     pub place: Option<
         extern "C" fn(
             ctx: *mut c_void,
@@ -40,6 +42,8 @@ pub struct HottyEffects {
             y: u16,
             w: u16,
             h: u16,
+            z: i32,
+            created: u32,
             move_cursor: bool,
         ),
     >,
@@ -151,10 +155,12 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                 cols,
                 rows,
                 window: w,
+                z,
+                created,
                 move_cursor,
             } => {
                 if let (Some(f), Ok(name)) = (fx.place, CString::new(surface)) {
-                    f(fx.ctx, name.as_ptr(), cols, rows, w.x, w.y, w.w, w.h, move_cursor);
+                    f(fx.ctx, name.as_ptr(), cols, rows, w.x, w.y, w.w, w.h, z as i32, created, move_cursor);
                 }
             }
             Effect::Delete { surface } => {

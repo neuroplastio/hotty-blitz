@@ -118,8 +118,8 @@ impl Kitty {
     }
 
     /// A virtual placement: where the placeholder cells get their pixels.
-    pub fn place_virtual(&self, out: &mut Vec<u8>, id: u32, cols: u16, rows: u16) {
-        let _ = write!(out, "\x1b_Ga=p,U=1,i={id},p=1,c={cols},r={rows},q=2\x1b\\");
+    pub fn place_virtual(&self, out: &mut Vec<u8>, id: u32, cols: u16, rows: u16, z: i16) {
+        let _ = write!(out, "\x1b_Ga=p,U=1,i={id},p=1,c={cols},r={rows},z={z},q=2\x1b\\");
     }
 
     /// Transmits and places directly at the cursor (for `hotty show`).
