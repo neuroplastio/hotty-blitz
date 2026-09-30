@@ -86,6 +86,8 @@ pub struct HottyHost {
     focused: Option<CString>,
     /// The name returned by `hotty_host_cursor`.
     cursor: Option<CString>,
+    /// The url returned by `hotty_host_hyperlink`.
+    hyperlink: Option<CString>,
 }
 
 /// Runs `f` on a live host, catching panics at the C boundary.
@@ -183,6 +185,7 @@ pub unsafe extern "C" fn hotty_host_new(cfg: *const HottyConfig) -> *mut HottyHo
         scanner: Scanner::new(),
         focused: None,
         cursor: None,
+        hyperlink: None,
     }))
 }
 
@@ -460,5 +463,23 @@ pub unsafe extern "C" fn hotty_host_cursor(h: *mut HottyHost, surface: *const c_
     guard(h, std::ptr::null(), |h| {
         h.cursor = h.host.cursor(surface).and_then(|c| CString::new(c).ok());
         h.cursor.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
+    })
+}
+
+/// The hyperlink under the pointer on `surface` after the last pointer
+/// event (SPEC §9: a link with `target="_blank"`), as its url, or NULL. The
+/// terminal treats it as it treats an OSC 8 hyperlink: its gesture, its
+/// feedback, its policies. Valid until the next call.
+///
+/// # Safety
+/// `h` must be valid, `surface` NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_hyperlink(h: *mut HottyHost, surface: *const c_char) -> *const c_char {
+    let Some(surface) = (unsafe { name(surface) }) else {
+        return std::ptr::null();
+    };
+    guard(h, std::ptr::null(), |h| {
+        h.hyperlink = h.host.hyperlink(surface).and_then(|u| CString::new(u).ok());
+        h.hyperlink.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
     })
 }

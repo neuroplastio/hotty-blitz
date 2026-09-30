@@ -522,6 +522,30 @@ impl Surface {
         self.doc.get_cursor().map(|c| c.name())
     }
 
+    /// The hyperlink the pointer last moved onto (SPEC §9: a link with
+    /// `target="_blank"`), as its url: the terminal treats it as it treats
+    /// an OSC 8 hyperlink. None over anything else, a link of the program's
+    /// included.
+    pub fn hyperlink(&self) -> Option<String> {
+        let mut id = self.doc.get_hover_node_id()?;
+        loop {
+            let node = self.doc.get_node(id)?;
+            if node.element_data().is_some_and(|e| &*e.name.local == "a") {
+                let attr = |name: &str| {
+                    node.attrs()?
+                        .iter()
+                        .find(|a| &*a.name.local == name)
+                        .map(|a| a.value.clone())
+                };
+                if attr("target").as_deref() != Some("_blank") {
+                    return None;
+                }
+                return link_url(&self.base, &attr("href")?);
+            }
+            id = node.parent?;
+        }
+    }
+
     pub fn focus(&mut self, target: Option<&str>) -> Result<(), String> {
         let before = self.doc.get_focussed_node_id();
         match target {
@@ -1029,6 +1053,10 @@ impl EventHandler for &mut Recorder {
                     // (SPEC §9), and the target is then empty.
                     let href = attr(id, "href");
                     let link = t == "a" && href.is_some();
+                    if link && attr(id, "target").as_deref() == Some("_blank") {
+                        // A hyperlink is the terminal's, and not reported.
+                        break;
+                    }
                     let target = attr(id, "id");
                     if target.is_some() || link {
                         let target = target.unwrap_or_default();

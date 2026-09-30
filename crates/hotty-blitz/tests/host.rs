@@ -359,6 +359,35 @@ fn links_report_href_and_url_with_or_without_an_id() {
 }
 
 #[test]
+fn a_hyperlink_is_the_terminals_and_reports_nothing() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "l"), ("q", "2")],
+        r#"<base href="https://example.com/blog/"><style>body{margin:0} a{display:block;height:40px}</style>
+<a id=out target=_blank href="../spec">Spec</a><a id=in href="../about">About</a>"#,
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "l"), ("c", "20"), ("r", "5"), ("q", "2")],
+        "",
+    ));
+    render(&mut h);
+    let click = |h: &mut Host, y: f32| {
+        let mut fx = h.pointer("l", PointerKind::Down, 10.0, y, Mods::default());
+        fx.extend(h.pointer("l", PointerKind::Up, 10.0, y, Mods::default()));
+        replies(&fx)
+            .into_iter()
+            .filter(|c| c.get("e") == Some("click"))
+            .count()
+    };
+    h.pointer("l", PointerKind::Move, 10.0, 10.0, Mods::default());
+    assert_eq!(h.hyperlink("l").as_deref(), Some("https://example.com/spec"));
+    assert_eq!(click(&mut h, 10.0), 0, "a hyperlink's click is not reported");
+    h.pointer("l", PointerKind::Move, 10.0, 50.0, Mods::default());
+    assert_eq!(h.hyperlink("l"), None, "a link of the program's is no hyperlink");
+    assert_eq!(click(&mut h, 50.0), 1);
+}
+
+#[test]
 fn keys_the_surface_does_not_use_go_to_the_program() {
     let mut h = host();
     place_form(&mut h);

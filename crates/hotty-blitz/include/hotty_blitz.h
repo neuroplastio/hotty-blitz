@@ -58,5 +58,10 @@ const char *hotty_host_focused(hotty_host *h);
  * CSS cursor name ("pointer", "text", ...), or NULL for the host's own.
  * Valid until the next call. */
 const char *hotty_host_cursor(hotty_host *h, const char *surface);
+/* The hyperlink under the pointer on the surface after the last pointer
+ * event (SPEC 9: a link with target="_blank"), as its url, or NULL. Treat it
+ * as an OSC 8 hyperlink: its gesture, its feedback, its policies. A click on
+ * it reports nothing to the program. Valid until the next call. */
+const char *hotty_host_hyperlink(hotty_host *h, const char *surface);
 
 #endif

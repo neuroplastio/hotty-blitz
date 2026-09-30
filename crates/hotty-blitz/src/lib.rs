@@ -628,6 +628,12 @@ impl Host {
         self.surfaces.get(surface)?.cursor()
     }
 
+    /// The hyperlink under the pointer on `surface` (Surface::hyperlink),
+    /// for a host to treat as an OSC 8 hyperlink: its url.
+    pub fn hyperlink(&self, surface: &str) -> Option<String> {
+        self.surfaces.get(surface)?.hyperlink()
+    }
+
     pub fn focused_surface(&self) -> Option<&str> {
         self.surfaces
             .iter()
