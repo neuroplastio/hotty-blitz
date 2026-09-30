@@ -45,6 +45,12 @@ Measured 2026-09-29, release build:
 Flat lists still cost linear time in their length: every pass, Stylo's
 included, scans the children of the node that changed.
 
+Not done yet:
+- **Occlusion.** A placement wholly under others (SPEC §5.2, `z`) is still
+  laid out and painted, and its patches still cost a render. Overlap
+  detection over the placements would let the host skip the paint of what
+  cannot show, and defer its patches until it shows again.
+
 ## Fidelity
 
 [docs/fidelity/](docs/fidelity/) has the corpus rendered here next to
