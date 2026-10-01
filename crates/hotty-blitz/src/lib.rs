@@ -607,6 +607,8 @@ impl Host {
 
     /// A pointer event at pixel position `(x, y)` inside `surface`. Returns
     /// events for the program; hover and pressed styles change locally.
+    /// `Down` and `Up` are the primary button's, or a tap's: a click (SPEC
+    /// §10.1). A host passes no other button.
     pub fn pointer(
         &mut self,
         surface: &str,

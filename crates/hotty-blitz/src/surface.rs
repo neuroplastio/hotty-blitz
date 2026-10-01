@@ -127,6 +127,8 @@ pub(crate) struct Surface {
     detached: bool,
     /// What the last press focused, for its release (Surface::pointer).
     press: Option<Option<NodeId>>,
+    /// Where the pointer is, in CSS pixels, while it is over the surface.
+    pointer_at: Option<(f32, f32)>,
     /// The focused text input and its value when it gained focus, for `change`.
     focus_value: Option<(NodeId, String)>,
     buttons: MouseEventButtons,
@@ -166,6 +168,88 @@ fn keyboard_event(kind: &'static str) -> Event {
         target: String::new(),
         detail: serde_json::Value::Null,
     }
+}
+
+/// A hyperlink's url (SPEC §9): `node` is an `a` with `target="_blank"`
+/// and a `url`. A hyperlink is the terminal's, not the program's.
+fn hyperlink_url(node: &blitz_dom::Node, base: &Option<url::Url>) -> Option<String> {
+    let el = node.element_data().filter(|e| &*e.name.local == "a")?;
+    if el.attr(local_name!("target")) != Some("_blank") {
+        return None;
+    }
+    link_url(base, el.attr(local_name!("href"))?)
+}
+
+/// The controls a label can stand for here: those that take focus.
+fn labelable(el: &blitz_dom::ElementData) -> bool {
+    match el.name.local.as_ref() {
+        "input" => el.attr(local_name!("type")) != Some("hidden"),
+        "button" | "select" | "textarea" => true,
+        _ => false,
+    }
+}
+
+/// A label's control (HTML): the element its `for` names, or else its
+/// first labelable descendant.
+fn label_control(doc: &BaseDocument, label: NodeId) -> Option<NodeId> {
+    let node = doc.get_node(label)?;
+    if let Some(id) = node.element_data()?.attr(local_name!("for")) {
+        let c = doc.get_element_by_id(id)?;
+        return doc
+            .get_node(c)?
+            .element_data()
+            .is_some_and(labelable)
+            .then_some(c);
+    }
+    let mut stack: Vec<NodeId> = node.children.iter().rev().copied().collect();
+    while let Some(id) = stack.pop() {
+        let Some(n) = doc.get_node(id) else { continue };
+        if n.element_data().is_some_and(labelable) {
+            return Some(id);
+        }
+        stack.extend(n.children.iter().rev().copied());
+    }
+    None
+}
+
+/// The control a click on `id` is a click on (SPEC §10.1): the control of
+/// the label it lands in, unless it lands on interactive content first.
+fn label_click_control(doc: &BaseDocument, mut id: Option<NodeId>) -> Option<NodeId> {
+    while let Some(n) = id {
+        let node = doc.get_node(n)?;
+        if let Some(el) = node.element_data() {
+            let interactive = labelable(el)
+                || match el.name.local.as_ref() {
+                    "a" => el.attr(local_name!("href")).is_some(),
+                    "details" => true,
+                    _ => false,
+                };
+            if interactive {
+                return None;
+            }
+            if &*el.name.local == "label" {
+                return label_control(doc, n);
+            }
+        }
+        id = node.parent;
+    }
+    None
+}
+
+/// Whether `id` is the first `summary` of a `details`, which toggles it.
+fn first_summary(doc: &BaseDocument, id: NodeId) -> bool {
+    let is = |n: NodeId, tag: &str| {
+        doc.get_node(n)
+            .and_then(|n| n.element_data())
+            .is_some_and(|e| &*e.name.local == tag)
+    };
+    let Some(parent) = doc.get_node(id).and_then(|n| n.parent) else {
+        return false;
+    };
+    is(parent, "details")
+        && doc
+            .get_node(parent)
+            .is_some_and(|p| p.children.iter().copied().find(|&c| is(c, "summary")) == Some(id))
 }
 
 /// A link's `url` (SPEC §9): its href resolved against the document's base,
@@ -241,6 +325,7 @@ impl Surface {
             keyboard: false,
             detached: false,
             press: None,
+            pointer_at: None,
             focus_value: None,
             buttons: MouseEventButtons::None,
             base,
@@ -600,15 +685,18 @@ impl Surface {
 
     /// The pointer's shape over what the pointer last moved onto, as a CSS
     /// `cursor` name: the element's `cursor`, or `pointer` in a link, `text`
-    /// over text. None over nothing in particular. On a detached surface a
-    /// link that is no hyperlink leads nowhere: the text pointer (SPEC §5.5).
+    /// over text. None over nothing in particular. A detached surface
+    /// promises no click but a hyperlink's (SPEC §5.5): elsewhere it shows
+    /// no hand, whatever the document's `cursor`, but the text pointer
+    /// over text and the default one over the rest.
     pub fn cursor(&self) -> Option<&'static str> {
         let shape = self.doc.get_cursor().map(|c| c.name())?;
         if self.detached && shape == "pointer" && self.hyperlink().is_none() {
-            let link = self.hovered_link().and_then(|id| self.doc.get_node(id));
-            if link.is_some_and(|n| n.attr(local_name!("href")).is_some()) {
-                return Some("text");
-            }
+            let text = self
+                .pointer_at
+                .and_then(|(x, y)| self.doc.hit(x, y))
+                .is_some_and(|h| h.is_text);
+            return Some(if text { "text" } else { "default" });
         }
         Some(shape)
     }
@@ -630,17 +718,7 @@ impl Surface {
     /// an OSC 8 hyperlink. None over anything else, a link of the program's
     /// included.
     pub fn hyperlink(&self) -> Option<String> {
-        let node = self.doc.get_node(self.hovered_link()?)?;
-        let attr = |name: &str| {
-            node.attrs()?
-                .iter()
-                .find(|a| &*a.name.local == name)
-                .map(|a| a.value.clone())
-        };
-        if attr("target").as_deref() != Some("_blank") {
-            return None;
-        }
-        link_url(&self.base, &attr("href")?)
+        hyperlink_url(self.doc.get_node(self.hovered_link()?)?, &self.base)
     }
 
     pub fn focus(&mut self, target: Option<&str>) -> Result<(), String> {
@@ -703,27 +781,41 @@ impl Surface {
     }
 
     /// What a press on `id` focuses (SPEC §10.1): the nearest element from
-    /// it outward that a browser focuses on a click (a form control, a link
-    /// with an `href`, a `summary`, an element with a `tabindex` of 0 or
-    /// more), unless that one is disabled. None: the press focuses nothing.
+    /// it outward that takes focus (`input`, `select`, `textarea`,
+    /// `button`, a link with an `href`, the first `summary` of a
+    /// `details`, an element with a `tabindex` of 0 or more), unless that
+    /// one is disabled or a hyperlink, which is the terminal's. A label
+    /// stands for its control. None: the press focuses nothing. Editing
+    /// hosts (`contenteditable`) would take focus too; Blitz has none.
     fn focus_target(&self, mut id: Option<NodeId>) -> Option<NodeId> {
         if self.detached {
             return None;
         }
+        let enabled = |id: NodeId| {
+            self.doc
+                .get_node(id)
+                .and_then(|n| n.element_data())
+                .is_some_and(|e| !e.is_disabled())
+        };
         while let Some(n) = id {
             let node = self.doc.get_node(n)?;
             if let Some(el) = node.element_data() {
-                let takes = match el.name.local.as_ref() {
-                    "input" => el.attr(local_name!("type")) != Some("hidden"),
-                    "button" | "select" | "textarea" | "summary" => true,
-                    "a" | "area" => el.attr(local_name!("href")).is_some(),
-                    _ => false,
-                } || el
-                    .attr(local_name!("tabindex"))
-                    .and_then(|t| t.trim().parse::<i32>().ok())
-                    .is_some_and(|t| t >= 0);
+                let takes = labelable(el)
+                    || match el.name.local.as_ref() {
+                        "summary" => first_summary(&self.doc, n),
+                        "a" | "area" => el.attr(local_name!("href")).is_some(),
+                        _ => false,
+                    }
+                    || el
+                        .attr(local_name!("tabindex"))
+                        .and_then(|t| t.trim().parse::<i32>().ok())
+                        .is_some_and(|t| t >= 0);
                 if takes {
-                    return (!el.is_disabled()).then_some(n);
+                    let hyperlink = hyperlink_url(node, &self.base).is_some();
+                    return (!hyperlink && enabled(n)).then_some(n);
+                }
+                if &*el.name.local == "label" {
+                    return label_control(&self.doc, n).filter(|&c| enabled(c));
                 }
             }
             id = node.parent;
@@ -779,6 +871,7 @@ impl Surface {
             PointerKind::Down => UiEvent::PointerDown(ev),
             PointerKind::Up => UiEvent::PointerUp(ev),
             PointerKind::Leave => {
+                self.pointer_at = None;
                 let old = self.doc.get_hover_node_id();
                 self.doc.clear_hover();
                 self.touch_chains(old, None);
@@ -786,6 +879,7 @@ impl Surface {
                 return Vec::new();
             }
         };
+        self.pointer_at = Some((x, y));
         let before = self.focused();
         let mut events = self.drive(ui);
         // A click takes the keyboard only by focusing an element that takes
@@ -1017,6 +1111,14 @@ impl Surface {
             let mut driver = EventDriver::new(doc, &mut rec);
             driver.handle_ui_event(ui);
         }
+        // A click on a label is a click on its control (SPEC §10.1). Blitz
+        // clicks only an `input` for its label; the Recorder stopped that.
+        if let Some((control, click)) = rec.label.take() {
+            let doc: &mut dyn Document = &mut self.doc;
+            EventDriver::new(doc, &mut rec)
+                .handle_dom_event(DomEvent::new(control, DomEventData::Click(click)));
+            rec.label = None;
+        }
         let mut events = rec.events;
         // Form submissions arrive as navigations (Blitz submits forms by
         // navigating). They never navigate here: they become `submit`.
@@ -1174,6 +1276,8 @@ struct Recorder {
     form: Option<NodeId>,
     /// The document's base URL, for links' `url`.
     base: Option<url::Url>,
+    /// A click on a label: its control, and the click to give it.
+    label: Option<(NodeId, BlitzPointerEvent)>,
 }
 
 impl EventHandler for &mut Recorder {
@@ -1182,9 +1286,17 @@ impl EventHandler for &mut Recorder {
         chain: &[NodeId],
         event: &mut DomEvent,
         doc: &mut dyn Document,
-        _state: &mut EventState,
+        state: &mut EventState,
     ) {
         let doc = doc.inner();
+        if let DomEventData::Click(click) = &event.data
+            && let Some(control) = label_click_control(&doc, Some(event.target))
+        {
+            // The label's control gets the click (Surface::drive), not
+            // Blitz's handling of the label.
+            state.prevent_default();
+            self.label = Some((control, click.clone()));
+        }
         let attr = |id: NodeId, name: &str| -> Option<String> {
             doc.get_node(id)?
                 .attrs()?
@@ -1222,11 +1334,16 @@ impl EventHandler for &mut Recorder {
                     if !reportable {
                         continue;
                     }
+                    let node = doc.get_node(id);
+                    if node.is_some_and(|n| n.element_data().is_some_and(|e| e.is_disabled())) {
+                        // A disabled control is not activated.
+                        break;
+                    }
                     // A link reports without an id: its href is the handle
                     // (SPEC §9), and the target is then empty.
                     let href = attr(id, "href");
                     let link = t == "a" && href.is_some();
-                    if link && attr(id, "target").as_deref() == Some("_blank") {
+                    if node.and_then(|n| hyperlink_url(n, &self.base)).is_some() {
                         // A hyperlink is the terminal's, and not reported.
                         break;
                     }

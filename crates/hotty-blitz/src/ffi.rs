@@ -342,8 +342,9 @@ fn mods(bits: u32) -> Mods {
     }
 }
 
-/// A pointer event at surface pixel `(x, y)`. `kind`: 0 move, 1 down, 2 up, 3 leave.
-/// `mods`: 1 shift, 2 ctrl, 4 alt, 8 super. A press also takes the keyboard
+/// A pointer event at surface pixel `(x, y)`. `kind`: 0 move, 1 down, 2 up, 3 leave;
+/// down and up are the primary button's, or a tap's (SPEC §10.1): pass no
+/// other button. `mods`: 1 shift, 2 ctrl, 4 alt, 8 super. A press also takes the keyboard
 /// from any other surface that has it (SPEC §10.1): its events come through
 /// `fx` too.
 ///

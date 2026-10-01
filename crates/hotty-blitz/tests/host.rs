@@ -1253,3 +1253,166 @@ fn a_detached_surface_paints_partially_as_it_would_in_full() {
         .count();
     assert_eq!(differing, 0, "{differing} pixels differ from a full paint");
 }
+
+#[test]
+fn a_hyperlink_takes_no_keyboard() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "l",
+        &[],
+        r#"<base href="https://example.com/"><style>*{margin:0;padding:0;border:0} a{display:block;width:200px;height:20px}</style>
+<a id=out target=_blank href="/spec">Spec</a><a id=in href="/about">About</a>"#,
+        "3",
+    );
+    // A hyperlink is the terminal's: a click on it takes nothing.
+    assert_eq!(click(&mut h, "l", 10.0, 10.0), vec![]);
+    assert!(!h.is_focused("l"));
+    // A link of the program's takes the keyboard...
+    let k = kinds(&click(&mut h, "l", 10.0, 30.0));
+    assert_eq!(k, vec![ev("focus", ""), ev("click", "in")]);
+    // ...which a click on the hyperlink, taking no focus, gives back.
+    assert_eq!(kinds(&click(&mut h, "l", 10.0, 10.0)), vec![ev("blur", "")]);
+}
+
+#[test]
+fn only_the_first_summary_of_a_details_takes_focus() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "d",
+        &[],
+        "<style>*{margin:0;padding:0} summary{display:block;height:20px}</style>
+         <details open><summary id=s1>one</summary><summary id=s2>two</summary><p>body</p></details>",
+        "4",
+    );
+    assert_eq!(
+        kinds(&click(&mut h, "d", 10.0, 30.0)),
+        vec![ev("click", "s2")]
+    );
+    assert!(!h.is_focused("d"));
+    let k = kinds(&click(&mut h, "d", 10.0, 10.0));
+    assert_eq!(k, vec![ev("focus", ""), ev("click", "s1")]);
+    assert!(h.is_focused("d"));
+}
+
+#[test]
+fn a_click_on_a_label_is_a_click_on_its_control() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "f",
+        &[],
+        "<style>*{margin:0;padding:0;border:0}
+         label,input,button{display:block;width:200px;height:20px} label.wrap{height:auto}</style>
+         <label for=t>Name</label><input id=t>
+         <label class=wrap>Agree <input type=checkbox id=c></label>
+         <label for=b>Go</label><button id=b>go</button>
+         <label for=x>Off</label><button id=x disabled>off</button>",
+        "8",
+    );
+    // A text field: its label focuses it, and typing goes into it.
+    assert_eq!(
+        kinds(&click(&mut h, "f", 10.0, 10.0)),
+        vec![ev("focus", "")]
+    );
+    assert!(key(&mut h, "f", "q").consumed);
+    h.blur("f");
+    // A checkbox: toggled, and focused.
+    let got = click(&mut h, "f", 10.0, 50.0);
+    assert_eq!(kinds(&got), vec![ev("focus", ""), ev("change", "c")]);
+    let v: serde_json::Value = serde_json::from_slice(&got[1].payload).unwrap();
+    assert_eq!(v["checked"], true);
+    h.blur("f");
+    // A button: clicked, and focused.
+    let k = kinds(&click(&mut h, "f", 10.0, 90.0));
+    assert_eq!(k, vec![ev("focus", ""), ev("click", "b")]);
+    h.blur("f");
+    // A disabled button: nothing, through its label or not.
+    assert_eq!(click(&mut h, "f", 10.0, 130.0), vec![]);
+    assert_eq!(click(&mut h, "f", 10.0, 150.0), vec![]);
+    assert!(!h.is_focused("f"));
+}
+
+#[test]
+fn on_a_detached_surface_focus_is_edetached_and_blur_does_nothing() {
+    let mut h = host();
+    doc_at(&mut h, "x", &[("d", "1")], "<input id=i>", "2");
+    for t in [Some("i"), Some("nope"), None] {
+        let mut c = vec![("a", "focus"), ("s", "x")];
+        c.extend(t.map(|t| ("t", t)));
+        let r = replies(&h.handle(&cmd(&c, "")));
+        assert_eq!(r.len(), 1, "{t:?}");
+        assert!(
+            String::from_utf8_lossy(&r[0].payload).contains("EDETACHED"),
+            "{t:?}: {:?}",
+            r[0].control.encode()
+        );
+    }
+    let r = replies(&h.handle(&cmd(&[("a", "blur"), ("s", "x")], "")));
+    assert_eq!(r.len(), 1);
+    assert_eq!((r[0].get("a"), r[0].get("re")), (Some("ok"), Some("blur")));
+}
+
+#[test]
+fn a_detached_surface_shows_a_hand_only_over_a_hyperlink() {
+    let doc = r#"<base href="https://example.com/"><style>*{margin:0;padding:0;border:0}
+        a,button,div{display:block;width:200px;height:20px}</style>
+        <button id=b style="cursor:pointer">button</button>
+        <div id=d data-on=click style="cursor:pointer">tap</div>
+        <a href="/in">a link</a><div style="cursor:pointer"></div>
+        <a target=_blank href="/out">a hyperlink</a>"#;
+    let shapes = |extra: &[(&str, &str)]| {
+        let mut h = host();
+        doc_at(&mut h, "x", extra, doc, "5");
+        [10.0, 30.0, 50.0, 70.0, 90.0].map(|y| {
+            h.pointer("x", PointerKind::Move, 15.0, y, Mods::default());
+            h.cursor("x")
+        })
+    };
+    // Attached, the document's cursor: a hand over each.
+    assert_eq!(shapes(&[]), [Some("pointer"); 5]);
+    // Detached, a hand only over the hyperlink: text over text, the
+    // default pointer elsewhere (beside the button's centred label).
+    assert_eq!(
+        shapes(&[("d", "1")]),
+        [
+            Some("default"),
+            Some("text"),
+            Some("text"),
+            Some("default"),
+            Some("pointer")
+        ]
+    );
+}
+
+#[test]
+fn what_the_user_typed_stays_after_detach() {
+    let field = |value: &str| {
+        format!(
+            "<style>body{{margin:0}} input{{width:200px}}</style><input id=name value='{value}'>"
+        )
+    };
+    let mut typed = host();
+    doc_at(&mut typed, "f", &[], &field(""), "2");
+    typed.handle(&cmd(
+        &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+        "",
+    ));
+    type_text(&mut typed, "yz");
+    typed.handle(&cmd(&[("a", "detach"), ("s", "f"), ("q", "2")], ""));
+    render(&mut typed);
+    let frame = |h: &Host| h.frame("f").unwrap().rgba.clone();
+    let mut written = host();
+    doc_at(&mut written, "f", &[("d", "1")], &field("yz"), "2");
+    let mut empty = host();
+    doc_at(&mut empty, "f", &[("d", "1")], &field(""), "2");
+    assert_eq!(
+        frame(&typed),
+        frame(&written),
+        "the field shows what was typed"
+    );
+    assert_ne!(frame(&typed), frame(&empty));
+    // The document still has the program's value.
+    assert_eq!(typed.inspect("f", "name").unwrap()["attrs"]["value"], "");
+}

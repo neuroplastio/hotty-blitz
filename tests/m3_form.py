@@ -94,14 +94,20 @@ def main():
         os.write(master, b)
         time.sleep(pause)
 
-    def click(x, y):
+    def click(x, y, button=0):
         # SGR-pixels: 1-based pixel coordinates.
-        send(f"\x1b[<0;{x + 1};{y + 1}M".encode(), 0.05)
-        send(f"\x1b[<0;{x + 1};{y + 1}m".encode())
+        send(f"\x1b[<{button};{x + 1};{y + 1}M".encode(), 0.05)
+        send(f"\x1b[<{button};{x + 1};{y + 1}m".encode())
 
     wait_for(lambda ev: any(e["kind"] == "ready" for e in ev), "the form")
     time.sleep(0.3)
     send(b"hello")
+    # Only the primary button clicks (SPEC §10.1): a middle or right click,
+    # on the checkbox or outside the form, neither toggles it nor moves the
+    # keyboard, so what follows still reaches the form.
+    for button in (1, 2):
+        click(166, 146, button)
+        click(500, 590, button)
     send(b"\t")  # to email: name reports `change`
     send(b"a@b.c")
     click(166, 146)  # the checkbox (row 3): email reports `change`, notify `change`
@@ -133,6 +139,8 @@ def main():
     expect(detail("change", "name") == {"value": "hello"}, f"change name=hello, got {detail('change', 'name')}")
     expect(detail("change", "email") == {"value": "a@b.c"}, f"change email, got {detail('change', 'email')}")
     expect((detail("change", "notify") or {}).get("checked") is True, f"notify checked, got {detail('change', 'notify')}")
+    toggles = [e for e in ev if e.get("e") == "change" and e.get("t") == "notify"]
+    expect(len(toggles) == 1, f"only the left click toggles notify, got {toggles}")
     expect(("click", "save") in got, "click on save")
     sub = detail("submit", "settings") or {}
     expect(sub.get("name") == "hello" and sub.get("email") == "a@b.c", f"submit fields, got {sub}")

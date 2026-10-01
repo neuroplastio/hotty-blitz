@@ -194,6 +194,10 @@ impl InputRouter {
         let motion = b & 32 != 0;
         let wheel = b & 64 != 0;
         let button = b & 3;
+        // A click is the primary button (SPEC §10.1): the others neither
+        // press, release nor take the keyboard. SGR reports which button a
+        // release is.
+        let primary = button == 0 && !wheel;
         let target = self.hit(px, py).filter(|_| !wheel);
         if !motion {
             crate::log(&format!(
@@ -227,26 +231,22 @@ impl InputRouter {
             let kind = if motion {
                 PointerKind::Move
             } else if press && button != 3 {
+                // A press on a surface takes the keyboard from any other
+                // one: Host::pointer does that.
                 self.pressed = Some(surface.clone());
-                // A press on a surface takes the keyboard from any other one.
-                for other in host.surface_names().map(str::to_string).collect::<Vec<_>>() {
-                    if other != surface && host.is_focused(&other) {
-                        push_effects(host.blur(&other), to_program);
-                    }
-                }
                 PointerKind::Down
             } else {
                 self.pressed = None;
                 PointerKind::Up
             };
-            if button == 0 || motion || kind == PointerKind::Up {
+            if motion || primary {
                 push_effects(host.pointer(&surface, kind, sx, sy, mods), to_program);
             }
             return;
         }
 
-        // Not ours. A press outside every surface takes the keyboard back.
-        if press && !motion && !wheel {
+        // Not ours. A click outside every surface takes the keyboard back.
+        if press && !motion && primary {
             for other in host.surface_names().map(str::to_string).collect::<Vec<_>>() {
                 if host.is_focused(&other) {
                     push_effects(host.blur(&other), to_program);
