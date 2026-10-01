@@ -691,6 +691,7 @@ dependencies = [
  "hashbrown",
  "log",
  "peniko",
+ "png 0.18.1",
  "skrifa",
  "smallvec",
  "vello_common",
@@ -774,6 +775,7 @@ dependencies = [
  "stylo_dom",
  "stylo_static_prefs",
  "url",
+ "vello_cpu",
 ]
 
 [[package]]
@@ -2366,6 +2368,7 @@ dependencies = [
  "glifo",
  "hashbrown",
  "ordered-channel",
+ "png 0.18.1",
  "rayon",
  "thread_local",
  "vello_common",

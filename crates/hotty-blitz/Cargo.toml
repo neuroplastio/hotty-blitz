@@ -18,6 +18,11 @@ blitz-traits.workspace = true
 url = "2.5"
 anyrender.workspace = true
 anyrender_vello_cpu.workspace = true
+# Colour emoji fonts are PNG bitmap glyphs (Noto Color Emoji's CBDT, Apple
+# Color Emoji's sbix). anyrender_vello_cpu brings vello_cpu without `png`,
+# and then every such glyph is dropped: an emoji drew blank. Only the feature
+# is added here; the version is the one anyrender_vello_cpu already brings.
+vello_cpu = { version = "0.1", default-features = false, features = ["png"] }
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
