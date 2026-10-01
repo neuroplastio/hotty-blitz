@@ -54,7 +54,11 @@ void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
 /* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's,
  * or a tap's (SPEC 10.1): pass no other button. A press also takes the
- * keyboard from any other surface that has it; its events come through fx. */
+ * keyboard from any other surface that has it; its events come through fx.
+ * From a press to its release the pointer is the surface's: pass it every
+ * move, with x and y counted from its top left even outside it (negative, or
+ * past its size), for drags (SPEC 9.1). Pass leave if the pointer is lost
+ * before the release: it ends a drag. Pass no touch moves: touch scrolls. */
 void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float x, float y,
                          uint32_t mods, const hotty_effects *fx);
 bool hotty_host_key(hotty_host *h, uint32_t key, const char *text, uint32_t mods,

@@ -20,6 +20,7 @@ use blitz_traits::net::Body;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::{Code, Key as KbKey, Location, Modifiers};
 use std::sync::{Arc, Mutex};
+use style::values::computed::UserSelect;
 use stylo_dom::ElementState;
 
 /// A surface's pixels: **premultiplied** RGBA8, `width`×`height`, row-major,
@@ -130,6 +131,11 @@ pub(crate) struct Surface {
     detached: bool,
     /// What the last press focused, for its release (Surface::pointer).
     press: Option<Option<NodeId>>,
+    /// The window its placement shows, in cells (SPEC §5.2): a drag's
+    /// target is empty outside it (§9.1). None while it is not placed.
+    pub window: Option<crate::Window>,
+    /// A drag under way (SPEC §9.1).
+    drag: Option<Drag>,
     /// Where the pointer is, in CSS pixels, while it is over the surface.
     pointer_at: Option<(f32, f32)>,
     /// The focused text input and its value when it gained focus, for `change`.
@@ -140,6 +146,34 @@ pub(crate) struct Surface {
     /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
     /// this host fetches nothing from the network.
     base: Option<url::Url>,
+}
+
+/// A drag under way (SPEC §9.1): the element that started it, and the
+/// target, the cell and the keys the program heard of last.
+struct Drag {
+    start: String,
+    target: String,
+    cell: (i32, i32),
+    keys: Mods,
+}
+
+/// A drag's event: its detail is the pointer's cell of the surface and the
+/// modifier keys held, in the spec's order (SPEC §9.1).
+fn drag_event(kind: &'static str, target: String, cell: (i32, i32), keys: Mods) -> Event {
+    let held: Vec<&str> = [
+        (keys.shift, "shift"),
+        (keys.ctrl, "ctrl"),
+        (keys.alt, "alt"),
+        (keys.meta, "meta"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    Event {
+        kind,
+        target,
+        detail: serde_json::json!({ "c": cell.0, "r": cell.1, "keys": held }),
+    }
 }
 
 /// A document's first `<base href>`, when it is an absolute http(s) URL.
@@ -329,6 +363,8 @@ impl Surface {
             keyboard: false,
             detached: false,
             press: None,
+            window: None,
+            drag: None,
             pointer_at: None,
             focus_value: None,
             buttons: MouseEventButtons::None,
@@ -571,6 +607,8 @@ impl Surface {
         self.keyboard = false;
         self.focus_value = None;
         self.press = None;
+        // A drag under way ends with nothing more reported (SPEC §9.1).
+        self.drag = None;
         self.move_focus(None);
         self.disable_controls();
         // `:disabled` may restyle anything, not only the controls.
@@ -681,6 +719,14 @@ impl Surface {
             "text": node.text_content(),
             "children": children,
         }))
+    }
+
+    /// The centre of the element with id `id`, in CSS pixels of the
+    /// surface: where a test puts the pointer (SPEC §16).
+    pub fn element_centre(&self, id: &str) -> Option<(f32, f32)> {
+        let doc: &BaseDocument = &self.doc;
+        let r = doc.get_client_bounding_rect(doc.get_element_by_id(id)?)?;
+        Some(((r.x + r.width / 2.0) as f32, (r.y + r.height / 2.0) as f32))
     }
 
     pub fn has_focus(&self) -> bool {
@@ -868,6 +914,153 @@ impl Surface {
         }
     }
 
+    /// A pointer event from the host (Host::pointer) at CSS pixel (`x`,
+    /// `y`) of the surface, which is in its cell `cell`. Returns the events
+    /// that lead, a drag's (SPEC §9.1: after `press`, before what the press
+    /// causes; on the release, before its click), and the rest.
+    pub fn pointer_input(
+        &mut self,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        cell: (i32, i32),
+        mods: Mods,
+    ) -> (Vec<Event>, Vec<Event>) {
+        let mut lead = Vec::new();
+        // A press while a drag is under way: the host lost its release.
+        if matches!(kind, PointerKind::Down | PointerKind::Leave) {
+            lead.extend(self.cancel_drag(mods));
+        }
+        let mut events = self.pointer(kind, x, y, mods);
+        if self.detached {
+            return (lead, events);
+        }
+        match kind {
+            PointerKind::Down => {
+                let pressed = self.doc.get_hover_node_id();
+                match self.drag_start(pressed) {
+                    Some(start) => {
+                        // A drag selects no text, whatever its CSS (§9.1).
+                        self.doc.clear_text_selection();
+                        lead.push(drag_event("dragstart", start.clone(), cell, mods));
+                        self.drag = Some(Drag {
+                            start: start.clone(),
+                            target: start,
+                            cell,
+                            keys: mods,
+                        });
+                    }
+                    // `user-select: none` (SPEC §11): Blitz anchored a
+                    // selection at the press; without an anchor, nothing
+                    // extends it.
+                    None if self.unselectable(pressed) => self.doc.clear_text_selection(),
+                    None => {}
+                }
+            }
+            PointerKind::Move => {
+                let target = self.drag_target_at(cell);
+                if let Some(d) = &mut self.drag {
+                    // An event for each element crossed, and while there is
+                    // none, for each cell (§9.1).
+                    if target != d.target || (target.is_empty() && cell != d.cell) {
+                        lead.push(drag_event("drag", target.clone(), cell, mods));
+                    }
+                    (d.target, d.cell, d.keys) = (target, cell, mods);
+                }
+            }
+            PointerKind::Up => {
+                if let Some(d) = self.drag.take() {
+                    let target = self.drag_target_at(cell);
+                    // A drag is a click only where it began (§9.1).
+                    if target != d.start {
+                        events.retain(|e| e.kind != "click");
+                    }
+                    lead.push(drag_event("dragend", target, cell, mods));
+                }
+            }
+            PointerKind::Leave => {}
+        }
+        (lead, events)
+    }
+
+    /// Ends a drag under way without a release (SPEC §9.1: the placement
+    /// went away, a new document, or the host lost the pointer): `dragend`,
+    /// with no target, at the last cell the program heard of.
+    pub fn cancel_drag(&mut self, keys: Mods) -> Option<Event> {
+        let d = self.drag.take()?;
+        let keys = if keys == Mods::default() {
+            d.keys
+        } else {
+            keys
+        };
+        Some(drag_event("dragend", String::new(), d.cell, keys))
+    }
+
+    /// Whether `id`'s `data-on` lists `what`.
+    fn listens(&self, id: NodeId, what: &str) -> bool {
+        self.doc
+            .get_node(id)
+            .and_then(|n| n.attrs())
+            .and_then(|attrs| attrs.iter().find(|a| &*a.name.local == "data-on"))
+            .is_some_and(|a| a.value.split_whitespace().any(|w| w == what))
+    }
+
+    /// What a press on `node` starts a drag on (SPEC §9.1): the nearest
+    /// element, from it outward, with `drag` in its `data-on`. None when
+    /// there is none, or it has no id.
+    fn drag_start(&self, mut node: Option<NodeId>) -> Option<String> {
+        while let Some(n) = node {
+            if self.listens(n, "drag") {
+                return self.id_of(n).filter(|id| !id.is_empty());
+            }
+            node = self.doc.get_node(n)?.parent;
+        }
+        None
+    }
+
+    /// A drag's target under the pointer, in `cell` (SPEC §9.1): the
+    /// nearest element with an id and `drag` in its `data-on`, from the
+    /// one under the pointer outward; empty where there is none, outside
+    /// the window included.
+    fn drag_target_at(&self, cell: (i32, i32)) -> String {
+        let inside = self.window.is_some_and(|w| {
+            let (c, r) = cell;
+            c >= w.x as i32 && c < (w.x + w.w) as i32 && r >= w.y as i32 && r < (w.y + w.h) as i32
+        });
+        if !inside {
+            return String::new();
+        }
+        let mut node = self.doc.get_hover_node_id();
+        while let Some(n) = node {
+            if self.listens(n, "drag")
+                && let Some(id) = self.id_of(n).filter(|id| !id.is_empty())
+            {
+                return id;
+            }
+            node = self.doc.get_node(n).and_then(|x| x.parent);
+        }
+        String::new()
+    }
+
+    /// Whether `node`'s `user-select` is `none`, as CSS UI 4 resolves it:
+    /// `auto` is its parent's (SPEC §11).
+    fn unselectable(&self, mut node: Option<NodeId>) -> bool {
+        while let Some(n) = node {
+            let Some(x) = self.doc.get_node(n) else {
+                return false;
+            };
+            if let Some(style) = x.primary_styles() {
+                match style.clone_user_select() {
+                    UserSelect::None => return true,
+                    UserSelect::Text | UserSelect::All => return false,
+                    UserSelect::Auto => {}
+                }
+            }
+            node = x.parent;
+        }
+        false
+    }
+
     pub fn pointer(&mut self, kind: PointerKind, x: f32, y: f32, mods: Mods) -> Vec<Event> {
         let button = MouseEventButton::Main;
         match kind {
@@ -887,7 +1080,14 @@ impl Surface {
                 client_y: y,
             },
             button,
-            buttons: self.buttons,
+            // A drag's moves reach the document as hover (SPEC §9.1): Blitz
+            // neither selects text with them nor takes them for a gesture
+            // of its own, which would cost the release its click.
+            buttons: if self.drag.is_some() && kind == PointerKind::Move {
+                MouseEventButtons::None
+            } else {
+                self.buttons
+            },
             mods: modifiers(mods),
             details: PointerDetails::default(),
             element: Default::default(),

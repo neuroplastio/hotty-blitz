@@ -9,8 +9,9 @@ use crate::Effect;
 use hotty_wire::Control;
 
 /// Event types a host can report, for the capability reply.
+/// `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1).
 pub const EVENTS: &[&str] = &[
-    "click", "change", "input", "submit", "press", "focus", "blur",
+    "click", "change", "input", "submit", "press", "drag", "focus", "blur",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

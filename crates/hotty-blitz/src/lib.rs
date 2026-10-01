@@ -260,6 +260,20 @@ impl Host {
         self.surfaces.get(surface)?.inspect(id)
     }
 
+    /// The centre of element `id` of `surface`, in pixels from the
+    /// surface's top left, for [`Host::pointer`]: the test interface's way
+    /// to point at an element (SPEC §16). The layout is the last render's.
+    pub fn element_centre(&self, surface: &str, id: &str) -> Option<(f32, f32)> {
+        let scale = self.config.metrics.scale;
+        let (x, y) = self.surfaces.get(surface)?.element_centre(id)?;
+        Some((x * scale, y * scale))
+    }
+
+    /// Whether `surface` is placed: shown, and so able to take the pointer.
+    pub fn is_placed(&self, surface: &str) -> bool {
+        self.surfaces.get(surface).is_some_and(|s| s.placed)
+    }
+
     /// The next render delivers `surface`'s whole frame, changed or not: for
     /// an adapter that must show it anew and no longer has its pixels.
     pub fn redeliver(&mut self, surface: &str) {
@@ -419,24 +433,33 @@ impl Host {
             "doc" => {
                 let name = surface_name()?.to_string();
                 let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
-                let (cols, rows, auto, placed, presses, created) = match self.surfaces.remove(&name)
-                {
-                    Some(old) => {
-                        self.store.forget_document(old.doc_id());
-                        (
-                            old.cols,
-                            old.rows,
-                            old.auto_rows,
-                            old.placed,
-                            old.presses,
-                            old.created,
-                        )
-                    }
-                    None => {
-                        self.created += 1;
-                        (80, 24, false, false, false, self.created)
-                    }
-                };
+                let detached = cmd.get("d") == Some("1");
+                let (cols, rows, auto, placed, presses, created, window) =
+                    match self.surfaces.remove(&name) {
+                        Some(mut old) => {
+                            self.store.forget_document(old.doc_id());
+                            // A new document ends a drag under way (SPEC §9.1),
+                            // unless it detaches the surface (§5.5).
+                            if let Some(e) = old.cancel_drag(Mods::default())
+                                && !detached
+                            {
+                                effects.push(Effect::Reply(e.encode(&name)));
+                            }
+                            (
+                                old.cols,
+                                old.rows,
+                                old.auto_rows,
+                                old.placed,
+                                old.presses,
+                                old.created,
+                                old.window,
+                            )
+                        }
+                        None => {
+                            self.created += 1;
+                            (80, 24, false, false, false, self.created, None)
+                        }
+                    };
                 let mut s = surface::Surface::new(
                     html,
                     &self.config,
@@ -448,13 +471,14 @@ impl Host {
                 // A replaced document keeps its placement: `r=auto` is
                 // measured when placed, not on every change.
                 s.placed = placed;
+                s.window = window;
                 s.presses = presses;
                 s.auto_rows = auto;
                 s.rows = rows;
                 s.created = created;
                 // `d=1`: detached from the start (SPEC §5.5). Without it, the
                 // surface is the program's again, detached before or not.
-                if cmd.get("d") == Some("1") {
+                if detached {
                     s.detach();
                 }
                 self.surfaces.insert(name, s);
@@ -498,6 +522,8 @@ impl Host {
                 s.set_size(cols, rows);
                 s.auto_rows = auto;
                 s.placed = true;
+                // A drag goes on across a new placement (SPEC §9.1).
+                s.window = Some(window);
                 // Like z, the placement's: placing again without it stops them.
                 s.presses = cmd.get("p") == Some("1");
                 s.dirty = true;
@@ -577,9 +603,14 @@ impl Host {
                         effects.push(Effect::Reply(e.encode(&name)));
                     }
                 }
+                // Its placement goes away, and with it a drag (SPEC §9.1).
+                if let Some(e) = s.cancel_drag(Mods::default()) {
+                    effects.push(Effect::Reply(e.encode(&name)));
+                }
                 if s.placed {
                     s.placed = false;
                     s.presses = false;
+                    s.window = None;
                     effects.push(Effect::Hide { surface: name });
                 }
                 Ok((Vec::new(), None))
@@ -621,6 +652,14 @@ impl Host {
     /// events for the program; hover and pressed styles change locally.
     /// `Down` and `Up` are the primary button's, or a tap's: a click (SPEC
     /// §10.1). A host passes no other button.
+    ///
+    /// A press on an element with `drag` in its `data-on` starts a drag
+    /// (SPEC §9.1), and the host then holds the pointer for `surface` until
+    /// the release: every move goes here, wherever it is, with `(x, y)`
+    /// counted from the surface's top left even outside it (negative, or
+    /// past its size). A host that loses the pointer before the release
+    /// sends `Leave`, which ends the drag. Mouse and pen only: a host passes
+    /// a touch as a tap (`Down` and `Up` where it lifts), never its moves.
     pub fn pointer(
         &mut self,
         surface: &str,
@@ -629,19 +668,25 @@ impl Host {
         y: f32,
         mods: Mods,
     ) -> Vec<Effect> {
-        let scale = self.config.metrics.scale;
+        let m = self.config.metrics;
         if !self.surfaces.contains_key(surface) {
             return Vec::new();
         }
         let s = self.surfaces.get_mut(surface).expect("checked above");
-        let events = s.pointer(kind, x / scale, y / scale, mods);
+        // The cell of the surface the pointer is in, outside it too.
+        let cell = (
+            (x / m.cell_w.max(1) as f32).floor() as i32,
+            (y / m.cell_h.max(1) as f32).floor() as i32,
+        );
+        let (lead, events) = s.pointer_input(kind, x / m.scale, y / m.scale, cell, mods);
         // `press` comes before everything the press causes, on this
-        // surface or another (SPEC §9).
+        // surface or another (SPEC §9), then a drag's events (§9.1).
         let mut effects: Vec<Effect> = match kind {
             PointerKind::Down => s.pressed().map(|e| Effect::Reply(e.encode(surface))),
             _ => None,
         }
         .into_iter()
+        .chain(lead.into_iter().map(|e| Effect::Reply(e.encode(surface))))
         .collect();
         if kind == PointerKind::Down {
             // A press on this surface is outside every other one: any other

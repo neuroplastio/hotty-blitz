@@ -1497,3 +1497,193 @@ fn a_press_comes_before_the_blur_it_causes_on_another_surface() {
         .collect();
     assert_eq!(order, vec![("x", "press"), ("f", "change"), ("f", "blur")]);
 }
+
+/// A drag's events with their detail: `(e, t, detail)`.
+fn drags(ev: &[Command]) -> Vec<(String, String, serde_json::Value)> {
+    ev.iter()
+        .filter(|c| c.get("a") == Some("ev"))
+        .map(|c| {
+            (
+                c.get("e").unwrap_or("").to_string(),
+                c.get("t").unwrap_or("").to_string(),
+                serde_json::from_slice(&c.payload).unwrap_or(serde_json::Value::Null),
+            )
+        })
+        .collect()
+}
+
+fn drag(e: &str, t: &str, c: i32, r: i32, keys: &[&str]) -> (String, String, serde_json::Value) {
+    (
+        e.to_string(),
+        t.to_string(),
+        serde_json::json!({ "c": c, "r": r, "keys": keys }),
+    )
+}
+
+/// Two cells three columns wide in row 1 of a 2-row surface, and one in
+/// row 0. The host's cells are 10×20 px.
+const CELLS: &str = "<style>body{margin:0}i{position:absolute;width:30px;height:20px}</style>
+    <i id=top data-on=drag style=left:0;top:0>T</i>
+    <i id=a data-on=drag style=left:0;top:20px><b><span>A</span></b></i>
+    <i id=b data-on='click drag' style=left:30px;top:20px>B</i>";
+
+#[test]
+fn a_drag_comes_after_its_press_and_before_the_blur_it_causes() {
+    let mut h = host();
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
+    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    assert!(
+        caps["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "drag")
+    );
+    place_form(&mut h);
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+        "",
+    ));
+    type_text(&mut h, "yz");
+    doc_at(&mut h, "x", &[], CELLS, "2");
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "2"),
+            ("p", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    let shift = Mods {
+        shift: true,
+        ..Mods::default()
+    };
+    let got = replies(&h.pointer("x", PointerKind::Down, 15.0, 30.0, shift));
+    let order: Vec<(&str, &str, &str)> = got
+        .iter()
+        .map(|c| {
+            (
+                c.get("s").unwrap_or(""),
+                c.get("e").unwrap_or(""),
+                c.get("t").unwrap_or(""),
+            )
+        })
+        .collect();
+    // The press, then the drag, then what the press causes (SPEC §9.1).
+    assert_eq!(
+        order,
+        vec![
+            ("x", "press", "a"),
+            ("x", "dragstart", "a"),
+            ("f", "change", ""),
+            ("f", "blur", "")
+        ]
+        .into_iter()
+        .map(|(s, e, t)| (s, e, if e == "change" { "name" } else { t }))
+        .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        drags(&got[1..2]),
+        vec![drag("dragstart", "a", 1, 1, &["shift"])]
+    );
+}
+
+#[test]
+fn a_drag_has_no_target_outside_the_window_and_ends_when_the_pointer_is_lost() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], CELLS));
+    // The window shows row 1 only: `top`, in row 0, is laid out, not shown.
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "2"),
+            ("y", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    let m = Mods::default();
+    let mut got = h.pointer("x", PointerKind::Down, 45.0, 30.0, m);
+    got.extend(h.pointer("x", PointerKind::Move, 15.0, 10.0, m));
+    got.extend(h.pointer("x", PointerKind::Move, 15.0, 30.0, m));
+    // Held: far outside, then left of and above the surface.
+    got.extend(h.pointer("x", PointerKind::Move, 512.0, 75.0, m));
+    got.extend(h.pointer("x", PointerKind::Move, -5.0, -25.0, m));
+    // The host lost the pointer: the drag ends where it last was.
+    got.extend(h.pointer("x", PointerKind::Leave, 0.0, 0.0, m));
+    got.extend(h.pointer("x", PointerKind::Up, 15.0, 30.0, m));
+    assert_eq!(
+        drags(&replies(&got)),
+        vec![
+            drag("dragstart", "b", 4, 1, &[]),
+            drag("drag", "", 1, 0, &[]),
+            drag("drag", "a", 1, 1, &[]),
+            drag("drag", "", 51, 3, &[]),
+            drag("drag", "", -1, -2, &[]),
+            drag("dragend", "", -1, -2, &[]),
+        ]
+    );
+}
+
+#[test]
+fn a_drag_selects_no_text_and_neither_does_user_select_none() {
+    // Frames before and after a press and a drag across the text: a
+    // selection would paint its highlight.
+    let selects = |html: &str, cells: bool| {
+        let mut h = host();
+        h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], html));
+        h.handle(&cmd(
+            &[
+                ("a", "place"),
+                ("s", "x"),
+                ("c", "30"),
+                ("r", "8"),
+                ("q", "2"),
+            ],
+            "",
+        ));
+        render(&mut h);
+        let before = h.frame("x").unwrap().rgba.clone();
+        let m = Mods::default();
+        let mut got = h.pointer("x", PointerKind::Down, 5.0, 32.0, m);
+        for (x, y) in [(60.0, 32.0), (200.0, 50.0), (120.0, 75.0)] {
+            got.extend(h.pointer("x", PointerKind::Move, x, y, m));
+        }
+        render(&mut h);
+        let changed = h.frame("x").unwrap().rgba != before;
+        got.extend(h.pointer("x", PointerKind::Up, 120.0, 75.0, m));
+        assert_eq!(!drags(&replies(&got)).is_empty(), cells, "{html}");
+        changed
+    };
+    assert!(selects(PROSE, false), "plain prose is selected");
+    let none = PROSE
+        .replace(
+            "<p>The first",
+            "<div style=user-select:none><p><b>The first",
+        )
+        .replace(
+            "third, below the rest.</p>",
+            "third, below the rest.</b></p></div>",
+        );
+    assert!(
+        !selects(&none, false),
+        "user-select: none, three levels up, selects nothing"
+    );
+    let opted = PROSE
+        .replace("<p>The first", "<div id=d data-on=drag><p><b>The first")
+        .replace(
+            "third, below the rest.</p>",
+            "third, below the rest.</b></p></div>",
+        );
+    assert!(
+        !selects(&opted, true),
+        "an element that opts in to drags selects nothing"
+    );
+}

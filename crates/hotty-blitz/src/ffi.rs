@@ -349,7 +349,9 @@ fn mods(bits: u32) -> Mods {
 /// down and up are the primary button's, or a tap's (SPEC §10.1): pass no
 /// other button. `mods`: 1 shift, 2 ctrl, 4 alt, 8 super. A press also takes the keyboard
 /// from any other surface that has it (SPEC §10.1): its events come through
-/// `fx` too.
+/// `fx` too. From a press to its release the pointer is the surface's, for
+/// drags (SPEC §9.1): every move comes here, with `(x, y)` counted from its
+/// top left even outside it; `leave` before the release ends a drag.
 ///
 /// # Safety
 /// `h` and `surface` must be valid; `fx` may be null.

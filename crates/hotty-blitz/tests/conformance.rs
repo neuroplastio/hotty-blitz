@@ -1,9 +1,20 @@
 //! The shared conformance vectors (conformance/README.md), run against
 //! hotty-blitz. The xterm.js addon runs the same file.
 
-use hotty_blitz::{Config, Effect, Host};
+use hotty_blitz::{Config, Effect, Host, Mods, PointerKind};
 use hotty_wire::{Command, Control, Event, Scanner};
 use serde_json::Value;
+
+/// Where the vectors' mouse is (pointer steps): on a surface, at a pixel
+/// from its top left. The runner is the terminal: while the button is down
+/// the pointer is the pressed surface's wherever it goes (SPEC §9.1), and a
+/// surface that is not placed takes nothing.
+#[derive(Default)]
+struct Mouse {
+    surface: String,
+    x: f32,
+    y: f32,
+}
 
 fn vectors() -> Value {
     // The vectors live in the HOTTY repository: HOTTY_DIR, or a checkout next
@@ -36,9 +47,103 @@ fn decode(bytes: &[u8]) -> (Vec<Command>, usize) {
     (commands, invalid)
 }
 
+/// The events among decoded messages.
+fn events(msgs: &[Command]) -> Vec<&Command> {
+    msgs.iter().filter(|c| c.get("a") == Some("ev")).collect()
+}
+
+/// Every event a step sent, against its `events`, in order (absent: not
+/// checked).
+fn check_events(step: &Value, got: &[&Command]) -> Result<(), String> {
+    let Some(want) = step.get("events") else {
+        return Ok(());
+    };
+    let want = want.as_array().unwrap();
+    let show = |c: &&Command| {
+        format!(
+            "{} {}",
+            c.control.encode(),
+            String::from_utf8_lossy(&c.payload)
+        )
+    };
+    if got.len() != want.len() {
+        return Err(format!(
+            "want {} event(s), got {}: [{}]",
+            want.len(),
+            got.len(),
+            got.iter().map(show).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    for (i, (g, w)) in got.iter().zip(want).enumerate() {
+        for (k, v) in w.as_object().unwrap() {
+            if k == "detail" {
+                let body: Value = serde_json::from_slice(&g.payload).unwrap_or(Value::Null);
+                if &body != v {
+                    return Err(format!("event {}: detail want {v}, got {}", i + 1, show(g)));
+                }
+            } else if g.get(k) != v.as_str() {
+                return Err(format!("event {}: {k} want {v}, got {}", i + 1, show(g)));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mods(step: &Value) -> Mods {
+    let held = |k: &str| {
+        step.get("keys")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|x| x == k))
+    };
+    Mods {
+        shift: held("shift"),
+        ctrl: held("ctrl"),
+        alt: held("alt"),
+        meta: held("meta"),
+    }
+}
+
+fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
+    // The layout a terminal would have painted by now.
+    host.render_dirty(&mut |_, _, _| {});
+    let kind = match step["pointer"].as_str().unwrap() {
+        "move" => {
+            let s = step["s"].as_str().unwrap().to_string();
+            let at = &step["at"];
+            let (x, y) = if let Some(id) = at.as_str() {
+                host.element_centre(&s, id)
+                    .ok_or(format!("no element #{id} to point at"))?
+            } else {
+                let m = Config::default().metrics;
+                let (c, r) = (at[0].as_f64().unwrap(), at[1].as_f64().unwrap());
+                (
+                    ((c + 0.5) * m.cell_w as f64) as f32,
+                    ((r + 0.5) * m.cell_h as f64) as f32,
+                )
+            };
+            *mouse = Mouse { surface: s, x, y };
+            PointerKind::Move
+        }
+        "down" => PointerKind::Down,
+        "up" => PointerKind::Up,
+        other => return Err(format!("unknown pointer {other}")),
+    };
+    let mut msgs = Vec::new();
+    if host.is_placed(&mouse.surface) {
+        for e in host.pointer(&mouse.surface, kind, mouse.x, mouse.y, mods(step)) {
+            if let Effect::Reply(b) = e {
+                msgs.extend(decode(&b).0);
+            }
+        }
+    }
+    check_events(step, &events(&msgs))
+}
+
 /// Failures, one line each, so a run reports every disagreement at once.
-fn run_step(host: &mut Host, step: &Value) -> Result<(), String> {
-    if let Some(ctl) = step.get("send") {
+fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
+    if step.get("pointer").is_some() {
+        pointer_step(host, mouse, step)
+    } else if let Some(ctl) = step.get("send") {
         let mut control = Control::default();
         for (k, v) in ctl.as_object().unwrap() {
             control.set(k, v.as_str().unwrap());
@@ -46,14 +151,16 @@ fn run_step(host: &mut Host, step: &Value) -> Result<(), String> {
         let payload = step.get("payload").and_then(Value::as_str).unwrap_or("");
         // Through the wire, as a program sends it.
         let (cmds, _) = decode(&hotty_wire::encode(&control, payload.as_bytes()));
-        let mut replies = Vec::new();
+        let mut msgs = Vec::new();
         for cmd in &cmds {
             for e in host.handle(cmd) {
                 if let Effect::Reply(b) = e {
-                    replies.extend(decode(&b).0);
+                    msgs.extend(decode(&b).0);
                 }
             }
         }
+        check_events(step, &events(&msgs))?;
+        let replies: Vec<&Command> = msgs.iter().filter(|c| c.get("a") != Some("ev")).collect();
         match step.get("reply") {
             None => Ok(()),
             Some(Value::Null) if replies.is_empty() => Ok(()),
@@ -112,8 +219,9 @@ fn protocol_vectors() {
     let mut failures = Vec::new();
     for vector in v["vectors"].as_array().unwrap() {
         let mut host = Host::new(Config::default());
+        let mut mouse = Mouse::default();
         for (i, step) in vector["steps"].as_array().unwrap().iter().enumerate() {
-            if let Err(e) = run_step(&mut host, step) {
+            if let Err(e) = run_step(&mut host, &mut mouse, step) {
                 failures.push(format!(
                     "{} (step {}): {e}",
                     vector["name"].as_str().unwrap(),

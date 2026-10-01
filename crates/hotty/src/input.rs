@@ -29,6 +29,10 @@ pub struct InputRouter {
     hovered: Option<String>,
     /// The surface that got the button press, which gets its release too.
     pressed: Option<String>,
+    /// Where that surface's top left is on the screen, in pixels, as of the
+    /// last report over it: a drag's moves off it are counted from there
+    /// (SPEC §9.1).
+    pressed_at: (f32, f32),
     enabled: bool,
     partial: Vec<u8>,
 }
@@ -46,6 +50,7 @@ impl InputRouter {
             vt: vt100::Parser::new(rows.max(1), cols.max(1), 0),
             hovered: None,
             pressed: None,
+            pressed_at: (0.0, 0.0),
             enabled: false,
             partial: Vec::new(),
         }
@@ -224,8 +229,16 @@ impl InputRouter {
             over.clone()
         };
         if let Some(surface) = owner {
+            // Off the surface it holds, a drag goes on counting from its top
+            // left: negative, or past its size (SPEC §9.1).
             let (sx, sy) = match &target {
-                Some((n, sx, sy)) if *n == surface => (*sx, *sy),
+                Some((n, sx, sy)) if *n == surface => {
+                    self.pressed_at = (px as f32 - sx, py as f32 - sy);
+                    (*sx, *sy)
+                }
+                _ if self.pressed.is_some() => {
+                    (px as f32 - self.pressed_at.0, py as f32 - self.pressed_at.1)
+                }
                 _ => (-1.0, -1.0),
             };
             let kind = if motion {
