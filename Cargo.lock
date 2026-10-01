@@ -771,6 +771,7 @@ dependencies = [
  "peniko",
  "serde",
  "serde_json",
+ "stylo_dom",
  "stylo_static_prefs",
  "url",
 ]

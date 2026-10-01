@@ -51,6 +51,8 @@ bool hotty_host_has_dirty(const hotty_host *h);
 void hotty_host_redeliver(hotty_host *h, const char *surface);
 void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
+/* kind: 0 move, 1 down, 2 up, 3 leave. A press also takes the keyboard from
+ * any other surface that has it (SPEC 10.1); its events come through fx. */
 void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float x, float y,
                          uint32_t mods, const hotty_effects *fx);
 bool hotty_host_key(hotty_host *h, uint32_t key, const char *text, uint32_t mods,

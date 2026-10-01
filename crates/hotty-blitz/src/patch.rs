@@ -388,7 +388,7 @@ fn sync_attributes(
     let old_attrs = collect(m.doc, old);
     let new_attrs = collect(scratch, new);
     // A control the user is editing keeps what they typed (idiomorph does the same).
-    let focused = m.doc.get_focussed_node_id() == Some(old);
+    let focused = crate::surface::focused_node(m.doc) == Some(old);
     for (name, value) in &new_attrs {
         if focused && &*name.local == "value" {
             continue;

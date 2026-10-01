@@ -23,6 +23,8 @@ serde.workspace = true
 serde_json.workspace = true
 keyboard-types = "0.7"
 stylo_static_prefs = "0.21"
+# Element states (focus, disabled), as Blitz keeps them: the version Blitz brings.
+stylo_dom = "0.21"
 kurbo = "0.13.1"
 peniko = "0.6"
 

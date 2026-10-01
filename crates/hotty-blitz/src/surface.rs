@@ -20,6 +20,7 @@ use blitz_traits::net::Body;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::{Code, Key as KbKey, Location, Modifiers};
 use std::sync::{Arc, Mutex};
+use stylo_dom::ElementState;
 
 /// A surface's pixels: **premultiplied** RGBA8, `width`×`height`, row-major,
 /// no padding. GPU hosts can upload it as is; [`Frame::straight`] converts
@@ -118,8 +119,14 @@ pub(crate) struct Surface {
     damage: paint::Tracker,
     viewport: (u32, u32, f32, bool),
     nav: Arc<NavQueue>,
-    /// The surface holds the keyboard (SPEC §10): granted by `a=focus` or a click.
+    /// The surface holds the keyboard (SPEC §10): granted by `a=focus`, or
+    /// a click that focuses an element.
     keyboard: bool,
+    /// Detached (SPEC §5.5): it reports nothing, never has the keyboard,
+    /// and its form controls are disabled. Only a new document undoes it.
+    detached: bool,
+    /// What the last press focused, for its release (Surface::pointer).
+    press: Option<Option<NodeId>>,
     /// The focused text input and its value when it gained focus, for `change`.
     focus_value: Option<(NodeId, String)>,
     buttons: MouseEventButtons,
@@ -143,6 +150,22 @@ fn declared_base(doc: &HtmlDocument) -> Option<url::Url> {
         .clone();
     let u = url::Url::parse(&href).ok()?;
     matches!(u.scheme(), "http" | "https").then_some(u)
+}
+
+/// The element that has focus, if one has. Blitz's `get_focussed_node_id`
+/// answers the root element when none has, so it cannot tell.
+pub(crate) fn focused_node(doc: &BaseDocument) -> Option<NodeId> {
+    doc.get_focussed_node_id()
+        .filter(|&id| doc.get_node(id).is_some_and(|n| n.is_focussed()))
+}
+
+/// `focus` or `blur`: the surface gained or lost the keyboard (SPEC §9).
+fn keyboard_event(kind: &'static str) -> Event {
+    Event {
+        kind,
+        target: String::new(),
+        detail: serde_json::Value::Null,
+    }
 }
 
 /// A link's `url` (SPEC §9): its href resolved against the document's base,
@@ -216,6 +239,8 @@ impl Surface {
             viewport: (w, h, m.scale, dark),
             nav,
             keyboard: false,
+            detached: false,
+            press: None,
             focus_value: None,
             buttons: MouseEventButtons::None,
             base,
@@ -434,9 +459,62 @@ impl Surface {
             damage,
             ..
         } = self;
-        patch::apply(doc, parse_doc, op, t, k, payload, &mut |d, id| {
+        let res = patch::apply(doc, parse_doc, op, t, k, payload, &mut |d, id| {
             damage.touch(d, id, scale)
-        })
+        });
+        if self.detached {
+            // The controls a patch added, or took `disabled` from, are
+            // disabled too. The patch already recorded where they paint.
+            self.disable_controls();
+        }
+        res
+    }
+
+    /// Detaches the surface (SPEC §5.5). It gives the keyboard back without
+    /// a word (neither `change` nor `blur`), and its form controls act as
+    /// if each had the `disabled` attribute, which the document does not
+    /// get: inspection still reports the program's attributes.
+    pub fn detach(&mut self) {
+        if self.detached {
+            return;
+        }
+        self.detached = true;
+        self.keyboard = false;
+        self.focus_value = None;
+        self.press = None;
+        self.move_focus(None);
+        self.disable_controls();
+        // `:disabled` may restyle anything, not only the controls.
+        self.damage.full = true;
+        self.dirty = true;
+    }
+
+    pub fn is_detached(&self) -> bool {
+        self.detached
+    }
+
+    /// Puts every form control that is not in the disabled state in it: it
+    /// then matches `:disabled`, and Blitz (the fork, blitz/README.md)
+    /// neither focuses, edits, toggles nor activates it, and paints it
+    /// disabled.
+    fn disable_controls(&mut self) {
+        let ids: Vec<NodeId> = self
+            .doc
+            .tree()
+            .iter()
+            .filter(|(_, n)| {
+                n.element_data().is_some_and(|e| {
+                    e.can_be_disabled() && !e.element_state.contains(ElementState::DISABLED)
+                })
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for id in ids {
+            self.doc
+                .snapshot_node_and(id, ElementState::DISABLED | ElementState::ENABLED, |n| {
+                    n.disable()
+                });
+        }
     }
 
     pub fn resource_changed(&mut self, href: &str) {
@@ -522,9 +600,29 @@ impl Surface {
 
     /// The pointer's shape over what the pointer last moved onto, as a CSS
     /// `cursor` name: the element's `cursor`, or `pointer` in a link, `text`
-    /// over text. None over nothing in particular.
+    /// over text. None over nothing in particular. On a detached surface a
+    /// link that is no hyperlink leads nowhere: the text pointer (SPEC §5.5).
     pub fn cursor(&self) -> Option<&'static str> {
-        self.doc.get_cursor().map(|c| c.name())
+        let shape = self.doc.get_cursor().map(|c| c.name())?;
+        if self.detached && shape == "pointer" && self.hyperlink().is_none() {
+            let link = self.hovered_link().and_then(|id| self.doc.get_node(id));
+            if link.is_some_and(|n| n.attr(local_name!("href")).is_some()) {
+                return Some("text");
+            }
+        }
+        Some(shape)
+    }
+
+    /// The nearest `a` from what the pointer last moved onto outward.
+    fn hovered_link(&self) -> Option<NodeId> {
+        let mut id = self.doc.get_hover_node_id()?;
+        loop {
+            let node = self.doc.get_node(id)?;
+            if node.element_data().is_some_and(|e| &*e.name.local == "a") {
+                return Some(id);
+            }
+            id = node.parent?;
+        }
     }
 
     /// The hyperlink the pointer last moved onto (SPEC §9: a link with
@@ -532,23 +630,17 @@ impl Surface {
     /// an OSC 8 hyperlink. None over anything else, a link of the program's
     /// included.
     pub fn hyperlink(&self) -> Option<String> {
-        let mut id = self.doc.get_hover_node_id()?;
-        loop {
-            let node = self.doc.get_node(id)?;
-            if node.element_data().is_some_and(|e| &*e.name.local == "a") {
-                let attr = |name: &str| {
-                    node.attrs()?
-                        .iter()
-                        .find(|a| &*a.name.local == name)
-                        .map(|a| a.value.clone())
-                };
-                if attr("target").as_deref() != Some("_blank") {
-                    return None;
-                }
-                return link_url(&self.base, &attr("href")?);
-            }
-            id = node.parent?;
+        let node = self.doc.get_node(self.hovered_link()?)?;
+        let attr = |name: &str| {
+            node.attrs()?
+                .iter()
+                .find(|a| &*a.name.local == name)
+                .map(|a| a.value.clone())
+        };
+        if attr("target").as_deref() != Some("_blank") {
+            return None;
         }
+        link_url(&self.base, &attr("href")?)
     }
 
     pub fn focus(&mut self, target: Option<&str>) -> Result<(), String> {
@@ -562,7 +654,7 @@ impl Surface {
                 self.doc.set_focus_to(node);
             }
             None => {
-                if self.doc.get_focussed_node_id().is_none() {
+                if self.focused().is_none() {
                     self.doc.focus_next_node();
                 }
             }
@@ -577,19 +669,84 @@ impl Surface {
     pub fn blur(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
         self.finish_change(&mut events);
-        let before = self.doc.get_focussed_node_id();
-        self.doc.clear_focus();
-        self.touch_chains(before, None);
+        self.move_focus(None);
         let had = std::mem::replace(&mut self.keyboard, false);
         if had {
-            events.push(Event {
-                kind: "blur",
-                target: String::new(),
-                detail: serde_json::Value::Null,
-            });
+            events.push(keyboard_event("blur"));
         }
         self.dirty = true;
         events
+    }
+
+    /// The element that has focus, if one has.
+    fn focused(&self) -> Option<NodeId> {
+        focused_node(&self.doc)
+    }
+
+    /// Focuses `want`, or nothing (also when a patch has removed it).
+    fn move_focus(&mut self, want: Option<NodeId>) {
+        let want = want.filter(|&id| self.doc.get_node(id).is_some());
+        if self.focused() == want {
+            return;
+        }
+        // Blitz's focused node, the root element when none: the chains
+        // stop below the root, which needs no repaint for focus.
+        let before = self.doc.get_focussed_node_id();
+        match want {
+            Some(id) => {
+                self.doc.set_focus_to(id);
+            }
+            None => self.doc.clear_focus(),
+        }
+        let after = self.doc.get_focussed_node_id();
+        self.touch_chains(before, after);
+    }
+
+    /// What a press on `id` focuses (SPEC §10.1): the nearest element from
+    /// it outward that a browser focuses on a click (a form control, a link
+    /// with an `href`, a `summary`, an element with a `tabindex` of 0 or
+    /// more), unless that one is disabled. None: the press focuses nothing.
+    fn focus_target(&self, mut id: Option<NodeId>) -> Option<NodeId> {
+        if self.detached {
+            return None;
+        }
+        while let Some(n) = id {
+            let node = self.doc.get_node(n)?;
+            if let Some(el) = node.element_data() {
+                let takes = match el.name.local.as_ref() {
+                    "input" => el.attr(local_name!("type")) != Some("hidden"),
+                    "button" | "select" | "textarea" | "summary" => true,
+                    "a" | "area" => el.attr(local_name!("href")).is_some(),
+                    _ => false,
+                } || el
+                    .attr(local_name!("tabindex"))
+                    .and_then(|t| t.trim().parse::<i32>().ok())
+                    .is_some_and(|t| t >= 0);
+                if takes {
+                    return (!el.is_disabled()).then_some(n);
+                }
+            }
+            id = node.parent;
+        }
+        None
+    }
+
+    /// After a press or a release: the surface has the keyboard while an
+    /// element in it has focus, and the program hears when that changes.
+    /// A text field focus leaves commits its value first.
+    fn keyboard_follows_focus(&mut self, events: &mut Vec<Event>) {
+        let focused = self.focused();
+        if self.focus_value.as_ref().map(|(n, _)| *n) != focused {
+            self.finish_change(events);
+            self.snapshot_focus();
+        }
+        let had = self.keyboard;
+        self.keyboard = focused.is_some();
+        match (had, self.keyboard) {
+            (true, false) => events.push(keyboard_event("blur")),
+            (false, true) => events.push(keyboard_event("focus")),
+            _ => {}
+        }
     }
 
     pub fn pointer(&mut self, kind: PointerKind, x: f32, y: f32, mods: Mods) -> Vec<Event> {
@@ -629,26 +786,40 @@ impl Surface {
                 return Vec::new();
             }
         };
+        let before = self.focused();
         let mut events = self.drive(ui);
-        if kind == PointerKind::Down {
-            // Clicking into a surface takes the keyboard (SPEC §10.1).
-            let had = self.keyboard;
-            self.keyboard = self.doc.get_focussed_node_id().is_some();
-            if had && !self.keyboard {
-                events.push(Event {
-                    kind: "blur",
-                    target: String::new(),
-                    detail: serde_json::Value::Null,
-                });
-            } else if !had && self.keyboard {
-                events.push(Event {
-                    kind: "focus",
-                    target: String::new(),
-                    detail: serde_json::Value::Null,
-                });
+        // A click takes the keyboard only by focusing an element that takes
+        // focus, and a click on anything else gives it back (SPEC §10.1).
+        // Browsers focus on the press; Blitz focuses some elements on the
+        // click and clears focus where its click matched nothing, a button
+        // included. So the press decides, and the release keeps that unless
+        // its click focused something else (a label's control).
+        let want = match kind {
+            PointerKind::Down => {
+                let target = self.focus_target(self.doc.get_hover_node_id());
+                self.press = Some(target);
+                Some(target)
             }
-        }
+            PointerKind::Up => {
+                let now = self.focused();
+                Some(match self.press.take() {
+                    Some(target) if now.is_none() || now == before => target,
+                    _ => now,
+                })
+            }
+            _ => None,
+        };
         self.dirty = true;
+        if self.detached {
+            // It never has the keyboard, and reports nothing: not even the
+            // focus Blitz gives a `summary` it toggled.
+            self.move_focus(None);
+            return Vec::new();
+        }
+        if let Some(want) = want {
+            self.move_focus(want);
+            self.keyboard_follows_focus(&mut events);
+        }
         events
     }
 
@@ -656,7 +827,7 @@ impl Surface {
         if !self.keyboard {
             return (false, Vec::new());
         }
-        let focused = self.doc.get_focussed_node_id();
+        let focused = self.focused();
         let kind = focused
             .map(|id| self.control_kind(id))
             .unwrap_or(Control::None);
@@ -665,7 +836,7 @@ impl Surface {
             (KeyName::Tab, _) if plain => {
                 let before = focused;
                 let mut events = self.drive_key(key);
-                let after = self.doc.get_focussed_node_id();
+                let after = self.focused();
                 let wrapped = match (before, after) {
                     (_, None) => true,
                     (Some(b), Some(a)) => {
@@ -682,15 +853,9 @@ impl Surface {
                 if wrapped {
                     // Tab past the last control leaves the surface (SPEC §10.2).
                     self.finish_change(&mut events);
-                    let was = self.doc.get_focussed_node_id();
-                    self.doc.clear_focus();
-                    self.touch_chains(was, None);
+                    self.move_focus(None);
                     self.keyboard = false;
-                    events.push(Event {
-                        kind: "blur",
-                        target: String::new(),
-                        detail: serde_json::Value::Null,
-                    });
+                    events.push(keyboard_event("blur"));
                 } else {
                     self.finish_change(&mut events);
                     self.snapshot_focus();
@@ -837,6 +1002,8 @@ impl Surface {
         } else {
             Vec::new()
         };
+        // For damage: Blitz's focused node is the root element when none is,
+        // and the chains stop below the root.
         let before = (
             self.doc.get_hover_node_id(),
             self.doc.get_focussed_node_id(),
@@ -856,8 +1023,7 @@ impl Surface {
         let navs: Vec<NavigationOptions> = std::mem::take(&mut *self.nav.0.lock().unwrap());
         for nav in navs {
             let form = rec.form.or_else(|| {
-                self.doc
-                    .get_focussed_node_id()
+                self.focused()
                     .and_then(|f| self.ancestor_with_tag(f, "form"))
             });
             let Some(form) = form else { continue };
@@ -870,7 +1036,7 @@ impl Surface {
         }
         // Text inputs report `change` when focus leaves them (not per keystroke,
         // so typing costs no round trip).
-        let focused = self.doc.get_focussed_node_id();
+        let focused = self.focused();
         if self.focus_value.as_ref().map(|(n, _)| *n) != focused {
             self.finish_change(&mut events);
             self.snapshot_focus();
@@ -885,11 +1051,14 @@ impl Surface {
         if is_press {
             self.damage.full = true;
         } else {
-            let after = (self.doc.get_hover_node_id(), focused);
+            let after = (
+                self.doc.get_hover_node_id(),
+                self.doc.get_focussed_node_id(),
+            );
             self.touch_chains(before.0, after.0);
             self.touch_chains(before.1, after.1);
             let scale = self.viewport.2 as f64;
-            if is_key && let Some(f) = after.1 {
+            if is_key && let Some(f) = focused {
                 self.damage.touch(&self.doc, f, scale);
             }
             if dragging {
@@ -901,7 +1070,7 @@ impl Surface {
                     .filter(|r| !now.contains(r))
                     .chain(now.iter().filter(|r| !selected.contains(r)))
                     .map(|r| r.0)
-                    .chain(after.1)
+                    .chain(focused)
                     .collect();
                 for n in changed {
                     self.damage.touch(&self.doc, n, scale);
@@ -913,8 +1082,7 @@ impl Surface {
 
     fn snapshot_focus(&mut self) {
         self.focus_value = self
-            .doc
-            .get_focussed_node_id()
+            .focused()
             .and_then(|id| self.text_value(id).map(|v| (id, v)));
     }
 

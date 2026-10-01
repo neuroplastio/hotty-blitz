@@ -11,6 +11,7 @@ changes upstream is an open question.
 | --- | --- |
 | `0001-blitz-dom-*` | patch cost proportional to depth, not document size (below) |
 | `0002-blitz-paint-*` | inline SVG follows its `preserveAspectRatio` |
+| `0003-blitz-dom-blitz-paint-*` | a control in the disabled state acts disabled, attribute or not |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -18,8 +19,20 @@ make check                   # `make` runs the script when ../blitz is missing
 ```
 
 Removing the `[patch]` section goes back to upstream Blitz. Everything still
-works, but patches cost O(N) again, and a stretched SVG (`preserveAspectRatio="none"`)
-is drawn narrow and centred.
+works, but patches cost O(N) again, a stretched SVG (`preserveAspectRatio="none"`)
+is drawn narrow and centred, and the controls of a detached surface can be
+clicked, toggled and typed into (silently: it still reports nothing).
+
+## Disabled controls
+
+A detached surface's form controls act as if each had the `disabled`
+attribute (HOTTY SPEC §5.5), but the document keeps the program's
+attributes. hotty-blitz puts them in the disabled state instead
+(`Node::disable`), which `:disabled` already matches. Upstream's pointer
+handling and form-control painting ask for the attribute; the fork has them
+ask `ElementData::is_disabled`, the attribute or the state. hotty-blitz's
+`a_detached_surfaces_controls_are_disabled` and
+`a_detached_document_paints_as_if_its_controls_had_disabled` check it.
 
 ## SVG: preserveAspectRatio
 

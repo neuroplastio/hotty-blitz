@@ -1,0 +1,100 @@
+From df5b6e210e7a106b57d034d6d7f6b406ab0a5407 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 11:23:56 +0200
+Subject: [PATCH] blitz-dom, blitz-paint: a control in the disabled state acts
+ disabled
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pointer handling and form-control painting asked for the `disabled`
+attribute. Blitz already keeps a control's disabled state in its
+ElementState (it follows the attribute, and `:disabled` matches it), so
+they now ask ElementData::is_disabled: the attribute, or a control in the
+disabled state. Nothing changes for a document whose state comes from its
+attributes. An embedder that disables a control with Node::disable, and
+leaves the program's attributes alone, gets the same behaviour as for
+the attribute: a press neither focuses nor selects in it, a click
+neither toggles, activates nor submits it, a drag does not select in it,
+and a checkbox or radio button is painted grey.
+
+hotty-blitz uses it for detached surfaces (HOTTY SPEC §5.5), whose
+controls act disabled while inspection still reports the program's
+attributes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/events/pointer.rs         | 8 +++-----
+ packages/blitz-dom/src/node/element.rs           | 9 +++++++++
+ packages/blitz-paint/src/render/form_controls.rs | 2 +-
+ 3 files changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/packages/blitz-dom/src/events/pointer.rs b/packages/blitz-dom/src/events/pointer.rs
+index 4eca2665..bf39383c 100644
+--- a/packages/blitz-dom/src/events/pointer.rs
++++ b/packages/blitz-dom/src/events/pointer.rs
+@@ -327,8 +327,7 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
+         return changed;
+     };
+ 
+-    let disabled = el.attr(local_name!("disabled")).is_some();
+-    if disabled {
++    if el.is_disabled() {
+         return changed;
+     }
+ 
+@@ -454,7 +453,7 @@ pub(crate) fn handle_pointerdown(
+     let click_target = {
+         let node = &doc.nodes[actual_target];
+         match node.data.downcast_element() {
+-            Some(el) if el.has_attr(local_name!("disabled")) => ClickTarget::Disabled,
++            Some(el) if el.is_disabled() => ClickTarget::Disabled,
+             Some(el) => {
+                 if let SpecialElementData::TextInput(ref text_input_data) = el.special_data {
+                     let mut content_box_offset = taffy::Point {
+@@ -632,8 +631,7 @@ pub(crate) fn handle_click(
+                 continue;
+             };
+ 
+-            let disabled = el.attr(local_name!("disabled")).is_some();
+-            if disabled {
++            if el.is_disabled() {
+                 break 'matched true;
+             }
+ 
+diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
+index bcbfdc48..0547c3e7 100644
+--- a/packages/blitz-dom/src/node/element.rs
++++ b/packages/blitz-dom/src/node/element.rs
+@@ -478,6 +478,15 @@ impl ElementData {
+         local_names!("button", "input", "select", "textarea").contains(&self.name.local)
+     }
+ 
++    /// Whether the element is disabled: it has the `disabled` attribute, or
++    /// it is a control in the disabled state. The state follows the
++    /// attribute, and an embedder may also set it (with `Node::disable`) to
++    /// disable a control whose attributes it leaves alone.
++    pub fn is_disabled(&self) -> bool {
++        self.has_attr(local_name!("disabled"))
++            || (self.can_be_disabled() && self.element_state.contains(ElementState::DISABLED))
++    }
++
+     /// Whether this element is a link (an `<a>` or `<area>` element with an `href` attribute)
+     pub fn is_link(&self) -> bool {
+         (self.name.local == local_name!("a") || self.name.local == local_name!("area"))
+diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-paint/src/render/form_controls.rs
+index fc4f0ad2..5d365a1b 100644
+--- a/packages/blitz-paint/src/render/form_controls.rs
++++ b/packages/blitz-paint/src/render/form_controls.rs
+@@ -16,7 +16,7 @@ impl ElementCx<'_, '_> {
+         };
+ 
+         let type_attr = self.node.attr(local_name!("type"));
+-        let disabled = self.node.attr(local_name!("disabled")).is_some();
++        let disabled = self.element.is_disabled();
+ 
+         // TODO this should be coming from css accent-color, but I couldn't find how to retrieve it
+         let accent_color = if disabled {
+-- 
+2.55.0
+

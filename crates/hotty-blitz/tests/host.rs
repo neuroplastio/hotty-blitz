@@ -808,3 +808,448 @@ fn incremental_layout_matches_a_fresh_document() {
         );
     }
 }
+
+/// A click (press and release) at `(x, y)`: every HOTTY message it produced.
+fn click(h: &mut Host, s: &str, x: f32, y: f32) -> Vec<Command> {
+    let mut fx = h.pointer(s, PointerKind::Down, x, y, Mods::default());
+    fx.extend(h.pointer(s, PointerKind::Up, x, y, Mods::default()));
+    replies(&fx)
+}
+
+/// `(e, t)` of each event.
+fn kinds(ev: &[Command]) -> Vec<(String, String)> {
+    ev.iter()
+        .filter(|c| c.get("a") == Some("ev"))
+        .map(|c| {
+            (
+                c.get("e").unwrap_or("").to_string(),
+                c.get("t").unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+fn ev(e: &str, t: &str) -> (String, String) {
+    (e.to_string(), t.to_string())
+}
+
+fn key(h: &mut Host, s: &str, c: &str) -> hotty_blitz::KeyOutcome {
+    h.key(
+        s,
+        &Key {
+            name: KeyName::Char(c.into()),
+            mods: Mods::default(),
+        },
+    )
+}
+
+/// The pixel at `(x, y)` of the surface's last frame, as RGB.
+fn pixel(h: &Host, s: &str, x: u32, y: u32) -> [u8; 3] {
+    let f = h.frame(s).unwrap();
+    let i = ((y * f.width + x) * 4) as usize;
+    [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]]
+}
+
+fn doc_at(h: &mut Host, s: &str, extra: &[(&str, &str)], html: &str, rows: &str) {
+    let mut pairs = vec![("a", "doc"), ("s", s), ("q", "2")];
+    pairs.extend_from_slice(extra);
+    h.handle(&cmd(&pairs, html));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", s),
+            ("c", "30"),
+            ("r", rows),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(h);
+}
+
+#[test]
+fn clicking_the_text_of_an_inert_document_takes_nothing() {
+    // The bug: Blitz calls the root element focused when nothing is, so a
+    // click on text took the keyboard and sent `focus`, and the click away
+    // sent `blur`. A shell under the document read both as typed text.
+    let mut h = host();
+    doc_at(&mut h, "x", &[], "<p>just text</p>", "3");
+    for (x, y) in [(20.0, 25.0), (250.0, 50.0)] {
+        assert_eq!(click(&mut h, "x", x, y), vec![], "a click at ({x}, {y})");
+        assert!(!h.is_focused("x"));
+    }
+    assert_eq!(h.focused_surface(), None);
+    // The terminal's click elsewhere: nothing to give back.
+    assert!(h.blur("x").is_empty());
+}
+
+#[test]
+fn a_click_takes_the_keyboard_only_through_an_element_that_takes_focus() {
+    let mut h = host();
+    place_form(&mut h);
+    // A button takes focus, and with it the keyboard.
+    let k = kinds(&click(&mut h, "f", 10.0, 65.0));
+    assert_eq!(k, vec![ev("focus", ""), ev("click", "go")]);
+    assert!(h.is_focused("f"));
+    // Text does not: a click on it gives the keyboard back.
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 30.0)), vec![ev("blur", "")]);
+    assert!(!h.is_focused("f"));
+    assert_eq!(kinds(&click(&mut h, "f", 250.0, 90.0)), vec![]);
+}
+
+#[test]
+fn a_click_inside_on_what_takes_no_focus_commits_and_gives_the_keyboard_back() {
+    let mut h = host();
+    place_form(&mut h);
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+        "",
+    ));
+    type_text(&mut h, "yz");
+    // The paragraph under the field takes no focus: the field commits its
+    // value, then the surface sends blur.
+    let got = click(&mut h, "f", 10.0, 30.0);
+    assert_eq!(kinds(&got), vec![ev("change", "name"), ev("blur", "")]);
+    let v: serde_json::Value = serde_json::from_slice(&got[0].payload).unwrap();
+    assert!(v["value"].as_str().unwrap().contains("yz"), "{v}");
+    assert!(!h.is_focused("f"));
+    assert!(!key(&mut h, "f", "q").consumed);
+}
+
+#[test]
+fn a_press_on_another_surface_takes_the_keyboard_from_this_one() {
+    let mut h = host();
+    place_form(&mut h);
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+        "",
+    ));
+    doc_at(&mut h, "x", &[("d", "1")], "<p>printed</p>", "2");
+    let fx = h.pointer("x", PointerKind::Down, 20.0, 25.0, Mods::default());
+    let got = replies(&fx);
+    assert!(got.iter().all(|c| c.get("s") == Some("f")), "{got:?}");
+    assert_eq!(kinds(&got), vec![ev("blur", "")]);
+    assert_eq!(h.focused_surface(), None);
+}
+
+/// A form with every kind of control, a link and an element that asks
+/// for clicks, one per 20 px row.
+const CONTROLS: &str = "<style>*{margin:0;padding:0;border:0}
+    input,button,a,div{display:block;width:200px;height:20px}</style>
+    <form id=f><input id=name name=name value=x><input type=checkbox id=ok name=ok value=yes>
+    <button type=submit id=save>Save</button></form>
+    <a id=go href='/go'>go</a><div id=d data-on=click>tap</div>
+    <details><summary id=more>more</summary><p>hidden</p></details>";
+
+#[test]
+fn a_detached_surface_sends_no_events() {
+    let mut h = host();
+    doc_at(&mut h, "x", &[], CONTROLS, "8");
+    // The same clicks on the attached surface report.
+    let mut attached = host();
+    doc_at(&mut attached, "x", &[], CONTROLS, "8");
+    let mut heard = Vec::new();
+    for y in [5.0, 25.0, 45.0, 65.0, 85.0, 105.0] {
+        heard.extend(kinds(&click(&mut attached, "x", 10.0, y)));
+    }
+    for e in ["click", "change", "submit", "focus", "blur"] {
+        assert!(heard.iter().any(|(k, _)| k == e), "no {e} in {heard:?}");
+    }
+
+    let r = replies(&h.handle(&cmd(&[("a", "detach"), ("s", "x")], "")));
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        (r[0].get("a"), r[0].get("re")),
+        (Some("ok"), Some("detach"))
+    );
+    let mut fx = Vec::new();
+    for y in [5.0, 25.0, 45.0, 65.0, 85.0, 105.0, 125.0] {
+        fx.extend(h.pointer("x", PointerKind::Move, 10.0, y, Mods::default()));
+        fx.extend(h.pointer("x", PointerKind::Down, 10.0, y, Mods::default()));
+        fx.extend(h.pointer("x", PointerKind::Up, 10.0, y, Mods::default()));
+        render(&mut h);
+        let k = key(&mut h, "x", "q");
+        assert!(!k.consumed);
+        fx.extend(k.effects);
+    }
+    fx.extend(h.pointer("x", PointerKind::Leave, 0.0, 0.0, Mods::default()));
+    fx.extend(h.blur("x"));
+    fx.extend(h.handle(&cmd(&[("a", "blur"), ("s", "x"), ("q", "2")], "")));
+    fx.extend(h.handle(&cmd(&[("a", "hide"), ("s", "x"), ("q", "2")], "")));
+    // hotty-blitz sends no `resize` at all: its pixel size follows its cells.
+    assert_eq!(replies(&fx), vec![]);
+    assert_eq!(h.focused_surface(), None);
+}
+
+#[test]
+fn detaching_gives_the_keyboard_back_without_change_or_blur() {
+    let mut h = host();
+    place_form(&mut h);
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+        "",
+    ));
+    type_text(&mut h, "yz");
+    let r = replies(&h.handle(&cmd(&[("a", "detach"), ("s", "f")], "")));
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        (r[0].get("a"), r[0].get("re")),
+        (Some("ok"), Some("detach"))
+    );
+    assert!(!h.is_focused("f"));
+    assert_eq!(h.focused_surface(), None);
+    let k = key(&mut h, "f", "q");
+    assert!(!k.consumed && k.effects.is_empty());
+    // It never has the keyboard again, nor sends what it held back.
+    let r = replies(&h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "name")], "")));
+    assert!(String::from_utf8_lossy(&r[0].payload).contains("EDETACHED"));
+    assert!(h.blur("f").is_empty());
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 5.0)), vec![]);
+}
+
+/// Markers that show the controls' state: blue while one is disabled, red
+/// once it is checked or focused, black otherwise.
+const MARKED: &str = "<style>*{margin:0;padding:0;border:0} body{background:#000}
+    input{display:block;width:100px;height:20px} .m{width:20px;height:20px}
+    #cb:disabled ~ #m1, #t:disabled ~ #m2, #cb2:disabled + #m3 {background:#00f}
+    #cb:checked ~ #m1, #t:focus ~ #m2, #cb2:checked + #m3 {background:#f00}</style>
+    <div id=box><input type=checkbox id=cb><input id=t value=x>
+    <div class=m id=m1></div><div class=m id=m2></div></div>";
+
+const BLUE: [u8; 3] = [0, 0, 255];
+const RED: [u8; 3] = [255, 0, 0];
+
+#[test]
+fn a_detached_surfaces_controls_are_disabled() {
+    // Attached, a click checks the box and focuses the field.
+    let mut h = host();
+    doc_at(&mut h, "x", &[], MARKED, "6");
+    click(&mut h, "x", 10.0, 10.0);
+    click(&mut h, "x", 10.0, 30.0);
+    render(&mut h);
+    assert_eq!((pixel(&h, "x", 10, 50), pixel(&h, "x", 10, 70)), (RED, RED));
+
+    let mut h = host();
+    doc_at(&mut h, "x", &[], MARKED, "6");
+    h.handle(&cmd(&[("a", "detach"), ("s", "x"), ("q", "2")], ""));
+    render(&mut h);
+    // They match :disabled, and a click neither toggles nor focuses them.
+    assert_eq!(
+        (pixel(&h, "x", 10, 50), pixel(&h, "x", 10, 70)),
+        (BLUE, BLUE)
+    );
+    click(&mut h, "x", 10.0, 10.0);
+    click(&mut h, "x", 10.0, 30.0);
+    assert!(!key(&mut h, "x", "q").consumed, "typing does not edit");
+    render(&mut h);
+    assert_eq!(
+        (pixel(&h, "x", 10, 50), pixel(&h, "x", 10, 70)),
+        (BLUE, BLUE)
+    );
+    // The document keeps the program's attributes.
+    let attrs = &h.inspect("x", "cb").unwrap()["attrs"];
+    assert_eq!(*attrs, serde_json::json!({"type": "checkbox", "id": "cb"}));
+
+    // A control a patch adds is disabled too, and so is one a patch takes
+    // `disabled` from.
+    let r = replies(&h.handle(&cmd(
+        &[("a", "patch"), ("s", "x"), ("op", "append"), ("t", "box")],
+        "<input type=checkbox id=cb2 disabled><div class=m id=m3></div>",
+    )));
+    assert_eq!(r[0].get("a"), Some("ok"));
+    h.handle(&cmd(
+        &[
+            ("a", "patch"),
+            ("s", "x"),
+            ("op", "unattr"),
+            ("t", "cb2"),
+            ("k", "disabled"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 110), BLUE);
+    click(&mut h, "x", 10.0, 90.0);
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 110), BLUE);
+    let attrs = &h.inspect("x", "cb2").unwrap()["attrs"];
+    assert_eq!(*attrs, serde_json::json!({"type": "checkbox", "id": "cb2"}));
+}
+
+#[test]
+fn a_detached_document_paints_as_if_its_controls_had_disabled() {
+    let controls = |disabled: &str| {
+        format!(
+            "<style>body{{margin:0}} :disabled{{opacity:0.5}}</style>
+             <input type=checkbox checked {disabled}><input type=radio {disabled}>
+             <button {disabled}>go</button><input value=text {disabled}>"
+        )
+    };
+    let mut detached = host();
+    doc_at(&mut detached, "x", &[("d", "1")], &controls(""), "3");
+    let mut disabled = host();
+    doc_at(&mut disabled, "x", &[], &controls("disabled"), "3");
+    let mut enabled = host();
+    doc_at(&mut enabled, "x", &[], &controls(""), "3");
+    let rgba = |h: &Host| h.frame("x").unwrap().rgba.clone();
+    assert_eq!(rgba(&detached), rgba(&disabled));
+    assert_ne!(rgba(&detached), rgba(&enabled));
+}
+
+#[test]
+fn what_is_local_stays_on_a_detached_surface() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "l",
+        &[("d", "1")],
+        r#"<base href="https://example.com/blog/"><style>body{margin:0} a,p,summary{display:block;height:20px;margin:0}</style>
+<p>select these words</p><a id=out target=_blank href="../spec">Spec</a><a id=in href="../about">About</a>
+<details><summary id=s>more</summary><p>hidden</p></details>"#,
+        "6",
+    );
+    // A hyperlink is the terminal's, and still opens; a link of the
+    // program's leads nowhere now, and shows the text pointer.
+    h.pointer("l", PointerKind::Move, 10.0, 30.0, Mods::default());
+    assert_eq!(
+        h.hyperlink("l").as_deref(),
+        Some("https://example.com/spec")
+    );
+    assert_eq!(h.cursor("l"), Some("pointer"));
+    assert_eq!(click(&mut h, "l", 10.0, 30.0), vec![]);
+    h.pointer("l", PointerKind::Move, 10.0, 50.0, Mods::default());
+    assert_eq!(h.hyperlink("l"), None);
+    assert_eq!(h.cursor("l"), Some("text"));
+    assert_eq!(click(&mut h, "l", 10.0, 50.0), vec![]);
+
+    // Selecting text.
+    render(&mut h);
+    let before = h.frame("l").unwrap().rgba.clone();
+    let mods = Mods::default();
+    let mut fx = h.pointer("l", PointerKind::Down, 2.0, 10.0, mods);
+    fx.extend(h.pointer("l", PointerKind::Move, 120.0, 10.0, mods));
+    fx.extend(h.pointer("l", PointerKind::Up, 120.0, 10.0, mods));
+    assert!(fx.is_empty());
+    render(&mut h);
+    assert_ne!(h.frame("l").unwrap().rgba, before, "the drag selected text");
+
+    // Toggling a <details>, which takes no keyboard.
+    let rows = |h: &mut Host| {
+        h.handle(&cmd(&[("a", "place"), ("s", "l"), ("c", "30")], ""))
+            .into_iter()
+            .find_map(|e| match e {
+                Effect::Place { rows, .. } => Some(rows),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let closed = rows(&mut h);
+    render(&mut h);
+    assert_eq!(click(&mut h, "l", 10.0, 70.0), vec![]);
+    assert_eq!(rows(&mut h), closed + 1, "the details opened");
+    assert!(!h.is_focused("l"));
+}
+
+#[test]
+fn a_document_without_d_gives_the_surface_back() {
+    let mut h = host();
+    let form = "<style>*{margin:0;padding:0;border:0} input,button{display:block;width:200px;height:20px}</style>
+        <input id=i><button id=b>go</button>";
+    doc_at(&mut h, "x", &[("d", "1")], form, "2");
+    assert_eq!(click(&mut h, "x", 10.0, 25.0), vec![]);
+    // A new document with d=1 stays detached; one without it is attached.
+    doc_at(&mut h, "x", &[("d", "1")], form, "2");
+    assert_eq!(click(&mut h, "x", 10.0, 25.0), vec![]);
+    doc_at(&mut h, "x", &[], form, "2");
+    assert_eq!(
+        kinds(&click(&mut h, "x", 10.0, 25.0)),
+        vec![ev("focus", ""), ev("click", "b")]
+    );
+    let r = replies(&h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "i")], "")));
+    assert_eq!(r[0].get("a"), Some("ok"));
+    assert!(key(&mut h, "x", "q").consumed);
+}
+
+/// Detaching restyles every control, and a patch to a detached surface
+/// disables the controls it brings: partial paints still equal a full one.
+#[test]
+fn a_detached_surface_paints_partially_as_it_would_in_full() {
+    let doc = "<style>body{margin:0;font:14px sans-serif} p{margin:2px}
+        input:disabled,button:disabled{background:#444;color:#aaa}
+        input:enabled,button:enabled{background:#fff;color:#000}</style>
+        <p id=a>alpha</p><div id=list><input id=i1 value=one><button id=b1>one</button></div>
+        <p id=z>tail</p>";
+    let patches: Vec<(Vec<(&str, &str)>, &str)> = vec![
+        (vec![("op", "text"), ("t", "a")], "alpha, longer"),
+        (
+            vec![("op", "append"), ("t", "list")],
+            "<input id=i2 value=two><input type=checkbox id=c2 checked>",
+        ),
+        (vec![("op", "attr"), ("t", "b1"), ("k", "disabled")], ""),
+        (vec![("op", "unattr"), ("t", "b1"), ("k", "disabled")], ""),
+        (
+            vec![("op", "morph"), ("t", "z")],
+            "<p id=z><button id=b3>three</button></p>",
+        ),
+    ];
+    let place = |h: &mut Host| {
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "x"), ("c", "40"), ("r", "10")],
+            "",
+        ));
+    };
+    let apply = |h: &mut Host, render_each: bool| {
+        let mut partial = 0;
+        for (ctl, payload) in &patches {
+            let mut c: Vec<(&str, &str)> = vec![("a", "patch"), ("s", "x")];
+            c.extend(ctl.iter().copied());
+            let r = replies(&h.handle(&cmd(&c, payload)));
+            assert_eq!(
+                r[0].get("a"),
+                Some("ok"),
+                "{:?}",
+                String::from_utf8_lossy(&r[0].payload)
+            );
+            if render_each {
+                for (_, _, _, d) in render(h) {
+                    partial += matches!(d, hotty_blitz::Damage::Rects(_)) as u32;
+                }
+            }
+        }
+        partial
+    };
+    // Incremental: attached first, then detached, a frame after each step.
+    let mut inc = host();
+    inc.handle(&cmd(&[("a", "doc"), ("s", "x")], doc));
+    place(&mut inc);
+    render(&mut inc);
+    let attached = inc.frame("x").unwrap().rgba.clone();
+    inc.handle(&cmd(&[("a", "detach"), ("s", "x")], ""));
+    render(&mut inc);
+    assert_ne!(
+        inc.frame("x").unwrap().rgba,
+        attached,
+        "detaching restyled the controls"
+    );
+    let partial = apply(&mut inc, true);
+    assert!(
+        partial >= 3,
+        "most patches should repaint partially ({partial})"
+    );
+    // Reference: created detached, the same patches, one full paint.
+    let mut full = host();
+    full.handle(&cmd(&[("a", "doc"), ("s", "x"), ("d", "1")], doc));
+    place(&mut full);
+    apply(&mut full, false);
+    render(&mut full);
+    let (a, b) = (inc.frame("x").unwrap(), full.frame("x").unwrap());
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    let differing = a
+        .rgba
+        .chunks(4)
+        .zip(b.rgba.chunks(4))
+        .filter(|(p, q)| p != q)
+        .count();
+    assert_eq!(differing, 0, "{differing} pixels differ from a full paint");
+}

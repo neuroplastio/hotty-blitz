@@ -443,6 +443,11 @@ impl Host {
                 s.auto_rows = auto;
                 s.rows = rows;
                 s.created = created;
+                // `d=1`: detached from the start (SPEC §5.5). Without it, the
+                // surface is the program's again, detached before or not.
+                if cmd.get("d") == Some("1") {
+                    s.detach();
+                }
                 self.surfaces.insert(name, s);
                 Ok((Vec::new(), None))
             }
@@ -567,12 +572,24 @@ impl Host {
                 }
                 Ok((Vec::new(), None))
             }
+            "detach" => {
+                let name = surface_name()?.to_string();
+                let s = self
+                    .surfaces
+                    .get_mut(&name)
+                    .ok_or(("ENOENT", format!("no surface {name}")))?;
+                s.detach();
+                Ok((Vec::new(), None))
+            }
             "focus" | "blur" => {
                 let name = surface_name()?.to_string();
                 let s = self
                     .surfaces
                     .get_mut(&name)
                     .ok_or(("ENOENT", format!("no surface {name}")))?;
+                if cmd.action() == "focus" && s.is_detached() {
+                    return Err(("EDETACHED", format!("surface {name} is detached")));
+                }
                 if cmd.action() == "focus" {
                     s.focus(cmd.get("t")).map_err(|e| ("ENOTARGET", e))?;
                 } else {
@@ -599,14 +616,28 @@ impl Host {
         mods: Mods,
     ) -> Vec<Effect> {
         let scale = self.config.metrics.scale;
-        let Some(s) = self.surfaces.get_mut(surface) else {
+        if !self.surfaces.contains_key(surface) {
             return Vec::new();
-        };
+        }
+        let mut effects = Vec::new();
+        if kind == PointerKind::Down {
+            // A press on this surface is outside every other one: any other
+            // that has the keyboard gives it back (SPEC §10.1).
+            for (name, other) in self.surfaces.iter_mut() {
+                if name != surface && other.has_focus() {
+                    effects.extend(
+                        other
+                            .blur()
+                            .into_iter()
+                            .map(|e| Effect::Reply(e.encode(name))),
+                    );
+                }
+            }
+        }
+        let s = self.surfaces.get_mut(surface).expect("checked above");
         let events = s.pointer(kind, x / scale, y / scale, mods);
-        events
-            .into_iter()
-            .map(|e| Effect::Reply(e.encode(surface)))
-            .collect()
+        effects.extend(events.into_iter().map(|e| Effect::Reply(e.encode(surface))));
+        effects
     }
 
     /// A key for the focused element of `surface`. `consumed` is false when
