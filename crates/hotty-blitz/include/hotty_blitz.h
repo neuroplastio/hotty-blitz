@@ -15,6 +15,7 @@ typedef struct {
   uint32_t palette[16];
   bool dark;
   const char *font_family; /* UTF-8, may be NULL */
+  float font_size;         /* the terminal's, in CSS pixels; 0: from cell_h */
 } hotty_config;
 
 typedef struct {

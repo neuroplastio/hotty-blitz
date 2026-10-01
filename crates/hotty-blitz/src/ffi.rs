@@ -19,6 +19,8 @@ pub struct HottyConfig {
     pub dark: bool,
     /// UTF-8, may be null.
     pub font_family: *const c_char,
+    /// The terminal's font size in CSS px; 0 derives it from `cell_h`.
+    pub font_size: f32,
 }
 
 #[repr(C)]
@@ -137,6 +139,7 @@ unsafe fn config(c: &HottyConfig) -> Config {
             dark: c.dark,
         },
         font_family: font,
+        font_size: (c.font_size > 0.0).then_some(c.font_size),
         ..Config::default()
     }
 }
@@ -491,4 +494,33 @@ pub unsafe extern "C" fn hotty_host_hyperlink(h: *mut HottyHost, surface: *const
         h.hyperlink = h.host.hyperlink(surface).and_then(|u| CString::new(u).ok());
         h.hyperlink.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn c_config(font_size: f32) -> HottyConfig {
+        HottyConfig {
+            cell_w: 16,
+            cell_h: 34,
+            scale: 2.0,
+            fg: 0xffffff,
+            bg: 0,
+            palette: [0; 16],
+            dark: true,
+            font_family: std::ptr::null(),
+            font_size,
+        }
+    }
+
+    #[test]
+    fn font_size_passes_through_and_zero_derives_it() {
+        let given = unsafe { config(&c_config(14.0)) };
+        assert_eq!(given.font_size, Some(14.0));
+        assert!(crate::style::host_css(&given).contains("font-size: 14px;"));
+        let derived = unsafe { config(&c_config(0.0)) };
+        assert_eq!(derived.font_size, None);
+        assert!(crate::style::host_css(&derived).contains("font-size: 13.6px;"));
+    }
 }
