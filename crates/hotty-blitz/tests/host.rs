@@ -1416,3 +1416,84 @@ fn what_the_user_typed_stays_after_detach() {
     // The document still has the program's value.
     assert_eq!(typed.inspect("f", "name").unwrap()["attrs"]["value"], "");
 }
+
+/// Places the form again, asking for presses or not (SPEC §5.2 `p`).
+fn place_form_presses(h: &mut Host, presses: bool) {
+    let mut pairs = vec![("a", "place"), ("s", "f"), ("c", "30"), ("r", "5"), ("q", "2")];
+    if presses {
+        pairs.push(("p", "1"));
+    }
+    h.handle(&cmd(&pairs, ""));
+    render(h);
+}
+
+#[test]
+fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
+    let mut h = host();
+    place_form(&mut h);
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
+    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    assert!(caps["events"].as_array().unwrap().iter().any(|e| e == "press"));
+    // Not asked for: a press on text says nothing (SPEC §10.1).
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 30.0)), vec![]);
+
+    place_form_presses(&mut h, true);
+    // Text: the id of the element it is in. Empty space: none.
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 30.0)), vec![ev("press", "count")]);
+    assert_eq!(kinds(&click(&mut h, "f", 250.0, 90.0)), vec![ev("press", "")]);
+    // A button: the press first, then what it does (SPEC §9).
+    assert_eq!(
+        kinds(&click(&mut h, "f", 10.0, 65.0)),
+        vec![ev("press", "go"), ev("focus", ""), ev("click", "go")]
+    );
+    // Space activates the button: a click, but no press.
+    let space = h.key(
+        "f",
+        &Key {
+            name: KeyName::Space,
+            mods: Mods::default(),
+        },
+    );
+    assert_eq!(kinds(&replies(&space.effects)), vec![ev("click", "go")]);
+    assert_eq!(
+        kinds(&click(&mut h, "f", 10.0, 30.0)),
+        vec![ev("press", "count"), ev("blur", "")]
+    );
+    // A new document keeps the placement, and with it `p`.
+    h.handle(&cmd(&[("a", "doc"), ("s", "f"), ("q", "2")], "<p id=new style=margin:0>new</p>"));
+    render(&mut h);
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 10.0)), vec![ev("press", "new")]);
+
+    // Placing again without it stops them; so does hiding.
+    place_form_presses(&mut h, false);
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 10.0)), vec![]);
+    place_form_presses(&mut h, true);
+    h.handle(&cmd(&[("a", "hide"), ("s", "f"), ("q", "2")], ""));
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 10.0)), vec![]);
+    // A detached surface reports nothing, whatever its placement asked.
+    place_form_presses(&mut h, true);
+    h.handle(&cmd(&[("a", "detach"), ("s", "f"), ("q", "2")], ""));
+    assert_eq!(kinds(&click(&mut h, "f", 10.0, 10.0)), vec![]);
+}
+
+#[test]
+fn a_press_comes_before_the_blur_it_causes_on_another_surface() {
+    let mut h = host();
+    place_form(&mut h);
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+        "",
+    ));
+    type_text(&mut h, "yz");
+    doc_at(&mut h, "x", &[], "<p>text</p>", "2");
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2"), ("p", "1"), ("q", "2")],
+        "",
+    ));
+    let got = replies(&h.pointer("x", PointerKind::Down, 20.0, 25.0, Mods::default()));
+    let order: Vec<(&str, &str)> = got
+        .iter()
+        .map(|c| (c.get("s").unwrap_or(""), c.get("e").unwrap_or("")))
+        .collect();
+    assert_eq!(order, vec![("x", "press"), ("f", "change"), ("f", "blur")]);
+}

@@ -102,6 +102,9 @@ pub(crate) struct Surface {
     pub rows: u16,
     pub auto_rows: bool,
     pub placed: bool,
+    /// Its placement asked for `press` (`p=1`, SPEC §5.2): every press in
+    /// it is reported, whatever it lands on.
+    pub presses: bool,
     pub dirty: bool,
     /// Which surface this is in the order of creation (the `a=doc` that
     /// created it, not one that replaced its document): among placements
@@ -307,6 +310,7 @@ impl Surface {
             rows,
             auto_rows: false,
             placed: false,
+            presses: false,
             created: 0,
             dirty: true,
             redeliver: false,
@@ -821,6 +825,29 @@ impl Surface {
             id = node.parent;
         }
         None
+    }
+
+    /// The program's word of the press that just happened (SPEC §9), when
+    /// its placement asked (`p=1`) and it is not detached: `t` is the
+    /// nearest element with an id, from the pressed one outward.
+    pub fn pressed(&self) -> Option<Event> {
+        if !self.presses || self.detached {
+            return None;
+        }
+        let mut node = self.doc.get_hover_node_id();
+        let mut target = String::new();
+        while let Some(n) = node {
+            if let Some(id) = self.id_of(n).filter(|id| !id.is_empty()) {
+                target = id;
+                break;
+            }
+            node = self.doc.get_node(n).and_then(|x| x.parent);
+        }
+        Some(Event {
+            kind: "press",
+            target,
+            detail: serde_json::Value::Null,
+        })
     }
 
     /// After a press or a release: the surface has the keyboard while an

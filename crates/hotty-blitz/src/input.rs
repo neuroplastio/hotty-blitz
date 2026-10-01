@@ -9,7 +9,9 @@ use crate::Effect;
 use hotty_wire::Control;
 
 /// Event types a host can report, for the capability reply.
-pub const EVENTS: &[&str] = &["click", "change", "input", "submit", "focus", "blur"];
+pub const EVENTS: &[&str] = &[
+    "click", "change", "input", "submit", "press", "focus", "blur",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerKind {

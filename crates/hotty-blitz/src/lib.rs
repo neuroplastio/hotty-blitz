@@ -419,14 +419,22 @@ impl Host {
             "doc" => {
                 let name = surface_name()?.to_string();
                 let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
-                let (cols, rows, auto, placed, created) = match self.surfaces.remove(&name) {
+                let (cols, rows, auto, placed, presses, created) = match self.surfaces.remove(&name)
+                {
                     Some(old) => {
                         self.store.forget_document(old.doc_id());
-                        (old.cols, old.rows, old.auto_rows, old.placed, old.created)
+                        (
+                            old.cols,
+                            old.rows,
+                            old.auto_rows,
+                            old.placed,
+                            old.presses,
+                            old.created,
+                        )
                     }
                     None => {
                         self.created += 1;
-                        (80, 24, false, false, self.created)
+                        (80, 24, false, false, false, self.created)
                     }
                 };
                 let mut s = surface::Surface::new(
@@ -440,6 +448,7 @@ impl Host {
                 // A replaced document keeps its placement: `r=auto` is
                 // measured when placed, not on every change.
                 s.placed = placed;
+                s.presses = presses;
                 s.auto_rows = auto;
                 s.rows = rows;
                 s.created = created;
@@ -489,6 +498,8 @@ impl Host {
                 s.set_size(cols, rows);
                 s.auto_rows = auto;
                 s.placed = true;
+                // Like z, the placement's: placing again without it stops them.
+                s.presses = cmd.get("p") == Some("1");
                 s.dirty = true;
                 effects.push(Effect::Place {
                     surface: name,
@@ -568,6 +579,7 @@ impl Host {
                 }
                 if s.placed {
                     s.placed = false;
+                    s.presses = false;
                     effects.push(Effect::Hide { surface: name });
                 }
                 Ok((Vec::new(), None))
@@ -621,7 +633,16 @@ impl Host {
         if !self.surfaces.contains_key(surface) {
             return Vec::new();
         }
-        let mut effects = Vec::new();
+        let s = self.surfaces.get_mut(surface).expect("checked above");
+        let events = s.pointer(kind, x / scale, y / scale, mods);
+        // `press` comes before everything the press causes, on this
+        // surface or another (SPEC §9).
+        let mut effects: Vec<Effect> = match kind {
+            PointerKind::Down => s.pressed().map(|e| Effect::Reply(e.encode(surface))),
+            _ => None,
+        }
+        .into_iter()
+        .collect();
         if kind == PointerKind::Down {
             // A press on this surface is outside every other one: any other
             // that has the keyboard gives it back (SPEC §10.1).
@@ -636,8 +657,6 @@ impl Host {
                 }
             }
         }
-        let s = self.surfaces.get_mut(surface).expect("checked above");
-        let events = s.pointer(kind, x / scale, y / scale, mods);
         effects.extend(events.into_iter().map(|e| Effect::Reply(e.encode(surface))));
         effects
     }
