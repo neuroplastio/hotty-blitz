@@ -498,6 +498,31 @@ pub unsafe extern "C" fn hotty_host_hyperlink(h: *mut HottyHost, surface: *const
     })
 }
 
+/// The terminal lets the pointer pass through where a surface does not take
+/// it (`hotty_host_takes_pointer`): the capabilities then say
+/// `"passthrough": true` (SPEC §4, §9.3).
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_passthrough(h: *mut HottyHost, on: bool) {
+    guard(h, (), |h| h.host.set_passthrough(on))
+}
+
+/// Whether the surface takes the pointer at device pixel (`x`, `y`) of the
+/// surface (Host::takes_pointer). Where it does not, the host hands the
+/// pointer to what is below it (SPEC §9.3).
+///
+/// # Safety
+/// `h` must be valid, `surface` NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_takes_pointer(h: *mut HottyHost, surface: *const c_char, x: f32, y: f32) -> bool {
+    let Some(surface) = (unsafe { name(surface) }) else {
+        return false;
+    };
+    guard(h, true, |h| h.host.takes_pointer(surface, x, y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

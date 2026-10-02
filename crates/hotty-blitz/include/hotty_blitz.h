@@ -74,5 +74,14 @@ const char *hotty_host_cursor(hotty_host *h, const char *surface);
  * as an OSC 8 hyperlink: its gesture, its feedback, its policies. A click on
  * it reports nothing to the program. Valid until the next call. */
 const char *hotty_host_hyperlink(hotty_host *h, const char *surface);
+/* Whether the surface takes the pointer at device pixel (x, y) of the
+ * surface: false where only boxes with pointer-events: none are (SPEC 9.3).
+ * There the pointer passes through it, to the placement below or the cells:
+ * presses, motion and releases, with the terminal's mouse reporting. Ask
+ * before giving the surface a press or a hover, not during its drag. */
+bool hotty_host_takes_pointer(hotty_host *h, const char *surface, float x, float y);
+/* The terminal does hand the pointer through (above): the capabilities then
+ * carry "passthrough": true (SPEC 4). */
+void hotty_host_set_passthrough(hotty_host *h, bool on);
 
 #endif

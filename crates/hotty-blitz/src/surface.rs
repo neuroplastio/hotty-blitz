@@ -413,6 +413,15 @@ impl Surface {
         self.doc.resolve(self.started.elapsed().as_secs_f64());
     }
 
+    /// Whether the surface takes the pointer at CSS pixel (`x`, `y`): some
+    /// element is there for CSS hit testing, which skips every box whose
+    /// `pointer-events` is `none`. Where none is, the pointer passes
+    /// through the surface (SPEC §9.3).
+    pub fn takes_pointer(&mut self, x: f32, y: f32) -> bool {
+        self.resolve();
+        self.doc.hit(x, y).is_some()
+    }
+
     /// Rows the content needs at `cols` columns (for `r=auto`).
     pub fn content_rows(&mut self, m: &Metrics, cols: u16) -> u16 {
         let w = cols as u32 * m.cell_w;

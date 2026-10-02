@@ -1758,3 +1758,26 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
         "an element that opts in to drags selects nothing"
     );
 }
+
+/// The capabilities say `passthrough` only when the terminal hands the
+/// pointer through (SPEC §4, §9.3), and the surface says where it takes it.
+#[test]
+fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
+    let mut h = host();
+    let caps = |h: &mut Host| {
+        let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
+        serde_json::from_slice::<serde_json::Value>(&r[0].payload).unwrap()
+    };
+    assert!(caps(&mut h).get("passthrough").is_none());
+    h.set_passthrough(true);
+    assert_eq!(caps(&mut h)["passthrough"], true);
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<style>html{pointer-events:none}body{margin:0}b{position:absolute;left:0;top:0;width:10px;height:20px;pointer-events:auto}</style><b></b>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "5"), ("r", "1"), ("q", "2")], ""));
+    render(&mut h);
+    assert!(h.takes_pointer("x", 5.0, 10.0), "the box with pointer-events: auto takes it");
+    assert!(!h.takes_pointer("x", 30.0, 10.0), "the rest lets it through");
+    assert!(!h.takes_pointer("nope", 5.0, 10.0), "no such surface takes nothing");
+}

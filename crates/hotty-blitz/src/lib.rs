@@ -170,6 +170,10 @@ pub struct Host {
     /// A press with Alt held began the gesture under way: it and the rest
     /// of the gesture are the program's, not a surface's (SPEC §9.2).
     program_press: bool,
+    /// The embedding terminal hands the pointer through where a surface
+    /// does not take it (`takes_pointer`, SPEC §9.3), and says so in the
+    /// capabilities.
+    passthrough: bool,
     frame_log: Option<FrameLog>,
 }
 
@@ -215,6 +219,7 @@ impl Host {
             surfaces: BTreeMap::new(),
             created: 0,
             program_press: false,
+            passthrough: false,
             frame_log: FrameLog::open(),
         }
     }
@@ -432,6 +437,10 @@ impl Host {
                     // cid: resources and data: URLs.
                     "net": {},
                 });
+                let mut caps = caps;
+                if self.passthrough {
+                    caps["passthrough"] = serde_json::Value::Bool(true);
+                }
                 Ok((Vec::new(), Some(caps.to_string().into_bytes())))
             }
             "doc" => {
@@ -787,6 +796,23 @@ impl Host {
 
     /// The pointer's shape over `surface` (Surface::cursor), for a host
     /// that shows the pointer: a CSS `cursor` name.
+    /// The terminal embedding this host lets the pointer pass through where
+    /// a surface does not take it (SPEC §9.3): the capabilities say so.
+    pub fn set_passthrough(&mut self, on: bool) {
+        self.passthrough = on;
+    }
+
+    /// Whether `surface` takes the pointer at device pixel (`x`, `y`) of the
+    /// surface. False where only boxes with `pointer-events: none` are, and
+    /// for a surface there is no such: the host then hands the pointer to
+    /// what is below the surface, another placement or the cells (SPEC §9.3).
+    pub fn takes_pointer(&mut self, surface: &str, x: f32, y: f32) -> bool {
+        let scale = self.config.metrics.scale;
+        self.surfaces
+            .get_mut(surface)
+            .is_some_and(|s| s.takes_pointer(x / scale, y / scale))
+    }
+
     pub fn cursor(&self, surface: &str) -> Option<&'static str> {
         self.surfaces.get(surface)?.cursor()
     }

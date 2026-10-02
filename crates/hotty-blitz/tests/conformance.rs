@@ -9,11 +9,17 @@ use serde_json::Value;
 /// from its top left. The runner is the terminal: while the button is down
 /// the pointer is the pressed surface's wherever it goes (SPEC §9.1), and a
 /// surface that is not placed takes nothing.
+///
+/// Where the surface takes no pointer (SPEC §9.3), the runner passes it
+/// through, as hottyterm does: the surface hears nothing. The press decides
+/// for its whole gesture.
 #[derive(Default)]
 struct Mouse {
     surface: String,
     x: f32,
     y: f32,
+    /// While the button is down: whether its press passed through.
+    down: Option<bool>,
 }
 
 fn vectors() -> Value {
@@ -121,7 +127,7 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
                     ((r + 0.5) * m.cell_h as f64) as f32,
                 )
             };
-            *mouse = Mouse { surface: s, x, y };
+            *mouse = Mouse { surface: s, x, y, down: mouse.down };
             PointerKind::Move
         }
         "down" => PointerKind::Down,
@@ -129,7 +135,27 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
         other => return Err(format!("unknown pointer {other}")),
     };
     let mut msgs = Vec::new();
-    if host.is_placed(&mouse.surface) {
+    let placed = host.is_placed(&mouse.surface);
+    let through = match (kind, mouse.down) {
+        (PointerKind::Down, _) | (_, None) => {
+            !placed || !host.takes_pointer(&mouse.surface, mouse.x, mouse.y)
+        }
+        (_, Some(through)) => through,
+    };
+    match kind {
+        PointerKind::Down => mouse.down = Some(through),
+        PointerKind::Up => mouse.down = None,
+        _ => {}
+    }
+    match step.get("through").and_then(Value::as_bool) {
+        Some(want) if want != through => {
+            return Err(format!("through: want {want}, got {through}"));
+        }
+        _ => {}
+    }
+    // Through, the pointer is over what is below: the surface is left.
+    let kind = if through && kind == PointerKind::Move { PointerKind::Leave } else { kind };
+    if placed && (!through || kind == PointerKind::Leave) {
         for e in host.pointer(&mouse.surface, kind, mouse.x, mouse.y, mods(step)) {
             if let Effect::Reply(b) = e {
                 msgs.extend(decode(&b).0);
@@ -218,7 +244,12 @@ fn protocol_vectors() {
     let v = vectors();
     let mut failures = Vec::new();
     for vector in v["vectors"].as_array().unwrap() {
+        // This runner passes the pointer through as hottyterm does.
+        if vector.get("requires").is_some_and(|r| r != "passthrough") {
+            continue;
+        }
         let mut host = Host::new(Config::default());
+        host.set_passthrough(true);
         let mut mouse = Mouse::default();
         for (i, step) in vector["steps"].as_array().unwrap().iter().enumerate() {
             if let Err(e) = run_step(&mut host, &mut mouse, step) {
