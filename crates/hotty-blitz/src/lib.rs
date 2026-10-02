@@ -426,6 +426,10 @@ impl Host {
                 let caps = serde_json::json!({
                     "v": "0.1",
                     "host": "hotty-blitz",
+                    // Raised with a fix a program may need to know of (SPEC §15):
+                    // 0.0.2 paints a box resized through a var patch (Blitz
+                    // fork 0005).
+                    "version": env!("CARGO_PKG_VERSION"),
                     "ops": ["morph", "inner", "replace", "append", "prepend", "before", "after",
                             "remove", "attr", "unattr", "text", "var"],
                     "events": input::EVENTS,

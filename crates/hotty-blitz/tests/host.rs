@@ -1759,6 +1759,20 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
     );
 }
 
+/// The capabilities name the implementation and its version (SPEC §4, §15):
+/// a program patches a surface's vars only from the version that lays a
+/// var patch out like a fresh document (0.0.2).
+#[test]
+fn the_capabilities_name_the_host_and_its_version() {
+    let mut h = host();
+    let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
+    let caps = serde_json::from_slice::<serde_json::Value>(&r[0].payload).unwrap();
+    assert_eq!(caps["host"], "hotty-blitz");
+    assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
+    let v: Vec<u32> = env!("CARGO_PKG_VERSION").split('.').map(|n| n.parse().unwrap()).collect();
+    assert!(v >= vec![0, 0, 2], "a_var_patch_lays_out_like_a_fresh_document's fix is 0.0.2");
+}
+
 /// The capabilities say `passthrough` only when the terminal hands the
 /// pointer through (SPEC §4, §9.3), and the surface says where it takes it.
 #[test]
