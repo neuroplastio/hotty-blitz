@@ -1009,7 +1009,7 @@ fn reply(
     for (k, v) in extra {
         control.set(&k, v);
     }
-    hotty_wire::encode(&control, body.as_deref().unwrap_or_default())
+    hotty_wire::encode_plain(&control, body.as_deref().unwrap_or_default())
 }
 
 /// A place command's window (SPEC §5.2): `x`, `y`, `w`, `h` in cells, by

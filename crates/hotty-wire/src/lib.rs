@@ -10,7 +10,8 @@
 //! their chunks reassembled and their payload decoded. Every byte that is not a
 //! HOTTY command comes out unchanged, however the reads split it.
 //!
-//! [`encode`] is the other direction: one command, chunked and encoded.
+//! [`encode`] is the other direction: one command, chunked and encoded;
+//! [`encode_plain`] is the same without compression, for what a host sends.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -123,12 +124,39 @@ impl Command {
     }
 }
 
-/// Encodes one command. The payload is compressed with zlib when that makes
-/// it smaller, then base64-encoded and chunked.
+/// A control value as it may be sent (SPEC §3.2): printable ASCII, with each
+/// character a value may not hold (`:`, `;`, `=`, a control character,
+/// anything outside ASCII) replaced by one `_`.
+pub fn clean_value(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            ':' | ';' | '=' => '_',
+            ' '..='~' => c,
+            _ => '_',
+        })
+        .collect()
+}
+
+/// Encodes one command, as a program sends it. The payload is compressed
+/// with zlib when that makes it smaller, then base64-encoded and chunked.
 pub fn encode(control: &Control, payload: &[u8]) -> Vec<u8> {
-    let mut control = control.clone();
+    encode_with(control, payload, true)
+}
+
+/// Encodes one command, as a host sends it: never compressed, so a program
+/// needs no zlib to read replies and events (SPEC §3.3).
+pub fn encode_plain(control: &Control, payload: &[u8]) -> Vec<u8> {
+    encode_with(control, payload, false)
+}
+
+fn encode_with(control: &Control, payload: &[u8], compress: bool) -> Vec<u8> {
+    let mut control: Control = control
+        .0
+        .iter()
+        .map(|(k, v)| (k.clone(), clean_value(v)))
+        .collect();
     let mut body: std::borrow::Cow<[u8]> = payload.into();
-    if payload.len() > 256 {
+    if compress && payload.len() > 256 {
         let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
         z.write_all(payload).expect("write to Vec");
         let compressed = z.finish().expect("finish to Vec");

@@ -149,6 +149,27 @@ fn large_payloads_are_chunked_at_4096() {
 }
 
 #[test]
+fn values_are_sent_as_printable_ascii() {
+    // SPEC §3.2: one `_` for each character a value may not hold.
+    assert_eq!(clean_value("a b:c;d=e\x07é😀~"), "a b_c_d_e___~");
+    let encoded = encode_plain(&[("a", "ev"), ("t", "café")].into_iter().collect(), b"");
+    assert_eq!(encoded, b"\x1b]7279;a=ev:t=caf_\x1b\\");
+}
+
+#[test]
+fn a_host_never_compresses() {
+    // SPEC §3.3: replies and events go out without `o`, however large.
+    let payload = vec![b'x'; 20000];
+    let control: Control = [("a", "ok"), ("re", "q")].into_iter().collect();
+    let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
+    assert!(text(encode(&control, &payload)).contains("o=z"));
+    let plain = encode_plain(&control, &payload);
+    assert!(!text(plain.clone()).contains("o="));
+    let got = scan_split(&plain, &mut Lcg(5));
+    assert_eq!(got.commands, vec![Command::new(control, payload)]);
+}
+
+#[test]
 fn bel_terminates_and_seqs_are_reported() {
     let input = b"\x1b[?1049h\x1b[?2026;1000l\x1b]7279;a=q:n=9\x07\x1b[2J\x1bcdone";
     let got = scan_split(input, &mut Lcg(1));

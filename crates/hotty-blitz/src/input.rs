@@ -80,25 +80,12 @@ impl Event {
         c.set("a", "ev");
         c.set("s", surface);
         c.set("e", self.kind);
-        c.set("t", sanitize(&self.target));
+        c.set("t", self.target.as_str());
         let body = if self.detail.is_null() {
             Vec::new()
         } else {
             self.detail.to_string().into_bytes()
         };
-        hotty_wire::encode(&c, &body)
+        hotty_wire::encode_plain(&c, &body)
     }
-}
-
-/// Control values cannot hold `:`, `;` or `=`; ids that do are reported mangled.
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c == ':' || c == ';' || c == '=' || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect()
 }

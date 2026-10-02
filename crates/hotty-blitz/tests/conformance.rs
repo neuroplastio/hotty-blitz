@@ -53,6 +53,28 @@ fn decode(bytes: &[u8]) -> (Vec<Command>, usize) {
     (commands, invalid)
 }
 
+/// What the host sent, decoded. A host sends nothing malformed, and never
+/// compresses (SPEC §3.3): no sequence it sends carries `o`.
+fn from_host(bytes: &[u8]) -> Result<Vec<Command>, String> {
+    let head = b"\x1b]7279;";
+    let mut rest = bytes;
+    while let Some(i) = rest.windows(head.len()).position(|w| w == head) {
+        rest = &rest[i + head.len()..];
+        let end = rest
+            .iter()
+            .position(|&b| b == b';' || b == 0x1b)
+            .unwrap_or(rest.len());
+        let control = Control::parse(&rest[..end])?;
+        if control.get("o").is_some() {
+            return Err(format!("the host compressed: {}", control.encode()));
+        }
+    }
+    match decode(bytes) {
+        (msgs, 0) => Ok(msgs),
+        (_, n) => Err(format!("the host sent {n} malformed message(s)")),
+    }
+}
+
 /// The events among decoded messages.
 fn events(msgs: &[Command]) -> Vec<&Command> {
     msgs.iter().filter(|c| c.get("a") == Some("ev")).collect()
@@ -112,11 +134,11 @@ fn mods(step: &Value) -> Mods {
 fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     // The layout a terminal would have painted by now.
     host.render_dirty(&mut |_, _, _| {});
-    let mut msgs = Vec::new();
-    let send = |host: &mut Host, s: &str, kind, x, y, msgs: &mut Vec<Command>| {
+    let mut sent = Vec::new();
+    let send = |host: &mut Host, s: &str, kind, x, y, sent: &mut Vec<u8>| {
         for e in host.pointer(s, kind, x, y, mods(step)) {
             if let Effect::Reply(b) = e {
-                msgs.extend(decode(&b).0);
+                sent.extend(b);
             }
         }
     };
@@ -139,7 +161,7 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
             // is left first, as a terminal leaves it (SPEC §9.4).
             if mouse.down.is_none() && !mouse.surface.is_empty() && mouse.surface != s {
                 let old = std::mem::take(&mut mouse.surface);
-                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut msgs);
+                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut sent);
             }
             *mouse = Mouse { surface: s, x, y, down: mouse.down };
             PointerKind::Move
@@ -151,9 +173,9 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
             let old = std::mem::take(&mut mouse.surface);
             mouse.down = None;
             if !old.is_empty() {
-                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut msgs);
+                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut sent);
             }
-            return check_events(step, &events(&msgs));
+            return check_events(step, &events(&from_host(&sent)?));
         }
         other => return Err(format!("unknown pointer {other}")),
     };
@@ -179,9 +201,9 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
     let kind = if through && kind == PointerKind::Move { PointerKind::Leave } else { kind };
     if placed && (!through || kind == PointerKind::Leave) {
         let (s, x, y) = (mouse.surface.clone(), mouse.x, mouse.y);
-        send(host, &s, kind, x, y, &mut msgs);
+        send(host, &s, kind, x, y, &mut sent);
     }
-    check_events(step, &events(&msgs))
+    check_events(step, &events(&from_host(&sent)?))
 }
 
 /// Failures, one line each, so a run reports every disagreement at once.
@@ -196,11 +218,11 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         let payload = step.get("payload").and_then(Value::as_str).unwrap_or("");
         // Through the wire, as a program sends it.
         let (cmds, _) = decode(&hotty_wire::encode(&control, payload.as_bytes()));
-        let mut msgs = Vec::new();
+        let mut sent = Vec::new();
         for cmd in &cmds {
             for e in host.handle(cmd) {
                 if let Effect::Reply(b) = e {
-                    msgs.extend(decode(&b).0);
+                    sent.extend(b);
                 }
             }
         }
@@ -214,10 +236,11 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
             host.render_dirty(&mut |_, _, _| {});
             for e in host.take_events() {
                 if let Effect::Reply(b) = e {
-                    msgs.extend(decode(&b).0);
+                    sent.extend(b);
                 }
             }
         }
+        let msgs = from_host(&sent)?;
         check_events(step, &events(&msgs))?;
         let replies: Vec<&Command> = msgs.iter().filter(|c| c.get("a") != Some("ev")).collect();
         match step.get("reply") {
