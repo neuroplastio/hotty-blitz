@@ -112,6 +112,14 @@ fn mods(step: &Value) -> Mods {
 fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     // The layout a terminal would have painted by now.
     host.render_dirty(&mut |_, _, _| {});
+    let mut msgs = Vec::new();
+    let send = |host: &mut Host, s: &str, kind, x, y, msgs: &mut Vec<Command>| {
+        for e in host.pointer(s, kind, x, y, mods(step)) {
+            if let Effect::Reply(b) = e {
+                msgs.extend(decode(&b).0);
+            }
+        }
+    };
     let kind = match step["pointer"].as_str().unwrap() {
         "move" => {
             let s = step["s"].as_str().unwrap().to_string();
@@ -127,14 +135,28 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
                     ((r + 0.5) * m.cell_h as f64) as f32,
                 )
             };
+            // Onto another surface with no button down: the one it was on
+            // is left first, as a terminal leaves it (SPEC §9.4).
+            if mouse.down.is_none() && !mouse.surface.is_empty() && mouse.surface != s {
+                let old = std::mem::take(&mut mouse.surface);
+                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut msgs);
+            }
             *mouse = Mouse { surface: s, x, y, down: mouse.down };
             PointerKind::Move
         }
         "down" => PointerKind::Down,
         "up" => PointerKind::Up,
+        // Out of the terminal's window: the host loses the pointer.
+        "leave" => {
+            let old = std::mem::take(&mut mouse.surface);
+            mouse.down = None;
+            if !old.is_empty() {
+                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut msgs);
+            }
+            return check_events(step, &events(&msgs));
+        }
         other => return Err(format!("unknown pointer {other}")),
     };
-    let mut msgs = Vec::new();
     let placed = host.is_placed(&mouse.surface);
     let through = match (kind, mouse.down) {
         (PointerKind::Down, _) | (_, None) => {
@@ -156,11 +178,8 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
     // Through, the pointer is over what is below: the surface is left.
     let kind = if through && kind == PointerKind::Move { PointerKind::Leave } else { kind };
     if placed && (!through || kind == PointerKind::Leave) {
-        for e in host.pointer(&mouse.surface, kind, mouse.x, mouse.y, mods(step)) {
-            if let Effect::Reply(b) = e {
-                msgs.extend(decode(&b).0);
-            }
-        }
+        let (s, x, y) = (mouse.surface.clone(), mouse.x, mouse.y);
+        send(host, &s, kind, x, y, &mut msgs);
     }
     check_events(step, &events(&msgs))
 }
@@ -258,8 +277,15 @@ fn protocol_vectors() {
     let v = vectors();
     let mut failures = Vec::new();
     for vector in v["vectors"].as_array().unwrap() {
-        // This runner passes the pointer through as hottyterm does.
-        if vector.get("requires").is_some_and(|r| r != "passthrough") {
+        // This runner passes the pointer through as hottyterm does, and
+        // hotty-blitz sends hover.
+        let has = |r: &Value| r == "passthrough" || r == "hover";
+        let runs = match vector.get("requires") {
+            None => true,
+            Some(Value::Array(all)) => all.iter().all(has),
+            Some(r) => has(r),
+        };
+        if !runs {
             continue;
         }
         let mut host = Host::new(Config::default());

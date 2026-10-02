@@ -114,6 +114,9 @@ pub(crate) struct Surface {
     /// A `fit` the last render found, with the rows of its layout, for the
     /// host to send.
     pub fit_event: Option<u16>,
+    /// Its placement asked for `hover` (`v=1`, SPEC §9.4): where the
+    /// program last heard the pointer is, out first.
+    pub hover: Option<Hovered>,
     pub dirty: bool,
     /// Which surface this is in the order of creation (the `a=doc` that
     /// created it, not one that replaced its document): among placements
@@ -160,6 +163,14 @@ pub(crate) struct Surface {
     playing: Vec<anim::Playing>,
     /// The document changed since the playing images' nodes were found.
     anim_stale: bool,
+}
+
+/// Where the pointer is for `hover` (SPEC §9.4): out of the window, or in
+/// it over the nearest element with an id (empty for none).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Hovered {
+    Out,
+    Over(String),
 }
 
 /// A drag under way (SPEC §9.1): the element that started it, and the
@@ -391,6 +402,7 @@ impl Surface {
             presses: false,
             fit: None,
             fit_event: None,
+            hover: None,
             created: 0,
             dirty: true,
             redeliver: false,
@@ -1162,6 +1174,68 @@ impl Surface {
         Some(drag_event("dragend", String::new(), d.cell, keys))
     }
 
+    /// Whether a button is down on the surface: from a press it took to
+    /// its release the pointer is the gesture's, and nothing is hovered
+    /// for the program (SPEC §9.4).
+    pub fn held(&self) -> bool {
+        self.drag.is_some() || !self.buttons.is_empty()
+    }
+
+    /// Whether `cell` of the surface is in its placement's window.
+    fn in_window(&self, (c, r): (i32, i32)) -> bool {
+        self.window.is_some_and(|w| {
+            c >= w.x as i32 && c < (w.x + w.w) as i32 && r >= w.y as i32 && r < (w.y + w.h) as i32
+        })
+    }
+
+    /// The program's word of where the pointer is now (SPEC §9.4), when its
+    /// placement asked (`v=1`), it is not detached, and that differs from
+    /// what it heard last. `cell` is the pointer's cell of the surface; on a
+    /// host with `passthrough`, a point no element takes is out.
+    pub fn hovered(&mut self, cell: (i32, i32), passthrough: bool) -> Option<Event> {
+        if self.detached || self.hover.is_none() {
+            return None;
+        }
+        let now = match self.pointer_at {
+            Some((x, y)) if self.in_window(cell) => {
+                self.resolve();
+                match self.doc.hit(x, y) {
+                    None if passthrough => Hovered::Out,
+                    hit => {
+                        let mut node = hit.map(|h| h.node_id);
+                        let mut target = String::new();
+                        while let Some(n) = node {
+                            if let Some(id) = self.id_of(n).filter(|id| !id.is_empty()) {
+                                target = id;
+                                break;
+                            }
+                            node = self.doc.get_node(n).and_then(|x| x.parent);
+                        }
+                        Hovered::Over(target)
+                    }
+                }
+            }
+            _ => Hovered::Out,
+        };
+        if self.hover.as_ref() == Some(&now) {
+            return None;
+        }
+        let event = match &now {
+            Hovered::Out => Event {
+                kind: "hover",
+                target: String::new(),
+                detail: serde_json::json!({ "out": true }),
+            },
+            Hovered::Over(t) => Event {
+                kind: "hover",
+                target: t.clone(),
+                detail: serde_json::json!({ "c": cell.0, "r": cell.1 }),
+            },
+        };
+        self.hover = Some(now);
+        Some(event)
+    }
+
     /// Whether `id`'s `data-on` lists `what`.
     fn listens(&self, id: NodeId, what: &str) -> bool {
         self.doc
@@ -1189,11 +1263,7 @@ impl Surface {
     /// one under the pointer outward; empty where there is none, outside
     /// the window included.
     fn drag_target_at(&self, cell: (i32, i32)) -> String {
-        let inside = self.window.is_some_and(|w| {
-            let (c, r) = cell;
-            c >= w.x as i32 && c < (w.x + w.w) as i32 && r >= w.y as i32 && r < (w.y + w.h) as i32
-        });
-        if !inside {
+        if !self.in_window(cell) {
             return String::new();
         }
         let mut node = self.doc.get_hover_node_id();

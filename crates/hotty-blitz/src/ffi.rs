@@ -385,6 +385,9 @@ fn mods(bits: u32) -> Mods {
 /// `fx` too. From a press to its release the pointer is the surface's, for
 /// drags (SPEC §9.1): every move comes here, with `(x, y)` counted from its
 /// top left even outside it; `leave` before the release ends a drag.
+/// A placement with `v=1` hears `hover` (SPEC §9.4) from moves, releases and
+/// leaves: pass `leave` whenever the pointer goes off the surface (onto the
+/// cells, another surface, a part it lets through, or out of the window).
 ///
 /// # Safety
 /// `h` and `surface` must be valid; `fx` may be null.

@@ -69,7 +69,10 @@ void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
  * From a press to its release the pointer is the surface's: pass it every
  * move, with x and y counted from its top left even outside it (negative, or
  * past its size), for drags (SPEC 9.1). Pass leave if the pointer is lost
- * before the release: it ends a drag. Pass no touch moves: touch scrolls. */
+ * before the release: it ends a drag. Pass no touch moves: touch scrolls.
+ * A placement with v=1 hears hover (SPEC 9.4) from moves, releases and
+ * leaves: pass leave whenever the pointer goes off the surface (onto the
+ * cells, another surface, a part it lets through, or out of the window). */
 void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float x, float y,
                          uint32_t mods, const hotty_effects *fx);
 bool hotty_host_key(hotty_host *h, uint32_t key, const char *text, uint32_t mods,

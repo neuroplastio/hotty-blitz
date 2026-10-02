@@ -578,7 +578,7 @@ impl Host {
                 let name = surface_name()?.to_string();
                 let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
                 let detached = cmd.get("d") == Some("1");
-                let (cols, rows, auto, placed, presses, fit, created, window) =
+                let (cols, rows, auto, placed, presses, fit, hover, created, window) =
                     match self.surfaces.remove(&name) {
                         Some(mut old) => {
                             self.store.forget_document(old.doc_id());
@@ -596,13 +596,14 @@ impl Host {
                                 old.placed,
                                 old.presses,
                                 old.fit,
+                                old.hover,
                                 old.created,
                                 old.window,
                             )
                         }
                         None => {
                             self.created += 1;
-                            (80, 24, false, false, false, None, self.created, None)
+                            (80, 24, false, false, false, None, None, self.created, None)
                         }
                     };
                 let mut s = surface::Surface::new(
@@ -619,6 +620,8 @@ impl Host {
                 s.window = window;
                 s.presses = presses;
                 s.fit = fit;
+                // `hover` goes on from what the program last heard (SPEC §9.4).
+                s.hover = hover;
                 s.auto_rows = auto;
                 s.rows = rows;
                 s.created = created;
@@ -674,6 +677,10 @@ impl Host {
                 s.presses = cmd.get("p") == Some("1");
                 // `fit` starts from the placement's own rows (SPEC §5.2).
                 s.fit = (cmd.get("f") == Some("1")).then_some(rows);
+                // `hover` goes on from what the program last heard, or
+                // starts from out (SPEC §9.4).
+                s.hover = (cmd.get("v") == Some("1"))
+                    .then(|| s.hover.take().unwrap_or(surface::Hovered::Out));
                 s.dirty = true;
                 effects.push(Effect::Place {
                     surface: name,
@@ -759,6 +766,7 @@ impl Host {
                     s.placed = false;
                     s.presses = false;
                     s.fit = None;
+                    s.hover = None;
                     s.window = None;
                     effects.push(Effect::Hide { surface: name });
                 }
@@ -841,6 +849,13 @@ impl Host {
             (y / m.cell_h.max(1) as f32).floor() as i32,
         );
         let (lead, events) = s.pointer_input(kind, x / m.scale, y / m.scale, cell, mods);
+        // Where the pointer is now, for `hover` (SPEC §9.4): not while a
+        // button is held, and at the release after everything it caused.
+        let hovered = match kind {
+            PointerKind::Down => None,
+            PointerKind::Move if s.held() => None,
+            _ => s.hovered(cell, self.passthrough),
+        };
         // `press` comes before everything the press causes, on this
         // surface or another (SPEC §9), then a drag's events (§9.1).
         let mut effects: Vec<Effect> = match kind {
@@ -864,7 +879,12 @@ impl Host {
                 }
             }
         }
-        effects.extend(events.into_iter().map(|e| Effect::Reply(e.encode(surface))));
+        effects.extend(
+            events
+                .into_iter()
+                .chain(hovered)
+                .map(|e| Effect::Reply(e.encode(surface))),
+        );
         effects
     }
 
@@ -879,9 +899,12 @@ impl Host {
                 if let Some(s) = self.surfaces.get_mut(surface) {
                     let (lead, events) =
                         s.pointer_input(PointerKind::Leave, 0.0, 0.0, (0, 0), mods);
+                    // The gesture hovers nothing: the window is left (§9.4).
+                    let out = s.hovered((0, 0), self.passthrough);
                     effects.extend(
                         lead.into_iter()
                             .chain(events)
+                            .chain(out)
                             .map(|e| Effect::Reply(e.encode(surface))),
                     );
                 }

@@ -2290,3 +2290,141 @@ fn a_detached_or_hidden_surface_hears_no_fit() {
     h.handle(&cmd(&[("a", "hide"), ("s", "x"), ("q", "2")], ""));
     assert_eq!(fits(&mut h), vec![], "hidden: no placement");
 }
+
+/// The `hover` events among the effects (SPEC §9.4), as (surface, t, detail).
+fn hovers(fx: &[Effect]) -> Vec<(String, String, serde_json::Value)> {
+    replies(fx)
+        .iter()
+        .filter(|c| c.get("e") == Some("hover"))
+        .map(|c| {
+            (
+                c.get("s").unwrap_or("").to_string(),
+                c.get("t").unwrap_or("").to_string(),
+                serde_json::from_slice(&c.payload).unwrap_or(serde_json::Value::Null),
+            )
+        })
+        .collect()
+}
+
+fn over(s: &str, t: &str, c: i32, r: i32) -> (String, String, serde_json::Value) {
+    (s.into(), t.into(), serde_json::json!({ "c": c, "r": r }))
+}
+
+fn out(s: &str) -> (String, String, serde_json::Value) {
+    (s.into(), String::new(), serde_json::json!({ "out": true }))
+}
+
+/// Three one-row elements, `a` (a text field), `b` and `c`, under a
+/// placement that asks for hover. Cells are 10 x 20 px.
+fn place_hover(h: &mut Host) {
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0}div,input{display:block;box-sizing:border-box;margin:0;border:0;\
+         padding:0;width:100%;height:20px}</style><input id=a><div id=b></div><div id=c></div>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "10"), ("r", "3"), ("v", "1")],
+        "",
+    ));
+    render(h);
+}
+
+#[test]
+fn hover_is_the_pointers_not_the_keyboards() {
+    let mut h = host();
+    place_hover(&mut h);
+    let m = Mods::default();
+    assert_eq!(
+        hovers(&h.pointer("x", PointerKind::Move, 15.0, 10.0, m)),
+        [over("x", "a", 1, 0)]
+    );
+    // A click on the field takes the keyboard: the press sends no hover,
+    // and neither does its release, where the pointer is what it was.
+    assert!(hovers(&h.pointer("x", PointerKind::Down, 15.0, 10.0, m)).is_empty());
+    assert!(hovers(&h.pointer("x", PointerKind::Up, 15.0, 10.0, m)).is_empty());
+    assert!(h.is_focused("x"));
+    assert_eq!(
+        hovers(&h.pointer("x", PointerKind::Move, 15.0, 30.0, m)),
+        [over("x", "b", 1, 1)]
+    );
+    // The program taking the keyboard back changes nothing.
+    assert!(hovers(&h.handle(&cmd(&[("a", "blur"), ("s", "x")], ""))).is_empty());
+    assert!(hovers(&h.pointer("x", PointerKind::Move, 25.0, 30.0, m)).is_empty());
+}
+
+#[test]
+fn a_new_document_keeps_hover_and_what_the_program_heard() {
+    let mut h = host();
+    place_hover(&mut h);
+    let m = Mods::default();
+    h.pointer("x", PointerKind::Move, 15.0, 30.0, m);
+    // The same id under the pointer in the new document is not news...
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0}div{height:20px}</style><div id=z></div><div id=b></div>",
+    ));
+    render(&mut h);
+    assert!(hovers(&h.pointer("x", PointerKind::Move, 16.0, 30.0, m)).is_empty());
+    // ...and another one is.
+    assert_eq!(
+        hovers(&h.pointer("x", PointerKind::Move, 16.0, 10.0, m)),
+        [over("x", "z", 1, 0)]
+    );
+}
+
+#[test]
+fn a_detached_surface_sends_no_hover_and_hears_the_difference_once_it_is_the_programs() {
+    let mut h = host();
+    place_hover(&mut h);
+    let m = Mods::default();
+    h.pointer("x", PointerKind::Move, 15.0, 30.0, m);
+    h.handle(&cmd(&[("a", "detach"), ("s", "x")], ""));
+    assert!(hovers(&h.pointer("x", PointerKind::Move, 15.0, 50.0, m)).is_empty());
+    assert!(hovers(&h.pointer("x", PointerKind::Leave, 0.0, 0.0, m)).is_empty());
+    // A document without d=1 makes it the program's again: it last heard b.
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0}div{height:20px}</style><div id=a></div><div id=b></div>",
+    ));
+    render(&mut h);
+    assert!(hovers(&h.pointer("x", PointerKind::Move, 15.0, 30.0, m)).is_empty());
+    assert_eq!(
+        hovers(&h.pointer("x", PointerKind::Move, 15.0, 10.0, m)),
+        [over("x", "a", 1, 0)]
+    );
+}
+
+#[test]
+fn losing_the_pointer_during_a_drag_ends_it_and_then_leaves() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0}div{height:20px}</style><div id=a data-on=drag></div><div id=b></div>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "10"), ("r", "2"), ("v", "1")],
+        "",
+    ));
+    render(&mut h);
+    let m = Mods::default();
+    assert_eq!(
+        hovers(&h.pointer("x", PointerKind::Move, 15.0, 10.0, m)),
+        [over("x", "a", 1, 0)]
+    );
+    h.pointer("x", PointerKind::Down, 15.0, 10.0, m);
+    let fx = h.pointer("x", PointerKind::Leave, 0.0, 0.0, m);
+    let kinds: Vec<_> = replies(&fx)
+        .iter()
+        .map(|c| c.get("e").unwrap_or("").to_string())
+        .collect();
+    assert_eq!(kinds, ["dragend", "hover"]);
+    assert_eq!(hovers(&fx), [out("x")]);
+}
+
+#[test]
+fn hover_is_listed_in_the_capabilities() {
+    let mut h = host();
+    let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
+    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    assert!(caps["events"].as_array().unwrap().iter().any(|e| e == "hover"));
+}
