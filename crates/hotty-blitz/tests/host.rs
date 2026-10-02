@@ -505,6 +505,40 @@ fn srcset_resolves_cid_resources() {
 }
 
 #[test]
+fn an_inline_svgs_image_resolves_cid_resources() {
+    // SPEC §7.1: cid: in an SVG href, sent before the document or after it,
+    // and sent again; Blitz fork 0009.
+    let png = |rgb: [u8; 3]| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([rgb[0], rgb[1], rgb[2], 255]))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    };
+    let mut h = host();
+    res(&mut h, "early", "image/png", png([0, 255, 0]));
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<body style='margin:0;background:#000'>\
+         <svg width=20 height=20 style='display:block'><image id=im href='cid:early' width=20 height=20/></svg>\
+         <svg width=20 height=20 style='display:block'><g><image xlink:href='cid:late' width=20 height=20/></g></svg></body>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0], "sent before the document");
+    assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 0], "not sent yet");
+    res(&mut h, "late", "image/png", png([255, 0, 0]));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 30), [255, 0, 0], "sent after it");
+    res(&mut h, "late", "image/png", png([0, 0, 255]));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 255], "sent again");
+    // The program's value stands (§7.1).
+    let im = h.inspect("x", "im").unwrap();
+    assert_eq!(im["attrs"]["href"], "cid:early");
+}
+
+#[test]
 fn an_svg_draws_no_image_file() {
     // A green PNG on the disk, named by an SVG <image>, inline and inside an
     // SVG <img>: neither reads it (SPEC §12; Blitz fork 0006).

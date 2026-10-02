@@ -17,6 +17,7 @@ changes upstream is an open question.
 | `0006-blitz-dom-*` | an SVG's `<image>` loads a `data:` URL and no file (below) |
 | `0007-blitz-traits-blitz-dom-*` | a request carries its destination: image, style, font, iframe, document (below) |
 | `0008-blitz-dom-*` | an `<img>` shows the source `srcset`, `sizes` and `<picture>` choose (below) |
+| `0009-blitz-dom-*` | an inline SVG's `<image>` draws what the document fetches for it (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -34,7 +35,8 @@ box, so one pulled inside a surface's root with a negative offset is not
 drawn at all. A box resized only through its containing block keeps its
 old overflow, and paint can cull it. An SVG can draw any image file on the
 disk, and an `<img>` loads its `src` alone, never a `srcset` or a
-`<picture>` source.
+`<picture>` source. An inline SVG's `<image>` draws no `cid:` resource
+and nothing from the network.
 
 ## SVG images load no files
 
@@ -42,9 +44,27 @@ Blitz parses every SVG, an `<img>` or CSS image and inline `<svg>` alike,
 with usvg's default options, whose image resolver reads any `<image href>`
 that is not a `data:` URL as a path on the disk: a page could draw any
 image the user's files hold, with no `NetProvider` asked (HOTTY SPEC §12).
-The fork's resolver loads `data:` URLs only. `an_image_loads_a_data_url_and_no_file`
-in blitz-dom checks it, and hotty-blitz's `an_svg_draws_no_image_file` and
+The fork's resolver loads `data:` URLs, and what the document fetched for
+an inline SVG's `<image>` (below), and nothing else.
+`an_image_loads_a_data_url_and_no_file` in blitz-dom checks it, and
+hotty-blitz's `an_svg_draws_no_image_file` and
 `files_documents_and_other_schemes_are_never_fetched`.
+
+## Images in inline SVG
+
+usvg resolves an `<image>`'s href as it parses, synchronously, and Blitz
+parses an inline `<svg>` while it constructs boxes, so nothing could be
+fetched for it. The fork fetches an SVG `<image>` as it does an `<img>`:
+when it joins the document or its `href` (or `xlink:href`) changes,
+through the `NetProvider`, as an `Image` request. The bytes are kept by
+resolved URL (`svg_image.rs`); when they arrive, the outermost `<svg>` is
+constructed, and so parsed, again, and the resolver hands usvg those bytes
+by href as written. `reload_resource_by_href` fetches such an image again.
+An SVG that is itself an image (an `<img>`, a CSS image) still loads
+nothing but `data:`, as in a browser. This is how `cid:` works in an SVG
+`href` (HOTTY SPEC §7.1), and how `img-src` reaches images in SVG (§7.2).
+hotty-blitz's `an_inline_svgs_image_resolves_cid_resources` and
+`an_inline_svgs_images_are_images` check it.
 
 ## Request destinations
 

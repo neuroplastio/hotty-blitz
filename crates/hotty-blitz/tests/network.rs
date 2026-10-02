@@ -711,3 +711,28 @@ fn srcset_and_picture_choose_what_is_fetched() {
     assert_eq!(paths, ["/1x.png", "/2x.png", "/dark.png", "/light.png", "/small.png"]);
 }
 
+#[test]
+fn an_inline_svgs_images_are_images() {
+    // SPEC §7.2: img-src covers images in SVG; Blitz fork 0009.
+    let srv = Server::start();
+    srv.route("/red.png", Reply::Ok("image/png", png(20, 20, RED)));
+    let o = &srv.origin;
+    let p = format!("img-src {o}");
+    let body = format!(
+        "<svg width=20 height=20 style='display:block'><image href='{o}/red.png' width=20 height=20/></svg>"
+    );
+    // The document asks for nothing: nothing is fetched.
+    let (mut h, _) = waking_host(&p);
+    show(&mut h, "a", "", &body);
+    render(&mut h);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(pixel(&h, "a", 10, 10), BLACK);
+    assert_eq!(srv.paths(), Vec::<String>::new());
+    // Both halves allow it.
+    let (mut h, rx) = waking_host(&p);
+    show(&mut h, "a", &meta(&p), &body);
+    render(&mut h);
+    arrive(&mut h, &rx, 1);
+    assert_eq!(pixel(&h, "a", 10, 10), RED);
+    assert_eq!(srv.paths(), vec!["/red.png"]);
+}

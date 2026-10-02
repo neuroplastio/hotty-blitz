@@ -57,8 +57,10 @@ directive: `img-src` for images (`<img>`, CSS backgrounds and masks),
   changed (SPEC §5.2). Animated GIFs from the network play.
 - `srcset`, `sizes` and `<picture>` choose the source, with `cid:` too:
   the candidate for the display's density, the first `<source>` whose
-  `type` and `media` match. Not fetched: images inside SVG, which load
-  `data:` URLs only.
+  `type` and `media` match.
+- An inline SVG's `<image href>` is an image like any other: `cid:`, or
+  fetched under `img-src`. An SVG that is itself an image (`<img>`, CSS)
+  loads only `data:` URLs inside it, as in a browser.
 
 ## Performance
 

@@ -1,0 +1,462 @@
+From 565ce63b9cd92423385ae8f2033b62ef22167220 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 20:28:00 +0200
+Subject: [PATCH] blitz-dom: an inline SVG's <image> draws what the document
+ fetches for it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An inline <svg>'s <image href> loaded a data: URL and nothing else (0006):
+usvg resolves hrefs as it parses, and the fork's resolver refused all but
+data:. So an <image> could not show a resource the page's NetProvider
+serves, a cid: one in HOTTY (SPEC §7.1 names SVG href), or an image from
+the network a policy allows (§7.2's img-src covers images in SVG).
+
+An SVG <image> is now fetched like an <img>: when it joins the document
+or its href (or xlink:href) changes, through the NetProvider, as
+destination Image. Its bytes are kept by resolved URL
+(BaseDocument::svg_images, svg_image.rs), and when they arrive the
+outermost <svg> it is in is constructed, and so parsed, again. The
+resolver usvg is given hands it those bytes, by href as written; it
+still reads no file. reload_resource_by_href fetches such an image again,
+so a resource sent again shows. data: URLs stay usvg's. An SVG that is
+itself an image (an <img>, a CSS image) still loads nothing but data:,
+as in a browser.
+
+an_image_draws_what_the_document_fetched_for_it checks the resolver.
+hotty-blitz's an_inline_svgs_image_resolves_cid_resources (sent before,
+after, and again) and an_inline_svgs_images_are_images (the network)
+check the whole path; the first fails without the change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs         |  15 ++
+ packages/blitz-dom/src/layout/construct.rs |   3 +-
+ packages/blitz-dom/src/lib.rs              |   2 +
+ packages/blitz-dom/src/mutator.rs          |  15 ++
+ packages/blitz-dom/src/net.rs              |  18 ++
+ packages/blitz-dom/src/svg_image.rs        | 184 +++++++++++++++++++++
+ packages/blitz-dom/src/util.rs             |  47 +++++-
+ 7 files changed, 277 insertions(+), 7 deletions(-)
+ create mode 100644 packages/blitz-dom/src/svg_image.rs
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index b333800b..a6f2ea7b 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -356,6 +356,11 @@ pub struct BaseDocument {
+     /// Value is a list of (node_id, image_type) pairs waiting for the image.
+     pub(crate) pending_images: HashMap<String, Vec<(NodeId, ImageType)>>,
+ 
++    /// What inline SVG `<image>` elements refer to, by resolved URL
++    /// (svg_image.rs).
++    #[cfg(feature = "svg")]
++    pub(crate) svg_images: HashMap<String, crate::svg_image::SvgImage>,
++
+     /// Nodes whose `background-image`/`mask-image` layers need flushing to
+     /// dedicated storage on the node because their style changed (populated by
+     /// the style traversal and by pseudo-element box construction).
+@@ -511,6 +516,8 @@ impl BaseDocument {
+             deferred_construction_nodes: Vec::new(),
+             image_cache: HashMap::new(),
+             pending_images: HashMap::new(),
++            #[cfg(feature = "svg")]
++            svg_images: HashMap::new(),
+             pending_style_image_nodes: Vec::new(),
+             pending_critical_resources: HashSet::new(),
+             controls_to_form: HashMap::new(),
+@@ -1116,6 +1123,8 @@ impl BaseDocument {
+     }
+ 
+     pub fn reload_resource_by_href(&mut self, href_to_reload: &str) {
++        #[cfg(feature = "svg")]
++        self.reload_svg_image(href_to_reload);
+         for &node_id in self.nodes_to_stylesheet.keys() {
+             let node = &self.nodes[node_id];
+             let Some(element) = node.element_data() else {
+@@ -1345,6 +1354,12 @@ impl BaseDocument {
+ 
+                 self.apply_loaded_image(url, image);
+             }
++            #[cfg(feature = "svg")]
++            Resource::SvgImage(bytes) => {
++                if let Some(url) = res.resolved_url.as_ref() {
++                    self.svg_image_loaded(url, bytes);
++                }
++            }
+             Resource::DocumentSrc(html) => {
+                 let Some(node_id) = res.node_id else {
+                     return;
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index 5de30006..23fcea7b 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -474,7 +474,8 @@ fn collect_layout_children_with_wrap(
+                 doc.nodes[id].remove_damage(CONSTRUCT_BOX | CONSTRUCT_DESCENDENT | CONSTRUCT_FC);
+             });
+ 
+-            match crate::util::parse_svg_image(outer_html.as_bytes()) {
++            let images = doc.svg_images_under(container_node_id);
++            match crate::util::parse_svg_image_with(outer_html.as_bytes(), &images) {
+                 Ok(svg) => {
+                     doc.get_node_mut(container_node_id)
+                         .unwrap()
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index 62a75de1..d4d9350a 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -66,6 +66,8 @@ mod stylo_device;
+ mod stylo_to_cursor_icon;
+ mod stylo_to_kurbo;
+ mod stylo_to_parley;
++#[cfg(feature = "svg")]
++mod svg_image;
+ pub mod traversal;
+ /// Versioned storage for the nodes of the DOM tree.
+ mod tree;
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index 1aa68f85..d953b1e4 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -33,6 +33,8 @@ pub enum AppendTextErr {
+ /// function for borrow-checker reasons.
+ enum SpecialOp {
+     LoadImage(NodeId),
++    #[cfg(feature = "svg")]
++    LoadSvgImage(NodeId),
+     LoadIframe(NodeId),
+     LoadStylesheet(NodeId),
+     UnloadStylesheet(NodeId),
+@@ -404,6 +406,13 @@ impl DocumentMutator<'_> {
+             if let Some(img) = img {
+                 self.load_image(img);
+             }
++        } else if cfg!(feature = "svg")
++            && tag.as_ref() == "image"
++            && attr.as_ref() == "href"
++            && element.name.ns == markup5ever::ns!(svg)
++        {
++            #[cfg(feature = "svg")]
++            self.doc.load_svg_image(node_id);
+         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
+             self.load_custom_paint_src(node_id);
+         } else if (tag, attr) == tag_and_attr!("link", "href")
+@@ -932,6 +941,8 @@ impl<'doc> DocumentMutator<'doc> {
+         for op in ops.drain(0..) {
+             match op {
+                 SpecialOp::LoadImage(node_id) => self.load_image(node_id),
++                #[cfg(feature = "svg")]
++                SpecialOp::LoadSvgImage(node_id) => self.doc.load_svg_image(node_id),
+                 SpecialOp::LoadIframe(node_id) => self.load_iframe(node_id),
+                 SpecialOp::LoadStylesheet(node_id) => self.load_linked_stylesheet(node_id),
+                 SpecialOp::UnloadStylesheet(node_id) => self.unload_stylesheet(node_id),
+@@ -969,6 +980,10 @@ impl<'doc> DocumentMutator<'doc> {
+                 "title" => self.title_node = Some(node_id),
+                 "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
+                 "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
++                #[cfg(feature = "svg")]
++                "image" if element.name.ns == markup5ever::ns!(svg) => {
++                    self.eager_op_queue.push(SpecialOp::LoadSvgImage(node_id))
++                }
+                 "iframe" => self.eager_op_queue.push(SpecialOp::LoadIframe(node_id)),
+                 "canvas" => self
+                     .eager_op_queue
+diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
+index e9b781a1..3ac47380 100644
+--- a/packages/blitz-dom/src/net.rs
++++ b/packages/blitz-dom/src/net.rs
+@@ -69,6 +69,10 @@ pub enum Resource {
+     Font(Bytes, FontFaceOverrides),
+     /// HTML fetched for an `<iframe>` element's `src`
+     DocumentSrc(String),
++    /// What an inline SVG's `<image>` refers to, as fetched: usvg decodes it
++    /// when it parses the `<svg>`.
++    #[cfg(feature = "svg")]
++    SvgImage(Arc<Vec<u8>>),
+     None,
+ }
+ 
+@@ -556,6 +560,20 @@ impl NetHandler for ResourceHandler<DocumentSrcHandler> {
+     }
+ }
+ 
++/// Fetches what an inline SVG's `<image>` refers to (svg_image.rs).
++#[cfg(feature = "svg")]
++pub(crate) struct SvgImageHandler;
++
++#[cfg(feature = "svg")]
++impl NetHandler for ResourceHandler<SvgImageHandler> {
++    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
++        self.respond(
++            resolved_url,
++            Ok(Resource::SvgImage(Arc::new(bytes.to_vec()))),
++        )
++    }
++}
++
+ pub struct ImageHandler {
+     kind: ImageType,
+ }
+diff --git a/packages/blitz-dom/src/svg_image.rs b/packages/blitz-dom/src/svg_image.rs
+new file mode 100644
+index 00000000..ebaa5e43
+--- /dev/null
++++ b/packages/blitz-dom/src/svg_image.rs
+@@ -0,0 +1,184 @@
++//! The images an inline `<svg>` draws with `<image href>`: fetched through
++//! the document's `NetProvider`, as an `<img>`'s are, and handed to usvg
++//! when it parses the `<svg>`.
++//!
++//! usvg resolves an `<image>`'s href as it parses, synchronously, and Blitz
++//! parses an inline `<svg>` while it constructs boxes. So an `<image>` is
++//! fetched when it joins the document or its href changes, like an `<img>`;
++//! its bytes are kept by URL; and when they arrive, the `<svg>` it is in is
++//! constructed, and so parsed, again. `data:` URLs are left to usvg.
++
++use std::collections::HashMap;
++use std::sync::Arc;
++
++use markup5ever::ns;
++
++use crate::layout::damage::ALL_DAMAGE;
++use crate::net::{ResourceHandler, SvgImageHandler};
++use crate::{BaseDocument, Node, NodeId};
++
++/// An image `<image>` elements refer to, by its resolved URL.
++#[derive(Default)]
++pub(crate) struct SvgImage {
++    /// Its bytes, once they arrived (empty: it failed).
++    bytes: Option<Arc<Vec<u8>>>,
++    /// The `<image>` elements that showed it, to construct again.
++    users: Vec<NodeId>,
++}
++
++/// Whether `node` is an SVG `<image>`.
++fn is_svg_image(node: &Node) -> bool {
++    node.element_data()
++        .is_some_and(|e| e.name.ns == ns!(svg) && e.name.local.as_ref() == "image")
++}
++
++/// The hrefs of an SVG `<image>` that are fetched: `href` and `xlink:href`,
++/// except `data:` URLs, which usvg decodes itself.
++fn hrefs(node: &Node) -> impl Iterator<Item = &str> {
++    node.attrs()
++        .into_iter()
++        .flatten()
++        .filter(|a| a.name.local.as_ref() == "href")
++        .map(|a| a.value.as_str())
++        .filter(|v| {
++            let v = v.trim_start();
++            !v.is_empty() && !v.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("data:"))
++        })
++}
++
++impl BaseDocument {
++    /// The outermost `<svg>` that `node` is in: the element Blitz parses.
++    fn outermost_svg(&self, node: NodeId) -> Option<NodeId> {
++        let mut found = None;
++        let mut current = Some(node);
++        while let Some(id) = current {
++            let node = self.get_node(id)?;
++            let Some(el) = node.element_data() else {
++                break;
++            };
++            if el.name.ns != ns!(svg) {
++                break;
++            }
++            if el.name.local.as_ref() == "svg" {
++                found = Some(id);
++            }
++            current = node.parent;
++        }
++        found
++    }
++
++    /// Construct the `<svg>` that `<image>` node `image` is in again, so
++    /// that it is parsed with what its images have now.
++    fn reconstruct_svg_of(&mut self, image: NodeId) {
++        if let Some(svg) = self.outermost_svg(image) {
++            let node = &mut self.nodes[svg];
++            node.clear_layout_cache();
++            node.insert_damage(ALL_DAMAGE);
++        }
++    }
++
++    /// `<image>` node `image` joined the document or changed its href:
++    /// fetch what it refers to, unless it is known already.
++    pub(crate) fn load_svg_image(&mut self, image: NodeId) {
++        let Some(node) = self.get_node(image) else {
++            return;
++        };
++        if !is_svg_image(node) {
++            return;
++        }
++        let urls: Vec<url::Url> = hrefs(node)
++            .filter_map(|href| self.url.resolve_relative(href))
++            .collect();
++        let mut known = false;
++        for url in urls {
++            let entry = self.svg_images.entry(url.to_string()).or_default();
++            if !entry.users.contains(&image) {
++                entry.users.push(image);
++            }
++            if entry.users.len() > 1 || entry.bytes.is_some() {
++                // Fetched, or being fetched, for another <image>.
++                known |= entry.bytes.is_some();
++                continue;
++            }
++            self.fetch_svg_image(url);
++        }
++        if known {
++            self.reconstruct_svg_of(image);
++        }
++    }
++
++    fn fetch_svg_image(&mut self, url: url::Url) {
++        self.net_provider.fetch(
++            self.id(),
++            self.build_request(url, blitz_traits::net::Destination::Image),
++            ResourceHandler::boxed(
++                self.tx.clone(),
++                self.id(),
++                None,
++                self.shell_provider.clone(),
++                SvgImageHandler,
++            ),
++        );
++    }
++
++    /// What an `<image>` refers to arrived from `url`: every `<svg>` that
++    /// shows it is constructed again.
++    pub(crate) fn svg_image_loaded(&mut self, url: &str, bytes: Arc<Vec<u8>>) {
++        let Some(entry) = self.svg_images.get_mut(url) else {
++            return;
++        };
++        entry.bytes = Some(bytes);
++        let users = std::mem::take(&mut entry.users);
++        let users: Vec<NodeId> = users
++            .into_iter()
++            .filter(|&id| {
++                self.get_node(id)
++                    .is_some_and(|n| n.flags.is_in_document() && is_svg_image(n))
++            })
++            .collect();
++        for &image in &users {
++            self.reconstruct_svg_of(image);
++        }
++        if let Some(entry) = self.svg_images.get_mut(url) {
++            entry.users = users;
++        }
++    }
++
++    /// `href` was sent again (a resource replaced, say): an image it names
++    /// is fetched again, and shown when it arrives.
++    pub(crate) fn reload_svg_image(&mut self, href: &str) {
++        let Some(url) = self.url.resolve_relative(href) else {
++            return;
++        };
++        if self.svg_images.contains_key(url.as_str()) {
++            self.fetch_svg_image(url);
++        }
++    }
++
++    /// The images the `<image>` elements under `<svg>` node `svg` refer to
++    /// and have, by href as written: what usvg asks for as it parses.
++    pub(crate) fn svg_images_under(&self, svg: NodeId) -> HashMap<String, Arc<Vec<u8>>> {
++        let mut out = HashMap::new();
++        let mut stack = vec![svg];
++        while let Some(id) = stack.pop() {
++            let Some(node) = self.get_node(id) else {
++                continue;
++            };
++            stack.extend(node.children.iter().copied());
++            if !is_svg_image(node) {
++                continue;
++            }
++            for href in hrefs(node) {
++                let bytes = self
++                    .url
++                    .resolve_relative(href)
++                    .and_then(|url| self.svg_images.get(url.as_str())?.bytes.clone())
++                    .filter(|b| !b.is_empty());
++                if let Some(bytes) = bytes {
++                    out.insert(href.to_string(), bytes);
++                }
++            }
++        }
++        out
++    }
++}
+diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
+index 977afb66..569eb634 100644
+--- a/packages/blitz-dom/src/util.rs
++++ b/packages/blitz-dom/src/util.rs
+@@ -156,16 +156,31 @@ pub fn walk_tree(indent: usize, node: &Node) {
+ /// Parse an SVG image.
+ #[cfg(feature = "svg")]
+ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
++    parse_svg_image_with(source, &std::collections::HashMap::new())
++}
++
++/// Parse an SVG whose `<image>` elements draw `images`, by href as written
++/// (an inline `<svg>`'s, which the document fetched: svg_image.rs).
++#[cfg(feature = "svg")]
++pub(crate) fn parse_svg_image_with(
++    source: &[u8],
++    images: &std::collections::HashMap<String, Arc<Vec<u8>>>,
++) -> Result<crate::node::SvgImageData, usvg::Error> {
+     let options = usvg::Options {
+         fontdb: Arc::clone(&*FONT_DB),
+-        // An <image> in the SVG loads a data: URL and nothing else. usvg's
+-        // default reads any other href as a path on the disk, so an SVG from
+-        // the network, or one inline in a page, could draw any image the
+-        // user's files hold. (A browser fetches it as the page's image, or
+-        // not at all when the SVG is itself an image.)
++        // An <image> in the SVG loads a data: URL, or what the document
++        // fetched for it, and nothing else. usvg's default reads any other
++        // href as a path on the disk, so an SVG from the network, or one
++        // inline in a page, could draw any image the user's files hold. (A
++        // browser fetches it as the page's image, or not at all when the
++        // SVG is itself an image.)
+         image_href_resolver: usvg::ImageHrefResolver {
+             resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+-            resolve_string: Box::new(|_, _| None),
++            resolve_string: Box::new(|href, options| {
++                let bytes = images.get(href)?.clone();
++                // "text/plain" has usvg tell the format from the bytes.
++                (usvg::ImageHrefResolver::default_data_resolver())("text/plain", bytes, options)
++            }),
+         },
+         ..Default::default()
+     };
+@@ -262,6 +277,26 @@ mod svg_tests {
+         assert!(data.tree.root().has_children(), "the data: URL was not");
+     }
+ 
++    #[test]
++    fn an_image_draws_what_the_document_fetched_for_it() {
++        let png = std::sync::Arc::new(vec![
++            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
++            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
++            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78,
++            0x9c, 0x63, 0x60, 0xf8, 0xcf, 0x00, 0x00, 0x02, 0x02, 0x01, 0x00, 0x7b, 0x09, 0x81,
++            0x78, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
++        ]);
++        let images = std::collections::HashMap::from([("cid:a".to_string(), png)]);
++        let svg = |href: &str| {
++            let src = format!(
++                r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="{href}" width="1" height="1"/></svg>"#
++            );
++            super::parse_svg_image_with(src.as_bytes(), &images).unwrap()
++        };
++        assert!(svg("cid:a").tree.root().has_children(), "fetched");
++        assert!(!svg("cid:b").tree.root().has_children(), "not fetched");
++    }
++
+     #[test]
+     fn non_numeric_dimensions_are_not_intrinsic() {
+         let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="auto" height="foo" viewBox="0 0 200 100"></svg>"#;
+-- 
+2.55.0
+
