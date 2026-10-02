@@ -1781,3 +1781,43 @@ fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
     assert!(!h.takes_pointer("x", 30.0, 10.0), "the rest lets it through");
     assert!(!h.takes_pointer("nope", 5.0, 10.0), "no such surface takes nothing");
 }
+
+/// A custom property that changes a containing block's height and its
+/// transform must leave its stretched absolute child painted as a fresh
+/// document paints it, here at a fractional scale (15x33 px cells, 1.604).
+/// The child's size changes with no style damage of its own; Blitz kept its
+/// old overflow, paint culled it by that, and nothing of it was painted
+/// (blitz/README.md, "Overflow after a relayout").
+#[test]
+fn a_var_patch_lays_out_like_a_fresh_document() {
+    let html = |h: u32| {
+        format!(
+            "<html id=root style='--h:{h}'><style>html,body{{margin:0;background:transparent}}
+        .ring{{position:absolute;left:0;top:0;width:300px;height:calc(var(--h)*20px);transform:translateY(calc((1 - var(--h))*20px))}}
+        .line{{position:absolute;left:4px;right:4px;top:9px;bottom:9px;border:2px solid #f00}}</style>
+        <div class=ring><div class=line></div></div></html>"
+        )
+    };
+    let painted = |h: &Host| h.frame("x").unwrap().rgba.chunks(4).filter(|p| p[3] > 0).count();
+    let host = || {
+        Host::new(Config {
+            metrics: Metrics { cell_w: 15, cell_h: 33, scale: 1.604167 },
+            ..Config::default()
+        })
+    };
+    let mut inc = host();
+    inc.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html(5)));
+    inc.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "1"), ("q", "2")], ""));
+    render(&mut inc);
+    inc.handle(&cmd(
+        &[("a", "patch"), ("s", "x"), ("op", "var"), ("t", "root"), ("k", "h"), ("q", "2")],
+        "6",
+    ));
+    render(&mut inc);
+    let mut fresh = host();
+    fresh.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html(6)));
+    fresh.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "1"), ("q", "2")], ""));
+    render(&mut fresh);
+    assert!(painted(&fresh) > 0, "the fresh document paints the line");
+    assert_eq!(painted(&inc), painted(&fresh));
+}

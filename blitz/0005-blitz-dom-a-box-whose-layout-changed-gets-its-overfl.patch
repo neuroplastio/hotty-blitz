@@ -1,0 +1,131 @@
+From 8eb168843281d4cde712dd5a32b5a8a583925308 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 15:29:23 +0200
+Subject: [PATCH] blitz-dom: a box whose layout changed gets its overflow and
+ transform again
+
+resolve_transforms computed a node's transform and scrollable overflow
+again only when its own style damage carried RECALCULATE_OVERFLOW. Damage
+flows up the tree, not down, so a box whose layout changed because an
+ancestor changed kept the overflow (and percentage transform) of its old
+size. A box stretched by an absolutely positioned containing block whose
+height comes from a custom property is the plain case: patching the
+property resizes the box, its style is unchanged, and its overflow stays
+the old height. Paint culls a box by that overflow, so a box grown and
+moved up by a transform was culled whole and nothing of it was painted,
+on every later paint too, while the same document built from scratch
+painted it.
+
+set_final_layout now records each node whose final layout changed, with
+the chain of boxes that reaches it in resolve_transforms (its containing
+block when it is out of flow, else its layout parent), and
+resolve_transforms recomputes a recorded node as it does a damaged one.
+The record is cleared after the walk. A first layout records every node,
+as it already recomputes every node.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs   |  7 +++++++
+ packages/blitz-dom/src/layout/mod.rs | 26 +++++++++++++++++++++++++-
+ packages/blitz-dom/src/resolve.rs    | 10 ++++++----
+ 3 files changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 72048f8d..fcaca130 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -228,6 +228,12 @@ pub struct BaseDocument {
+     pub(crate) own_relayout: HashSet<NodeId>,
+     /// Nodes whose layout children changed in this resolve's construction.
+     pub(crate) restructured: HashSet<NodeId>,
++    /// Nodes whose final layout changed since `resolve_transforms` last ran,
++    /// with every box that reaches them in that walk. Their transforms and
++    /// scrollable overflow are computed again even without style damage: a
++    /// box stretched by a resized containing block changes size with no
++    /// damage of its own.
++    pub(crate) geometry_changed: HashSet<NodeId>,
+     /// How deeply this document is nested within other documents
+     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
+     pub(crate) subdocument_depth: usize,
+@@ -471,6 +477,7 @@ impl BaseDocument {
+             invalidated: Vec::new(),
+             own_relayout: HashSet::new(),
+             restructured: HashSet::new(),
++            geometry_changed: HashSet::new(),
+             subdocument_depth: config.subdocument_depth,
+             devtool_settings: DevtoolSettings::default(),
+             url: base_url,
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 2102dfd1..60149f93 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -647,13 +647,37 @@ impl taffy::LayoutGridContainer for BaseDocument {
+     }
+ }
+ 
++impl BaseDocument {
++    /// Record that a node's final layout changed, for `resolve_transforms`:
++    /// the node and the boxes that reach it in that walk (its containing
++    /// block if it is out of flow, else its layout parent, and so on up).
++    /// Stops at a recorded node, whose own chain is already recorded.
++    fn geometry_changed(&mut self, node_id: blitz_traits::node_id::NodeId) {
++        let mut current = Some(node_id);
++        while let Some(id) = current {
++            if !self.geometry_changed.insert(id) {
++                break;
++            }
++            current = self.nodes.get(id).and_then(|n| {
++                n.oof_containing_block
++                    .get()
++                    .or_else(|| n.layout_parent.get())
++            });
++        }
++    }
++}
++
+ impl RoundTree for BaseDocument {
+     fn get_unrounded_layout(&self, node_id: NodeId) -> Layout {
+         *self.node_from_id(node_id).unrounded_layout()
+     }
+ 
+     fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout) {
+-        *self.node_from_id_mut(node_id).final_layout_mut() = *layout;
++        let slot = self.node_from_id_mut(node_id).final_layout_mut();
++        if *slot != *layout {
++            *slot = *layout;
++            self.geometry_changed(dom_node_id(node_id));
++        }
+     }
+ 
+     fn is_out_of_flow(&self, node_id: NodeId) -> bool {
+diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
+index ceba815b..d7198073 100644
+--- a/packages/blitz-dom/src/resolve.rs
++++ b/packages/blitz-dom/src/resolve.rs
+@@ -114,6 +114,7 @@ impl BaseDocument {
+ 
+         // Resolve transforms
+         self.resolve_transforms(root_node_id);
++        self.geometry_changed.clear();
+         timer.record_time("transform");
+ 
+         // Build paint children / stacking contexts for damaged subtrees. Runs
+@@ -174,10 +175,11 @@ impl BaseDocument {
+ 
+         let scale = self.viewport.scale_f64();
+ 
+-        if !self.nodes[node_id]
+-            .damage()
+-            .map(|d| d.contains(style::selector_parser::RestyleDamage::RECALCULATE_OVERFLOW))
+-            .unwrap_or(false)
++        if !self.geometry_changed.contains(&node_id)
++            && !self.nodes[node_id]
++                .damage()
++                .map(|d| d.contains(style::selector_parser::RestyleDamage::RECALCULATE_OVERFLOW))
++                .unwrap_or(false)
+         {
+             let node = &self.nodes[node_id];
+             let location = node.final_layout().location.map(|v| v as f64 * scale);
+-- 
+2.55.0
+

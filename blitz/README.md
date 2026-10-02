@@ -13,6 +13,7 @@ changes upstream is an open question.
 | `0002-blitz-paint-*` | inline SVG follows its `preserveAspectRatio` |
 | `0003-blitz-dom-blitz-paint-*` | a control in the disabled state acts disabled, attribute or not |
 | `0004-blitz-paint-*` | outlines take `outline-offset` and every border style |
+| `0005-blitz-dom-*` | a box whose layout changed gets its overflow and transform again (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -24,7 +25,9 @@ works, but patches cost O(N) again, a stretched SVG (`preserveAspectRatio="none"
 is drawn narrow and centred, the controls of a detached surface can be
 clicked, toggled and typed into (silently: it still reports nothing), and
 every outline is solid and just outside its box, so one pulled inside a
-surface's root with a negative offset is not drawn at all.
+surface's root with a negative offset is not drawn at all. A box resized
+only through its containing block keeps its old overflow, and paint can
+cull it.
 
 ## Disabled controls
 
@@ -59,6 +62,20 @@ the outline after the element's content, as CSS 2.1 Appendix E does, so the
 element's background does not cover one inside it. hotty-blitz's
 `an_outline_takes_its_offset_and_style` checks it. Dotted outlines have
 round dots, as Blitz's dotted borders do; Chromium's are square.
+
+## Overflow after a relayout
+
+Blitz computes a node's transform and scrollable overflow again only when
+its own style damage asks for it. Damage flows up the tree, so a box whose
+size changed because an ancestor changed kept its old overflow. Paint
+culls a box by its overflow: patching a custom property that sets the
+height and the `translateY` of an absolutely positioned ring left its
+stretched child with the overflow of the old height, which the new
+transform moved off the surface. Nothing of the child was painted, on any
+later paint either. The fork records every node whose final layout
+changed (`set_final_layout`), with the boxes that reach it in
+`resolve_transforms`, and computes those again too. hotty-blitz's
+`a_var_patch_lays_out_like_a_fresh_document` checks it.
 
 ## Patch cost: what it changes
 
