@@ -57,6 +57,11 @@ int64_t hotty_host_next_frame(hotty_host *h);
  * must show it anew and no longer has its pixels. */
 void hotty_host_redeliver(hotty_host *h, const char *surface);
 void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
+/* What rendering found for the program, through fx->reply: fit events (SPEC
+ * 5.2: a placement with f=1 hears the rows its document needs), at most one
+ * per surface, with the rows of the last frame drawn. Call after
+ * hotty_host_render. */
+void hotty_host_events(hotty_host *h, const hotty_effects *fx);
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
 /* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's,
  * or a tap's (SPEC 10.1): pass no other button. A press also takes the

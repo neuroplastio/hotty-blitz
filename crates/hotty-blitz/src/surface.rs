@@ -106,6 +106,12 @@ pub(crate) struct Surface {
     /// Its placement asked for `press` (`p=1`, SPEC §5.2): every press in
     /// it is reported, whatever it lands on.
     pub presses: bool,
+    /// Its placement asked for `fit` (`f=1`, SPEC §5.2): the rows the
+    /// program last heard the document needs, the placement's own first.
+    pub fit: Option<u16>,
+    /// A `fit` the last render found, with the rows of its layout, for the
+    /// host to send.
+    pub fit_event: Option<u16>,
     pub dirty: bool,
     /// Which surface this is in the order of creation (the `a=doc` that
     /// created it, not one that replaced its document): among placements
@@ -351,6 +357,8 @@ impl Surface {
             auto_rows: false,
             placed: false,
             presses: false,
+            fit: None,
+            fit_event: None,
             created: 0,
             dirty: true,
             redeliver: false,
@@ -513,6 +521,11 @@ impl Surface {
         let dark = self.viewport.3;
         self.ensure_viewport(m, w, h, dark);
         self.resolve();
+        self.laid_out_rows(m)
+    }
+
+    /// Rows the content needs in the current layout: what `r=auto` chooses.
+    fn laid_out_rows(&self, m: &Metrics) -> u16 {
         let height_css = self.doc.root_element().final_layout().size.height;
         let px = (height_css * m.scale).ceil() as u32;
         (px.div_ceil(m.cell_h)).clamp(1, 1000) as u16
@@ -533,6 +546,18 @@ impl Surface {
             // A stylesheet has not arrived yet; the `res` that brings it marks
             // this surface dirty again.
             return None;
+        }
+        // `fit` (SPEC §5.2): the rows of the layout this frame draws, when
+        // they are not the ones the program last heard. A detached surface
+        // reports nothing (§5.5).
+        if let Some(heard) = self.fit
+            && !self.detached
+        {
+            let need = self.laid_out_rows(m);
+            if need != heard {
+                self.fit = Some(need);
+                self.fit_event = Some(need);
+            }
         }
         // Styling may have loaded images (a background), and the document
         // may have changed under the animated ones.

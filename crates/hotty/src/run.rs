@@ -61,6 +61,8 @@ pub(crate) struct Shim {
     pub stats: Stats,
     /// Mouse modes the program asked for (the polyfill owns the real ones).
     pub input: InputRouter,
+    /// What renders found for the program (`fit`, SPEC §5.2), for its input.
+    pub to_program: Vec<u8>,
 }
 
 const BSU: &[u8] = b"\x1b[?2026h";
@@ -257,6 +259,11 @@ impl Shim {
             }
         });
         stats.render_time += t.elapsed();
+        for e in self.host.take_events() {
+            if let Effect::Reply(b) = e {
+                self.to_program.extend_from_slice(&b);
+            }
+        }
         if !buf.is_empty() {
             if bracket {
                 out.extend_from_slice(BSU);
@@ -359,6 +366,7 @@ pub fn run(opts: Options) -> i32 {
         alt: false,
         stats,
         input,
+        to_program: Vec::new(),
     };
     let mut stdout_lock = stdout.lock();
     let _ = stdout_lock.write_all(&enable);
@@ -399,6 +407,11 @@ pub fn run(opts: Options) -> i32 {
                     shim.input.observe(&out);
                     let _ = stdout_lock.write_all(&out);
                     let _ = stdout_lock.flush();
+                }
+                if !shim.to_program.is_empty()
+                    && master.write_all(&std::mem::take(&mut shim.to_program)).is_err()
+                {
+                    break 'outer;
                 }
                 continue;
             }
@@ -460,6 +473,13 @@ pub fn run(opts: Options) -> i32 {
             if !replies.is_empty() {
                 let _ = master.write_all(&replies);
             }
+        }
+        // What renders found for the program (`fit`), after the replies to
+        // the commands that caused them.
+        if !shim.to_program.is_empty()
+            && master.write_all(&std::mem::take(&mut shim.to_program)).is_err()
+        {
+            break;
         }
     }
     let status = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);

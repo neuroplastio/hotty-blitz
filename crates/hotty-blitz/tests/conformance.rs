@@ -185,6 +185,20 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                 }
             }
         }
+        // The frame a terminal draws after the command, and what drawing it
+        // tells the program (`fit`, SPEC §5.2); then two more, drawn in
+        // full, to see one event too many (conformance/README).
+        for frame in 0..3 {
+            if frame > 0 {
+                host.repaint();
+            }
+            host.render_dirty(&mut |_, _, _| {});
+            for e in host.take_events() {
+                if let Effect::Reply(b) = e {
+                    msgs.extend(decode(&b).0);
+                }
+            }
+        }
         check_events(step, &events(&msgs))?;
         let replies: Vec<&Command> = msgs.iter().filter(|c| c.get("a") != Some("ev")).collect();
         match step.get("reply") {

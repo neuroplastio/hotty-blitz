@@ -331,6 +331,18 @@ pub unsafe extern "C" fn hotty_host_render(h: *mut HottyHost, ctx: *mut c_void, 
     })
 }
 
+/// Sends what rendering found for the program through `fx`: `fit` events
+/// (SPEC §5.2), at most one per surface, with the rows of the last frame
+/// drawn. Call after `hotty_host_render`.
+///
+/// # Safety
+/// `h` must be valid; `fx` may be null (the events are dropped).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_events(h: *mut HottyHost, fx: *const HottyEffects) {
+    let fx = unsafe { fx.as_ref() };
+    guard(h, (), |h| run_effects(h.host.take_events(), fx))
+}
+
 fn rect(r: crate::Rect) -> HottyRect {
     HottyRect {
         x: r.x,

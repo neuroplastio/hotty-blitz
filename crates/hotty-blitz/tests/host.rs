@@ -2171,3 +2171,115 @@ fn a_patch_that_adds_an_animated_image_plays_it() {
     render(&mut h);
     assert_eq!(h.next_frame(), None);
 }
+
+/// The `fit` events a frame drawn now tells the program (SPEC §5.2), as
+/// `(surface, rows)`.
+fn fits(h: &mut Host) -> Vec<(String, u64)> {
+    render(h);
+    replies(&h.take_events())
+        .iter()
+        .map(|c| {
+            assert_eq!((c.get("a"), c.get("e"), c.get("t")), (Some("ev"), Some("fit"), Some("")));
+            let body: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
+            (c.get("s").unwrap().to_string(), body["r"].as_u64().unwrap())
+        })
+        .collect()
+}
+
+/// A document `n` cells tall, by `--n`, placed with `f=1` (`extra` added).
+fn fit_doc(h: &mut Host, n: u32, extra: &[(&str, &str)]) {
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        &format!("<div id=d style='height: calc(var(--n, {n}) * var(--hotty-cell-h))'></div>"),
+    ));
+    let mut pairs = vec![("a", "place"), ("s", "x"), ("c", "20"), ("f", "1"), ("q", "2")];
+    pairs.extend_from_slice(extra);
+    h.handle(&cmd(&pairs, ""));
+}
+
+fn set_n(h: &mut Host, n: &str) {
+    h.handle(&cmd(
+        &[("a", "patch"), ("s", "x"), ("op", "var"), ("t", "d"), ("k", "n"), ("q", "2")],
+        n,
+    ));
+}
+
+#[test]
+fn fit_is_heard_once_per_frame_with_the_rows_drawn() {
+    let mut h = host();
+    fit_doc(&mut h, 2, &[]);
+    assert_eq!(fits(&mut h), vec![], "r=auto chose the rows it needs");
+    // Three patches before the next frame: one fit, for the last.
+    for n in ["5", "7", "3"] {
+        set_n(&mut h, n);
+    }
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 3)]);
+    assert_eq!(fits(&mut h), vec![], "nothing changed");
+    // Back to what the program last heard of in between: still heard,
+    // since it heard 3.
+    set_n(&mut h, "2");
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 2)]);
+}
+
+#[test]
+fn fit_follows_a_new_cell_size_and_a_new_document() {
+    let mut h = host();
+    // 40 px of content: 2 rows of 20 px.
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<div style='height: 40px'></div>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("f", "1"), ("q", "2")], ""));
+    assert_eq!(fits(&mut h), vec![]);
+    // Rows half as tall: the same pixels need twice the rows.
+    let mut c = h.config().clone();
+    c.metrics.cell_h = 10;
+    h.set_config(c);
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 4)]);
+    // A new document keeps the placement, f=1 included.
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<div style='height: 60px'></div>",
+    ));
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 6)]);
+}
+
+#[test]
+fn fit_starts_from_the_placement_rows_and_needs_f_1() {
+    // r=1 for a document 2 rows tall, with no reply (q=2): the program is
+    // taken to have heard 1.
+    let mut h = host();
+    fit_doc(&mut h, 2, &[("r", "1")]);
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 2)]);
+    // f other than 1 is as if absent.
+    let mut h = host();
+    fit_doc(&mut h, 2, &[("r", "1")]);
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "20"), ("r", "1"), ("f", "2"), ("q", "2")],
+        "",
+    ));
+    assert_eq!(fits(&mut h), vec![]);
+}
+
+#[test]
+fn a_detached_or_hidden_surface_hears_no_fit() {
+    let mut h = host();
+    fit_doc(&mut h, 2, &[]);
+    render(&mut h);
+    h.handle(&cmd(&[("a", "detach"), ("s", "x"), ("q", "2")], ""));
+    set_n(&mut h, "4");
+    assert_eq!(fits(&mut h), vec![], "detached");
+    // The program last heard 2: a document of its own again (no d=1)
+    // tells it how its rows differ from that.
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<div id=d style='height: calc(3 * var(--hotty-cell-h))'></div>",
+    ));
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 3)]);
+    let mut h = host();
+    fit_doc(&mut h, 2, &[]);
+    render(&mut h);
+    set_n(&mut h, "4");
+    h.handle(&cmd(&[("a", "hide"), ("s", "x"), ("q", "2")], ""));
+    assert_eq!(fits(&mut h), vec![], "hidden: no placement");
+}

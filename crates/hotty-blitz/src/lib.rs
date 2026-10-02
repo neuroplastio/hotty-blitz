@@ -175,6 +175,9 @@ pub struct Host {
     /// does not take it (`takes_pointer`, SPEC §9.3), and says so in the
     /// capabilities.
     passthrough: bool,
+    /// `fit` events renders found (SPEC §5.2), at most one per surface:
+    /// the rows of the last frame drawn.
+    fits: Vec<(String, u16)>,
     frame_log: Option<FrameLog>,
 }
 
@@ -221,6 +224,7 @@ impl Host {
             created: 0,
             program_press: false,
             passthrough: false,
+            fits: Vec::new(),
             frame_log: FrameLog::open(),
         }
     }
@@ -353,7 +357,14 @@ impl Host {
             if !(s.dirty && s.placed) {
                 continue;
             }
-            if let Some(damage) = s.render(&metrics, dark) {
+            let damage = s.render(&metrics, dark);
+            if let Some(rows) = s.fit_event.take() {
+                match self.fits.iter_mut().find(|(n, _)| n == name) {
+                    Some(f) => f.1 = rows,
+                    None => self.fits.push((name.clone(), rows)),
+                }
+            }
+            if let Some(damage) = damage {
                 let t = std::time::Instant::now();
                 out(name, &s.frame, &damage);
                 if let Some(log) = &mut self.frame_log {
@@ -382,6 +393,28 @@ impl Host {
                 }
             }
         }
+    }
+
+    /// The events rendering produced, for the program: `fit` (SPEC §5.2),
+    /// at most one per surface, with the rows of the last frame drawn.
+    /// Take them after [`Host::render_dirty`].
+    pub fn take_events(&mut self) -> Vec<Effect> {
+        std::mem::take(&mut self.fits)
+            .into_iter()
+            .filter(|(name, _)| {
+                self.surfaces
+                    .get(name)
+                    .is_some_and(|s| s.fit.is_some() && !s.is_detached())
+            })
+            .map(|(name, rows)| {
+                let e = Event {
+                    kind: "fit",
+                    target: String::new(),
+                    detail: serde_json::json!({ "r": rows }),
+                };
+                Effect::Reply(e.encode(&name))
+            })
+            .collect()
     }
 
     pub fn frame(&self, name: &str) -> Option<&Frame> {
@@ -487,7 +520,7 @@ impl Host {
                 let name = surface_name()?.to_string();
                 let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
                 let detached = cmd.get("d") == Some("1");
-                let (cols, rows, auto, placed, presses, created, window) =
+                let (cols, rows, auto, placed, presses, fit, created, window) =
                     match self.surfaces.remove(&name) {
                         Some(mut old) => {
                             self.store.forget_document(old.doc_id());
@@ -504,13 +537,14 @@ impl Host {
                                 old.auto_rows,
                                 old.placed,
                                 old.presses,
+                                old.fit,
                                 old.created,
                                 old.window,
                             )
                         }
                         None => {
                             self.created += 1;
-                            (80, 24, false, false, false, self.created, None)
+                            (80, 24, false, false, false, None, self.created, None)
                         }
                     };
                 let mut s = surface::Surface::new(
@@ -526,6 +560,7 @@ impl Host {
                 s.placed = placed;
                 s.window = window;
                 s.presses = presses;
+                s.fit = fit;
                 s.auto_rows = auto;
                 s.rows = rows;
                 s.created = created;
@@ -579,6 +614,8 @@ impl Host {
                 s.window = Some(window);
                 // Like z, the placement's: placing again without it stops them.
                 s.presses = cmd.get("p") == Some("1");
+                // `fit` starts from the placement's own rows (SPEC §5.2).
+                s.fit = (cmd.get("f") == Some("1")).then_some(rows);
                 s.dirty = true;
                 effects.push(Effect::Place {
                     surface: name,
@@ -663,6 +700,7 @@ impl Host {
                 if s.placed {
                     s.placed = false;
                     s.presses = false;
+                    s.fit = None;
                     s.window = None;
                     effects.push(Effect::Hide { surface: name });
                 }
