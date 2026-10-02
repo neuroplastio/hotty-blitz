@@ -1,0 +1,360 @@
+From 93c168bcb1ee5d1c58076d91e471eb93bf245f98 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 10:39:40 +0200
+Subject: [PATCH] blitz-paint: outlines take outline-offset and every border
+ style
+
+An outline was always drawn solid, just outside the border box:
+outline-offset was ignored, and dashed, dotted, double, groove, ridge,
+inset and outset outlines came out solid. An outline pulled inside its box
+with a negative offset (the usual way to outline something that fills its
+viewport, which would clip the outline otherwise) was drawn off screen.
+
+The outline is now the border of a box of its own (CssBox::outline_ring):
+outline-offset outside the border box, or inside it when negative, its
+rounded corners grown by the offset and the width. It is drawn with the
+border's own edge code, split out of draw_border as draw_border_edges, so
+it takes every border style; a solid outline stays one fill. The
+OutlineBox kind and outline_box, used only by the old path, are gone.
+
+The outline is now painted after the element's content, as CSS 2.1
+Appendix E paints outlines last, so that one inside the border box is not
+covered by the element's own background.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-paint/src/kurbo_css/css_box.rs |  80 +++++++------
+ packages/blitz-paint/src/kurbo_css/mod.rs     |   1 -
+ packages/blitz-paint/src/render.rs            |   6 +-
+ packages/blitz-paint/src/render/border.rs     | 107 +++++++++++-------
+ 4 files changed, 119 insertions(+), 75 deletions(-)
+
+diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-paint/src/kurbo_css/css_box.rs
+index 321077fe..d5b92347 100644
+--- a/packages/blitz-paint/src/kurbo_css/css_box.rs
++++ b/packages/blitz-paint/src/kurbo_css/css_box.rs
+@@ -8,32 +8,29 @@ use super::{Corner, CssBoxKind, Direction, Edge, add_insets, get_corner_insets};
+ /// We have 4 boxes, 4 corners, and clockwise/anticlockwise for a total of 16 different options
+ ///
+ /// ```a
+-///    *--------------------------------------------------------*  <--- CssBox::OutlineBox
+-///    |                         Outline                        |
+-///    |    *----------------------------------------------*    |  <--- CssBox::BorderBox
+-///    |    |                    Border                    |    |
+-///    |    |    *------------------------------------*    |    |  <--- CssBox::PaddingBox
+-///    |    |    |               Padding              |    |    |
+-///    |    |    |    *--------------------------*    |    |    |  <--- CssBox::ContentBox
+-///    |    |    |    |          Content         |    |    |    |
+-///    |    |    |    |                          |    |    |    |
+-///    |    |    |    |                          |    |    |    |
+-///    |    |    |    |                          |    |    |    |
+-///    |    |    |    *--------------------------*    |    |    |
+-///    |    |    |                                    |    |    |
+-///    |    |    *------------------------------------*    |    |
+-///    |    |                                              |    |
+-///    |    *----------------------------------------------*    |
+-///    |                                                        |
+-///    *--------------------------------------------------------*
++///    *----------------------------------------------*  <--- CssBox::BorderBox
++///    |                    Border                    |
++///    |    *------------------------------------*    |  <--- CssBox::PaddingBox
++///    |    |               Padding              |    |
++///    |    |    *--------------------------*    |    |  <--- CssBox::ContentBox
++///    |    |    |          Content         |    |    |
++///    |    |    |                          |    |    |
++///    |    |    |                          |    |    |
++///    |    |    |                          |    |    |
++///    |    |    *--------------------------*    |    |
++///    |    |                                    |    |
++///    |    *------------------------------------*    |
++///    |                                              |
++///    *----------------------------------------------*
+ /// ```
+ ///
++/// The outline is the border of a box of its own ([`CssBox::outline_ring`]).
++///
+ #[derive(Debug, Clone)]
+ pub struct CssBox {
+     pub border_box: Rect,
+     pub padding_box: Rect,
+     pub content_box: Rect,
+-    pub outline_box: Rect,
+ 
+     pub padding_width: Insets,
+     pub border_width: Insets,
+@@ -52,7 +49,6 @@ impl CssBox {
+     ) -> Self {
+         let padding_box = border_box - border;
+         let content_box = padding_box - padding;
+-        let outline_box = border_box.inset(outline_width);
+ 
+         // Correct the border radii if they are too big if two border radii would intersect, then we need to shrink
+         // ALL border radii by the same factor such that they do not
+@@ -78,7 +74,6 @@ impl CssBox {
+             padding_box,
+             border_box,
+             content_box,
+-            outline_box,
+             outline_width,
+             padding_width: padding,
+             border_width: border,
+@@ -195,18 +190,36 @@ impl CssBox {
+         )
+     }
+ 
+-    /// Construct a bezpath drawing the outline
+-    pub fn outline(&self) -> BezPath {
+-        let mut path = BezPath::new();
+-
+-        // TODO: this has been known to produce quirky outputs with hugely rounded edges
+-        self.shape(&mut path, CssBoxKind::OutlineBox, Direction::Clockwise);
+-        path.move_to(self.corner(Corner::TopLeft, CssBoxKind::BorderBox));
+-
+-        self.shape(&mut path, CssBoxKind::BorderBox, Direction::Anticlockwise);
+-        path.move_to(self.corner(Corner::TopLeft, CssBoxKind::BorderBox));
++    /// Construct a new [`CssBox`] whose border is this box's outline: `offset`
++    /// outside the border box (inside it when negative), `outline_width` wide.
++    ///
++    /// A rounded corner grows by the offset and the width (shrinking to square
++    /// when that is negative); a square corner stays square. The outline can then
++    /// be drawn in any border style.
++    pub fn outline_ring(&self, offset: f64) -> CssBox {
++        let width = self.outline_width;
++        let grow = offset + width;
++        let grow_radius = |radius: Vec2| {
++            if radius.x > 0.0 && radius.y > 0.0 {
++                Vec2::new((radius.x + grow).max(0.0), (radius.y + grow).max(0.0))
++            } else {
++                Vec2::ZERO
++            }
++        };
++        let radii = NonUniformRoundedRectRadii {
++            top_left: grow_radius(self.border_radii.top_left),
++            top_right: grow_radius(self.border_radii.top_right),
++            bottom_right: grow_radius(self.border_radii.bottom_right),
++            bottom_left: grow_radius(self.border_radii.bottom_left),
++        };
+ 
+-        path
++        CssBox::new(
++            self.border_box + Insets::uniform(grow),
++            Insets::uniform(width),
++            Insets::ZERO,
++            0.0,
++            radii,
++        )
+     }
+ 
+     /// Construct a bezpath drawing the frame border
+@@ -324,7 +337,6 @@ impl CssBox {
+ 
+     fn corner(&self, corner: Corner, css_box: CssBoxKind) -> Point {
+         let Rect { x0, y0, x1, y1 } = match css_box {
+-            CssBoxKind::OutlineBox => self.outline_box,
+             CssBoxKind::BorderBox => self.border_box,
+             CssBoxKind::PaddingBox => self.padding_box,
+             CssBoxKind::ContentBox => self.content_box,
+@@ -506,7 +518,6 @@ impl CssBox {
+         }
+ 
+         let css_box: Insets = match side {
+-            OutlineBox => return false,
+             BorderBox => return false,
+             PaddingBox => self.border_width,
+             ContentBox => add_insets(self.border_width, self.padding_width),
+@@ -565,7 +576,6 @@ impl CssBox {
+ 
+         let radii: Vec2 = match side {
+             BorderBox => corner_radii,
+-            OutlineBox => corner_radii + Vec2::new(self.outline_width, self.outline_width),
+             PaddingBox => corner_radii - get_corner_insets(*border_width, corner),
+             ContentBox => {
+                 corner_radii - get_corner_insets(add_insets(*border_width, *padding_width), corner)
+diff --git a/packages/blitz-paint/src/kurbo_css/mod.rs b/packages/blitz-paint/src/kurbo_css/mod.rs
+index 099cc0f3..f9ec9194 100644
+--- a/packages/blitz-paint/src/kurbo_css/mod.rs
++++ b/packages/blitz-paint/src/kurbo_css/mod.rs
+@@ -33,7 +33,6 @@ pub(crate) enum Corner {
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ #[allow(clippy::enum_variant_names, reason = "Use CSS standard terminology")]
+ pub(crate) enum CssBoxKind {
+-    OutlineBox,
+     BorderBox,
+     PaddingBox,
+     ContentBox,
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index b0747d38..59818e5e 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -473,7 +473,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             None,
+         );
+ 
+-        cx.draw_outline(scene);
+         cx.draw_outset_box_shadow(scene);
+ 
+         // clip-path clip ayer
+@@ -590,6 +589,11 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             },
+         );
+ 
++        // The outline goes over the element and its content (CSS 2.1 Appendix E),
++        // so that one drawn inside the border box (a negative `outline-offset`)
++        // is not painted over by the element's own background.
++        cx.draw_outline(scene);
++
+         self.layer_manager
+             .maybe_pop_layer(scene, css_clip_layer_pushed);
+     }
+diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/src/render/border.rs
+index fd87ad93..b15ba137 100644
+--- a/packages/blitz-paint/src/render/border.rs
++++ b/packages/blitz-paint/src/render/border.rs
+@@ -5,7 +5,7 @@ use peniko::{Color, Fill};
+ use smallvec::SmallVec;
+ use style::{
+     computed_values::border_collapse::T as BorderCollapse,
+-    values::computed::{BorderStyle, OutlineStyle},
++    values::computed::{BorderStyle, Color as StyleColor, OutlineStyle},
+ };
+ 
+ use crate::{
+@@ -226,6 +226,41 @@ impl ElementCx<'_, '_> {
+             }
+         }
+ 
++        let resolve =
++            |color: &StyleColor| color.resolve_to_absolute(&current_color).as_srgb_color();
++        self.draw_border_edges(
++            scene,
++            [
++                (
++                    Edge::Top,
++                    resolve(&border.border_top_color),
++                    border.border_top_style,
++                ),
++                (
++                    Edge::Right,
++                    resolve(&border.border_right_color),
++                    border.border_right_style,
++                ),
++                (
++                    Edge::Bottom,
++                    resolve(&border.border_bottom_color),
++                    border.border_bottom_style,
++                ),
++                (
++                    Edge::Left,
++                    resolve(&border.border_left_color),
++                    border.border_left_style,
++                ),
++            ],
++        );
++    }
++
++    /// Draw the four edges of `self.frame`'s border, each in its colour and style.
++    fn draw_border_edges(
++        &self,
++        scene: &mut impl PaintScene,
++        edges: [(Edge, Color, BorderStyle); 4],
++    ) {
+         // (colour, path) pairs to be filled. Several entries may share a colour;
+         // they are grouped before filling so that adjacent same-coloured regions
+         // are drawn together, avoiding anti-aliasing seams between them.
+@@ -234,15 +269,7 @@ impl ElementCx<'_, '_> {
+         // and inner halves of a `groove`/`ridge`).
+         let mut borders: SmallVec<[(Color, BezPath); 8]> = SmallVec::new();
+ 
+-        for &edge in &[Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
+-            let (color, edge_style) = match edge {
+-                Edge::Top => (&border.border_top_color, border.border_top_style),
+-                Edge::Right => (&border.border_right_color, border.border_right_style),
+-                Edge::Bottom => (&border.border_bottom_color, border.border_bottom_style),
+-                Edge::Left => (&border.border_left_color, border.border_left_style),
+-            };
+-            let color = color.resolve_to_absolute(&current_color).as_srgb_color();
+-
++        for (edge, color, edge_style) in edges {
+             if color.components[3] <= 0.0 {
+                 continue;
+             }
+@@ -608,44 +635,48 @@ impl ElementCx<'_, '_> {
+         }
+     }
+ 
+-    /// ❌ dotted - Defines a dotted border
+-    /// ❌ dashed - Defines a dashed border
+-    /// ✅ solid - Defines a solid border
+-    /// ❌ double - Defines a double border
+-    /// ❌ groove - Defines a 3D grooved border. The effect depends on the border-color value
+-    /// ❌ ridge - Defines a 3D ridged border. The effect depends on the border-color value
+-    /// ❌ inset - Defines a 3D inset border. The effect depends on the border-color value
+-    /// ❌ outset - Defines a 3D outset border. The effect depends on the border-color value
+-    /// ✅ none - Defines no border
+-    /// ✅ hidden - Defines a hidden border
++    /// Draw the outline: the border of a box `outline-offset` outside the border
++    /// box (inside it when negative), so it takes every border style.
+     pub(crate) fn draw_outline(&self, scene: &mut impl PaintScene) {
+         let outline = self.style.get_outline();
+ 
++        let style = match outline.outline_style {
++            OutlineStyle::Auto => return,
++            OutlineStyle::BorderStyle(BorderStyle::None | BorderStyle::Hidden) => return,
++            OutlineStyle::BorderStyle(style) => style,
++        };
++
+         let current_color = self.style.clone_color();
+         let color = outline
+             .outline_color
+             .resolve_to_absolute(&current_color)
+             .as_srgb_color();
++        if self.frame.outline_width <= 0.0 || color.components[3] <= 0.0 {
++            return;
++        }
+ 
+-        let style = match outline.outline_style {
+-            OutlineStyle::Auto => return,
+-            OutlineStyle::BorderStyle(style) => style,
+-        };
++        let offset = outline.outline_offset.to_f64_px() * self.scale;
++        let ring = self.frame.outline_ring(offset);
++        if ring.border_box.width() <= 0.0 || ring.border_box.height() <= 0.0 {
++            return;
++        }
+ 
+-        let path = match style {
+-            BorderStyle::None | BorderStyle::Hidden => return,
+-            BorderStyle::Solid => self.frame.outline(),
+-
+-            // TODO: Implement other border styles
+-            BorderStyle::Inset
+-            | BorderStyle::Groove
+-            | BorderStyle::Outset
+-            | BorderStyle::Ridge
+-            | BorderStyle::Dotted
+-            | BorderStyle::Dashed
+-            | BorderStyle::Double => self.frame.outline(),
+-        };
++        // A solid outline is the ring in one fill: no seams where edges meet.
++        if style == BorderStyle::Solid {
++            let mut path = ring.border_box_path();
++            path.extend(ring.padding_box_path());
++            scene.fill(Fill::EvenOdd, self.transform, color, None, &path);
++            return;
++        }
+ 
+-        scene.fill(Fill::NonZero, self.transform, color, None, &path);
++        let cx = ElementCx {
++            frame: ring,
++            style: self.style.clone(),
++            ..*self
++        };
++        cx.draw_border_edges(
++            scene,
++            [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left].map(|edge| (edge, color, style)),
++        );
+     }
+ }
+-- 
+2.55.0
+

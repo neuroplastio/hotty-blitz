@@ -149,6 +149,37 @@ fn inline_svg_follows_its_preserve_aspect_ratio() {
 }
 
 #[test]
+fn an_outline_takes_its_offset_and_style() {
+    // A surface's root, outlined inside its own box: dashes over the root's
+    // background, along the surface's edges. Upstream drew every outline
+    // solid, outside the border box (off the surface), under the background.
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<body style='margin:0'><div style='height:40px;background:#0000ff;\
+         outline:2px dashed #ff0000;outline-offset:-2px'></div></body>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+    render(&mut h);
+    let f = h.frame("x").unwrap();
+    let red = |x: u32, y: u32| {
+        let i = ((y * f.width + x) * 4) as usize;
+        f.rgba[i] > 200 && f.rgba[i + 2] < 50
+    };
+    let (top, left): (Vec<bool>, Vec<bool>) = (
+        (0..f.width).map(|x| red(x, 0)).collect(),
+        (0..f.height).map(|y| red(0, y)).collect(),
+    );
+    for edge in [&top, &left] {
+        assert!(edge.iter().any(|&r| r) && edge.iter().any(|&r| !r), "{edge:?}");
+    }
+    // A dash at each end of an edge (beside the corner, whose pixel the two
+    // edges' mitre shares).
+    assert!(red(1, 0) && red(f.width - 2, f.height - 1));
+    assert!(!red(3, 3) && !red(f.width / 2, f.height / 2));
+}
+
+#[test]
 fn hide_removes_the_placement_and_keeps_the_document() {
     let mut h = host();
     h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p id=p>one</p><input id=i>"));

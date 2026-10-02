@@ -12,6 +12,7 @@ changes upstream is an open question.
 | `0001-blitz-dom-*` | patch cost proportional to depth, not document size (below) |
 | `0002-blitz-paint-*` | inline SVG follows its `preserveAspectRatio` |
 | `0003-blitz-dom-blitz-paint-*` | a control in the disabled state acts disabled, attribute or not |
+| `0004-blitz-paint-*` | outlines take `outline-offset` and every border style |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -20,8 +21,10 @@ make check                   # `make` runs the script when ../blitz is missing
 
 Removing the `[patch]` section goes back to upstream Blitz. Everything still
 works, but patches cost O(N) again, a stretched SVG (`preserveAspectRatio="none"`)
-is drawn narrow and centred, and the controls of a detached surface can be
-clicked, toggled and typed into (silently: it still reports nothing).
+is drawn narrow and centred, the controls of a detached surface can be
+clicked, toggled and typed into (silently: it still reports nothing), and
+every outline is solid and just outside its box, so one pulled inside a
+surface's root with a negative offset is not drawn at all.
 
 ## Disabled controls
 
@@ -42,6 +45,20 @@ fits the viewBox to the element's box as its `preserveAspectRatio` says
 fits inside it. Charts drawn in a fixed viewBox and stretched to their box
 need `none`. hotty-blitz's `inline_svg_follows_its_preserve_aspect_ratio`
 checks it.
+
+## Outlines
+
+Upstream draws every outline solid, just outside the border box: it ignores
+`outline-offset`, and draws a dashed or dotted outline solid. A surface's
+root fills the surface, so an outline on it must come inside with a
+negative offset, and upstream drew it off the surface (hotty-demo's
+"its surfaces" view: a dashed outline on each surface). The fork draws an
+outline as the border of a box of its own, offset from the border box,
+with the border's edge code, so it takes every border style. It also paints
+the outline after the element's content, as CSS 2.1 Appendix E does, so the
+element's background does not cover one inside it. hotty-blitz's
+`an_outline_takes_its_offset_and_style` checks it. Dotted outlines have
+round dots, as Blitz's dotted borders do; Chromium's are square.
 
 ## Patch cost: what it changes
 
