@@ -1,16 +1,21 @@
 //! The in-band resource store and the only resource loader documents get
-//! (SPEC §12): `cid:<name>` from the store, `data:` inline, and nothing else.
+//! (SPEC §12): `cid:<name>` from the store, `data:` inline, and from the
+//! network what the policy allows (SPEC §7.2; policy.rs, fetch.rs). Nothing
+//! else: every other request fails as a missing resource does.
 //!
 //! The loader also decodes the frames of animated images (anim.rs) as it
 //! hands them to a document, and keeps them for the document's surface to
 //! play ([`Store::take_animations`]).
 
 use crate::anim::{self, Animation};
+use crate::fetch;
+use crate::policy::{Directive, Policy};
 use base64::Engine as _;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use url::Url;
 
 #[derive(Clone)]
 pub struct Resource {
@@ -34,7 +39,21 @@ struct Inner {
     animations: HashMap<String, Option<Weak<Animation>>>,
     /// Animations documents loaded, waiting for their surfaces.
     started: Vec<(usize, String, Arc<Animation>)>,
+    /// The host's half of the network policy (SPEC §7.2).
+    host_policy: Policy,
+    /// Each live document's half, from its `<meta name="hotty-network">`.
+    policies: HashMap<usize, Policy>,
+    /// Network requests a document made while it was being built, before
+    /// its half of the policy was known.
+    parked: Vec<(usize, Request, Box<dyn NetHandler>)>,
+    /// Documents that got something from the network since the host last
+    /// looked: they have messages to handle, and draw again.
+    delivered: BTreeSet<usize>,
+    limits: fetch::Limits,
 }
+
+/// Wakes the thread that renders, from a fetching thread.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// Per-session resource store, shared by every surface of a host.
 pub struct Store {
@@ -42,6 +61,9 @@ pub struct Store {
     pub quota: usize,
     /// `started` has entries: checked without the lock on every render.
     has_started: AtomicBool,
+    /// `delivered` has entries, likewise.
+    has_delivered: AtomicBool,
+    waker: Mutex<Option<Waker>>,
 }
 
 impl Store {
@@ -50,6 +72,8 @@ impl Store {
             inner: Mutex::new(Inner::default()),
             quota,
             has_started: AtomicBool::new(false),
+            has_delivered: AtomicBool::new(false),
+            waker: Mutex::new(None),
         })
     }
 
@@ -110,6 +134,9 @@ impl Store {
             waiting.retain(|(d, _)| *d != doc_id);
         }
         inner.started.retain(|(d, _, _)| *d != doc_id);
+        inner.policies.remove(&doc_id);
+        inner.parked.retain(|(d, _, _)| *d != doc_id);
+        inner.delivered.remove(&doc_id);
     }
 
     /// Document `doc_id` loads `bytes` from `url`: if they are an animated
@@ -190,6 +217,136 @@ impl Store {
     pub fn total_bytes(&self) -> usize {
         self.inner.lock().unwrap().total
     }
+
+    /// The host's half of the network policy. Documents already shown keep
+    /// theirs and are held to the new one from their next request.
+    pub fn set_host_policy(&self, policy: Policy) {
+        self.inner.lock().unwrap().host_policy = policy;
+    }
+
+    pub fn host_policy(&self) -> Policy {
+        self.inner.lock().unwrap().host_policy.clone()
+    }
+
+    pub fn set_limits(&self, limits: fetch::Limits) {
+        self.inner.lock().unwrap().limits = limits;
+    }
+
+    /// Called from a fetching thread when something a document asked for
+    /// arrives: the renderer then asks `has_delivered`. Once this returns,
+    /// the old waker is not called again.
+    pub fn set_waker(&self, waker: Option<Waker>) {
+        *self.waker.lock().unwrap() = waker;
+    }
+
+    /// Document `doc_id` is built, and asks for the network what `policy`
+    /// says (its `<meta name="hotty-network">`): the requests it made while
+    /// it was being built go now.
+    pub fn set_document_policy(self: &Arc<Self>, doc_id: usize, policy: Policy) {
+        let parked = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.policies.insert(doc_id, policy);
+            let (mine, rest) = std::mem::take(&mut inner.parked)
+                .into_iter()
+                .partition(|(d, _, _)| *d == doc_id);
+            inner.parked = rest;
+            mine
+        };
+        for (_, request, handler) in parked {
+            self.request(doc_id, request, handler);
+        }
+    }
+
+    /// Whether both halves of the policy allow `url` for `directive`, for
+    /// document `doc_id` (SPEC §7.2).
+    fn allows(&self, doc_id: usize, directive: Directive, url: &Url) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.host_policy.allows(directive, url)
+            && inner
+                .policies
+                .get(&doc_id)
+                .is_some_and(|p| p.allows(directive, url))
+    }
+
+    /// A request for an `http` or `https` URL: fetched if the policy allows
+    /// it, failed as a missing resource otherwise.
+    fn request(self: &Arc<Self>, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if !inner.policies.contains_key(&doc_id) {
+                inner.parked.push((doc_id, request, handler));
+                return;
+            }
+        }
+        let url = request.url;
+        let directive = Directive::of(request.destination)
+            .filter(|&d| fetch::fetchable(&url) && self.allows(doc_id, d, &url));
+        let Some(directive) = directive else {
+            handler.bytes(url.to_string(), Bytes::new());
+            return;
+        };
+        let limits = self.inner.lock().unwrap().limits;
+        let store = Arc::downgrade(self);
+        let allows: fetch::Allows = Arc::new(move |u: &Url| {
+            store
+                .upgrade()
+                .is_some_and(|s| s.allows(doc_id, directive, u))
+        });
+        let store = Arc::downgrade(self);
+        let asked = url.to_string();
+        fetch::get(fetch::Want {
+            url,
+            accept: match directive {
+                Directive::Img => "image/*,*/*;q=0.8",
+                Directive::Style => "text/css,*/*;q=0.1",
+                Directive::Font | Directive::Media => "*/*",
+            },
+            limits,
+            allows,
+            done: Box::new(move |bytes| {
+                if let Some(store) = store.upgrade() {
+                    store.arrived(doc_id, &asked, bytes.unwrap_or_default(), handler);
+                }
+            }),
+        });
+    }
+
+    /// What document `doc_id` fetched arrived (empty: it failed), on a
+    /// fetching thread: the document gets it as it would a resource, and
+    /// the renderer is woken to draw it.
+    fn arrived(&self, doc_id: usize, url: &str, bytes: Bytes, handler: Box<dyn NetHandler>) {
+        if !self.inner.lock().unwrap().policies.contains_key(&doc_id) {
+            return;
+        }
+        if !bytes.is_empty() {
+            self.load(doc_id, url, &bytes);
+        }
+        handler.bytes(url.to_string(), bytes);
+        self.inner.lock().unwrap().delivered.insert(doc_id);
+        self.has_delivered.store(true, Ordering::Release);
+        // Under the lock: once `set_waker` has replaced it, the old one is
+        // never called again (its context may be gone).
+        if let Some(wake) = self.waker.lock().unwrap().as_ref() {
+            wake();
+        }
+    }
+
+    /// Whether a document got something from the network that it has not
+    /// drawn yet.
+    pub fn has_delivered(&self) -> bool {
+        self.has_delivered.load(Ordering::Acquire)
+    }
+
+    /// The documents that got something from the network since the last
+    /// call.
+    pub fn take_delivered(&self) -> BTreeSet<usize> {
+        if !self.has_delivered() {
+            return BTreeSet::new();
+        }
+        let mut inner = self.inner.lock().unwrap();
+        self.has_delivered.store(false, Ordering::Release);
+        std::mem::take(&mut inner.delivered)
+    }
 }
 
 /// The `NetProvider` every document is built with.
@@ -197,6 +354,9 @@ pub struct Provider(pub Arc<Store>);
 
 impl NetProvider for Provider {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
+        if matches!(request.url.scheme(), "http" | "https") {
+            return self.0.request(doc_id, request, handler);
+        }
         let url = request.url;
         match url.scheme() {
             "cid" => {

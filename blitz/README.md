@@ -15,20 +15,24 @@ changes upstream is an open question.
 | `0004-blitz-paint-*` | outlines take `outline-offset` and every border style |
 | `0005-blitz-dom-*` | a box whose layout changed gets its overflow and transform again (below) |
 | `0006-blitz-dom-*` | an SVG's `<image>` loads a `data:` URL and no file (below) |
+| `0007-blitz-traits-blitz-dom-*` | a request carries its destination: image, style, font, iframe, document (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
 make check                   # `make` runs the script when ../blitz is missing
 ```
 
-Removing the `[patch]` section goes back to upstream Blitz. Everything still
-works, but patches cost O(N) again, a stretched SVG (`preserveAspectRatio="none"`)
-is drawn narrow and centred, the controls of a detached surface can be
-clicked, toggled and typed into (silently: it still reports nothing), and
-every outline is solid and just outside its box, so one pulled inside a
-surface's root with a negative offset is not drawn at all. A box resized
-only through its containing block keeps its old overflow, and paint can
-cull it. An SVG can draw any image file on the disk.
+Removing the `[patch]` section goes back to upstream Blitz, which
+hotty-blitz no longer builds against: it applies the network policy by
+each request's destination (0007). With that one use undone, refusing every
+fetch, everything still works, but patches cost O(N) again, a stretched SVG
+(`preserveAspectRatio="none"`) is drawn narrow and centred, the controls of
+a detached surface can be clicked, toggled and typed into (silently: it
+still reports nothing), and every outline is solid and just outside its
+box, so one pulled inside a surface's root with a negative offset is not
+drawn at all. A box resized only through its containing block keeps its
+old overflow, and paint can cull it. An SVG can draw any image file on the
+disk.
 
 ## SVG images load no files
 
@@ -37,7 +41,20 @@ with usvg's default options, whose image resolver reads any `<image href>`
 that is not a `data:` URL as a path on the disk: a page could draw any
 image the user's files hold, with no `NetProvider` asked (HOTTY SPEC §12).
 The fork's resolver loads `data:` URLs only. `an_image_loads_a_data_url_and_no_file`
-in blitz-dom checks it.
+in blitz-dom checks it, and hotty-blitz's `an_svg_draws_no_image_file` and
+`files_documents_and_other_schemes_are_never_fetched`.
+
+## Request destinations
+
+A `NetProvider` got a URL and nothing about what it was for, so it could
+not apply a policy per kind of resource, as CSP's `img-src`, `style-src`
+and `font-src` do (HOTTY SPEC §7.2). `Request` now has fetch's
+`destination`, and every request a document makes sets it: `Image` for
+`<img>` and CSS images, `Style` for stylesheets, their reload and
+`@import`, `Font` for `@font-face`, `Iframe` for an `<iframe>`'s document,
+and `Document` for a navigation. `Request::get` leaves it `Empty`. The
+struct was `non_exhaustive` already. hotty-blitz's `tests/network.rs`
+checks each directive.
 
 ## Disabled controls
 

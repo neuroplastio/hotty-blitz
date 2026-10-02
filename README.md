@@ -6,10 +6,10 @@ text, and renders on the CPU. This repository holds:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host: surfaces, patches and morph, `cid:` resources (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events, and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host: surfaces, patches and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events, and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
-| `blitz/` | the patch on Blitz that makes a patch cost the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
+| `blitz/` | the patches on Blitz: among them, a patch costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
 
 ## Try it
 
@@ -30,6 +30,33 @@ surfaces as images (SPEC §14). It also works across SSH:
 A terminal can instead link `libhotty_blitz` through the C ABI and render
 surfaces natively: sharp at any zoom, no pixels on the wire, and local
 interaction.
+
+## The network
+
+A surface fetches nothing from the network unless its user allows it
+(SPEC §7.2). The terminal's half of the policy is CSP's syntax:
+`hotty run --net 'img-src https:'`, `hotty_host_set_network` through the C
+ABI. The capabilities report it as `net`. A document asks with
+`<meta name="hotty-network" content="img-src https://example.com">`, and a
+URL is fetched only when a source in both halves matches it, for its
+directive: `img-src` for images (`<img>`, CSS backgrounds and masks),
+`style-src` for stylesheets and `@import`, `font-src` for `@font-face`.
+
+- Only `http` and `https`, never a document (`<iframe>`), never a file, and
+  nothing under the default base `https://hotty.invalid/`. Relative URLs
+  resolve against the document's `<base>`.
+- No referrer, cookies or credentials. A redirect is followed only where
+  the policy allows its target too.
+- At most 8 MiB and 10 seconds per fetch, its redirects included; past
+  either, it fails as a missing resource does.
+- Four threads fetch for the whole process, off every terminal's render
+  thread, into one cache (64 MiB, least recently used out): a URL shown in
+  several surfaces or terminals is fetched once while it is cached. What
+  arrives wakes the terminal (`hotty_host_set_waker`), and the surface is
+  drawn again; a placement made with `f=1` hears `fit` if its height
+  changed (SPEC §5.2). Animated GIFs from the network play.
+- Not fetched yet: `srcset`, `<picture>` sources, `poster`, and images
+  inside SVG, which load `data:` URLs only.
 
 ## Performance
 

@@ -531,6 +531,60 @@ pub unsafe extern "C" fn hotty_host_hyperlink(h: *mut HottyHost, surface: *const
     })
 }
 
+/// The host's half of the network policy (SPEC §7.2), in CSP's syntax:
+/// `img-src https://example.com; font-src https:`. Null or empty: none, as
+/// a new host starts. The capabilities report it (`net`).
+///
+/// # Safety
+/// `h` must be valid; `policy` null or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_network(h: *mut HottyHost, policy: *const c_char) {
+    let policy = if policy.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(policy) }.to_string_lossy().into_owned()
+    };
+    guard(h, (), |h| h.host.set_network(&policy))
+}
+
+/// A context pointer the terminal vouches for on any thread.
+struct WakeCtx(*mut c_void);
+unsafe impl Send for WakeCtx {}
+unsafe impl Sync for WakeCtx {}
+
+impl WakeCtx {
+    /// The pointer, through the whole (Send) value: a closure that named
+    /// the field would capture the bare pointer.
+    fn ptr(&self) -> *mut c_void {
+        self.0
+    }
+}
+
+/// `wake(ctx)` is called on a fetching thread when something a document
+/// fetched from the network arrives, or fails: render then, on the
+/// terminal's own thread (`hotty_host_has_dirty` is true). It must return
+/// quickly and not call into hotty-blitz. Null `wake` removes it. Once this
+/// returns, the old one is not called again; nor is any after
+/// `hotty_host_free`.
+///
+/// # Safety
+/// `h` must be valid; `ctx` must stay valid for `wake` until it is
+/// replaced or the host freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_waker(
+    h: *mut HottyHost,
+    wake: Option<extern "C" fn(ctx: *mut c_void)>,
+    ctx: *mut c_void,
+) {
+    guard(h, (), |h| match wake {
+        Some(wake) => {
+            let ctx = WakeCtx(ctx);
+            h.host.set_waker(move || wake(ctx.ptr()));
+        }
+        None => h.host.clear_waker(),
+    })
+}
+
 /// The terminal lets the pointer pass through where a surface does not take
 /// it (`hotty_host_takes_pointer`): the capabilities then say
 /// `"passthrough": true` (SPEC §4, §9.3).

@@ -2,6 +2,7 @@
 //! glue that turns host input into DOM events and DOM events into HOTTY ones.
 
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
+use crate::policy::Policy;
 use crate::{Config, Metrics, Rect, anim, net, paint, patch};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -81,9 +82,10 @@ pub struct Timings {
     pub diff_us: u32,
 }
 
-/// Every document's base URL. Nothing under it can be fetched: the loader
-/// serves only `cid:` and `data:` (SPEC §12), and `.invalid` never resolves. It is
-/// https because Blitz submits forms only for http(s), data and mailto actions.
+/// A document's base URL unless it declares one (SPEC §7.3). Nothing under
+/// it is ever fetched (`fetch::fetchable`), and `.invalid` never resolves.
+/// It is https because Blitz submits forms only for http(s), data and mailto
+/// actions.
 pub const BASE_URL: &str = "https://hotty.invalid/";
 
 #[derive(Default)]
@@ -186,6 +188,24 @@ fn drag_event(kind: &'static str, target: String, cell: (i32, i32), keys: Mods) 
         target,
         detail: serde_json::json!({ "c": cell.0, "r": cell.1, "keys": held }),
     }
+}
+
+/// What a document asks of the network (SPEC §7.2): the content of its
+/// first `<meta name="hotty-network">`. Patches can change it, but the
+/// document keeps what it had when it was built, until the next `a=doc`.
+fn requested_network(doc: &HtmlDocument) -> Policy {
+    let doc = doc.inner();
+    let Some(id) = doc
+        .query_selector("meta[name='hotty-network' i]")
+        .ok()
+        .flatten()
+    else {
+        return Policy::default();
+    };
+    doc.get_node(id)
+        .and_then(|n| n.attr(local_name!("content")))
+        .map(Policy::parse)
+        .unwrap_or_default()
 }
 
 /// A document's first `<base href>`, when it is an absolute http(s) URL.
@@ -325,20 +345,32 @@ impl Surface {
         let (w, h) = (cols as u32 * m.cell_w, rows as u32 * m.cell_h);
         let dark = config.theme.dark;
         let nav = Arc::new(NavQueue::default());
-        let doc_config = DocumentConfig {
-            viewport: Some(Viewport::new(w, h, m.scale, scheme(dark))),
-            // A base that can resolve relative URLs (a form's empty action,
-            // `href="#x"`); the loader fails closed on this scheme anyway (SPEC §12).
-            base_url: Some(BASE_URL.to_string()),
-            ua_stylesheets: Some(vec![DEFAULT_CSS.to_string(), host_css.to_string()]),
-            net_provider: Some(Arc::new(net::Provider(store.clone()))),
-            navigation_provider: Some(nav.clone()),
-            html_parser_provider: Some(Arc::new(HtmlProvider)),
-            font_ctx: Some(font_ctx.clone()),
-            ..Default::default()
+        let build = |base: &str| {
+            HtmlDocument::from_html(
+                html,
+                DocumentConfig {
+                    viewport: Some(Viewport::new(w, h, m.scale, scheme(dark))),
+                    base_url: Some(base.to_string()),
+                    ua_stylesheets: Some(vec![DEFAULT_CSS.to_string(), host_css.to_string()]),
+                    net_provider: Some(Arc::new(net::Provider(store.clone()))),
+                    navigation_provider: Some(nav.clone()),
+                    html_parser_provider: Some(Arc::new(HtmlProvider)),
+                    font_ctx: Some(font_ctx.clone()),
+                    ..Default::default()
+                },
+            )
         };
-        let doc = HtmlDocument::from_html(html, doc_config);
+        // Relative URLs resolve against the document's `<base>` (SPEC
+        // §7.3), which is known once it is parsed: a document that has one
+        // is built again with it. The first fetched nothing, since nothing
+        // goes to the network before the document's policy is known.
+        let mut doc = build(BASE_URL);
         let base = declared_base(&doc);
+        if let Some(b) = &base {
+            store.forget_document(doc.id());
+            doc = build(b.as_str());
+        }
+        store.set_document_policy(doc.id(), requested_network(&doc));
         // The shared font context: without one, a document scans the
         // system's fonts, which cost every new surface ~12 ms.
         let parse_doc = HtmlDocument::from_html(
@@ -766,6 +798,15 @@ impl Surface {
                     n.disable()
                 });
         }
+    }
+
+    /// Something the document fetched from the network arrived, or failed:
+    /// it is drawn again, at its new height if it has one.
+    pub fn net_arrived(&mut self) {
+        self.doc.handle_messages();
+        self.dirty = true;
+        self.damage.full = true;
+        self.anim_stale = true;
     }
 
     pub fn resource_changed(&mut self, href: &str) {

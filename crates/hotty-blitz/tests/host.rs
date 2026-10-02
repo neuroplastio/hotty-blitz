@@ -483,21 +483,6 @@ fn a_background_image_resource_paints_in_the_first_frame() {
 }
 
 #[test]
-fn other_schemes_fail_closed() {
-    let mut h = host();
-    h.handle(&cmd(
-        &[("a", "doc"), ("s", "x")],
-        "<link rel=stylesheet href='https://example.com/x.css'><img src='file:///etc/passwd'><p>ok</p>",
-    ));
-    h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2")],
-        "",
-    ));
-    // Renders (the blocked stylesheet does not hold painting forever).
-    assert_eq!(render(&mut h).len(), 1);
-}
-
-#[test]
 fn an_svg_draws_no_image_file() {
     // A green PNG on the disk, named by an SVG <image>, inline and inside an
     // SVG <img>: neither reads it (SPEC §12; Blitz fork 0006).

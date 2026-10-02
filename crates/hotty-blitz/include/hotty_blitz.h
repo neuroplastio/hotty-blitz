@@ -94,5 +94,15 @@ bool hotty_host_takes_pointer(hotty_host *h, const char *surface, float x, float
 /* The terminal does hand the pointer through (above): the capabilities then
  * carry "passthrough": true (SPEC 4). */
 void hotty_host_set_passthrough(hotty_host *h, bool on);
+/* The host's half of the network policy (SPEC 7.2) in CSP's syntax, as its
+ * user grants it: "img-src https://example.com; font-src https:". NULL or
+ * empty: none, as a new host starts. The capabilities report it ("net"). */
+void hotty_host_set_network(hotty_host *h, const char *policy);
+/* wake(ctx) is called on a fetching thread when something a document fetched
+ * arrives or fails: render then, on the terminal's thread
+ * (hotty_host_has_dirty is true). It must return quickly and not call into
+ * hotty-blitz. NULL wake removes it; once this returns, or the host is freed,
+ * the old one is not called again. */
+void hotty_host_set_waker(hotty_host *h, void (*wake)(void *ctx), void *ctx);
 
 #endif

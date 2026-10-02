@@ -18,7 +18,9 @@ hotty — HOTTY on Blitz: render, show, and `hotty run`, the kitty graphics poly
 usage:
   hotty render <file.html> [-o out.png] [--cols N] [--rows N|auto] [--cell WxH] [--scale S] [--font F] [--time]
   hotty show   <file.html> [--cols N] [--rows N|auto] [--scale S] [--font F]
-  hotty run    [--transport shm|direct] [--frames on|off] [--scale S] [--font F] -- <program> [args…]
+  hotty run    [--transport shm|direct] [--frames on|off] [--scale S] [--font F] [--net POLICY] -- <program> [args…]
+                                              --net: what surfaces may fetch, in CSP syntax
+                                              (\"img-src https:\"); nothing without it
   hotty send   <key=value>… [< payload]      write one HOTTY command to stdout
   hotty dump   [< captured-stream]           decode the HOTTY commands in a stream
   hotty bench  [--frames N] [--only size|flat|nested]
@@ -320,6 +322,7 @@ fn cmd_run(args: &[String]) -> i32 {
         frames,
         scale: f.get("scale").and_then(|s| s.parse().ok()),
         font: f.get("font").map(str::to_string),
+        net: f.get("net").map(str::to_string),
         cmd,
     })
 }

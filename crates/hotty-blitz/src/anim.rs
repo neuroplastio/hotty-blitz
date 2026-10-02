@@ -324,7 +324,8 @@ fn target<'a>(
 }
 
 /// Finds the nodes that show each playing image: `<img>` elements by their
-/// `src`, and background and mask layers by their URL. Costs a walk of the
+/// `src` (resolved, as Blitz fetched it), and background and mask layers by
+/// their URL. Costs a walk of the
 /// document, so a surface does it only after its document changed, and
 /// only while something plays.
 pub(crate) fn locate(doc: &BaseDocument, playing: &mut [Playing]) {
@@ -345,7 +346,7 @@ pub(crate) fn locate(doc: &BaseDocument, playing: &mut [Playing]) {
         };
         if el.name.local == local_name!("img")
             && let Some(src) = el.attr(local_name!("src"))
-            && let Ok(u) = url::Url::parse(src)
+            && let Ok(u) = doc.base_url().join(src)
             && let Some(&i) = index.get(u.as_str())
         {
             playing[i].nodes.push((id, Slot::Img));

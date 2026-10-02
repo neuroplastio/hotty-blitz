@@ -6,10 +6,12 @@
 //! HTML; both hand commands to a [`Host`] and draw the frames it produces.
 
 mod anim;
+pub mod fetch;
 pub mod ffi;
 pub mod input;
 pub mod net;
 pub mod paint;
+pub mod policy;
 pub mod patch;
 pub mod style;
 mod surface;
@@ -210,6 +212,13 @@ impl FrameLog {
     }
 }
 
+impl Drop for Host {
+    /// Fetches still under way outlive the host; its waker does not.
+    fn drop(&mut self) {
+        self.store.set_waker(None);
+    }
+}
+
 impl Host {
     pub fn new(config: Config) -> Host {
         // Stylo ships `:has()` behind a pref that Blitz leaves off.
@@ -298,25 +307,73 @@ impl Host {
     }
 
     /// Whether [`Host::render_dirty`] has something to render: a placed
-    /// surface changed, or an animated image on one is due to show its next
-    /// frame.
+    /// surface changed, an animated image on one is due to show its next
+    /// frame, or something a document fetched arrived.
     pub fn has_dirty(&self) -> bool {
         let now = std::time::Instant::now();
-        self.surfaces
-            .values()
-            .any(|s| s.placed && (s.dirty || s.next_frame().is_some_and(|t| t <= now)))
+        self.store.has_delivered()
+            || self
+                .surfaces
+                .values()
+                .any(|s| s.placed && (s.dirty || s.next_frame().is_some_and(|t| t <= now)))
     }
 
     /// When an animated image (GIF, APNG, WebP) on a placed surface is due
     /// to show its next frame: render then. `None` while nothing plays, or
     /// nothing that plays is in a placement's window. Each animated image
-    /// has one deadline at a time, so a host needs one timer.
+    /// has one deadline at a time, so a host needs one timer. Now, when
+    /// something a document fetched has arrived.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
+        if self.store.has_delivered() {
+            return Some(std::time::Instant::now());
+        }
         self.surfaces
             .values()
             .filter(|s| s.placed)
             .filter_map(|s| s.next_frame())
             .min()
+    }
+
+    /// The host's half of the network policy (SPEC §7.2), in CSP's syntax:
+    /// `img-src https://example.com; font-src https:`. A host run by a
+    /// person starts with none, and its user grants it. The capabilities
+    /// report it (`net`). Fetching happens on threads of its own; set a
+    /// waker ([`Host::set_waker`]) to hear when something arrives.
+    pub fn set_network(&mut self, policy: &str) {
+        self.store.set_host_policy(policy::Policy::parse(policy));
+    }
+
+    /// Called on a fetching thread when something a document fetched
+    /// arrives (or fails): render on the host's own thread then
+    /// ([`Host::has_dirty`] is true).
+    pub fn set_waker(&mut self, wake: impl Fn() + Send + Sync + 'static) {
+        self.store.set_waker(Some(Arc::new(wake)));
+    }
+
+    /// No waker: once this returns, the last one is not called again.
+    pub fn clear_waker(&mut self) {
+        self.store.set_waker(None);
+    }
+
+    /// The fetch limits ([`fetch::MAX_BYTES`], [`fetch::TIMEOUT`]), for
+    /// tests that cannot wait for the real ones.
+    #[doc(hidden)]
+    pub fn set_fetch_limits(&mut self, max_bytes: usize, timeout: std::time::Duration) {
+        self.store.set_limits(fetch::Limits { max_bytes, timeout });
+    }
+
+    /// Hands the surfaces whose documents fetched something what arrived:
+    /// they draw again.
+    fn take_network(&mut self) {
+        let docs = self.store.take_delivered();
+        if docs.is_empty() {
+            return;
+        }
+        for s in self.surfaces.values_mut() {
+            if docs.contains(&s.doc_id()) {
+                s.net_arrived();
+            }
+        }
     }
 
     /// Moves the animated images of placed surfaces to the frames they show
@@ -350,6 +407,7 @@ impl Host {
     /// Renders every placed surface whose document changed, calling `out`
     /// with its frame and what changed.
     pub fn render_dirty(&mut self, out: &mut dyn FnMut(&str, &Frame, &Damage)) {
+        self.take_network();
         self.animate(std::time::Instant::now());
         let metrics = self.config.metrics;
         let dark = self.config.theme.dark;
@@ -506,9 +564,9 @@ impl Host {
                     "scale": m.scale,
                     "scheme": if self.config.theme.dark { "dark" } else { "light" },
                     "limits": { "resources": self.store.quota },
-                    // No network (SPEC §7.2): this host fetches nothing but
-                    // cid: resources and data: URLs.
-                    "net": {},
+                    // The host's half of the network policy (SPEC §7.2):
+                    // empty unless its user granted something.
+                    "net": self.store.host_policy().to_json(),
                 });
                 let mut caps = caps;
                 if self.passthrough {

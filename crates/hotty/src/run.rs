@@ -23,6 +23,8 @@ pub struct Options {
     pub frames: Option<bool>,
     pub scale: Option<f32>,
     pub font: Option<String>,
+    /// The host's half of the network policy (SPEC §7.2), CSP syntax.
+    pub net: Option<String>,
     pub cmd: Vec<String>,
 }
 
@@ -357,8 +359,19 @@ pub fn run(opts: Options) -> i32 {
     let mut input = InputRouter::new(config.metrics.cell_w, config.metrics.cell_h);
     let mut enable = Vec::new();
     input.enable_on_terminal(&mut enable);
+    // Something a document fetched arrives on a fetching thread: a byte on
+    // this pair wakes the poll loop, which draws it.
+    let (mut wake_r, wake_w) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+    let _ = wake_w.set_nonblocking(true);
+    let mut host = Host::new(config);
+    if let Some(net) = &opts.net {
+        host.set_network(net);
+    }
+    host.set_waker(move || {
+        let _ = (&wake_w).write(&[1]);
+    });
     let mut shim = Shim {
-        host: Host::new(config),
+        host,
         kitty: Kitty::new(transport, frame_edits),
         meta: HashMap::new(),
         next_id: 0xA1_0000,
@@ -386,6 +399,7 @@ pub fn run(opts: Options) -> i32 {
             PollFd::new(master.as_fd(), PollFlags::POLLIN),
             PollFd::new(stdin_fd, PollFlags::POLLIN),
             PollFd::new(sig_r.as_fd(), PollFlags::POLLIN),
+            PollFd::new(wake_r.as_fd(), PollFlags::POLLIN),
         ];
         // An animated image's next frame is a deadline too; not while the
         // program holds its output back (mode 2026), which ends in a flush.
@@ -424,7 +438,26 @@ pub fn run(opts: Options) -> i32 {
                 r.intersects(PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR)
             })
         };
-        let (m_ready, i_ready, s_ready) = (ready(0), ready(1), ready(2));
+        let (m_ready, i_ready, s_ready, w_ready) = (ready(0), ready(1), ready(2), ready(3));
+        if w_ready {
+            let mut drain = [0u8; 64];
+            let _ = wake_r.read(&mut drain);
+        }
+        // Not while the program holds its output back: its flush draws it.
+        if w_ready && !shim.in_sync {
+            let mut out = Vec::new();
+            shim.flush_renders(&mut out, true);
+            if !out.is_empty() {
+                shim.input.observe(&out);
+                let _ = stdout_lock.write_all(&out);
+                let _ = stdout_lock.flush();
+            }
+            if !shim.to_program.is_empty()
+                && master.write_all(&std::mem::take(&mut shim.to_program)).is_err()
+            {
+                break 'outer;
+            }
+        }
 
         if s_ready {
             let mut drain = [0u8; 64];

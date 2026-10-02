@@ -1,0 +1,257 @@
+From 4750bbf21e54a88e39f04648856ef9e673753ce3 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 18:50:54 +0200
+Subject: [PATCH] blitz-traits, blitz-dom: a request carries its destination
+
+A NetProvider got a URL and nothing about what it was for, so it could
+not decide per kind of resource, as a Content Security Policy does with
+img-src, style-src and font-src. Request now has fetch's destination
+(Destination: Empty, Document, Iframe, Image, Style, Font), and every
+request a document makes says it:
+
+- <img> and CSS images (background-image, mask-image): Image;
+- <link rel=stylesheet>, its reload and @import: Style;
+- @font-face: Font;
+- an <iframe>'s document: Iframe;
+- a navigation (NavigationOptions::into_request, blitz's launch): Document.
+
+Request::get leaves it Empty, and Request::destination sets it. The
+struct is non_exhaustive already, so the field breaks no one outside.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs      | 13 ++++++++---
+ packages/blitz-dom/src/iframe.rs        |  4 ++--
+ packages/blitz-dom/src/layout/damage.rs |  1 +
+ packages/blitz-dom/src/mutator.rs       |  6 +++--
+ packages/blitz-dom/src/net.rs           | 18 ++++++++++----
+ packages/blitz-traits/src/navigation.rs |  1 +
+ packages/blitz-traits/src/net.rs        | 31 +++++++++++++++++++++++++
+ packages/blitz/src/lib.rs               |  5 +++-
+ 8 files changed, 66 insertions(+), 13 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index fcaca130..b333800b 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -603,8 +603,12 @@ impl BaseDocument {
+ 
+     /// Wrapper around [`crate::net::stamped_request`]. Use the free function
+     /// when `&self` would conflict with a held `&mut` borrow on a field.
+-    pub(crate) fn build_request(&self, url: url::Url) -> Request {
+-        crate::net::stamped_request(url, self.abort_signal.as_ref())
++    pub(crate) fn build_request(
++        &self,
++        url: url::Url,
++        destination: blitz_traits::net::Destination,
++    ) -> Request {
++        crate::net::stamped_request(url, destination, self.abort_signal.as_ref())
+     }
+ 
+     pub fn favicon_url(&self) -> Option<String> {
+@@ -1125,7 +1129,10 @@ impl BaseDocument {
+                         let resolved_href = self.resolve_url(href);
+                         self.net_provider.fetch(
+                             self.id(),
+-                            self.build_request(resolved_href.clone()),
++                            self.build_request(
++                                resolved_href.clone(),
++                                blitz_traits::net::Destination::Style,
++                            ),
+                             ResourceHandler::boxed(
+                                 self.tx.clone(),
+                                 self.id,
+diff --git a/packages/blitz-dom/src/iframe.rs b/packages/blitz-dom/src/iframe.rs
+index 801366d9..d2683b99 100644
+--- a/packages/blitz-dom/src/iframe.rs
++++ b/packages/blitz-dom/src/iframe.rs
+@@ -4,7 +4,7 @@ use std::sync::Arc;
+ use std::sync::mpsc::Sender;
+ 
+ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
+-use blitz_traits::net::{AbortController, AbortSignal, Url};
++use blitz_traits::net::{AbortController, AbortSignal, Destination, Url};
+ use blitz_traits::node_id::NodeId;
+ use blitz_traits::shell::ShellProvider;
+ 
+@@ -134,7 +134,7 @@ impl BaseDocument {
+         let signal = self.new_iframe_generation(node_id, Some(handler.request_id()));
+         self.net_provider.fetch(
+             self.id(),
+-            stamped_request(url, Some(&signal)),
++            stamped_request(url, Destination::Iframe, Some(&signal)),
+             Box::new(handler),
+         );
+     }
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index 90b9dc23..cd72aea4 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -541,6 +541,7 @@ impl BaseDocument {
+                             doc_id,
+                             crate::net::stamped_request(
+                                 (**new_url).clone(),
++                                blitz_traits::net::Destination::Image,
+                                 self.abort_signal.as_ref(),
+                             ),
+                             ResourceHandler::boxed(
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index fef8ccf1..d7f7750a 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -1110,7 +1110,8 @@ impl<'doc> DocumentMutator<'doc> {
+ 
+         self.doc.net_provider.fetch(
+             self.doc.id(),
+-            self.doc.build_request(url),
++            self.doc
++                .build_request(url, blitz_traits::net::Destination::Style),
+             Box::new(handler),
+         );
+     }
+@@ -1170,7 +1171,8 @@ impl<'doc> DocumentMutator<'doc> {
+ 
+                 self.doc.net_provider.fetch(
+                     self.doc.id(),
+-                    self.doc.build_request(src),
++                    self.doc
++                        .build_request(src, blitz_traits::net::Destination::Image),
+                     ResourceHandler::boxed(
+                         self.doc.tx.clone(),
+                         self.doc.id(),
+diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
+index 0d39ca44..e9b781a1 100644
+--- a/packages/blitz-dom/src/net.rs
++++ b/packages/blitz-dom/src/net.rs
+@@ -19,15 +19,19 @@ use style::{
+     values::{CssUrl, SourceLocation},
+ };
+ 
+-use blitz_traits::net::{AbortSignal, Bytes, NetHandler, NetProvider, Request};
++use blitz_traits::net::{AbortSignal, Bytes, Destination, NetHandler, NetProvider, Request};
+ use blitz_traits::shell::ShellProvider;
+ 
+ use url::Url;
+ 
+ use crate::{document::DocumentEvent, util::ImageType};
+ 
+-pub(crate) fn stamped_request(url: Url, signal: Option<&AbortSignal>) -> Request {
+-    let mut req = Request::get(url);
++pub(crate) fn stamped_request(
++    url: Url,
++    destination: Destination,
++    signal: Option<&AbortSignal>,
++) -> Request {
++    let mut req = Request::get(url).destination(destination);
+     if let Some(sig) = signal {
+         req = req.signal(sig.clone());
+     }
+@@ -224,7 +228,11 @@ impl ServoStylesheetLoader for StylesheetLoader {
+         let import = ServoArc::new(lock.wrap(import));
+         self.net_provider.fetch(
+             self.doc_id,
+-            stamped_request(url.as_ref().clone(), self.abort_signal.as_ref()),
++            stamped_request(
++                url.as_ref().clone(),
++                Destination::Style,
++                self.abort_signal.as_ref(),
++            ),
+             ResourceHandler::boxed(
+                 self.tx.clone(),
+                 self.doc_id,
+@@ -502,7 +510,7 @@ pub(crate) fn fetch_font_face_rules<'a>(
+             if let Some((url, format)) = preferred_source {
+                 network_provider.fetch(
+                     doc_id,
+-                    stamped_request(url, abort_signal),
++                    stamped_request(url, Destination::Font, abort_signal),
+                     ResourceHandler::boxed(
+                         tx.clone(),
+                         doc_id,
+diff --git a/packages/blitz-traits/src/navigation.rs b/packages/blitz-traits/src/navigation.rs
+index 535ae215..698a2179 100644
+--- a/packages/blitz-traits/src/navigation.rs
++++ b/packages/blitz-traits/src/navigation.rs
+@@ -63,6 +63,7 @@ impl NavigationOptions {
+             headers: HeaderMap::new(),
+             body: self.document_resource,
+             signal: None,
++            destination: crate::net::Destination::Document,
+         }
+     }
+ }
+diff --git a/packages/blitz-traits/src/net.rs b/packages/blitz-traits/src/net.rs
+index ddce27be..756114cd 100644
+--- a/packages/blitz-traits/src/net.rs
++++ b/packages/blitz-traits/src/net.rs
+@@ -57,6 +57,10 @@ pub struct Request {
+     pub headers: HeaderMap,
+     pub body: Body,
+     pub signal: Option<AbortSignal>,
++    /// What the response is for. A provider can decide by it what to fetch,
++    /// as a Content Security Policy does with `img-src`, `style-src` and
++    /// `font-src`.
++    pub destination: Destination,
+ }
+ impl Request {
+     /// A get request to the specified Url and an empty body
+@@ -68,6 +72,7 @@ impl Request {
+             headers: HeaderMap::new(),
+             body: Body::Empty,
+             signal: None,
++            destination: Destination::Empty,
+         }
+     }
+ 
+@@ -75,6 +80,32 @@ impl Request {
+         self.signal = Some(signal);
+         self
+     }
++
++    pub fn destination(mut self, destination: Destination) -> Self {
++        self.destination = destination;
++        self
++    }
++}
++
++/// A request's destination: <https://fetch.spec.whatwg.org/#concept-request-destination>,
++/// for the kinds of request a document makes.
++#[non_exhaustive]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum Destination {
++    /// Not one of the others: fetch's empty string.
++    #[default]
++    Empty,
++    /// A document to navigate to.
++    Document,
++    /// The document of an `<iframe>`.
++    Iframe,
++    /// An image: `<img>`, or an image in CSS (`background-image`,
++    /// `mask-image`).
++    Image,
++    /// A stylesheet: `<link rel=stylesheet>` or `@import`.
++    Style,
++    /// A font, from `@font-face`.
++    Font,
+ }
+ 
+ #[derive(Debug, Clone)]
+diff --git a/packages/blitz/src/lib.rs b/packages/blitz/src/lib.rs
+index e7c342ee..23599f39 100644
+--- a/packages/blitz/src/lib.rs
++++ b/packages/blitz/src/lib.rs
+@@ -63,7 +63,10 @@ pub fn launch_url(url: &str) {
+     let application = BlitzApplication::new(proxy, reciever);
+ 
+     let (url, bytes) = rt
+-        .block_on(net_provider.fetch_async(blitz_traits::net::Request::get(url)))
++        .block_on(net_provider.fetch_async(
++            blitz_traits::net::Request::get(url)
++                .destination(blitz_traits::net::Destination::Document),
++        ))
+         .unwrap();
+     let html = std::str::from_utf8(bytes.as_ref()).unwrap();
+ 
+-- 
+2.55.0
+
