@@ -498,6 +498,33 @@ fn other_schemes_fail_closed() {
 }
 
 #[test]
+fn an_svg_draws_no_image_file() {
+    // A green PNG on the disk, named by an SVG <image>, inline and inside an
+    // SVG <img>: neither reads it (SPEC §12; Blitz fork 0006).
+    let dir = std::env::temp_dir().join(format!("hotty-svg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("green.png");
+    let img = image::RgbaImage::from_pixel(20, 20, image::Rgba([0, 255, 0, 255]));
+    img.save(&file).unwrap();
+    let p = file.to_str().unwrap();
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        &format!(
+            "<body style='margin:0;background:#000'>\
+             <svg width=20 height=20 style='display:block'><image href='{p}' width=20 height=20/></svg>\
+             <img style='display:block' src=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' \
+             width='20' height='20'%3E%3Cimage href='{p}' width='20' height='20'/%3E%3C/svg%3E\"></body>"
+        ),
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    render(&mut h);
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 0], "inline");
+    assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 0], "an SVG image");
+}
+
+#[test]
 fn submitting_a_form_reports_its_fields() {
     // A form with an empty action (the usual case here) used to panic Blitz
     // while resolving the action against a document with no base URL.

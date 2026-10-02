@@ -1,0 +1,80 @@
+From d0a17554e8a3437b12595461fbe0cb400c6bac50 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 18:53:24 +0200
+Subject: [PATCH] blitz-dom: an SVG's <image> loads a data: URL and no file
+
+parse_svg_image gave usvg its default options, whose image resolver reads
+any href that is not a data: URL as a path on the disk. Every SVG Blitz
+parses goes through it: an <img> or CSS image that is an SVG, and inline
+<svg> in a page. So a page could draw any image the user's files hold,
+`<svg><image href="/home/me/Pictures/x.png"/></svg>`, with nothing
+fetched and no NetProvider asked. A browser fetches an inline SVG's image
+as the page's image, and none at all for an SVG that is itself an image.
+
+The resolver now loads data: URLs as before and nothing else.
+an_image_loads_a_data_url_and_no_file writes a PNG to a temporary file
+and checks that its path draws nothing while the same PNG as a data: URL
+draws; it fails without the change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/util.rs | 36 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
+index dcad882a..977afb66 100644
+--- a/packages/blitz-dom/src/util.rs
++++ b/packages/blitz-dom/src/util.rs
+@@ -158,6 +158,15 @@ pub fn walk_tree(indent: usize, node: &Node) {
+ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
+     let options = usvg::Options {
+         fontdb: Arc::clone(&*FONT_DB),
++        // An <image> in the SVG loads a data: URL and nothing else. usvg's
++        // default reads any other href as a path on the disk, so an SVG from
++        // the network, or one inline in a page, could draw any image the
++        // user's files hold. (A browser fetches it as the page's image, or
++        // not at all when the SVG is itself an image.)
++        image_href_resolver: usvg::ImageHrefResolver {
++            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
++            resolve_string: Box::new(|_, _| None),
++        },
+         ..Default::default()
+     };
+     crate::node::SvgImageData::from_data(source, &options)
+@@ -226,6 +235,33 @@ mod svg_tests {
+         assert!(svg.intrinsic_height().is_some());
+     }
+ 
++    #[test]
++    fn an_image_loads_a_data_url_and_no_file() {
++        // A 1x1 PNG, on the disk and as a data: URL.
++        const PNG: &[u8] = &[
++            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
++            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
++            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78,
++            0x9c, 0x63, 0x60, 0xf8, 0xcf, 0x00, 0x00, 0x02, 0x02, 0x01, 0x00, 0x7b, 0x09, 0x81,
++            0x78, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
++        ];
++        const PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg+M8AAAICAQB7CYF4AAAAAElFTkSuQmCC";
++        let bytes = PNG;
++        let path = std::env::temp_dir().join(format!("blitz-svg-image-{}.png", std::process::id()));
++        std::fs::write(&path, bytes).unwrap();
++        let svg = |href: &str| {
++            let src = format!(
++                r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="{href}" width="1" height="1"/></svg>"#
++            );
++            parse_svg_image(src.as_bytes()).unwrap()
++        };
++        let file = svg(path.to_str().unwrap());
++        let data = svg(&format!("data:image/png;base64,{PNG_BASE64}"));
++        std::fs::remove_file(&path).unwrap();
++        assert!(!file.tree.root().has_children(), "the file was read");
++        assert!(data.tree.root().has_children(), "the data: URL was not");
++    }
++
+     #[test]
+     fn non_numeric_dimensions_are_not_intrinsic() {
+         let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="auto" height="foo" viewBox="0 0 200 100"></svg>"#;
+-- 
+2.55.0
+
