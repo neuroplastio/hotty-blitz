@@ -1,0 +1,362 @@
+From 639a66ee28aaa77579faaad2794f78356e05ffd5 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 19:50:31 +0200
+Subject: [PATCH] blitz-dom: an <img> shows the source srcset, sizes and
+ <picture> choose
+
+Blitz loaded an <img>'s src and nothing else: a srcset was ignored, and
+an image given only by srcset, or by the <source> elements of a
+<picture>, was never loaded.
+
+BaseDocument::image_source now selects an image source as HTML does:
+the first <source> of the <img>'s <picture> whose `type` this build
+decodes (image's reading formats, and SVG) and whose `media` matches the
+device, else the <img>'s own srcset, else its src. Of a srcset, the
+candidate with the smallest density at or above the device's
+(hidpi_scale times zoom), else the densest; a `w` candidate's density is
+its width over the size `sizes` gives it (stylo's SourceSizeList), and
+an <img>'s src counts as its 1x candidate when no other is. `media` is a
+stylo MediaList, evaluated against the stylist's device.
+
+load_image fetches that source, and changing an <img>'s srcset or sizes,
+or a <source>'s srcset, sizes, media or type, loads the <img> again. Not
+done: choosing again when the viewport or scale changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/image_source.rs | 258 +++++++++++++++++++++++++
+ packages/blitz-dom/src/lib.rs          |   1 +
+ packages/blitz-dom/src/mutator.rs      |  31 ++-
+ 3 files changed, 286 insertions(+), 4 deletions(-)
+ create mode 100644 packages/blitz-dom/src/image_source.rs
+
+diff --git a/packages/blitz-dom/src/image_source.rs b/packages/blitz-dom/src/image_source.rs
+new file mode 100644
+index 00000000..1df14950
+--- /dev/null
++++ b/packages/blitz-dom/src/image_source.rs
+@@ -0,0 +1,258 @@
++//! Which URL an `<img>` shows: HTML's "select an image source", for
++//! `srcset`, `sizes` and the `<source>` elements of a `<picture>`.
++//!
++//! <https://html.spec.whatwg.org/multipage/images.html#select-an-image-source>
++
++use cssparser::{Parser, ParserInput};
++use selectors::matching::QuirksMode;
++use style::media_queries::MediaList;
++use style::parser::ParserContext;
++use style::stylesheets::{CssRuleType, CustomMediaEvaluator, Origin};
++use style::values::specified::source_size_list::SourceSizeList;
++use style_traits::ParsingMode;
++
++use crate::{BaseDocument, Node, NodeId, local_name};
++
++/// How a candidate of a `srcset` says what it is for.
++#[derive(Clone, Copy, Debug, PartialEq)]
++enum Descriptor {
++    /// `2x`: pixels per CSS px.
++    Density(f32),
++    /// `640w`: its width in pixels, against the `sizes` it is shown at.
++    Width(f32),
++}
++
++/// The candidates of a `srcset`: each URL with its descriptor (1x when it
++/// has none). Candidates with a descriptor that does not parse are dropped.
++fn parse_srcset(srcset: &str) -> Vec<(&str, Descriptor)> {
++    let mut out = Vec::new();
++    let mut rest = srcset;
++    loop {
++        rest = rest.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ',');
++        if rest.is_empty() {
++            return out;
++        }
++        let end = rest
++            .find(|c: char| c.is_ascii_whitespace())
++            .unwrap_or(rest.len());
++        let (mut url, after) = rest.split_at(end);
++        rest = after;
++        let mut descriptors = "";
++        if url.ends_with(',') {
++            url = url.trim_end_matches(',');
++        } else {
++            // Descriptors run to the next comma outside parentheses.
++            let mut depth = 0;
++            let end = rest
++                .char_indices()
++                .find(|&(_, c)| {
++                    match c {
++                        '(' => depth += 1,
++                        ')' => depth -= 1,
++                        _ => {}
++                    }
++                    c == ',' && depth <= 0
++                })
++                .map_or(rest.len(), |(i, _)| i);
++            descriptors = &rest[..end];
++            rest = &rest[end..];
++        }
++        if url.is_empty() {
++            continue;
++        }
++        let mut descriptor = None;
++        let mut valid = true;
++        for d in descriptors.split_ascii_whitespace() {
++            let parsed = if let Some(x) = d.strip_suffix('x') {
++                x.parse()
++                    .ok()
++                    .filter(|x: &f32| *x > 0.0)
++                    .map(Descriptor::Density)
++            } else if let Some(w) = d.strip_suffix('w') {
++                w.parse()
++                    .ok()
++                    .filter(|w: &f32| *w > 0.0)
++                    .map(Descriptor::Width)
++            } else if d
++                .strip_suffix('h')
++                .is_some_and(|h| h.parse::<f32>().is_ok())
++            {
++                // A height descriptor: allowed, and of no use here.
++                continue;
++            } else {
++                None
++            };
++            match parsed {
++                Some(p) if descriptor.is_none() => descriptor = Some(p),
++                _ => valid = false,
++            }
++        }
++        if valid {
++            out.push((url, descriptor.unwrap_or(Descriptor::Density(1.0))));
++        }
++    }
++}
++
++impl BaseDocument {
++    /// The URL `<img>` node `img` shows, as written (unresolved): from the
++    /// first `<source>` of its `<picture>` whose `type` this build decodes
++    /// and whose `media` matches, else from its own `srcset`, else its `src`.
++    /// Of a `srcset`, the candidate with the smallest density at or above
++    /// the device's, else the densest; a `w` candidate's density is its
++    /// width over the size `sizes` gives it.
++    pub fn image_source(&self, img: NodeId) -> Option<String> {
++        let node = self.get_node(img)?;
++        if let Some(parent) = node.parent.and_then(|p| self.get_node(p))
++            && parent
++                .element_data()
++                .is_some_and(|e| e.name.local == local_name!("picture"))
++        {
++            for &child in &parent.children {
++                if child == img {
++                    break;
++                }
++                let Some(source) = self.get_node(child) else {
++                    continue;
++                };
++                if !source
++                    .element_data()
++                    .is_some_and(|e| e.name.local == local_name!("source"))
++                {
++                    continue;
++                }
++                if let Some(t) = source.attr(local_name!("type"))
++                    && !decodes(t)
++                {
++                    continue;
++                }
++                if let Some(media) = source.attr(local_name!("media"))
++                    && !self.media_matches(media)
++                {
++                    continue;
++                }
++                if let Some(url) = self.pick(source, None) {
++                    return Some(url);
++                }
++            }
++        }
++        let src = node.attr(local_name!("src")).filter(|s| !s.is_empty());
++        self.pick(node, src).or_else(|| src.map(str::to_string))
++    }
++
++    /// The candidate of `node`'s `srcset` for this device. `src`, an
++    /// `<img>`'s, counts as a 1x candidate when no other is 1x.
++    fn pick(&self, node: &Node, src: Option<&str>) -> Option<String> {
++        let mut candidates = parse_srcset(node.attr(local_name!("srcset"))?);
++        if candidates.is_empty() {
++            return None;
++        }
++        let size = if candidates
++            .iter()
++            .any(|(_, d)| matches!(d, Descriptor::Width(_)))
++        {
++            self.source_size(node.attr(local_name!("sizes")).unwrap_or(""))
++        } else {
++            0.0
++        };
++        if let Some(src) = src
++            && !candidates
++                .iter()
++                .any(|(_, d)| *d == Descriptor::Density(1.0))
++        {
++            candidates.push((src, Descriptor::Density(1.0)));
++        }
++        let density = |d: Descriptor| match d {
++            Descriptor::Density(x) => x,
++            Descriptor::Width(w) if size > 0.0 => w / size,
++            Descriptor::Width(_) => f32::INFINITY,
++        };
++        let want = self.viewport.hidpi_scale * self.viewport.zoom;
++        let mut best: Option<(&str, f32)> = None;
++        for (url, d) in candidates {
++            let x = density(d);
++            best = match best {
++                None => Some((url, x)),
++                Some((_, b)) if (b < want && x > b) || (x >= want && x < b) => Some((url, x)),
++                keep => keep,
++            };
++        }
++        best.map(|(url, _)| url.to_string())
++    }
++
++    /// The width in CSS px an image is shown at by a `sizes` attribute.
++    fn source_size(&self, sizes: &str) -> f32 {
++        let url_data = self.url.url_extra_data();
++        let context = ParserContext::new(
++            Origin::Author,
++            &url_data,
++            Some(CssRuleType::Style),
++            ParsingMode::DEFAULT,
++            QuirksMode::NoQuirks,
++            Default::default(),
++            None,
++            None,
++            Default::default(),
++        );
++        let mut input = ParserInput::new(sizes);
++        let list = SourceSizeList::parse(&context, &mut Parser::new(&mut input));
++        list.evaluate(self.stylist.device(), QuirksMode::NoQuirks)
++            .to_f32_px()
++    }
++
++    /// Whether a `<source>`'s `media` matches the device.
++    fn media_matches(&self, media: &str) -> bool {
++        let url_data = self.url.url_extra_data();
++        let mut context = ParserContext::new(
++            Origin::Author,
++            &url_data,
++            Some(CssRuleType::Media),
++            ParsingMode::DEFAULT,
++            QuirksMode::NoQuirks,
++            Default::default(),
++            None,
++            None,
++            Default::default(),
++        );
++        let mut input = ParserInput::new(media);
++        let list = MediaList::parse(&mut context, &mut Parser::new(&mut input));
++        list.evaluate(
++            self.stylist.device(),
++            QuirksMode::NoQuirks,
++            &mut CustomMediaEvaluator::none(),
++        )
++    }
++}
++
++/// Whether this build decodes images of MIME type `t`.
++fn decodes(t: &str) -> bool {
++    let t = t.trim().to_ascii_lowercase();
++    if t == "image/svg+xml" {
++        return cfg!(feature = "svg");
++    }
++    image::ImageFormat::from_mime_type(&t).is_some_and(|f| f.reading_enabled())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{Descriptor, parse_srcset};
++
++    #[test]
++    fn srcset_candidates() {
++        assert_eq!(
++            parse_srcset("a.png, b.png 2x,c.png 640w , d.png 1.5x 10h, bad.png 2q, e.png,"),
++            vec![
++                ("a.png", Descriptor::Density(1.0)),
++                ("b.png", Descriptor::Density(2.0)),
++                ("c.png", Descriptor::Width(640.0)),
++                ("d.png", Descriptor::Density(1.5)),
++                ("e.png", Descriptor::Density(1.0)),
++            ]
++        );
++        // A comma inside a URL stays in it.
++        assert_eq!(
++            parse_srcset("data:image/png;base64,AAAA 2x"),
++            vec![("data:image/png;base64,AAAA", Descriptor::Density(2.0))]
++        );
++        assert!(parse_srcset("  ,, ").is_empty());
++    }
++}
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index ccbcc895..62a75de1 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -49,6 +49,7 @@ mod form;
+ mod html;
+ /// Loading of `<iframe>` elements into sub-documents.
+ mod iframe;
++mod image_source;
+ /// Integration of taffy and the DOM.
+ mod layout;
+ mod mutator;
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index d7f7750a..1aa68f85 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -378,8 +378,32 @@ impl DocumentMutator<'_> {
+ 
+         if (tag, attr) == tag_and_attr!("input", "checked") {
+             set_input_checked_state(element, value.to_string());
+-        } else if (tag, attr) == tag_and_attr!("img", "src") {
++        } else if (tag, attr) == tag_and_attr!("img", "src")
++            || (tag, attr) == tag_and_attr!("img", "srcset")
++            || (tag, attr) == tag_and_attr!("img", "sizes")
++        {
+             self.load_image(node_id);
++        } else if tag == &local_name!("source")
++            && matches!(attr.as_ref(), "srcset" | "sizes" | "media" | "type")
++        {
++            // A <picture>'s <img> may pick another source.
++            let img = self.doc.nodes[node_id].parent.and_then(|p| {
++                let picture = &self.doc.nodes[p];
++                picture
++                    .element_data()
++                    .is_some_and(|e| e.name.local == local_name!("picture"))
++                    .then(|| {
++                        picture.children.iter().copied().find(|&c| {
++                            self.doc.nodes[c]
++                                .element_data()
++                                .is_some_and(|e| e.name.local == local_name!("img"))
++                        })
++                    })
++                    .flatten()
++            });
++            if let Some(img) = img {
++                self.load_image(img);
++            }
+         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
+             self.load_custom_paint_src(node_id);
+         } else if (tag, attr) == tag_and_attr!("link", "href")
+@@ -1136,10 +1160,9 @@ impl<'doc> DocumentMutator<'doc> {
+     }
+ 
+     fn load_image(&mut self, target_id: NodeId) {
+-        let node = &self.doc.nodes[target_id];
+-        if let Some(raw_src) = node.attr(local_name!("src")) {
++        if let Some(raw_src) = self.doc.image_source(target_id) {
+             if !raw_src.is_empty() {
+-                let src = self.doc.resolve_url(raw_src);
++                let src = self.doc.resolve_url(&raw_src);
+                 let src_string = src.as_str();
+ 
+                 // Check cache first
+-- 
+2.55.0
+

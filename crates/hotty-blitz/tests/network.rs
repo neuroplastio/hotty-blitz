@@ -650,3 +650,64 @@ fn a_fetched_gif_plays() {
     render(&mut h);
     assert_eq!(pixel(&h, "a", 10, 10), GREEN);
 }
+
+#[test]
+fn srcset_and_picture_choose_what_is_fetched() {
+    let srv = Server::start();
+    for (path, colour) in [
+        ("/1x.png", RED),
+        ("/2x.png", GREEN),
+        ("/src.png", BLACK),
+        ("/small.png", RED),
+        ("/big.png", GREEN),
+        ("/dark.png", GREEN),
+        ("/light.png", RED),
+        ("/no.png", BLACK),
+    ] {
+        srv.route(path, Reply::Ok("image/png", png(20, 20, colour)));
+    }
+    let o = &srv.origin;
+    let p = format!("img-src {o}");
+    let style = "style='display:block;width:20px;height:20px'";
+    let body = format!(
+        "<img srcset='{o}/1x.png, {o}/2x.png 2x' src='{o}/src.png' {style}>\
+         <img srcset='{o}/small.png 100w, {o}/big.png 400w' sizes='(max-width: 10px) 400px, 50px' {style}>\
+         <picture><source type='image/x-none' srcset='{o}/no.png'>\
+         <source media='(prefers-color-scheme: dark)' srcset='{o}/dark.png'>\
+         <img src='{o}/light.png' {style}></picture>"
+    );
+    let shown = |scale: f32, dark: bool| {
+        let mut h = Host::new(Config {
+            // Cells of 10x20 CSS px at any scale.
+            metrics: Metrics {
+                cell_w: (10.0 * scale) as u32,
+                cell_h: (20.0 * scale) as u32,
+                scale,
+            },
+            theme: hotty_blitz::Theme {
+                dark,
+                ..hotty_blitz::Theme::default()
+            },
+            ..Config::default()
+        });
+        h.set_network(&p);
+        let (tx, rx) = channel();
+        h.set_waker(move || {
+            let _ = tx.send(());
+        });
+        show(&mut h, "a", &meta(&p), &body);
+        render(&mut h);
+        arrive(&mut h, &rx, 3);
+        let px = |y: f32| pixel(&h, "a", (10.0 * scale) as u32, (y * scale) as u32);
+        [px(10.0), px(30.0), px(50.0)]
+    };
+    // 1x: the 1x candidate; 50px wide: 100w is 2x, enough; light: the <img>.
+    assert_eq!(shown(1.0, false), [RED, RED, RED]);
+    // 2x, dark: the 2x candidate; 100w is 2x still, enough; the dark source.
+    assert_eq!(shown(2.0, true), [GREEN, RED, GREEN]);
+    let mut paths = srv.paths();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths, ["/1x.png", "/2x.png", "/dark.png", "/light.png", "/small.png"]);
+}
+

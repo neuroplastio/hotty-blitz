@@ -483,6 +483,28 @@ fn a_background_image_resource_paints_in_the_first_frame() {
 }
 
 #[test]
+fn srcset_resolves_cid_resources() {
+    // SPEC §7.1: cid: in srcset too, the candidate for the device's density.
+    let svg = |c: &str| {
+        format!("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><rect width='20' height='20' fill='{c}'/></svg>")
+    };
+    let mut h = host();
+    for (id, c) in [("one", "#ff0000"), ("two", "#00ff00"), ("src", "#0000ff")] {
+        h.handle(&cmd(&[("a", "res"), ("id", id), ("type", "image/svg+xml"), ("q", "2")], &svg(c)));
+    }
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<body style='margin:0;background:#000'>\
+         <img srcset='cid:one 1x, cid:two 2x' src='cid:src' style='display:block;width:20px;height:20px'>\
+         <img srcset='cid:two 2x' src='cid:src' style='display:block;width:20px;height:20px'></body>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), [255, 0, 0], "1x at scale 1");
+    assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 255], "src is the 1x candidate");
+}
+
+#[test]
 fn an_svg_draws_no_image_file() {
     // A green PNG on the disk, named by an SVG <image>, inline and inside an
     // SVG <img>: neither reads it (SPEC §12; Blitz fork 0006).

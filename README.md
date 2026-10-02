@@ -55,8 +55,10 @@ directive: `img-src` for images (`<img>`, CSS backgrounds and masks),
   arrives wakes the terminal (`hotty_host_set_waker`), and the surface is
   drawn again; a placement made with `f=1` hears `fit` if its height
   changed (SPEC §5.2). Animated GIFs from the network play.
-- Not fetched yet: `srcset`, `<picture>` sources, `poster`, and images
-  inside SVG, which load `data:` URLs only.
+- `srcset`, `sizes` and `<picture>` choose the source, with `cid:` too:
+  the candidate for the display's density, the first `<source>` whose
+  `type` and `media` match. Not fetched: images inside SVG, which load
+  `data:` URLs only.
 
 ## Performance
 

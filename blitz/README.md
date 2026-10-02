@@ -16,6 +16,7 @@ changes upstream is an open question.
 | `0005-blitz-dom-*` | a box whose layout changed gets its overflow and transform again (below) |
 | `0006-blitz-dom-*` | an SVG's `<image>` loads a `data:` URL and no file (below) |
 | `0007-blitz-traits-blitz-dom-*` | a request carries its destination: image, style, font, iframe, document (below) |
+| `0008-blitz-dom-*` | an `<img>` shows the source `srcset`, `sizes` and `<picture>` choose (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -32,7 +33,8 @@ still reports nothing), and every outline is solid and just outside its
 box, so one pulled inside a surface's root with a negative offset is not
 drawn at all. A box resized only through its containing block keeps its
 old overflow, and paint can cull it. An SVG can draw any image file on the
-disk.
+disk, and an `<img>` loads its `src` alone, never a `srcset` or a
+`<picture>` source.
 
 ## SVG images load no files
 
@@ -55,6 +57,20 @@ and `font-src` do (HOTTY SPEC §7.2). `Request` now has fetch's
 and `Document` for a navigation. `Request::get` leaves it `Empty`. The
 struct was `non_exhaustive` already. hotty-blitz's `tests/network.rs`
 checks each directive.
+
+## srcset and picture
+
+Upstream loads an `<img>`'s `src` and nothing else. `BaseDocument::image_source`
+selects an image source as HTML does: the first `<source>` of its
+`<picture>` whose `type` this build decodes and whose `media` matches (a
+stylo `MediaList` against the stylist's device), else its own `srcset`,
+else its `src`. Of a `srcset`, the candidate with the smallest density at
+or above the device's, else the densest; a `w` candidate's density is its
+width over the size `sizes` gives it (stylo's `SourceSizeList`). Changing
+the attributes loads the image again; a new viewport or scale does not
+choose again. hotty-blitz's `srcset_resolves_cid_resources` and
+`srcset_and_picture_choose_what_is_fetched` check it, and anim.rs finds a
+playing image by the same source.
 
 ## Disabled controls
 
