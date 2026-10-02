@@ -191,8 +191,8 @@ fn hide_removes_the_placement_and_keeps_the_document() {
     assert!(fx.contains(&Effect::Hide { surface: "x".into() }), "{fx:?}");
     assert!(replies(&fx).iter().any(|r| r.get("e") == Some("blur")));
     assert_eq!(h.placement("x"), None);
-    // Hidden: patches apply, nothing renders.
-    h.handle(&cmd(&[("a", "patch"), ("s", "x"), ("op", "text"), ("t", "p"), ("q", "2")], "two"));
+    // Hidden: deltas apply, nothing renders.
+    h.handle(&cmd(&[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "p"), ("q", "2")], "two"));
     assert!(render(&mut h).is_empty());
     assert_eq!(h.inspect("x", "p").unwrap()["text"], "two");
     // Hiding again does nothing; placing again shows it as it is now.
@@ -202,10 +202,10 @@ fn hide_removes_the_placement_and_keeps_the_document() {
 }
 
 #[test]
-fn a_patch_to_an_element_whose_layout_box_is_gone_repaints_instead_of_panicking() {
+fn a_delta_to_an_element_whose_layout_box_is_gone_repaints_instead_of_panicking() {
     // A tooltip shown on hover lays its <b> out in an anonymous box; hidden
     // again, the box is freed while the <b>, not laid out, still points at
-    // it. A patch to the <b> before the next layout used to measure it
+    // it. A delta to the <b> before the next layout used to measure it
     // through that box and panic (a chart's tooltips, in hotty-demo).
     let mut h = host();
     h.handle(&cmd(
@@ -220,13 +220,13 @@ fn a_patch_to_an_element_whose_layout_box_is_gone_repaints_instead_of_panicking(
     render(&mut h);
     h.pointer("x", PointerKind::Leave, 0.0, 0.0, Mods::default());
     render(&mut h);
-    let r = replies(&h.handle(&cmd(&[("a", "patch"), ("s", "x"), ("op", "text"), ("t", "t")], "12:01")));
+    let r = replies(&h.handle(&cmd(&[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "t")], "12:01")));
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(render(&mut h).len(), 1);
 }
 
 #[test]
-fn a_text_patch_damages_only_part_of_the_frame() {
+fn a_text_delta_damages_only_part_of_the_frame() {
     let mut h = host();
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x")],
@@ -238,7 +238,7 @@ fn a_text_patch_damages_only_part_of_the_frame() {
     ));
     render(&mut h);
     let r = replies(&h.handle(&cmd(
-        &[("a", "patch"), ("s", "x"), ("op", "text"), ("t", "a")],
+        &[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "a")],
         "ONE",
     )));
     assert_eq!(r[0].get("a"), Some("ok"));
@@ -257,14 +257,14 @@ fn a_missing_target_is_an_error_and_quiet_suppresses_ok() {
     let mut h = host();
     h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p id=a>1</p>"));
     let r = replies(&h.handle(&cmd(
-        &[("a", "patch"), ("s", "x"), ("op", "text"), ("t", "nope")],
+        &[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "nope")],
         "2",
     )));
     assert_eq!(r[0].get("a"), Some("err"));
     assert!(String::from_utf8_lossy(&r[0].payload).contains("ENOTARGET"));
     let r = replies(&h.handle(&cmd(
         &[
-            ("a", "patch"),
+            ("a", "delta"),
             ("s", "x"),
             ("op", "text"),
             ("t", "a"),
@@ -310,7 +310,7 @@ fn morph_keeps_what_the_user_typed_and_change_comes_on_blur() {
     type_text(&mut h, "yz");
     // An immediate-mode program re-sends the whole tree with a new count.
     let r = replies(&h.handle(&cmd(
-        &[("a", "patch"), ("s", "f"), ("op", "morph"), ("t", "list")],
+        &[("a", "delta"), ("s", "f"), ("op", "morph"), ("t", "list")],
         "<div id=list><input id=name value=x><p id=count>2</p>
          <button id=go style='position:absolute;left:0;top:60px;width:100px;height:20px'>Go</button></div>",
     )));
@@ -659,7 +659,7 @@ fn submitting_a_form_reports_its_fields() {
 }
 
 /// Damage-only painting must produce exactly what a full paint of the same
-/// document produces, whatever the patches did to layout.
+/// document produces, whatever the deltas did to layout.
 #[test]
 fn partial_repaint_matches_a_full_paint() {
     let doc = "<style>body{margin:0;font:14px sans-serif}.row{display:flex;gap:6px;padding:4px}
@@ -671,7 +671,7 @@ fn partial_repaint_matches_a_full_paint() {
         <div class=bar><i id=bar></i></div>
         <ul id=list><li id=l1>one</li><li id=l2>two</li><li id=l3>three</li></ul>
         <p id=tail>tail text below everything</p>";
-    let patches: Vec<(Vec<(&str, &str)>, &str)> = vec![
+    let deltas: Vec<(Vec<(&str, &str)>, &str)> = vec![
         (vec![("op", "text"), ("t", "a")], "alpha-longer-now"),
         (vec![("op", "var"), ("t", "bar"), ("k", "p")], "73"),
         (
@@ -698,14 +698,14 @@ fn partial_repaint_matches_a_full_paint() {
             "",
         ));
     };
-    // Incremental: first frame, then one render per patch.
+    // Incremental: first frame, then one render per delta.
     let mut inc = host();
     inc.handle(&cmd(&[("a", "doc"), ("s", "x")], doc));
     place(&mut inc);
     render(&mut inc);
     let mut partial = 0;
-    for (ctl, payload) in &patches {
-        let mut c: Vec<(&str, &str)> = vec![("a", "patch"), ("s", "x")];
+    for (ctl, payload) in &deltas {
+        let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
         c.extend(ctl.iter().copied());
         let r = replies(&inc.handle(&cmd(&c, payload)));
         assert_eq!(
@@ -722,14 +722,14 @@ fn partial_repaint_matches_a_full_paint() {
     }
     assert!(
         partial >= 5,
-        "most patches should repaint partially ({partial})"
+        "most deltas should repaint partially ({partial})"
     );
-    // Reference: the same patches, one full paint at the end.
+    // Reference: the same deltas, one full paint at the end.
     let mut full = host();
     full.handle(&cmd(&[("a", "doc"), ("s", "x")], doc));
     place(&mut full);
-    for (ctl, payload) in &patches {
-        let mut c: Vec<(&str, &str)> = vec![("a", "patch"), ("s", "x")];
+    for (ctl, payload) in &deltas {
+        let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
         c.extend(ctl.iter().copied());
         full.handle(&cmd(&c, payload));
     }
@@ -923,7 +923,7 @@ fn incremental_layout_matches_a_fresh_document() {
     render(&mut inc);
     for step in 1..23 {
         let r = replies(&inc.handle(&cmd(
-            &[("a", "patch"), ("s", "x"), ("op", "morph"), ("t", "m")],
+            &[("a", "delta"), ("s", "x"), ("op", "morph"), ("t", "m")],
             &busy_page(step),
         )));
         assert_eq!(r[0].get("a"), Some("ok"));
@@ -1208,16 +1208,16 @@ fn a_detached_surfaces_controls_are_disabled() {
     let attrs = &h.inspect("x", "cb").unwrap()["attrs"];
     assert_eq!(*attrs, serde_json::json!({"type": "checkbox", "id": "cb"}));
 
-    // A control a patch adds is disabled too, and so is one a patch takes
+    // A control a delta adds is disabled too, and so is one a delta takes
     // `disabled` from.
     let r = replies(&h.handle(&cmd(
-        &[("a", "patch"), ("s", "x"), ("op", "append"), ("t", "box")],
+        &[("a", "delta"), ("s", "x"), ("op", "append"), ("t", "box")],
         "<input type=checkbox id=cb2 disabled><div class=m id=m3></div>",
     )));
     assert_eq!(r[0].get("a"), Some("ok"));
     h.handle(&cmd(
         &[
-            ("a", "patch"),
+            ("a", "delta"),
             ("s", "x"),
             ("op", "unattr"),
             ("t", "cb2"),
@@ -1329,7 +1329,7 @@ fn a_document_without_d_gives_the_surface_back() {
     assert!(key(&mut h, "x", "q").consumed);
 }
 
-/// Detaching restyles every control, and a patch to a detached surface
+/// Detaching restyles every control, and a delta to a detached surface
 /// disables the controls it brings: partial paints still equal a full one.
 #[test]
 fn a_detached_surface_paints_partially_as_it_would_in_full() {
@@ -1338,7 +1338,7 @@ fn a_detached_surface_paints_partially_as_it_would_in_full() {
         input:enabled,button:enabled{background:#fff;color:#000}</style>
         <p id=a>alpha</p><div id=list><input id=i1 value=one><button id=b1>one</button></div>
         <p id=z>tail</p>";
-    let patches: Vec<(Vec<(&str, &str)>, &str)> = vec![
+    let deltas: Vec<(Vec<(&str, &str)>, &str)> = vec![
         (vec![("op", "text"), ("t", "a")], "alpha, longer"),
         (
             vec![("op", "append"), ("t", "list")],
@@ -1359,8 +1359,8 @@ fn a_detached_surface_paints_partially_as_it_would_in_full() {
     };
     let apply = |h: &mut Host, render_each: bool| {
         let mut partial = 0;
-        for (ctl, payload) in &patches {
-            let mut c: Vec<(&str, &str)> = vec![("a", "patch"), ("s", "x")];
+        for (ctl, payload) in &deltas {
+            let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
             c.extend(ctl.iter().copied());
             let r = replies(&h.handle(&cmd(&c, payload)));
             assert_eq!(
@@ -1393,9 +1393,9 @@ fn a_detached_surface_paints_partially_as_it_would_in_full() {
     let partial = apply(&mut inc, true);
     assert!(
         partial >= 3,
-        "most patches should repaint partially ({partial})"
+        "most deltas should repaint partially ({partial})"
     );
-    // Reference: created detached, the same patches, one full paint.
+    // Reference: created detached, the same deltas, one full paint.
     let mut full = host();
     full.handle(&cmd(&[("a", "doc"), ("s", "x"), ("d", "1")], doc));
     place(&mut full);
@@ -1887,8 +1887,9 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
 }
 
 /// The capabilities name the implementation and its version (SPEC §4, §15):
-/// a program patches a surface's vars only from the version that lays a
-/// var patch out like a fresh document (0.0.2).
+/// a program sends var deltas only from the version that lays a var
+/// delta out like a fresh document (0.0.2), and `a=delta` only from the
+/// version that took the name (0.0.3).
 #[test]
 fn the_capabilities_name_the_host_and_its_version() {
     let mut h = host();
@@ -1897,7 +1898,7 @@ fn the_capabilities_name_the_host_and_its_version() {
     assert_eq!(caps["host"], "hotty-blitz");
     assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
     let v: Vec<u32> = env!("CARGO_PKG_VERSION").split('.').map(|n| n.parse().unwrap()).collect();
-    assert!(v >= vec![0, 0, 2], "a_var_patch_lays_out_like_a_fresh_document's fix is 0.0.2");
+    assert!(v >= vec![0, 0, 3], "a=patch became a=delta in 0.0.3");
 }
 
 /// The capabilities say `passthrough` only when the terminal hands the
@@ -1930,7 +1931,7 @@ fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
 /// old overflow, paint culled it by that, and nothing of it was painted
 /// (blitz/README.md, "Overflow after a relayout").
 #[test]
-fn a_var_patch_lays_out_like_a_fresh_document() {
+fn a_var_delta_lays_out_like_a_fresh_document() {
     let html = |h: u32| {
         format!(
             "<html id=root style='--h:{h}'><style>html,body{{margin:0;background:transparent}}
@@ -1951,7 +1952,7 @@ fn a_var_patch_lays_out_like_a_fresh_document() {
     inc.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "1"), ("q", "2")], ""));
     render(&mut inc);
     inc.handle(&cmd(
-        &[("a", "patch"), ("s", "x"), ("op", "var"), ("t", "root"), ("k", "h"), ("q", "2")],
+        &[("a", "delta"), ("s", "x"), ("op", "var"), ("t", "root"), ("k", "h"), ("q", "2")],
         "6",
     ));
     render(&mut inc);
@@ -2218,7 +2219,7 @@ fn backgrounds_data_urls_and_apngs_play_too() {
 }
 
 #[test]
-fn a_patch_that_adds_an_animated_image_plays_it() {
+fn a_delta_that_adds_an_animated_image_plays_it() {
     let mut h = host();
     res(&mut h, "g", "image/gif", gif(20, &[RED, GREEN], S, None));
     place_image(&mut h, "<div id=box></div>");
@@ -2226,7 +2227,7 @@ fn a_patch_that_adds_an_animated_image_plays_it() {
     assert_eq!(h.next_frame(), None);
     h.handle(&cmd(
         &[
-            ("a", "patch"),
+            ("a", "delta"),
             ("s", "x"),
             ("op", "inner"),
             ("t", "box"),
@@ -2241,7 +2242,7 @@ fn a_patch_that_adds_an_animated_image_plays_it() {
     // Removed, it stops asking for time.
     h.handle(&cmd(
         &[
-            ("a", "patch"),
+            ("a", "delta"),
             ("s", "x"),
             ("op", "inner"),
             ("t", "box"),
@@ -2280,7 +2281,7 @@ fn fit_doc(h: &mut Host, n: u32, extra: &[(&str, &str)]) {
 
 fn set_n(h: &mut Host, n: &str) {
     h.handle(&cmd(
-        &[("a", "patch"), ("s", "x"), ("op", "var"), ("t", "d"), ("k", "n"), ("q", "2")],
+        &[("a", "delta"), ("s", "x"), ("op", "var"), ("t", "d"), ("k", "n"), ("q", "2")],
         n,
     ));
 }
@@ -2290,7 +2291,7 @@ fn fit_is_heard_once_per_frame_with_the_rows_drawn() {
     let mut h = host();
     fit_doc(&mut h, 2, &[]);
     assert_eq!(fits(&mut h), vec![], "r=auto chose the rows it needs");
-    // Three patches before the next frame: one fit, for the last.
+    // Three deltas before the next frame: one fit, for the last.
     for n in ["5", "7", "3"] {
         set_n(&mut h, n);
     }

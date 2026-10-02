@@ -1,6 +1,6 @@
 [package]
 name = "hotty-blitz"
-description = "A HOTTY host on Blitz: surfaces, patches, in-band resources, CPU rendering, and a C ABI"
+description = "A HOTTY host on Blitz: surfaces, deltas, in-band resources, CPU rendering, and a C ABI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -40,7 +40,7 @@ peniko = "0.6"
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 
 [features]
-# Blitz prints how long each resolve phase took (for profiling patches).
+# Blitz prints how long each resolve phase took (for profiling deltas).
 phase-times = ["blitz-dom/log-phase-times"]
 
 [dev-dependencies]

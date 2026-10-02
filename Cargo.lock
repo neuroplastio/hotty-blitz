@@ -768,7 +768,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "hotty"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "hotty-blitz"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
@@ -811,7 +811,7 @@ dependencies = [
 
 [[package]]
 name = "hotty-wire"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.22.1",
  "flate2",

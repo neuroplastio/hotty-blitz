@@ -3,7 +3,7 @@
 
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
-use crate::{Config, Metrics, Rect, anim, net, paint, patch};
+use crate::{Config, Metrics, Rect, anim, delta, net, paint};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
@@ -99,7 +99,7 @@ impl NavigationProvider for NavQueue {
 
 pub(crate) struct Surface {
     doc: HtmlDocument,
-    /// Where patch fragments are parsed (see patch.rs).
+    /// Where delta fragments are parsed (see delta.rs).
     parse_doc: HtmlDocument,
     pub cols: u16,
     pub rows: u16,
@@ -127,7 +127,7 @@ pub(crate) struct Surface {
     pub redeliver: bool,
     pub frame: Frame,
     /// Render contexts by bucketed size, so painting a rectangle does not
-    /// allocate one (the fixed cost that dominated small patches).
+    /// allocate one (the fixed cost that dominated small deltas).
     renderers: Vec<((u32, u32), VelloCpuImageRenderer)>,
     scratch: Vec<u8>,
     /// What to repaint at the next render (paint.rs).
@@ -202,7 +202,7 @@ fn drag_event(kind: &'static str, target: String, cell: (i32, i32), keys: Mods) 
 }
 
 /// What a document asks of the network (SPEC §7.2): the content of its
-/// first `<meta name="hotty-network">`. Patches can change it, but the
+/// first `<meta name="hotty-network">`. Deltas can change it, but the
 /// document keeps what it had when it was built, until the next `a=doc`.
 fn requested_network(doc: &HtmlDocument) -> Policy {
     let doc = doc.inner();
@@ -736,13 +736,13 @@ impl Surface {
         }
     }
 
-    pub fn patch(
+    pub fn delta(
         &mut self,
         op: &str,
         t: Option<&str>,
         k: Option<&str>,
         payload: &str,
-    ) -> Result<(), patch::PatchError> {
+    ) -> Result<(), delta::DeltaError> {
         let scale = self.viewport.2 as f64;
         let Surface {
             doc,
@@ -750,14 +750,14 @@ impl Surface {
             damage,
             ..
         } = self;
-        let res = patch::apply(doc, parse_doc, op, t, k, payload, &mut |d, id| {
+        let res = delta::apply(doc, parse_doc, op, t, k, payload, &mut |d, id| {
             damage.touch(d, id, scale)
         });
         // Nodes that show an animated image may have come or gone.
         self.anim_stale = true;
         if self.detached {
-            // The controls a patch added, or took `disabled` from, are
-            // disabled too. The patch already recorded where they paint.
+            // The controls a delta added, or took `disabled` from, are
+            // disabled too. The delta already recorded where they paint.
             self.disable_controls();
         }
         res
@@ -989,7 +989,7 @@ impl Surface {
         focused_node(&self.doc)
     }
 
-    /// Focuses `want`, or nothing (also when a patch has removed it).
+    /// Focuses `want`, or nothing (also when a delta has removed it).
     fn move_focus(&mut self, want: Option<NodeId>) {
         let want = want.filter(|&id| self.doc.get_node(id).is_some());
         if self.focused() == want {

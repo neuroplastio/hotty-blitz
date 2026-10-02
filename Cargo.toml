@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/hotty-wire", "crates/hotty-blitz", "crates/hotty"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/neuroplastio/hotty-blitz"
@@ -28,7 +28,7 @@ png = "0.17"
 
 # The Blitz fork (../blitz, branch `hotty`, made by scripts/blitz-fork.sh
 # from the patches in blitz/): construction, layout and rounding stop where a
-# change stops, so a patch costs O(depth) instead of O(N).
+# change stops, so a delta costs O(depth) instead of O(N).
 [patch."https://github.com/DioxusLabs/blitz"]
 blitz-dom = { path = "../blitz/packages/blitz-dom" }
 blitz-html = { path = "../blitz/packages/blitz-html" }

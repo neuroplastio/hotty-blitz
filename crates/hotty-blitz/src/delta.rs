@@ -1,4 +1,4 @@
-//! Patches (SPEC §6): operations on one surface's document,
+//! Deltas (SPEC §6): operations on one surface's document,
 //! addressed by element id, and the morph that keeps element identity.
 //!
 //! Fragments are parsed into a separate **scratch** document, never into the
@@ -13,22 +13,22 @@ use blitz_dom::{
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PatchError {
+pub struct DeltaError {
     pub code: &'static str,
     pub detail: String,
 }
 
-impl PatchError {
-    fn new(code: &'static str, detail: impl Into<String>) -> PatchError {
-        PatchError {
+impl DeltaError {
+    fn new(code: &'static str, detail: impl Into<String>) -> DeltaError {
+        DeltaError {
             code,
             detail: detail.into(),
         }
     }
 }
 
-/// Applies one patch. `touch` is called with the document as it was before
-/// the change, for every node whose painted area the patch may change, so
+/// Applies one delta. `touch` is called with the document as it was before
+/// the change, for every node whose painted area the delta may change, so
 /// the caller can repaint only those (see paint.rs).
 #[allow(clippy::too_many_arguments)]
 pub fn apply(
@@ -39,16 +39,16 @@ pub fn apply(
     key: Option<&str>,
     payload: &str,
     touch: &mut dyn FnMut(&BaseDocument, NodeId),
-) -> Result<(), PatchError> {
+) -> Result<(), DeltaError> {
     let parent = |doc: &BaseDocument, id: NodeId| doc.get_node(id).and_then(|n| n.parent);
-    let find = |doc: &BaseDocument, id: Option<&str>| -> Result<NodeId, PatchError> {
+    let find = |doc: &BaseDocument, id: Option<&str>| -> Result<NodeId, DeltaError> {
         let id =
-            id.ok_or_else(|| PatchError::new("EINVAL", format!("op={op} needs t=<element id>")))?;
+            id.ok_or_else(|| DeltaError::new("EINVAL", format!("op={op} needs t=<element id>")))?;
         doc.get_element_by_id(id)
-            .ok_or_else(|| PatchError::new("ENOTARGET", id.to_string()))
+            .ok_or_else(|| DeltaError::new("ENOTARGET", id.to_string()))
     };
-    let attr_name = || -> Result<QualName, PatchError> {
-        let k = key.ok_or_else(|| PatchError::new("EINVAL", format!("op={op} needs k=<name>")))?;
+    let attr_name = || -> Result<QualName, DeltaError> {
+        let k = key.ok_or_else(|| DeltaError::new("EINVAL", format!("op={op} needs k=<name>")))?;
         Ok(qual(k))
     };
     // The element whose children the fragment becomes decides how it parses
@@ -111,7 +111,7 @@ pub fn apply(
                 if missing.is_empty() {
                     Ok(())
                 } else {
-                    Err(PatchError::new("ENOTARGET", missing.join(",")))
+                    Err(DeltaError::new("ENOTARGET", missing.join(",")))
                 }
             }
         },
@@ -213,7 +213,7 @@ pub fn apply(
         "var" => {
             let t = find(doc, target)?;
             touch(doc, t);
-            let k = key.ok_or_else(|| PatchError::new("EINVAL", "op=var needs k=<name>"))?;
+            let k = key.ok_or_else(|| DeltaError::new("EINVAL", "op=var needs k=<name>"))?;
             let name = if k.starts_with("--") {
                 k.to_string()
             } else {
@@ -222,7 +222,7 @@ pub fn apply(
             doc.mutate().set_style_property(t, &name, payload);
             Ok(())
         }
-        other => Err(PatchError::new("EINVAL", format!("unknown op={other}"))),
+        other => Err(DeltaError::new("EINVAL", format!("unknown op={other}"))),
     }
 }
 

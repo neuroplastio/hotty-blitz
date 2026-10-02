@@ -1,6 +1,6 @@
 //! Painting only what changed.
 //!
-//! A patch's cost must scale with what it changes, not with the surface. So a
+//! A delta's cost must scale with what it changes, not with the surface. So a
 //! surface keeps its frame, works out from layout (not by diffing pixels)
 //! which rectangles a batch of changes touched, and repaints only those,
 //! each into a render target the size of the rectangle.

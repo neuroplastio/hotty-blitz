@@ -9,7 +9,7 @@ changes upstream is an open question.
 
 | patch | what |
 | --- | --- |
-| `0001-blitz-dom-*` | patch cost proportional to depth, not document size (below) |
+| `0001-blitz-dom-*` | delta cost proportional to depth, not document size (below) |
 | `0002-blitz-paint-*` | inline SVG follows its `preserveAspectRatio` |
 | `0003-blitz-dom-blitz-paint-*` | a control in the disabled state acts disabled, attribute or not |
 | `0004-blitz-paint-*` | outlines take `outline-offset` and every border style |
@@ -28,7 +28,7 @@ make check                   # `make` runs the script when ../blitz is missing
 Removing the `[patch]` section goes back to upstream Blitz, which
 hotty-blitz no longer builds against: it applies the network policy by
 each request's destination (0007). With that one use undone, refusing every
-fetch, everything still works, but patches cost O(N) again, a stretched SVG
+fetch, everything still works, but deltas cost O(N) again, a stretched SVG
 (`preserveAspectRatio="none"`) is drawn narrow and centred, the controls of
 a detached surface can be clicked, toggled and typed into (silently: it
 still reports nothing), and every outline is solid and just outside its
@@ -137,16 +137,16 @@ round dots, as Blitz's dotted borders do; Chromium's are square.
 Blitz computes a node's transform and scrollable overflow again only when
 its own style damage asks for it. Damage flows up the tree, so a box whose
 size changed because an ancestor changed kept its old overflow. Paint
-culls a box by its overflow: patching a custom property that sets the
+culls a box by its overflow: a delta to a custom property that sets the
 height and the `translateY` of an absolutely positioned ring left its
 stretched child with the overflow of the old height, which the new
 transform moved off the surface. Nothing of the child was painted, on any
 later paint either. The fork records every node whose final layout
 changed (`set_final_layout`), with the boxes that reach it in
 `resolve_transforms`, and computes those again too. hotty-blitz's
-`a_var_patch_lays_out_like_a_fresh_document` checks it.
+`a_var_delta_lays_out_like_a_fresh_document` checks it.
 
-## Patch cost: what it changes
+## Delta cost: what it changes
 
 Upstream, one changed cell costs every phase of `resolve` a walk of the whole
 document. The fork makes each phase stop where the change stops:
@@ -193,11 +193,11 @@ tree rounds everything, as upstream does.
 
 - Debug builds compare every incremental rounding with `taffy::round_layout`
   and panic on a difference.
-- hotty-blitz's `incremental_layout_matches_a_fresh_document` patches a page for 22
-  steps and compares every frame, pixel for pixel, with the same page built
-  from scratch. The page mixes nested content-sized flex-wrap, fractional
-  sizes, grid, a float, a table, absolute boxes, baseline alignment, a flex
-  column and fixed-size clipped cells.
+- hotty-blitz's `incremental_layout_matches_a_fresh_document` changes a page
+  with deltas for 22 steps and compares every frame, pixel for pixel, with
+  the same page built from scratch. The page mixes nested content-sized
+  flex-wrap, fractional sizes, grid, a float, a table, absolute boxes,
+  baseline alignment, a flex column and fixed-size clipped cells.
   - Forcing every item to count as settled fails at step 1 (3,194 pixels).
   - Skipping the rounding of moved subtrees trips the debug check.
 - Blitz's own suites pass on the fork, in debug with the rounding check on:

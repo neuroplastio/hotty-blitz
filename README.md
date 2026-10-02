@@ -6,10 +6,10 @@ text, and renders on the CPU. This repository holds:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host: surfaces, patches and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events, and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events, and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
-| `blitz/` | the patches on Blitz: among them, a patch costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
+| `blitz/` | the patches on Blitz: among them, a delta costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
 
 ## Try it
 
@@ -68,21 +68,21 @@ directive: `img-src` for images (`<img>`, CSS backgrounds and masks),
 
 Measured 2026-09-29, release build:
 
-- **A one-cell patch** costs about 0.1 ms per frame at any size of nested
+- **A one-cell delta** costs about 0.1 ms per frame at any size of nested
   document (64 to 262,144 cells), because the Blitz patch makes construction,
   layout and rounding stop where the change stops.
 - **Paint** covers only the damage: the old and new boxes of what changed.
-- **Bub-n-Bros** (`../hotty/examples/bubbros.py`) patches 7 of its ~380
-  sprites a frame.
+- **Bub-n-Bros** (`../hotty/examples/bubbros.py`) sends deltas to 7
+  of its ~380 sprites a frame.
 
 Flat lists still cost linear time in their length: every pass, Stylo's
 included, scans the children of the node that changed.
 
 Not done yet:
 - **Occlusion.** A placement wholly under others (SPEC §5.2, `z`) is still
-  laid out and painted, and its patches still cost a render. Overlap
+  laid out and painted, and its deltas still cost a render. Overlap
   detection over the placements would let the host skip the paint of what
-  cannot show, and defer its patches until it shows again.
+  cannot show, and defer its deltas until it shows again.
 
 ## Fidelity
 

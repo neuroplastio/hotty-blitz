@@ -6,13 +6,13 @@
 //! HTML; both hand commands to a [`Host`] and draw the frames it produces.
 
 mod anim;
+pub mod delta;
 pub mod fetch;
 pub mod ffi;
 pub mod input;
 pub mod net;
 pub mod paint;
 pub mod policy;
-pub mod patch;
 pub mod style;
 mod surface;
 
@@ -553,9 +553,10 @@ impl Host {
                 let caps = serde_json::json!({
                     "v": "0.1",
                     "host": "hotty-blitz",
-                    // Raised with a fix a program may need to know of (SPEC §15):
-                    // 0.0.2 paints a box resized through a var patch (Blitz
-                    // fork 0005).
+                    // Raised with a change a program may need to know of
+                    // (SPEC §15): 0.0.2 paints a box resized through a var
+                    // delta (Blitz fork 0005); 0.0.3 takes `a=delta`, which
+                    // was `a=patch`, and no longer the old name.
                     "version": env!("CARGO_PKG_VERSION"),
                     "ops": ["morph", "inner", "replace", "append", "prepend", "before", "after",
                             "remove", "attr", "unattr", "text", "var"],
@@ -699,7 +700,7 @@ impl Host {
                     None,
                 ))
             }
-            "patch" => {
+            "delta" => {
                 let name = surface_name()?.to_string();
                 let s = self
                     .surfaces
@@ -707,7 +708,7 @@ impl Host {
                     .ok_or(("ENOENT", format!("no surface {name}")))?;
                 let payload = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
                 let op = cmd.get("op").unwrap_or("morph");
-                let res = s.patch(op, cmd.get("t"), cmd.get("k"), payload);
+                let res = s.delta(op, cmd.get("t"), cmd.get("k"), payload);
                 s.dirty = true;
                 res.map(|_| (Vec::new(), None))
                     .map_err(|e| (e.code, e.detail))

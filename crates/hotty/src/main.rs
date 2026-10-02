@@ -24,7 +24,7 @@ usage:
   hotty send   <key=value>… [< payload]      write one HOTTY command to stdout
   hotty dump   [< captured-stream]           decode the HOTTY commands in a stream
   hotty bench  [--frames N] [--only size|flat|nested]
-                                              patch cost vs patch size and vs document size
+                                              delta cost vs delta size and vs document size
   hotty replay <stream> [--cell WxH] [--scale S] [--runs N]
                                               benchmark: every synchronized-output batch is a frame
 
@@ -608,7 +608,7 @@ fn cmd_bench(args: &[String]) -> i32 {
             ..Config::default()
         })
     };
-    // One frame: `k` text patches, then render. Returns (ms, damaged px, timings).
+    // One frame: `k` text deltas, then render. Returns (ms, damaged px, timings).
     let frame = |host: &mut Host,
                  cells: &[usize],
                  tick: usize|
@@ -617,7 +617,7 @@ fn cmd_bench(args: &[String]) -> i32 {
         for &c in cells {
             let cmd = Command::new(
                 [
-                    ("a", "patch"),
+                    ("a", "delta"),
                     ("s", "b"),
                     ("op", "text"),
                     ("t", &format!("c{c}")),
@@ -670,7 +670,7 @@ fn cmd_bench(args: &[String]) -> i32 {
 
     if run("size") {
         println!(
-            "patch cost vs patch size: 1200-cell grid, 2394x1440 px surface, {frames} frames each"
+            "delta cost vs delta size: 1200-cell grid, 2394x1440 px surface, {frames} frames each"
         );
         println!(
             "{:>8} {:>10} {:>10} {:>10} {:>10} {:>12} {:>10}",
@@ -709,7 +709,7 @@ fn cmd_bench(args: &[String]) -> i32 {
     }
     if run("flat") {
         println!();
-        println!("patch cost vs document size: one cell per frame");
+        println!("delta cost vs document size: one cell per frame");
         println!(
             "{:>8} {:>10} {:>10} {:>10} {:>12}",
             "cells", "ms/frame", "resolve", "paint", "first frame"

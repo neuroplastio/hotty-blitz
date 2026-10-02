@@ -38,7 +38,7 @@ corpus: release hotty   ## render every corpus page to corpus-out/*.png
 	@mkdir -p corpus-out
 	@for f in $(HOTTY_DIR)/corpus/*.html; do n=$$(basename $$f .html); ./target/release/hotty render $$f --cols 80 --scale 2 --cell 20x42 -o corpus-out/$$n.png --time 2>&1 | sed "s/^/$$n: /"; done
 
-bench: release   ## patch cost vs patch size and document size
+bench: release   ## delta cost vs delta size and document size
 	./target/release/hotty bench --frames 30
 
 oracle: corpus   ## corpus pages in Chromium next to hotty-blitz: corpus-out/*.sheet.png
