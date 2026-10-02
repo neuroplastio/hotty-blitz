@@ -464,6 +464,25 @@ fn a_stylesheet_resource_arrives_after_the_document() {
 }
 
 #[test]
+fn a_background_image_resource_paints_in_the_first_frame() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "res"), ("id", "bg"), ("type", "image/svg+xml"), ("q", "2")],
+        "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'>\
+         <rect width='20' height='20' fill='#ff0000'/></svg>",
+    ));
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<body style='margin:0;background:#000'>\
+         <div style='width:20px;height:20px;background-image:url(cid:bg)'></div></body>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    // Styling loads it; it shows now, not with whatever renders next.
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), [255, 0, 0]);
+}
+
+#[test]
 fn other_schemes_fail_closed() {
     let mut h = host();
     h.handle(&cmd(

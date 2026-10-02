@@ -411,6 +411,10 @@ impl Surface {
     fn resolve(&mut self) {
         self.doc.handle_messages();
         self.doc.resolve(self.started.elapsed().as_secs_f64());
+        // Styling loads CSS images (a background), and a `cid:` or `data:`
+        // one arrives at once: in place now, it paints in this frame
+        // rather than the next one. It needs no layout.
+        self.doc.handle_messages();
     }
 
     /// Whether the surface takes the pointer at CSS pixel (`x`, `y`): some
