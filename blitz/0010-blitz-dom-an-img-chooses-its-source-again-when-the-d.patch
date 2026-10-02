@@ -1,0 +1,181 @@
+From 3f67adaef535a39921912d29e0110860d1ea5692 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 20:28:34 +0200
+Subject: [PATCH] blitz-dom: an <img> chooses its source again when the device
+ changes
+
+0008 chose an <img>'s source from its srcset, sizes and <picture> when
+it loaded, and never again: moving the window to a display of another
+scale, zooming, or changing the colour scheme kept the candidate chosen
+for the old device, as a page resized to another `sizes` width did.
+
+Each <img> whose source the device chose (it has a srcset, or is in a
+<picture>) remembers the URL it loads (chosen_image_sources). When
+flush_pending_device_changes applies a new size, scale, colour scheme or
+media type, those images choose again, against the new device, and load
+what they chose when it differs: from the cache at once, or fetched,
+the old image showing until the new one arrives. An image chosen for an
+old device that arrives after the choice moved on is not shown.
+
+hotty-blitz's srcset_and_picture_choose_again_for_a_new_scale_or_theme
+checks it (1x, 2x, a light theme, 1x again); it fails without the
+change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs     | 20 ++++++++
+ packages/blitz-dom/src/image_source.rs | 67 ++++++++++++++++++++++++++
+ packages/blitz-dom/src/mutator.rs      |  3 +-
+ 3 files changed, 89 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index a6f2ea7b..a8aa7fd0 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -356,6 +356,10 @@ pub struct BaseDocument {
+     /// Value is a list of (node_id, image_type) pairs waiting for the image.
+     pub(crate) pending_images: HashMap<String, Vec<(NodeId, ImageType)>>,
+ 
++    /// The source each `<img>` whose source the device chose loads, resolved
++    /// (image_source.rs): chosen again when the device changes.
++    pub(crate) chosen_image_sources: HashMap<NodeId, String>,
++
+     /// What inline SVG `<image>` elements refer to, by resolved URL
+     /// (svg_image.rs).
+     #[cfg(feature = "svg")]
+@@ -516,6 +520,7 @@ impl BaseDocument {
+             deferred_construction_nodes: Vec::new(),
+             image_cache: HashMap::new(),
+             pending_images: HashMap::new(),
++            chosen_image_sources: HashMap::new(),
+             #[cfg(feature = "svg")]
+             svg_images: HashMap::new(),
+             pending_style_image_nodes: Vec::new(),
+@@ -1434,6 +1439,10 @@ impl BaseDocument {
+ 
+             match image_type {
+                 ImageType::Image => {
++                    if !self.image_source_is_current(node_id, url) {
++                        continue;
++                    }
++                    let node = &mut self.nodes[node_id];
+                     node.element_data_mut().unwrap().special_data =
+                         SpecialElementData::Image(Box::new(image.clone()));
+ 
+@@ -2110,6 +2119,17 @@ impl BaseDocument {
+         ));
+         self.scroll_viewport_by(0.0, 0.0); // Clamp scroll offset
+ 
++        // An <img> with a srcset, or in a <picture>, may choose another
++        // source for the new device.
++        if changes.intersects(
++            DeviceChanges::VIEWPORT_SIZE
++                | DeviceChanges::SCALE
++                | DeviceChanges::COLOR_SCHEME
++                | DeviceChanges::MEDIA_TYPE,
++        ) {
++            self.choose_image_sources_again();
++        }
++
+         // Text is shaped at a specific scale factor, so cached inline layouts
+         // must be invalidated when the scale changes.
+         if changes.contains(DeviceChanges::SCALE) {
+diff --git a/packages/blitz-dom/src/image_source.rs b/packages/blitz-dom/src/image_source.rs
+index 1df14950..1fe18cbc 100644
+--- a/packages/blitz-dom/src/image_source.rs
++++ b/packages/blitz-dom/src/image_source.rs
+@@ -139,6 +139,73 @@ impl BaseDocument {
+         self.pick(node, src).or_else(|| src.map(str::to_string))
+     }
+ 
++    /// Whether what `<img>` node `img` shows depends on the device: it has
++    /// a `srcset`, or is in a `<picture>`.
++    fn chooses(&self, img: NodeId) -> bool {
++        let Some(node) = self.get_node(img) else {
++            return false;
++        };
++        node.attr(local_name!("srcset")).is_some()
++            || node.parent.and_then(|p| self.get_node(p)).is_some_and(|p| {
++                p.element_data()
++                    .is_some_and(|e| e.name.local == local_name!("picture"))
++            })
++    }
++
++    /// `<img>` node `img` loads `url` (resolved): remembered when the
++    /// device chose it, so that another device can choose again.
++    pub(crate) fn image_source_loading(&mut self, img: NodeId, url: &str) {
++        if self.chooses(img) {
++            self.chosen_image_sources.insert(img, url.to_string());
++        } else {
++            self.chosen_image_sources.remove(&img);
++        }
++    }
++
++    /// Whether `url` is what `<img>` node `img` shows now, as far as the
++    /// device's choice goes: an image chosen for another device that
++    /// arrives late is not shown.
++    pub(crate) fn image_source_is_current(&self, img: NodeId, url: &str) -> bool {
++        self.chosen_image_sources
++            .get(&img)
++            .is_none_or(|current| current == url)
++    }
++
++    /// The device changed (its size, scale, colour scheme or media type):
++    /// every `<img>` whose source the device chose chooses again, and loads
++    /// what it chose when that differs.
++    pub(crate) fn choose_image_sources_again(&mut self) {
++        let mut again = Vec::new();
++        let mut gone = Vec::new();
++        for (&img, current) in &self.chosen_image_sources {
++            let in_document = self.get_node(img).is_some_and(|n| {
++                n.flags.is_in_document()
++                    && n.element_data()
++                        .is_some_and(|e| e.name.local == local_name!("img"))
++            });
++            if !in_document {
++                gone.push(img);
++                continue;
++            }
++            let now = self
++                .image_source(img)
++                .filter(|s| !s.is_empty())
++                .and_then(|s| self.url.resolve_relative(&s));
++            if now.is_some_and(|now| now.as_str() != current) {
++                again.push(img);
++            }
++        }
++        for img in gone {
++            self.chosen_image_sources.remove(&img);
++        }
++        if !again.is_empty() {
++            let mut mutator = self.mutate();
++            for img in again {
++                mutator.load_image(img);
++            }
++        }
++    }
++
+     /// The candidate of `node`'s `srcset` for this device. `src`, an
+     /// `<img>`'s, counts as a 1x candidate when no other is 1x.
+     fn pick(&self, node: &Node, src: Option<&str>) -> Option<String> {
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index d953b1e4..ff962491 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -1174,11 +1174,12 @@ impl<'doc> DocumentMutator<'doc> {
+         self.doc.stylesheet_generation += 1;
+     }
+ 
+-    fn load_image(&mut self, target_id: NodeId) {
++    pub(crate) fn load_image(&mut self, target_id: NodeId) {
+         if let Some(raw_src) = self.doc.image_source(target_id) {
+             if !raw_src.is_empty() {
+                 let src = self.doc.resolve_url(&raw_src);
+                 let src_string = src.as_str();
++                self.doc.image_source_loading(target_id, src_string);
+ 
+                 // Check cache first
+                 if let Some(cached_image) = self.doc.image_cache.get(src_string) {
+-- 
+2.55.0
+

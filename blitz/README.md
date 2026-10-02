@@ -18,6 +18,7 @@ changes upstream is an open question.
 | `0007-blitz-traits-blitz-dom-*` | a request carries its destination: image, style, font, iframe, document (below) |
 | `0008-blitz-dom-*` | an `<img>` shows the source `srcset`, `sizes` and `<picture>` choose (below) |
 | `0009-blitz-dom-*` | an inline SVG's `<image>` draws what the document fetches for it (below) |
+| `0010-blitz-dom-*` | an `<img>` chooses its source again when the device changes (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -87,10 +88,15 @@ stylo `MediaList` against the stylist's device), else its own `srcset`,
 else its `src`. Of a `srcset`, the candidate with the smallest density at
 or above the device's, else the densest; a `w` candidate's density is its
 width over the size `sizes` gives it (stylo's `SourceSizeList`). Changing
-the attributes loads the image again; a new viewport or scale does not
-choose again. hotty-blitz's `srcset_resolves_cid_resources` and
-`srcset_and_picture_choose_what_is_fetched` check it, and anim.rs finds a
-playing image by the same source.
+the attributes loads the image again, and so does a new device (0010):
+when the viewport's size, scale or colour scheme, or the media type,
+changes, every `<img>` whose source the device chose chooses again and
+loads what it chose if that differs; the old image shows until the new
+one arrives, and one chosen for an old device that arrives late is not
+shown. hotty-blitz's `srcset_resolves_cid_resources`,
+`srcset_and_picture_choose_what_is_fetched` and
+`srcset_and_picture_choose_again_for_a_new_scale_or_theme` check it, and
+anim.rs finds a playing image by the same source.
 
 ## Disabled controls
 

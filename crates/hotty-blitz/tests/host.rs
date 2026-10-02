@@ -505,6 +505,46 @@ fn srcset_resolves_cid_resources() {
 }
 
 #[test]
+fn srcset_and_picture_choose_again_for_a_new_scale_or_theme() {
+    // A window moved to a display of another scale, or a font zoom: the
+    // candidate for the new density shows. Blitz fork 0010.
+    let svg = |c: &str| {
+        format!("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><rect width='20' height='20' fill='{c}'/></svg>")
+    };
+    let mut h = host();
+    for (id, c) in [("one", "#ff0000"), ("two", "#00ff00"), ("dark", "#0000ff"), ("light", "#ffffff")] {
+        h.handle(&cmd(&[("a", "res"), ("id", id), ("type", "image/svg+xml"), ("q", "2")], &svg(c)));
+    }
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<body style='margin:0;background:#000'>\
+         <img srcset='cid:one 1x, cid:two 2x' style='display:block;width:20px;height:20px'>\
+         <picture><source media='(prefers-color-scheme: dark)' srcset='cid:dark'>\
+         <img src='cid:light' style='display:block;width:20px;height:20px'></picture></body>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    let at = |h: &mut Host, scale: f32, dark: bool| {
+        let mut config = h.config().clone();
+        config.metrics = Metrics {
+            cell_w: (10.0 * scale) as u32,
+            cell_h: (20.0 * scale) as u32,
+            scale,
+        };
+        config.theme.dark = dark;
+        h.set_config(config);
+        render(h);
+        let px = |y: f32| pixel(h, "x", (10.0 * scale) as u32, (y * scale) as u32);
+        [px(10.0), px(30.0)]
+    };
+    let (red, green, blue, white) = ([255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]);
+    assert!(h.config().theme.dark);
+    assert_eq!(at(&mut h, 1.0, true), [red, blue]);
+    assert_eq!(at(&mut h, 2.0, true), [green, blue], "a denser display");
+    assert_eq!(at(&mut h, 2.0, false), [green, white], "a light theme");
+    assert_eq!(at(&mut h, 1.0, false), [red, white], "back to 1x");
+}
+
+#[test]
 fn an_inline_svgs_image_resolves_cid_resources() {
     // SPEC §7.1: cid: in an SVG href, sent before the document or after it,
     // and sent again; Blitz fork 0009.
