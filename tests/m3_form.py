@@ -114,6 +114,11 @@ def main():
     click(186, 226)  # Save: `click` and `submit`
     wait_for(lambda ev: any(e.get("e") == "submit" for e in ev), "submit")
     send(b"\x1b", 0.3)  # Esc is the program's: it gives the keyboard back
+    # A press with Alt held is the program's (SPEC §9.2): an Alt click on
+    # the checkbox toggles nothing, and the surface reports nothing of it.
+    n = len(events())
+    click(166, 146, 8)
+    alt_events = [e for e in events()[n:] if e["kind"] == "event"]
     send(b"q", 0.3)  # now 'q' reaches the program, which quits
     try:
         proc.wait(timeout=5)
@@ -141,6 +146,7 @@ def main():
     expect((detail("change", "notify") or {}).get("checked") is True, f"notify checked, got {detail('change', 'notify')}")
     toggles = [e for e in ev if e.get("e") == "change" and e.get("t") == "notify"]
     expect(len(toggles) == 1, f"only the left click toggles notify, got {toggles}")
+    expect(alt_events == [], f"an Alt click reached the surface: {alt_events}")
     expect(("click", "save") in got, "click on save")
     sub = detail("submit", "settings") or {}
     expect(sub.get("name") == "hello" and sub.get("email") == "a@b.c", f"submit fields, got {sub}")

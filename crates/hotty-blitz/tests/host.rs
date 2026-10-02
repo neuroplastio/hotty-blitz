@@ -1529,6 +1529,46 @@ fn a_press_comes_before_the_blur_it_causes_on_another_surface() {
     assert_eq!(order, vec![("x", "press"), ("f", "change"), ("f", "blur")]);
 }
 
+#[test]
+fn a_press_with_alt_is_the_programs_and_gives_the_keyboard_back() {
+    // SPEC §9.2: as a press on the cells. The surface with the keyboard
+    // commits and gives it back; the surface pressed reports no `press`,
+    // though its placement asked, nor anything else until the release.
+    let mut h = host();
+    place_form(&mut h);
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+        "",
+    ));
+    type_text(&mut h, "yz");
+    doc_at(&mut h, "x", &[], "<p id=p data-on=click>text</p>", "2");
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2"), ("p", "1"), ("q", "2")],
+        "",
+    ));
+    let alt = Mods {
+        alt: true,
+        ..Mods::default()
+    };
+    let pairs = |fx: &[Effect]| -> Vec<(String, String)> {
+        replies(fx)
+            .iter()
+            .map(|c| (c.get("s").unwrap_or("").into(), c.get("e").unwrap_or("").into()))
+            .collect()
+    };
+    let got = pairs(&h.pointer("x", PointerKind::Down, 20.0, 25.0, alt));
+    assert_eq!(got, vec![("f".into(), "change".into()), ("f".into(), "blur".into())]);
+    assert!(!h.is_focused("f"));
+    // Alt let go: the gesture is still the program's, to its release.
+    assert_eq!(pairs(&h.pointer("x", PointerKind::Move, 22.0, 25.0, Mods::default())), vec![]);
+    assert_eq!(pairs(&h.pointer("x", PointerKind::Up, 22.0, 25.0, Mods::default())), vec![]);
+    // The next press without Alt is the surface's again.
+    let got = pairs(&h.pointer("x", PointerKind::Down, 20.0, 25.0, Mods::default()));
+    assert_eq!(got, vec![("x".into(), "press".into())]);
+    let got = pairs(&h.pointer("x", PointerKind::Up, 20.0, 25.0, Mods::default()));
+    assert_eq!(got, vec![("x".into(), "click".into())]);
+}
+
 /// A drag's events with their detail: `(e, t, detail)`.
 fn drags(ev: &[Command]) -> Vec<(String, String, serde_json::Value)> {
     ev.iter()

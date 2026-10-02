@@ -33,6 +33,9 @@ pub struct InputRouter {
     /// last report over it: a drag's moves off it are counted from there
     /// (SPEC §9.1).
     pressed_at: (f32, f32),
+    /// A press with Alt held began the gesture under way: until its
+    /// release, it is the program's (SPEC §9.2).
+    program_press: bool,
     enabled: bool,
     partial: Vec<u8>,
 }
@@ -51,6 +54,7 @@ impl InputRouter {
             hovered: None,
             pressed: None,
             pressed_at: (0.0, 0.0),
+            program_press: false,
             enabled: false,
             partial: Vec::new(),
         }
@@ -210,6 +214,32 @@ impl InputRouter {
             ));
         }
         let over = target.as_ref().map(|t| t.0.clone());
+
+        // A press with Alt held is the program's, wherever it lands, and so
+        // is its gesture until the release (SPEC §9.2): as on the cells.
+        if press && !motion && primary {
+            self.program_press = mods.alt;
+        }
+        if self.program_press {
+            if let Some(old) = self.hovered.take() {
+                push_effects(
+                    host.pointer(&old, PointerKind::Leave, 0.0, 0.0, mods),
+                    to_program,
+                );
+            }
+            if press && !motion && primary {
+                self.pressed = None;
+                for other in host.surface_names().map(str::to_string).collect::<Vec<_>>() {
+                    if host.is_focused(&other) {
+                        push_effects(host.blur(&other), to_program);
+                    }
+                }
+            } else if !press && !motion && primary {
+                self.program_press = false;
+            }
+            self.forward_mouse(b, px, py, press, to_program);
+            return;
+        }
 
         // Hover: leave the old surface when the pointer moves off it.
         if self.hovered != over {

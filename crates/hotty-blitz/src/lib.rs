@@ -167,6 +167,9 @@ pub struct Host {
     surfaces: BTreeMap<String, surface::Surface>,
     /// Surfaces created so far, for their order (SPEC §5.2).
     created: u32,
+    /// A press with Alt held began the gesture under way: it and the rest
+    /// of the gesture are the program's, not a surface's (SPEC §9.2).
+    program_press: bool,
     frame_log: Option<FrameLog>,
 }
 
@@ -211,6 +214,7 @@ impl Host {
             font_ctx: FontContext::default(),
             surfaces: BTreeMap::new(),
             created: 0,
+            program_press: false,
             frame_log: FrameLog::open(),
         }
     }
@@ -660,6 +664,11 @@ impl Host {
     /// past its size). A host that loses the pointer before the release
     /// sends `Leave`, which ends the drag. Mouse and pen only: a host passes
     /// a touch as a tap (`Down` and `Up` where it lifts), never its moves.
+    ///
+    /// A press with Alt held is the program's (SPEC §9.2): it and the rest
+    /// of its gesture, to the release, reach no surface. The host reports
+    /// them to the program as it would over the cells; passing them here is
+    /// harmless, and gives the keyboard back as such a press does.
     pub fn pointer(
         &mut self,
         surface: &str,
@@ -668,6 +677,14 @@ impl Host {
         y: f32,
         mods: Mods,
     ) -> Vec<Effect> {
+        // A press begins a gesture, and decides whose it is: a release the
+        // host lost does not leave the next one the program's.
+        if kind == PointerKind::Down {
+            self.program_press = mods.alt;
+        }
+        if self.program_press {
+            return self.program_pointer(surface, kind, mods);
+        }
         let m = self.config.metrics;
         if !self.surfaces.contains_key(surface) {
             return Vec::new();
@@ -703,6 +720,35 @@ impl Host {
             }
         }
         effects.extend(events.into_iter().map(|e| Effect::Reply(e.encode(surface))));
+        effects
+    }
+
+    /// A pointer event of a gesture that a press with Alt began (SPEC §9.2):
+    /// the press is one on the cells, so the surface under it is no longer
+    /// hovered and a surface with the keyboard gives it back; nothing else
+    /// reaches a surface until the release.
+    fn program_pointer(&mut self, surface: &str, kind: PointerKind, mods: Mods) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        match kind {
+            PointerKind::Down => {
+                if let Some(s) = self.surfaces.get_mut(surface) {
+                    let (lead, events) =
+                        s.pointer_input(PointerKind::Leave, 0.0, 0.0, (0, 0), mods);
+                    effects.extend(
+                        lead.into_iter()
+                            .chain(events)
+                            .map(|e| Effect::Reply(e.encode(surface))),
+                    );
+                }
+                for (name, s) in self.surfaces.iter_mut() {
+                    if s.has_focus() {
+                        effects.extend(s.blur().into_iter().map(|e| Effect::Reply(e.encode(name))));
+                    }
+                }
+            }
+            PointerKind::Up => self.program_press = false,
+            PointerKind::Move | PointerKind::Leave => {}
+        }
         effects
     }
 
