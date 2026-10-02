@@ -379,7 +379,29 @@ pub fn run(opts: Options) -> i32 {
             PollFd::new(stdin_fd, PollFlags::POLLIN),
             PollFd::new(sig_r.as_fd(), PollFlags::POLLIN),
         ];
-        match nix::poll::poll(&mut fds, PollTimeout::NONE) {
+        // An animated image's next frame is a deadline too; not while the
+        // program holds its output back (mode 2026), which ends in a flush.
+        let timeout = match shim.host.next_frame() {
+            Some(t) if !shim.in_sync => {
+                let ms = t
+                    .saturating_duration_since(Instant::now())
+                    .as_micros()
+                    .div_ceil(1000);
+                PollTimeout::try_from(ms.min(i32::MAX as u128) as i32).unwrap_or(PollTimeout::MAX)
+            }
+            _ => PollTimeout::NONE,
+        };
+        match nix::poll::poll(&mut fds, timeout) {
+            Ok(0) => {
+                let mut out = Vec::new();
+                shim.flush_renders(&mut out, true);
+                if !out.is_empty() {
+                    shim.input.observe(&out);
+                    let _ = stdout_lock.write_all(&out);
+                    let _ = stdout_lock.flush();
+                }
+                continue;
+            }
             Ok(_) => {}
             Err(nix::errno::Errno::EINTR) => continue,
             Err(_) => break,

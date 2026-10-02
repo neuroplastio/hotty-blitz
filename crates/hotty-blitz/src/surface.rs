@@ -2,7 +2,7 @@
 //! glue that turns host input into DOM events and DOM events into HOTTY ones.
 
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
-use crate::{Config, Metrics, Rect, net, paint, patch};
+use crate::{Config, Metrics, Rect, anim, net, paint, patch};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
@@ -146,6 +146,12 @@ pub(crate) struct Surface {
     /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
     /// this host fetches nothing from the network.
     base: Option<url::Url>,
+    /// Where the document's animated images come from (anim.rs).
+    store: Arc<net::Store>,
+    /// The animated images the document shows, playing.
+    playing: Vec<anim::Playing>,
+    /// The document changed since the playing images' nodes were found.
+    anim_stale: bool,
 }
 
 /// A drag under way (SPEC §9.1): the element that started it, and the
@@ -319,7 +325,7 @@ impl Surface {
             // `href="#x"`); the loader fails closed on this scheme anyway (SPEC §12).
             base_url: Some(BASE_URL.to_string()),
             ua_stylesheets: Some(vec![DEFAULT_CSS.to_string(), host_css.to_string()]),
-            net_provider: Some(Arc::new(net::Provider(store))),
+            net_provider: Some(Arc::new(net::Provider(store.clone()))),
             navigation_provider: Some(nav.clone()),
             html_parser_provider: Some(Arc::new(HtmlProvider)),
             font_ctx: Some(font_ctx.clone()),
@@ -370,6 +376,80 @@ impl Surface {
             buttons: MouseEventButtons::None,
             base,
             started: std::time::Instant::now(),
+            store,
+            playing: Vec::new(),
+            anim_stale: true,
+        }
+    }
+
+    /// Starts playing the animated images the document loaded since the
+    /// last call, at `now`. One loaded again starts over.
+    pub fn adopt_animations(&mut self, now: std::time::Instant) {
+        let started = self.store.take_animations(self.doc.id());
+        if started.is_empty() {
+            return;
+        }
+        for (url, a) in started {
+            self.playing.retain(|p| p.url != url);
+            self.playing.push(anim::Playing::new(url, a, now));
+        }
+        self.anim_stale = true;
+        self.dirty = true;
+    }
+
+    /// Moves every playing image that is seen to its frame at `now`. True
+    /// if one changed: the surface is then dirty.
+    pub fn advance(&mut self, now: std::time::Instant) -> bool {
+        let mut changed = false;
+        for p in &mut self.playing {
+            changed |= p.advance(now);
+        }
+        self.dirty |= changed;
+        changed
+    }
+
+    /// When the next frame of an animated image that is seen is due.
+    pub fn next_frame(&self) -> Option<std::time::Instant> {
+        self.playing.iter().filter_map(|p| p.due()).min()
+    }
+
+    /// Puts each playing image's current frame into the nodes that show
+    /// it, damaging their boxes, and notes which images the placement's
+    /// window shows. After layout: the nodes are found again after a change.
+    fn show_animations(&mut self, m: &Metrics) {
+        if self.playing.is_empty() {
+            return;
+        }
+        let scale = m.scale as f64;
+        if self.anim_stale {
+            anim::locate(&self.doc, &mut self.playing);
+            self.anim_stale = false;
+        }
+        let Surface {
+            doc,
+            damage,
+            playing,
+            ..
+        } = self;
+        for p in playing.iter_mut() {
+            p.show(doc, &mut |d, id| damage.touch(d, id, scale));
+        }
+        let window = match self.window {
+            Some(w) => paint::DevRect {
+                x0: (w.x as u32 * m.cell_w) as f64,
+                y0: (w.y as u32 * m.cell_h) as f64,
+                x1: ((w.x + w.w) as u32 * m.cell_w) as f64,
+                y1: ((w.y + w.h) as u32 * m.cell_h) as f64,
+            },
+            None => paint::DevRect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 0.0,
+                y1: 0.0,
+            },
+        };
+        for p in &mut self.playing {
+            p.set_visible(&self.doc, scale, window);
         }
     }
 
@@ -454,6 +534,10 @@ impl Surface {
             // this surface dirty again.
             return None;
         }
+        // Styling may have loaded images (a background), and the document
+        // may have changed under the animated ones.
+        self.adopt_animations(t0);
+        self.show_animations(m);
         let t1 = std::time::Instant::now();
         self.dirty = false;
         let redeliver = std::mem::take(&mut self.redeliver);
@@ -600,6 +684,8 @@ impl Surface {
         let res = patch::apply(doc, parse_doc, op, t, k, payload, &mut |d, id| {
             damage.touch(d, id, scale)
         });
+        // Nodes that show an animated image may have come or gone.
+        self.anim_stale = true;
         if self.detached {
             // The controls a patch added, or took `disabled` from, are
             // disabled too. The patch already recorded where they paint.
@@ -663,6 +749,7 @@ impl Surface {
         self.doc.handle_messages();
         self.dirty = true;
         self.damage.full = true;
+        self.anim_stale = true;
     }
 
     /// Text per terminal row (SPEC §11): each text run goes to the row its

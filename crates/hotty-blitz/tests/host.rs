@@ -1854,3 +1854,293 @@ fn a_var_patch_lays_out_like_a_fresh_document() {
     assert!(painted(&fresh) > 0, "the fresh document paints the line");
     assert_eq!(painted(&inc), painted(&fresh));
 }
+
+/// An animated GIF, `size`×`size`, one solid colour per frame, each shown
+/// `ms` milliseconds; it plays `repeat` more times after the first, or
+/// forever. The tests give frames seconds ([`S`]): `render_dirty` plays them
+/// to the clock, and only `Host::animate` with a deadline may move them on.
+fn gif(size: u32, colours: &[[u8; 3]], ms: u32, repeat: Option<u16>) -> Vec<u8> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(match repeat {
+            None => Repeat::Infinite,
+            Some(n) => Repeat::Finite(n),
+        })
+        .unwrap();
+        let frames = colours.iter().map(|&[r, g, b]| {
+            let img = image::RgbaImage::from_pixel(size, size, image::Rgba([r, g, b, 255]));
+            image::Frame::from_parts(img, 0, 0, image::Delay::from_numer_denom_ms(ms, 1))
+        });
+        enc.encode_frames(frames).unwrap();
+    }
+    out
+}
+
+const GREEN: [u8; 3] = [0, 255, 0];
+/// A frame's delay in the tests, in milliseconds.
+const S: u32 = 5000;
+
+fn res(h: &mut Host, id: &str, mime: &str, bytes: Vec<u8>) {
+    let r = replies(
+        &h.handle(&Command::new(
+            [("a", "res"), ("id", id), ("type", mime)]
+                .into_iter()
+                .collect(),
+            bytes,
+        )),
+    );
+    assert_eq!(r[0].get("a"), Some("ok"));
+}
+
+/// `img` at the top left of an 80x10 surface (800x200 px, large enough
+/// that a small change repaints only part of it), text below.
+fn place_image(h: &mut Host, img: &str) {
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        &format!(
+            "<body style='margin:0;background:#000;color:#fff'>{img}<p>a caption under it</p></body>"
+        ),
+    ));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "80"),
+            ("r", "10"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+}
+
+const IMG: &str = "<img src='cid:g' style='display:block;width:20px;height:20px'>";
+
+/// The frame `h` shows next, rendered: its damage.
+fn next_frame(h: &mut Host) -> hotty_blitz::Damage {
+    let due = h.next_frame().expect("the animation plays");
+    h.animate(due);
+    let frames = render(h);
+    assert_eq!(frames.len(), 1, "one frame for the one surface");
+    frames[0].3.clone()
+}
+
+#[test]
+fn an_animated_gif_plays_its_frames_on_their_delays_and_loops() {
+    let mut h = host();
+    res(
+        &mut h,
+        "g",
+        "image/gif",
+        gif(20, &[RED, GREEN, BLUE], S, None),
+    );
+    let before = std::time::Instant::now();
+    place_image(&mut h, IMG);
+    assert_eq!(render(&mut h)[0].3, hotty_blitz::Damage::Full);
+    assert_eq!(pixel(&h, "x", 10, 10), RED, "the first frame shows at once");
+    let due = h.next_frame().expect("the animation plays");
+    let wait = due - before;
+    assert!(
+        wait >= std::time::Duration::from_secs(5) && wait < std::time::Duration::from_secs(6),
+        "the next frame is due a frame's delay after it started: {wait:?}"
+    );
+    // Nothing is due before then.
+    h.animate(due - std::time::Duration::from_millis(1));
+    assert!(render(&mut h).is_empty());
+    // Each frame repaints the image's box only.
+    for colour in [GREEN, BLUE, RED, GREEN] {
+        match next_frame(&mut h) {
+            hotty_blitz::Damage::Rects(rs) => {
+                assert!(
+                    rs.iter().all(|r| r.y + r.h <= 40 && r.x + r.w <= 64),
+                    "{rs:?}"
+                )
+            }
+            d => panic!("a frame of the image repaints part of the surface: {d:?}"),
+        }
+        assert_eq!(pixel(&h, "x", 10, 10), colour);
+    }
+}
+
+#[test]
+fn an_animated_frame_paints_as_a_full_paint_would() {
+    let mut h = host();
+    res(
+        &mut h,
+        "g",
+        "image/gif",
+        gif(20, &[RED, GREEN, BLUE], S, None),
+    );
+    place_image(
+        &mut h,
+        &format!("<div style='padding:3px;border:1px solid #fff'>{IMG}</div>"),
+    );
+    render(&mut h);
+    for _ in 0..2 {
+        assert!(matches!(next_frame(&mut h), hotty_blitz::Damage::Rects(_)));
+        let partial = h.frame("x").unwrap().rgba.clone();
+        h.repaint();
+        render(&mut h);
+        assert!(
+            partial == h.frame("x").unwrap().rgba,
+            "a partial paint differs from a full one"
+        );
+    }
+}
+
+#[test]
+fn still_images_ask_for_no_timer() {
+    let mut h = host();
+    res(&mut h, "g", "image/gif", gif(20, &[RED], S, None));
+    place_image(&mut h, IMG);
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), RED);
+    assert_eq!(h.next_frame(), None);
+    assert!(!h.has_dirty());
+}
+
+#[test]
+fn an_image_out_of_the_window_or_not_placed_asks_for_no_timer() {
+    let mut h = host();
+    res(&mut h, "g", "image/gif", gif(20, &[RED, GREEN], S, None));
+    // The image is on the surface's third row; the window shows two.
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        &format!("<body style='margin:0'><div style='height:40px'></div>{IMG}</body>"),
+    ));
+    assert_eq!(h.next_frame(), None, "not placed");
+    let place = |h: &mut Host, extra: &[(&str, &str)]| {
+        let mut pairs = vec![
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "4"),
+            ("q", "2"),
+        ];
+        pairs.extend_from_slice(extra);
+        h.handle(&cmd(&pairs, ""));
+        render(h);
+    };
+    place(&mut h, &[("h", "2")]);
+    assert_eq!(h.next_frame(), None, "out of the window");
+    place(&mut h, &[]);
+    assert!(h.next_frame().is_some(), "in the window");
+    h.handle(&cmd(&[("a", "hide"), ("s", "x"), ("q", "2")], ""));
+    assert_eq!(h.next_frame(), None, "hidden");
+}
+
+#[test]
+fn a_gif_that_loops_a_number_of_times_stops_on_its_last_frame() {
+    let mut h = host();
+    // Played once, and once more.
+    res(
+        &mut h,
+        "g",
+        "image/gif",
+        gif(20, &[RED, GREEN], S, Some(1)),
+    );
+    place_image(&mut h, IMG);
+    render(&mut h);
+    for colour in [GREEN, RED, GREEN] {
+        next_frame(&mut h);
+        assert_eq!(pixel(&h, "x", 10, 10), colour);
+    }
+    assert_eq!(h.next_frame(), None, "the second play ended");
+    assert_eq!(pixel(&h, "x", 10, 10), GREEN);
+}
+
+#[test]
+fn a_frame_of_no_delay_shows_for_a_tenth_of_a_second() {
+    let mut h = host();
+    res(&mut h, "g", "image/gif", gif(20, &[RED, GREEN], 0, None));
+    let before = std::time::Instant::now();
+    place_image(&mut h, IMG);
+    render(&mut h);
+    let wait = h.next_frame().unwrap() - before;
+    assert!(wait >= std::time::Duration::from_millis(100), "{wait:?}");
+}
+
+#[test]
+fn backgrounds_data_urls_and_apngs_play_too() {
+    use base64::Engine as _;
+    // An APNG of two frames, half as long as the GIFs', forever.
+    let mut apng = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut apng, 20, 20);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_animated(2, 0).unwrap();
+        enc.set_frame_delay(S as u16 / 2, 1000).unwrap();
+        let mut w = enc.write_header().unwrap();
+        for [r, g, b] in [BLUE, GREEN] {
+            w.write_image_data(&[r, g, b, 255].repeat(400)).unwrap();
+        }
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(gif(20, &[GREEN, RED], S, None));
+    let mut h = host();
+    res(&mut h, "g", "image/gif", gif(20, &[RED, BLUE], S, None));
+    res(&mut h, "p", "image/png", apng);
+    place_image(
+        &mut h,
+        &format!(
+            "<div style='display:flex'>
+             <div style='width:20px;height:20px;background-image:url(cid:g)'></div>
+             <img src='data:image/gif;base64,{data}' style='width:20px;height:20px'>
+             <img src='cid:p' style='width:20px;height:20px'></div>"
+        ),
+    );
+    render(&mut h);
+    // Each plays on its own beat (the background started when styling
+    // loaded it): what each showed, frame after frame.
+    let mut seen: [Vec<[u8; 3]>; 3] = Default::default();
+    for step in 0..8 {
+        if step > 0 {
+            next_frame(&mut h);
+        }
+        for (i, x) in [10, 30, 50].into_iter().enumerate() {
+            let c = pixel(&h, "x", x, 10);
+            if seen[i].last() != Some(&c) {
+                seen[i].push(c);
+            }
+        }
+    }
+    assert_eq!(seen[0][..3], [RED, BLUE, RED], "the background");
+    assert_eq!(seen[1][..3], [GREEN, RED, GREEN], "the data: URL");
+    assert_eq!(seen[2][..5], [BLUE, GREEN, BLUE, GREEN, BLUE], "the APNG");
+}
+
+#[test]
+fn a_patch_that_adds_an_animated_image_plays_it() {
+    let mut h = host();
+    res(&mut h, "g", "image/gif", gif(20, &[RED, GREEN], S, None));
+    place_image(&mut h, "<div id=box></div>");
+    render(&mut h);
+    assert_eq!(h.next_frame(), None);
+    h.handle(&cmd(
+        &[
+            ("a", "patch"),
+            ("s", "x"),
+            ("op", "inner"),
+            ("t", "box"),
+            ("q", "2"),
+        ],
+        IMG,
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), RED);
+    next_frame(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), GREEN);
+    // Removed, it stops asking for time.
+    h.handle(&cmd(
+        &[
+            ("a", "patch"),
+            ("s", "x"),
+            ("op", "inner"),
+            ("t", "box"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(h.next_frame(), None);
+}

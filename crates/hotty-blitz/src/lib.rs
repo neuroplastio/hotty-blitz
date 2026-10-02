@@ -5,6 +5,7 @@
 //! and the Ghostty fork (PoC-2, through [`ffi`]). Neither knows anything about
 //! HTML; both hand commands to a [`Host`] and draw the frames it produces.
 
+mod anim;
 pub mod ffi;
 pub mod input;
 pub mod net;
@@ -292,8 +293,37 @@ impl Host {
         }
     }
 
+    /// Whether [`Host::render_dirty`] has something to render: a placed
+    /// surface changed, or an animated image on one is due to show its next
+    /// frame.
     pub fn has_dirty(&self) -> bool {
-        self.surfaces.values().any(|s| s.dirty && s.placed)
+        let now = std::time::Instant::now();
+        self.surfaces
+            .values()
+            .any(|s| s.placed && (s.dirty || s.next_frame().is_some_and(|t| t <= now)))
+    }
+
+    /// When an animated image (GIF, APNG, WebP) on a placed surface is due
+    /// to show its next frame: render then. `None` while nothing plays, or
+    /// nothing that plays is in a placement's window. Each animated image
+    /// has one deadline at a time, so a host needs one timer.
+    pub fn next_frame(&self) -> Option<std::time::Instant> {
+        self.surfaces
+            .values()
+            .filter(|s| s.placed)
+            .filter_map(|s| s.next_frame())
+            .min()
+    }
+
+    /// Moves the animated images of placed surfaces to the frames they show
+    /// at `now`; the surfaces that changed are dirty. [`Host::render_dirty`]
+    /// does it with the current time.
+    pub fn animate(&mut self, now: std::time::Instant) {
+        for s in self.surfaces.values_mut() {
+            if s.placed {
+                s.advance(now);
+            }
+        }
     }
 
     /// Everything goes: full reset, or the program's session ended.
@@ -316,6 +346,7 @@ impl Host {
     /// Renders every placed surface whose document changed, calling `out`
     /// with its frame and what changed.
     pub fn render_dirty(&mut self, out: &mut dyn FnMut(&str, &Frame, &Damage)) {
+        self.animate(std::time::Instant::now());
         let metrics = self.config.metrics;
         let dark = self.config.theme.dark;
         for (name, s) in self.surfaces.iter_mut() {
@@ -369,6 +400,11 @@ impl Host {
     pub fn handle(&mut self, cmd: &Command) -> Vec<Effect> {
         let start = self.frame_log.is_some().then(std::time::Instant::now);
         let effects = self.handle_command(cmd);
+        // The animated images the command had documents load start now.
+        let now = std::time::Instant::now();
+        for s in self.surfaces.values_mut() {
+            s.adopt_animations(now);
+        }
         if let (Some(start), Some(log)) = (start, &mut self.frame_log) {
             log.commands += 1;
             log.handle += start.elapsed();

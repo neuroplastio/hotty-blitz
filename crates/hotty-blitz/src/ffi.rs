@@ -268,6 +268,27 @@ pub unsafe extern "C" fn hotty_host_has_dirty(h: *const HottyHost) -> bool {
     unsafe { h.as_ref() }.is_some_and(|h| h.host.has_dirty())
 }
 
+/// Milliseconds until an animated image (GIF, APNG, WebP) on a placed
+/// surface shows its next frame: render then (`hotty_host_has_dirty` is
+/// true by that time). 0 when one is due now; -1 when nothing plays, or
+/// nothing that plays is in a placement's window. Ask again after every
+/// call that renders or handles commands, and keep one timer: each image
+/// has one deadline at a time.
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_next_frame(h: *mut HottyHost) -> i64 {
+    guard(h, -1, |h| match h.host.next_frame() {
+        None => -1,
+        Some(t) => {
+            let left = t.saturating_duration_since(std::time::Instant::now());
+            // Rounded up: a timer that fires early finds nothing due.
+            left.as_micros().div_ceil(1000).min(i64::MAX as u128) as i64
+        }
+    })
+}
+
 /// The next render delivers `surface`'s whole frame, changed or not: for an
 /// adapter that must show it anew and no longer has its pixels.
 ///

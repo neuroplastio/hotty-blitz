@@ -47,6 +47,12 @@ void hotty_host_free(hotty_host *h);
 void hotty_host_configure(hotty_host *h, const hotty_config *cfg);
 void hotty_host_osc(hotty_host *h, const uint8_t *body, size_t len, const hotty_effects *fx);
 bool hotty_host_has_dirty(const hotty_host *h);
+/* Milliseconds until an animated image (GIF, APNG, WebP) on a placed surface
+ * shows its next frame: render then (hotty_host_has_dirty is true by that
+ * time). 0 when one is due now, -1 when nothing plays or nothing that plays
+ * is in a placement's window. Ask again after every call that renders or
+ * handles commands, and keep one timer. */
+int64_t hotty_host_next_frame(hotty_host *h);
 /* The next render delivers the surface's whole frame, for an adapter that
  * must show it anew and no longer has its pixels. */
 void hotty_host_redeliver(hotty_host *h, const char *surface);

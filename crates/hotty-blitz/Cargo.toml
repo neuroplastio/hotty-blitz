@@ -16,6 +16,9 @@ blitz-paint.workspace = true
 blitz-traits.workspace = true
 # A link's url in click events (SPEC §9): the version Blitz already brings.
 url = "2.5"
+# Every frame of an animated GIF, APNG or WebP (anim.rs): Blitz decodes the
+# first only. The version and formats Blitz already brings.
+image = { version = "0.25", default-features = false, features = ["gif", "png", "webp"] }
 anyrender.workspace = true
 anyrender_vello_cpu.workspace = true
 # Colour emoji fonts are PNG bitmap glyphs (Noto Color Emoji's CBDT, Apple
@@ -38,3 +41,7 @@ peniko = "0.6"
 [features]
 # Blitz prints how long each resolve phase took (for profiling patches).
 phase-times = ["blitz-dom/log-phase-times"]
+
+[dev-dependencies]
+# An APNG for the tests (`image` writes their GIFs).
+png.workspace = true
