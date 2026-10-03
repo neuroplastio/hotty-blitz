@@ -2286,6 +2286,53 @@ fn set_n(h: &mut Host, n: &str) {
     ));
 }
 
+/// The rows `r=auto` chooses for a document 30 columns wide.
+fn auto_rows(h: &mut Host, html: &str) -> u16 {
+    h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], html));
+    let fx = h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("q", "2")], ""));
+    fx.iter()
+        .find_map(|e| match e {
+            Effect::Place { rows, .. } => Some(*rows),
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// `r=auto` measures the content, not the root's box: a root the viewport
+/// sizes (`html, body { height: 100% }`, a common reset) is as tall as its
+/// content, overflowing or short, as in a browser laid out one pixel tall.
+#[test]
+fn auto_rows_count_the_content_of_a_root_the_viewport_sizes() {
+    let pinned = "<style>html, body { margin: 0; height: 100% }</style>";
+    let mut h = host();
+    // 60 paragraphs of 40 px: 120 rows, far past the 24 a viewport has.
+    let tall = format!("{pinned}{}", "<p style='margin: 0; height: 40px'>p</p>".repeat(60));
+    assert_eq!(auto_rows(&mut h, &tall), 120);
+    let short = format!("{pinned}<p style='margin: 0; height: 30px'>p</p>");
+    assert_eq!(auto_rows(&mut h, &short), 2);
+    // Content an inner box clips is not the document's.
+    let clipped = format!(
+        "{pinned}<div style='height: 60px; overflow: hidden'>{}</div>",
+        "<p style='margin: 0; height: 40px'>p</p>".repeat(60)
+    );
+    assert_eq!(auto_rows(&mut h, &clipped), 3);
+}
+
+/// `fit` hears content that overflows a root the viewport sizes.
+#[test]
+fn fit_hears_content_that_overflows_a_root_the_viewport_sizes() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<style>html, body { margin: 0; height: 100% }</style>\
+         <div id=d style='height: calc(var(--n, 2) * var(--hotty-cell-h))'></div>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("f", "1"), ("q", "2")], ""));
+    assert_eq!(fits(&mut h), vec![], "r=auto chose the rows it needs");
+    set_n(&mut h, "9");
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 9)]);
+}
+
 #[test]
 fn fit_is_heard_once_per_frame_with_the_rows_drawn() {
     let mut h = host();

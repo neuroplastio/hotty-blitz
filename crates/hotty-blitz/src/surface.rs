@@ -558,20 +558,36 @@ impl Surface {
         self.doc.hit(x, y).is_some()
     }
 
-    /// Rows the content needs at `cols` columns (for `r=auto`).
+    /// Rows the content needs at `cols` columns (for `r=auto`): laid out
+    /// that wide and one pixel tall, so the viewport adds nothing, as
+    /// xterm-addon-hotty measures it. A document that sizes its root by the
+    /// viewport (`html, body { height: 100% }`) gets its content's rows,
+    /// not the viewport's.
     pub fn content_rows(&mut self, m: &Metrics, cols: u16) -> u16 {
         let w = cols as u32 * m.cell_w;
         let h = self.viewport.1.max(m.cell_h);
         let dark = self.viewport.3;
-        self.ensure_viewport(m, w, h, dark);
+        self.ensure_viewport(m, w, 1, dark);
         self.resolve();
-        self.laid_out_rows(m)
+        let rows = self.laid_out_rows(m);
+        // Nothing else lays out one pixel tall: what draws next sets its own.
+        self.ensure_viewport(m, w, h, dark);
+        rows
     }
 
-    /// Rows the content needs in the current layout: what `r=auto` chooses.
+    /// Rows the content needs in the current layout: down to the bottom of
+    /// the root's margin box, or of what overflows it, whichever is lower.
+    /// Overflow counts as a browser's `scrollHeight` counts it: content a
+    /// box clips (`overflow: hidden`, `auto`) does not.
+    ///
+    /// `fit` reads it from the frame drawn, at the placement's size: a
+    /// document whose root the viewport sizes hears the rows its content
+    /// overflows to, but never fewer than the placement's.
     fn laid_out_rows(&self, m: &Metrics) -> u16 {
-        let height_css = self.doc.root_element().final_layout().size.height;
-        let px = (height_css * m.scale).ceil() as u32;
+        let l = self.doc.root_element().final_layout();
+        let content = l.border.top + l.scrollable_overflow_rect.bottom;
+        let bottom = l.location.y + l.size.height.max(content) + l.margin.bottom;
+        let px = (bottom * m.scale).ceil() as u32;
         (px.div_ceil(m.cell_h)).clamp(1, 1000) as u16
     }
 
