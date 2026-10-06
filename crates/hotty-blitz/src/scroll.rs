@@ -337,14 +337,17 @@ pub fn scroll_key(doc: &mut BaseDocument, s: Scroller, axes: u8, k: KeyScroll) -
 }
 
 /// The offset that brings `[start, end)` into a scrollport `[at, at+len)`
-/// with the least movement, its start first where it does not fit.
+/// with the least movement, as CSSOM View's `block: "nearest"` does: an
+/// edge out of the port is aligned with it where the element fits, and the
+/// other edge where it does not; one that covers the port stays put.
 fn nearest(at: f64, len: f64, start: f64, end: f64) -> f64 {
-    if start >= at && end <= at + len {
-        at
-    } else if start < at || end - start > len {
-        start
-    } else {
-        end - len
+    let (above, below) = (start < at, end > at + len);
+    let fits = end - start <= len;
+    match (above, below) {
+        (true, true) | (false, false) => at,
+        (true, false) if fits => start,
+        (false, true) if !fits => start,
+        _ => end - len,
     }
 }
 
@@ -553,8 +556,13 @@ mod tests {
         assert_eq!(nearest(0.0, 40.0, 50.0, 60.0), 20.0);
         // Above: its start at the port's start.
         assert_eq!(nearest(30.0, 40.0, 10.0, 20.0), 10.0);
-        // Taller than the port: its start.
+        // Taller than the port, below: its start at the port's start.
         assert_eq!(nearest(0.0, 40.0, 50.0, 100.0), 50.0);
+        // Taller, above with its end in view: its end at the port's end.
+        assert_eq!(nearest(30.0, 40.0, 0.0, 60.0), 20.0);
+        // Covering the port, or exactly it: stays.
+        assert_eq!(nearest(30.0, 40.0, 10.0, 100.0), 30.0);
+        assert_eq!(nearest(30.0, 40.0, 30.0, 70.0), 30.0);
     }
 
     #[test]

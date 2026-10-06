@@ -323,6 +323,25 @@ fn shift_turns_a_wheel_across() {
 }
 
 #[test]
+fn focus_on_what_covers_the_port_leaves_it_where_it_is() {
+    // A page that focuses its root so that the keys scroll it (hotty-demo)
+    // does not jump back to its top when it focuses it again: an element
+    // that covers the port is in view (CSSOM View's "nearest").
+    let mut h = host();
+    let page = format!("<main id=root tabindex=-1>{ROWS}</main>");
+    place(&mut h, Some("1"), &page, "20", "4");
+    assert!(wheel(&mut h, 15.0, 10.0, 0.0, 60.0));
+    render(&mut h);
+    assert_eq!(top(&h), "d");
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "root"), ("q", "2")],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(top(&h), "d", "the focus moved nothing");
+}
+
+#[test]
 fn a_textarea_keeps_the_keys_it_types_with() {
     let mut h = host();
     place(
