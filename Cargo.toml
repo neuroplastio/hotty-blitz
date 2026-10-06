@@ -15,7 +15,7 @@ hotty-blitz = { path = "crates/hotty-blitz" }
 # Blitz is pinned by commit. Upgrade in a leg of its own.
 blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg", "system-fonts", "floats", "woff"] }
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg"] }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg", "scrollbars"] }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
 anyrender = "0.13.0"
 anyrender_vello_cpu = { version = "0.17.0", default-features = false, features = ["filters", "multithreading"] }

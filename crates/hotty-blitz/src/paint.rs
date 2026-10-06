@@ -366,6 +366,8 @@ pub struct Tracker {
     /// Repaint everything (first frame, resize, new stylesheet, clicks).
     pub full: bool,
     touched: Vec<blitz_dom::NodeId>,
+    /// Rectangles damaged whatever the layout: the root's scrollbars.
+    rects: Vec<DevRect>,
     old: std::collections::HashMap<blitz_dom::NodeId, (Option<DevRect>, Option<blitz_dom::NodeId>)>,
 }
 
@@ -400,8 +402,15 @@ impl Tracker {
         }
     }
 
+    /// Damages rectangle `r` of the surface, in device pixels.
+    pub fn add(&mut self, r: DevRect) {
+        if !self.full {
+            self.rects.push(r);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
-        !self.full && self.touched.is_empty()
+        !self.full && self.touched.is_empty() && self.rects.is_empty()
     }
 
     /// Damage after layout, grown by `margin` (shadows, outlines,
@@ -414,7 +423,10 @@ impl Tracker {
         h: u32,
         margin: f64,
     ) -> Vec<Rect> {
-        let mut out = Vec::new();
+        let mut out: Vec<Rect> = std::mem::take(&mut self.rects)
+            .into_iter()
+            .filter_map(|r| r.to_rect(margin, w, h))
+            .collect();
         let mut done = std::collections::HashSet::new();
         let touched = std::mem::take(&mut self.touched);
         for t in touched {
@@ -462,7 +474,149 @@ impl Tracker {
 
     pub fn clear(&mut self) {
         self.touched.clear();
+        self.rects.clear();
         self.old.clear();
         self.full = false;
+    }
+}
+
+/// The root's overlay scrollbars (scroll.rs, `RootBar`), drawn over the
+/// document as Blitz draws an element's. Worked out before a paint, which
+/// moves the root's scroll to select a rectangle.
+pub(crate) struct RootBars {
+    shapes: Vec<Thumb>,
+    scale: f64,
+}
+
+/// A thumb, its colour, the track behind it (with `scrollbar-color`), and
+/// the colour of its contrast edge (without).
+struct Thumb {
+    shape: kurbo::RoundedRect,
+    color: Color,
+    track: Option<(kurbo::Rect, Color)>,
+    edge: Option<Color>,
+}
+
+impl RootBars {
+    pub(crate) fn new(
+        doc: &blitz_dom::BaseDocument,
+        axes: u8,
+        bar: &crate::scroll::RootBar,
+        opacity: f32,
+    ) -> RootBars {
+        use crate::scroll::{Axis, root_thumb};
+        use blitz_dom::node::ScrollbarColor;
+        let scale = doc.viewport().scale_f64();
+        let mut shapes = Vec::new();
+        let root = doc.try_root_element();
+        if opacity <= 0.0 || root.is_none() {
+            return RootBars { shapes, scale };
+        }
+        let dark = doc.viewport().color_scheme == blitz_traits::shell::ColorScheme::Dark;
+        let (rest, hover, active, edge) = if dark {
+            (
+                Color::from_rgba8(214, 214, 214, 178),
+                Color::from_rgba8(190, 190, 190, 222),
+                Color::from_rgba8(172, 172, 172, 255),
+                Color::from_rgba8(0, 0, 0, 102),
+            )
+        } else {
+            (
+                Color::from_rgba8(128, 128, 128, 178),
+                Color::from_rgba8(152, 152, 152, 222),
+                Color::from_rgba8(170, 170, 170, 255),
+                Color::from_rgba8(255, 255, 255, 102),
+            )
+        };
+        let srgb = |c: style::color::AbsoluteColor| {
+            let c = c.to_color_space(style::color::ColorSpace::Srgb);
+            Color::new([c.components.0, c.components.1, c.components.2, c.alpha])
+        };
+        // `scrollbar-color` on the root colours the viewport's.
+        let custom = match root.map(|r| r.scrollbar_color()) {
+            Some(ScrollbarColor::Colors { thumb, track }) => Some((srgb(thumb), srgb(track))),
+            _ => None,
+        };
+        let vp = doc.viewport();
+        let (w, h) = (vp.window_size.0 as f64, vp.window_size.1 as f64);
+        for axis in [Axis::Y, Axis::X] {
+            let Some(thumb) = root_thumb(doc, axes, axis) else {
+                continue;
+            };
+            let rect = thumb.scale_from_origin(scale);
+            let track = custom.map(|(_, track)| {
+                let r = match axis {
+                    Axis::X => kurbo::Rect::new(0.0, rect.y0, w, rect.y1),
+                    Axis::Y => kurbo::Rect::new(rect.x0, 0.0, rect.x1, h),
+                };
+                (r, track.multiply_alpha(opacity))
+            });
+            let color = match custom {
+                Some((thumb, _)) => thumb,
+                None if bar.drag.is_some_and(|(a, _)| a == axis) => active,
+                None if bar.hover == Some(axis) => hover,
+                None => rest,
+            };
+            let radius = match axis {
+                Axis::X => rect.height() / 2.0,
+                Axis::Y => rect.width() / 2.0,
+            };
+            // A contrast edge on the default thumbs only: a document's
+            // `scrollbar-color` is drawn exactly as given.
+            let stroke = custom.is_none().then(|| edge.multiply_alpha(opacity));
+            shapes.push(Thumb {
+                shape: rect.to_rounded_rect(radius),
+                color: color.multiply_alpha(opacity),
+                track,
+                edge: stroke,
+            });
+        }
+        RootBars { shapes, scale }
+    }
+
+    /// Paints them; `transform` maps device pixels of the surface into the
+    /// scene.
+    pub(crate) fn paint(&self, scene: &mut impl PaintScene, transform: Affine) {
+        for t in &self.shapes {
+            if let Some((r, c)) = t.track {
+                scene.fill(Fill::NonZero, transform, c, None, &r);
+            }
+            scene.fill(Fill::NonZero, transform, t.color, None, &t.shape);
+            if let Some(c) = t.edge {
+                let s = self.scale;
+                let r = t.shape.rect().inset(-s / 2.0);
+                let radius = t.shape.radii().top_left - s / 2.0;
+                scene.stroke(
+                    &Stroke::new(s),
+                    transform,
+                    c,
+                    None,
+                    &r.to_rounded_rect(radius),
+                );
+            }
+        }
+    }
+}
+
+/// Where the root's scrollbars can paint along `axis`, in device pixels:
+/// the strip along the surface's edge, for damage.
+pub fn root_bar_strip(doc: &blitz_dom::BaseDocument, vertical: bool) -> DevRect {
+    let vp = doc.viewport();
+    let (w, h) = (vp.window_size.0 as f64, vp.window_size.1 as f64);
+    let band = (14.0 * vp.scale_f64()).ceil();
+    if vertical {
+        DevRect {
+            x0: (w - band).max(0.0),
+            y0: 0.0,
+            x1: w,
+            y1: h,
+        }
+    } else {
+        DevRect {
+            x0: 0.0,
+            y0: (h - band).max(0.0),
+            x1: w,
+            y1: h,
+        }
     }
 }

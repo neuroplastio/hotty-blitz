@@ -269,11 +269,12 @@ pub unsafe extern "C" fn hotty_host_has_dirty(h: *const HottyHost) -> bool {
 }
 
 /// Milliseconds until an animated image (GIF, APNG, WebP) on a placed
-/// surface shows its next frame: render then (`hotty_host_has_dirty` is
-/// true by that time). 0 when one is due now; -1 when nothing plays, or
-/// nothing that plays is in a placement's window. Ask again after every
-/// call that renders or handles commands, and keep one timer: each image
-/// has one deadline at a time.
+/// surface shows its next frame, or scrollbars that fade are drawn again:
+/// render then (`hotty_host_has_dirty` is true by that time). 0 when one is
+/// due now; -1 when nothing plays, or nothing that plays is in a
+/// placement's window, and no scrollbar fades. Ask again after every call
+/// that renders, handles commands or hands the host input, and keep one
+/// timer: each has one deadline at a time.
 ///
 /// # Safety
 /// `h` must be valid.
@@ -414,6 +415,49 @@ pub unsafe extern "C" fn hotty_host_pointer(
     guard(h, (), |h| {
         run_effects(h.host.pointer(surface, kind, x, y, mods(mod_bits)), fx)
     })
+}
+
+/// A wheel's turn, a touchpad's scroll or a touch drag at device pixel
+/// `(x, y)` of the surface, by `(dx, dy)` device pixels: positive scrolls
+/// towards the content's end, right and down, and a wheel's notch as far as
+/// it scrolls the cells. `surface` null or empty: over the cells. `mods` as
+/// for a pointer event; shift turns a vertical wheel horizontal. Returns
+/// true if the surface took it: its document scrolled, or
+/// `overscroll-behavior` stopped it there (SPEC §5.3). Otherwise the host
+/// handles it as over the cells beneath (§9): scrollback, or the program's
+/// wheel input. Its events (`hover`) come through `fx`.
+///
+/// # Safety
+/// `h` must be valid; `surface` may be null; `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_wheel(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    x: f32,
+    y: f32,
+    dx: f32,
+    dy: f32,
+    mod_bits: u32,
+    fx: *const HottyEffects,
+) -> bool {
+    let surface = unsafe { name(surface) }.unwrap_or("");
+    let fx = unsafe { fx.as_ref() };
+    guard(h, false, |h| {
+        let out = h.host.wheel(surface, x, y, dx, dy, mods(mod_bits));
+        run_effects(out.effects, fx);
+        out.taken
+    })
+}
+
+/// The wheel gesture under way ended (a touchpad's fingers lifted, or its
+/// momentum stopped): the next wheel begins another. Without it, a gesture
+/// ends 150 ms after its last wheel, or at a press.
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_end_gesture(h: *mut HottyHost) {
+    guard(h, (), |h| h.host.end_gesture())
 }
 
 /// A key for the focused surface. `key`: 0 text (in `text`), 1 enter, 2 tab,

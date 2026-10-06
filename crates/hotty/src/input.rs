@@ -241,6 +241,33 @@ impl InputRouter {
             return;
         }
 
+        // A wheel over a surface whose document scrolls is its own while
+        // it can move that way (SPEC §5.3); otherwise, and over the cells,
+        // it is the program's. One report is a row (or a column) of it.
+        if wheel {
+            let taken = match self.hit(px, py) {
+                Some((surface, sx, sy)) => {
+                    let (w, h) = (self.cell_w as f32, self.cell_h as f32);
+                    let (dx, dy) = match button {
+                        0 => (0.0, -h),
+                        1 => (0.0, h),
+                        2 => (-w, 0.0),
+                        _ => (w, 0.0),
+                    };
+                    let out = host.wheel(&surface, sx, sy, dx, dy, mods);
+                    push_effects(out.effects, to_program);
+                    out.taken
+                }
+                // Over the cells: the gesture is the terminal's, even where
+                // it goes on over a surface.
+                None => host.wheel("", 0.0, 0.0, 0.0, 0.0, mods).taken,
+            };
+            if !taken {
+                self.forward_mouse(b, px, py, press, to_program);
+            }
+            return;
+        }
+
         // Hover: leave the old surface when the pointer moves off it.
         if self.hovered != over {
             if let Some(old) = self.hovered.take() {

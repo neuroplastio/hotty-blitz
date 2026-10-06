@@ -13,6 +13,7 @@ pub mod input;
 pub mod net;
 pub mod paint;
 pub mod policy;
+mod scroll;
 pub mod style;
 mod surface;
 
@@ -21,7 +22,7 @@ use hotty_wire::{Command, Control};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub use input::{Event, Key, KeyName, KeyOutcome, Mods, PointerKind};
+pub use input::{Event, Key, KeyName, KeyOutcome, Mods, PointerKind, WheelOutcome};
 pub use surface::{Damage, Frame, Timings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,8 +181,23 @@ pub struct Host {
     /// `fit` events renders found (SPEC §5.2), at most one per surface:
     /// the rows of the last frame drawn.
     fits: Vec<(String, u16)>,
+    /// The wheel gesture under way (SPEC §5.3): where its first wheel sent
+    /// it, which the rest of it follows.
+    gesture: Option<Gesture>,
     frame_log: Option<FrameLog>,
 }
+
+/// A wheel gesture: a wheel's notches, or a touchpad's scroll and its
+/// momentum, as long as they come within [`GESTURE`] of each other.
+struct Gesture {
+    surface: String,
+    route: scroll::Route,
+    at: std::time::Instant,
+}
+
+/// A wheel this soon after the one before belongs to the same gesture, as
+/// xterm-addon-hotty has it.
+const GESTURE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// `HOTTY_FRAME_LOG=<file>`: one tab-separated line per rendered surface,
 /// timing the commands applied since the last frame and each render stage,
@@ -234,6 +250,7 @@ impl Host {
             program_press: false,
             passthrough: false,
             fits: Vec::new(),
+            gesture: None,
             frame_log: FrameLog::open(),
         }
     }
@@ -319,8 +336,9 @@ impl Host {
     }
 
     /// When an animated image (GIF, APNG, WebP) on a placed surface is due
-    /// to show its next frame: render then. `None` while nothing plays, or
-    /// nothing that plays is in a placement's window. Each animated image
+    /// to show its next frame, or scrollbars that fade are drawn again:
+    /// render then. `None` while nothing plays, or nothing that plays is in
+    /// a placement's window, and no scrollbar fades. Each animated image
     /// has one deadline at a time, so a host needs one timer. Now, when
     /// something a document fetched has arrived.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
@@ -573,12 +591,18 @@ impl Host {
                 if self.passthrough {
                     caps["passthrough"] = serde_json::Value::Bool(true);
                 }
+                // A document can ask to scroll (SPEC §5.3).
+                caps["scroll"] = serde_json::Value::Bool(true);
                 Ok((Vec::new(), Some(caps.to_string().into_bytes())))
             }
             "doc" => {
                 let name = surface_name()?.to_string();
                 let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
                 let detached = cmd.get("d") == Some("1");
+                // A gesture latched to the old document's boxes ends with it.
+                if self.gesture.as_ref().is_some_and(|g| g.surface == name) {
+                    self.gesture = None;
+                }
                 let (cols, rows, auto, placed, presses, fit, hover, created, window) =
                     match self.surfaces.remove(&name) {
                         Some(mut old) => {
@@ -614,6 +638,9 @@ impl Host {
                     self.store.clone(),
                     self.font_ctx.clone(),
                     (cols, rows),
+                    // Like `d`, the document's: without it, it does not
+                    // scroll (SPEC §5.1).
+                    scroll::axes(cmd.get("scroll")),
                 );
                 // A replaced document keeps its placement: `r=auto` is
                 // measured when placed, not on every change.
@@ -836,6 +863,10 @@ impl Host {
         if kind == PointerKind::Down {
             self.program_press = mods.alt;
         }
+        // A press, or the pointer leaving, ends a wheel gesture.
+        if matches!(kind, PointerKind::Down | PointerKind::Leave) {
+            self.gesture = None;
+        }
         if self.program_press {
             return self.program_pointer(surface, kind, mods);
         }
@@ -859,8 +890,11 @@ impl Host {
         };
         // `press` comes before everything the press causes, on this
         // surface or another (SPEC §9), then a drag's events (§9.1).
+        // A press on a scrollbar's thumb is not the document's.
         let mut effects: Vec<Effect> = match kind {
-            PointerKind::Down => s.pressed().map(|e| Effect::Reply(e.encode(surface))),
+            PointerKind::Down if !s.on_scrollbar() => {
+                s.pressed().map(|e| Effect::Reply(e.encode(surface)))
+            }
             _ => None,
         }
         .into_iter()
@@ -919,6 +953,94 @@ impl Host {
             PointerKind::Move | PointerKind::Leave => {}
         }
         effects
+    }
+
+    /// A wheel's turn, a touchpad's scroll or a touch drag over `surface`,
+    /// at device pixel (`x`, `y`) of it, by (`dx`, `dy`) device pixels:
+    /// positive scrolls towards the content's end, right and down (a
+    /// wheel's notch as far as it scrolls the cells). `surface` is empty
+    /// over the cells.
+    ///
+    /// `taken` is true if the surface took it: its document scrolled, or
+    /// `overscroll-behavior` stopped it there (SPEC §5.3). Otherwise the
+    /// host handles it as over the cells beneath (§9): scrollback, or the
+    /// program's wheel input.
+    ///
+    /// A gesture goes where its first wheel went: the box that scrolls
+    /// takes all of it, and it goes no further when that box reaches its
+    /// end, as in a browser. Wheels within 150 ms of each other are one
+    /// gesture, and a press or the pointer leaving ends one; a host that
+    /// knows when a gesture ends (a touchpad's phases) says so with
+    /// [`Host::end_gesture`]. Shift turns a wheel's vertical delta
+    /// horizontal, as browsers do.
+    pub fn wheel(
+        &mut self,
+        surface: &str,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        mods: Mods,
+    ) -> WheelOutcome {
+        let (dx, dy) = if mods.shift && dx == 0.0 {
+            (dy, 0.0)
+        } else {
+            (dx, dy)
+        };
+        let now = std::time::Instant::now();
+        let scale = self.config.metrics.scale;
+        let (cx, cy, dx, dy) = (
+            x / scale,
+            y / scale,
+            (dx / scale) as f64,
+            (dy / scale) as f64,
+        );
+        let same = self.gesture.as_ref().filter(|g| {
+            now.duration_since(g.at) < GESTURE
+                && (g.surface == surface || g.route == scroll::Route::Terminal)
+        });
+        let route = match same {
+            Some(g) => g.route,
+            None => match self.surfaces.get_mut(surface).filter(|s| s.placed) {
+                Some(s) => s.wheel_route(cx, cy, dx, dy),
+                None => scroll::Route::Terminal,
+            },
+        };
+        self.gesture = Some(Gesture {
+            surface: surface.to_string(),
+            route,
+            at: now,
+        });
+        let mut out = WheelOutcome::default();
+        match route {
+            scroll::Route::Terminal => {}
+            scroll::Route::Stop => out.taken = true,
+            scroll::Route::Doc(scroller) => {
+                out.taken = true;
+                let m = self.config.metrics;
+                let passthrough = self.passthrough;
+                if let Some(s) = self.surfaces.get_mut(surface) {
+                    s.wheel_scroll(scroller, cx, cy, dx, dy);
+                    // What the pointer is over changed under it (SPEC §9.4).
+                    let cell = (
+                        (x / m.cell_w.max(1) as f32).floor() as i32,
+                        (y / m.cell_h.max(1) as f32).floor() as i32,
+                    );
+                    if !s.held() {
+                        out.effects.extend(
+                            s.hovered(cell, passthrough)
+                                .map(|e| Effect::Reply(e.encode(surface))),
+                        );
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The wheel gesture under way ended: the next wheel begins another.
+    pub fn end_gesture(&mut self) {
+        self.gesture = None;
     }
 
     /// A key for the focused element of `surface`. `consumed` is false when

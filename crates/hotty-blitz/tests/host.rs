@@ -373,14 +373,24 @@ fn links_report_href_and_url_with_or_without_an_id() {
     let detail: serde_json::Value = serde_json::from_slice(&first.payload).unwrap();
     assert_eq!(
         detail,
-        serde_json::json!({"href": "../about", "url": "https://example.com/about"})
+        serde_json::json!({
+            "href": "../about",
+            "url": "https://example.com/about",
+            // 40 px of 20-px rows from the top: rows 0 and 1 (SPEC §9: `area`).
+            "area": {"c": 0, "r": 0, "w": 20, "h": 2}
+        })
     );
     let second = click(&mut h, 50.0);
     assert_eq!(second.get("t"), Some("ext"));
     let detail: serde_json::Value = serde_json::from_slice(&second.payload).unwrap();
     assert_eq!(
         detail,
-        serde_json::json!({"href": "https://other.org/x", "url": "https://other.org/x"})
+        serde_json::json!({
+            "href": "https://other.org/x",
+            "url": "https://other.org/x",
+            // 40 to 80 px: rows 2 and 3.
+            "area": {"c": 0, "r": 2, "w": 20, "h": 2}
+        })
     );
 
     // This host fetches nothing from the network (SPEC §7.2), and says so.

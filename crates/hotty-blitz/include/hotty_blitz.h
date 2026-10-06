@@ -48,10 +48,11 @@ void hotty_host_configure(hotty_host *h, const hotty_config *cfg);
 void hotty_host_osc(hotty_host *h, const uint8_t *body, size_t len, const hotty_effects *fx);
 bool hotty_host_has_dirty(const hotty_host *h);
 /* Milliseconds until an animated image (GIF, APNG, WebP) on a placed surface
- * shows its next frame: render then (hotty_host_has_dirty is true by that
- * time). 0 when one is due now, -1 when nothing plays or nothing that plays
- * is in a placement's window. Ask again after every call that renders or
- * handles commands, and keep one timer. */
+ * shows its next frame, or scrollbars that fade are drawn again: render then
+ * (hotty_host_has_dirty is true by that time). 0 when one is due now, -1 when
+ * nothing plays or nothing that plays is in a placement's window, and no
+ * scrollbar fades. Ask again after every call that renders, handles commands
+ * or hands the host input, and keep one timer. */
 int64_t hotty_host_next_frame(hotty_host *h);
 /* The next render delivers the surface's whole frame, for an adapter that
  * must show it anew and no longer has its pixels. */
@@ -75,6 +76,22 @@ void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
  * cells, another surface, a part it lets through, or out of the window). */
 void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float x, float y,
                          uint32_t mods, const hotty_effects *fx);
+/* A wheel's turn, a touchpad's scroll or a touch drag at device pixel (x, y)
+ * of the surface, by (dx, dy) device pixels: positive scrolls towards the
+ * content's end, right and down, a wheel's notch as far as it scrolls the
+ * cells. surface NULL or "": over the cells, which makes the gesture the
+ * terminal's even where it goes on over a surface. mods as for pointer
+ * events; shift turns a vertical wheel horizontal. Returns true if the
+ * surface took it: its document scrolled, or overscroll-behavior stopped it
+ * there (SPEC 5.3). Otherwise handle it as over the cells beneath (SPEC 9):
+ * scrollback, or the program's wheel input. A gesture goes where its first
+ * wheel went; wheels within 150 ms of each other are one, and a press ends
+ * one. Its events (hover) come through fx. */
+bool hotty_host_wheel(hotty_host *h, const char *surface, float x, float y, float dx, float dy,
+                      uint32_t mods, const hotty_effects *fx);
+/* The wheel gesture under way ended (a touchpad's fingers lifted, or its
+ * momentum stopped): the next wheel begins another. */
+void hotty_host_end_gesture(hotty_host *h);
 bool hotty_host_key(hotty_host *h, uint32_t key, const char *text, uint32_t mods,
                      const hotty_effects *fx);
 void hotty_host_blur(hotty_host *h, const char *surface, const hotty_effects *fx);

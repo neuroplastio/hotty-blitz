@@ -66,6 +66,14 @@ pub struct KeyOutcome {
     pub effects: Vec<Effect>,
 }
 
+/// What became of a wheel ([`crate::Host::wheel`]).
+#[derive(Debug, Default)]
+pub struct WheelOutcome {
+    /// The surface took it. If false, the host handles it as over the cells.
+    pub taken: bool,
+    pub effects: Vec<Effect>,
+}
+
 /// Something the program should hear about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {

@@ -1,7 +1,7 @@
 //! The shared conformance vectors (conformance/README.md), run against
 //! hotty-blitz. The xterm.js addon runs the same file.
 
-use hotty_blitz::{Config, Effect, Host, Mods, PointerKind};
+use hotty_blitz::{Config, Effect, Host, Key, KeyName, Mods, PointerKind};
 use hotty_wire::{Command, Control, Event, Scanner};
 use serde_json::Value;
 
@@ -168,6 +168,7 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
         }
         "down" => PointerKind::Down,
         "up" => PointerKind::Up,
+        "wheel" => return wheel_step(host, mouse, step),
         // Out of the terminal's window: the host loses the pointer.
         "leave" => {
             let old = std::mem::take(&mut mouse.surface);
@@ -206,10 +207,97 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
     check_events(step, &events(&from_host(&sent)?))
 }
 
+/// A wheel where the mouse is, by `by` cells (positive: right and down),
+/// as one gesture that ends before the next step (conformance/README).
+/// Where the pointer passes through the surface, or there is none, the
+/// wheel is over the cells: the terminal's.
+fn wheel_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
+    host.render_dirty(&mut |_, _, _| {});
+    let m = Config::default().metrics;
+    let by = &step["by"];
+    let (dx, dy) = (
+        by[0].as_f64().unwrap() as f32 * m.cell_w as f32,
+        by[1].as_f64().unwrap() as f32 * m.cell_h as f32,
+    );
+    let over = host.is_placed(&mouse.surface)
+        && (mouse.down.is_some() || host.takes_pointer(&mouse.surface, mouse.x, mouse.y));
+    let surface = if over {
+        mouse.surface.clone()
+    } else {
+        String::new()
+    };
+    let out = host.wheel(&surface, mouse.x, mouse.y, dx, dy, mods(step));
+    host.end_gesture();
+    let mut sent = Vec::new();
+    for e in out.effects {
+        if let Effect::Reply(b) = e {
+            sent.extend(b);
+        }
+    }
+    check_terminal(step, !out.taken)?;
+    check_events(step, &events(&from_host(&sent)?))
+}
+
+fn check_terminal(step: &Value, terminal: bool) -> Result<(), String> {
+    match step.get("terminal").and_then(Value::as_bool) {
+        Some(want) if want != terminal => Err(format!("terminal: want {want}, got {terminal}")),
+        _ => Ok(()),
+    }
+}
+
+/// A key as the DOM's `KeyboardEvent.key` names it.
+fn key_name(name: &str) -> KeyName {
+    match name {
+        "Enter" => KeyName::Enter,
+        "Tab" => KeyName::Tab,
+        "Backspace" => KeyName::Backspace,
+        "Delete" => KeyName::Delete,
+        "Escape" => KeyName::Escape,
+        "ArrowLeft" => KeyName::Left,
+        "ArrowRight" => KeyName::Right,
+        "ArrowUp" => KeyName::Up,
+        "ArrowDown" => KeyName::Down,
+        "Home" => KeyName::Home,
+        "End" => KeyName::End,
+        "PageUp" => KeyName::PageUp,
+        "PageDown" => KeyName::PageDown,
+        " " => KeyName::Space,
+        s if s.chars().count() == 1 => KeyName::Char(s.to_string()),
+        _ => KeyName::Other,
+    }
+}
+
+/// A key pressed where the keyboard is: the surface that has it, or else
+/// the terminal (conformance/README).
+fn key_step(host: &mut Host, step: &Value) -> Result<(), String> {
+    host.render_dirty(&mut |_, _, _| {});
+    let key = Key {
+        name: key_name(step["key"].as_str().unwrap()),
+        mods: mods(step),
+    };
+    let mut sent = Vec::new();
+    let terminal = match host.focused_surface().map(str::to_string) {
+        Some(s) => {
+            let out = host.key(&s, &key);
+            for e in out.effects {
+                if let Effect::Reply(b) = e {
+                    sent.extend(b);
+                }
+            }
+            !out.consumed
+        }
+        None => true,
+    };
+    check_terminal(step, terminal)?;
+    check_events(step, &events(&from_host(&sent)?))
+}
+
 /// Failures, one line each, so a run reports every disagreement at once.
 fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     if step.get("pointer").is_some() {
         pointer_step(host, mouse, step)
+    } else if step.get("key").is_some() {
+        key_step(host, step)
     } else if let Some(ctl) = step.get("send") {
         let mut control = Control::default();
         for (k, v) in ctl.as_object().unwrap() {
@@ -301,8 +389,8 @@ fn protocol_vectors() {
     let mut failures = Vec::new();
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through as hottyterm does, and
-        // hotty-blitz sends hover.
-        let has = |r: &Value| r == "passthrough" || r == "hover";
+        // hotty-blitz sends hover and scrolls.
+        let has = |r: &Value| r == "passthrough" || r == "hover" || r == "scroll";
         let runs = match vector.get("requires") {
             None => true,
             Some(Value::Array(all)) => all.iter().all(has),

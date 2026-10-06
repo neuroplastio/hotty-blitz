@@ -3,6 +3,7 @@
 
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
+use crate::scroll::{self, Route, Scroller};
 use crate::{Config, Metrics, Rect, anim, delta, net, paint};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -21,6 +22,7 @@ use blitz_traits::net::Body;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::{Code, Key as KbKey, Location, Modifiers};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use style::values::computed::UserSelect;
 use stylo_dom::ElementState;
 
@@ -163,6 +165,17 @@ pub(crate) struct Surface {
     playing: Vec<anim::Playing>,
     /// The document changed since the playing images' nodes were found.
     anim_stale: bool,
+    /// The axes its document scrolls along (`scroll`, SPEC §5.1): 1
+    /// vertically, 2 horizontally, 3 both, 0 none. Blitz keeps the others
+    /// still (scroll.rs).
+    pub scroll_axes: u8,
+    /// A cell's size in CSS pixels, for `area` (SPEC §9).
+    cell: (f64, f64),
+    /// The root's scrollbars, which hotty-blitz draws (scroll.rs).
+    root_bar: scroll::RootBar,
+    /// Elements whose scrollbars Blitz shows, with when they last showed:
+    /// they are painted again as they fade.
+    fading: Vec<(NodeId, Instant)>,
 }
 
 /// Where the pointer is for `hover` (SPEC §9.4): out of the window, or in
@@ -332,6 +345,12 @@ fn first_summary(doc: &BaseDocument, id: NodeId) -> bool {
             .is_some_and(|p| p.children.iter().copied().find(|&c| is(c, "summary")) == Some(id))
 }
 
+/// A cell's size in CSS pixels.
+fn cell_css(m: &Metrics) -> (f64, f64) {
+    let scale = m.scale.max(f32::EPSILON) as f64;
+    (m.cell_w as f64 / scale, m.cell_h as f64 / scale)
+}
+
 /// A link's `url` (SPEC §9): its href resolved against the document's base,
 /// or none when that would be under hotty.invalid.
 fn link_url(base: &Option<url::Url>, href: &str) -> Option<String> {
@@ -351,6 +370,7 @@ impl Surface {
         store: Arc<net::Store>,
         font_ctx: FontContext,
         (cols, rows): (u16, u16),
+        scroll_axes: u8,
     ) -> Surface {
         let m = config.metrics;
         let (w, h) = (cols as u32 * m.cell_w, rows as u32 * m.cell_h);
@@ -382,6 +402,8 @@ impl Surface {
             doc = build(b.as_str());
         }
         store.set_document_policy(doc.id(), requested_network(&doc));
+        // Along an axis it did not ask for, nothing in it scrolls (SPEC §5.3).
+        doc.set_scroll_axes(scroll_axes & 2 != 0, scroll_axes & 1 != 0);
         // The shared font context: without one, a document scans the
         // system's fonts, which cost every new surface ~12 ms.
         let parse_doc = HtmlDocument::from_html(
@@ -431,6 +453,10 @@ impl Surface {
             store,
             playing: Vec::new(),
             anim_stale: true,
+            scroll_axes,
+            cell: cell_css(&m),
+            root_bar: scroll::RootBar::default(),
+            fading: Vec::new(),
         }
     }
 
@@ -456,13 +482,20 @@ impl Surface {
         for p in &mut self.playing {
             changed |= p.advance(now);
         }
+        changed |= self.fade_scrollbars(now);
         self.dirty |= changed;
         changed
     }
 
-    /// When the next frame of an animated image that is seen is due.
+    /// When the next frame of an animated image that is seen, or of
+    /// scrollbars fading, is due.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
-        self.playing.iter().filter_map(|p| p.due()).min()
+        let now = Instant::now();
+        self.playing
+            .iter()
+            .filter_map(|p| p.due())
+            .chain(self.fade_due(now))
+            .min()
     }
 
     /// Puts each playing image's current frame into the nodes that show
@@ -532,6 +565,7 @@ impl Surface {
 
     fn ensure_viewport(&mut self, m: &Metrics, w: u32, h: u32, dark: bool) {
         let want = (w, h, m.scale, dark);
+        self.cell = cell_css(m);
         if self.viewport != want {
             self.doc
                 .set_viewport(Viewport::new(w, h, m.scale, scheme(dark)));
@@ -555,7 +589,25 @@ impl Surface {
     /// through the surface (SPEC §9.3).
     pub fn takes_pointer(&mut self, x: f32, y: f32) -> bool {
         self.resolve();
-        self.doc.hit(x, y).is_some()
+        let (x, y) = self.page(x, y);
+        if self.doc.hit(x, y).is_some() {
+            return true;
+        }
+        // Where no box is, a browser hits the root element, whose
+        // background is the whole viewport's: unless it has
+        // `pointer-events: none` too. Blitz hits nothing outside its box.
+        self.doc.try_root_element().is_some_and(|r| {
+            r.primary_styles().is_some_and(|s| {
+                s.clone_pointer_events() != style::computed_values::pointer_events::T::None
+            })
+        })
+    }
+
+    /// CSS pixel (`x`, `y`) of the surface in the document's coordinates,
+    /// which Blitz hit-tests in: the root's scroll added.
+    fn page(&self, x: f32, y: f32) -> (f32, f32) {
+        let s = self.doc.viewport_scroll();
+        (x + s.x as f32, y + s.y as f32)
     }
 
     /// Rows the content needs at `cols` columns (for `r=auto`): laid out
@@ -607,6 +659,7 @@ impl Surface {
             // this surface dirty again.
             return None;
         }
+        self.clamp_root();
         // `fit` (SPEC §5.2): the rows of the layout this frame draws, when
         // they are not the ones the program last heard. A detached surface
         // reports nothing (§5.5).
@@ -679,6 +732,19 @@ impl Surface {
         })
     }
 
+    /// The root's scroll stays within what there is to scroll as the layout
+    /// changes (a resize, a delta that removes content), as a page's does.
+    fn clamp_root(&mut self) {
+        if self.scroll_axes == 0 {
+            return;
+        }
+        let ((x, y), (mx, my)) = scroll::state(&self.doc, Scroller::Viewport, self.scroll_axes);
+        if x > mx || y > my {
+            scroll::scroll_to(&mut self.doc, Scroller::Viewport, x.min(mx), y.min(my));
+            self.damage.full = true;
+        }
+    }
+
     /// Paints rectangle `r` of the surface into the frame.
     fn paint_rect(&mut self, r: Rect, scale: f64, w: u32, h: u32) {
         // Render into a context of the rectangle's size rounded up to 64 px,
@@ -707,6 +773,13 @@ impl Surface {
             .resize((r_render.w * r_render.h * 4) as usize, 0);
         renderer.reset();
         let doc: &mut BaseDocument = &mut self.doc;
+        // The root's scrollbars, over everything (Blitz draws elements').
+        let bars = paint::RootBars::new(
+            doc,
+            self.scroll_axes,
+            &self.root_bar,
+            self.root_bar.opacity(Instant::now()),
+        );
         if has_fixed_root_children(doc) {
             // Blitz cancels viewport scroll for fixed boxes, so the scroll
             // window below would misplace them: translate instead (slower:
@@ -714,30 +787,28 @@ impl Surface {
             // falls outside).
             renderer.render(
                 |scene| {
-                    paint_scene(
-                        &mut paint::Window::new(scene, r.x, r.y, r_render.w, r_render.h),
-                        doc,
-                        scale,
-                        w,
-                        h,
-                        0,
-                        0,
-                    )
+                    let mut window = paint::Window::new(scene, r.x, r.y, r_render.w, r_render.h);
+                    paint_scene(&mut window, doc, scale, w, h, 0, 0);
+                    bars.paint(&mut window, kurbo::Affine::IDENTITY);
                 },
                 &mut self.scratch,
             );
         } else {
-            // Paint the rectangle as a viewport scrolled to its corner: the
-            // painter then culls against exactly this rectangle, so the cost
-            // is what lies inside it. The scroll is put back before anything
-            // else reads it.
+            // Paint the rectangle as a viewport scrolled on to its corner:
+            // the painter then culls against exactly this rectangle, so the
+            // cost is what lies inside it. The scroll is put back before
+            // anything else reads it.
             let saved = doc.viewport_scroll();
             doc.set_viewport_scroll(blitz_dom::Point {
-                x: r.x as f64 / scale,
-                y: r.y as f64 / scale,
+                x: saved.x + r.x as f64 / scale,
+                y: saved.y + r.y as f64 / scale,
             });
             renderer.render(
-                |scene| paint_scene(scene, doc, scale, r_render.w, r_render.h, 0, 0),
+                |scene| {
+                    paint_scene(scene, doc, scale, r_render.w, r_render.h, 0, 0);
+                    let shift = kurbo::Affine::translate((-(r.x as f64), -(r.y as f64)));
+                    bars.paint(scene, shift);
+                },
                 &mut self.scratch,
             );
             doc.set_viewport_scroll(saved);
@@ -938,7 +1009,10 @@ impl Surface {
         if self.detached && shape == "pointer" && self.hyperlink().is_none() {
             let text = self
                 .pointer_at
-                .and_then(|(x, y)| self.doc.hit(x, y))
+                .and_then(|(x, y)| {
+                    let (x, y) = self.page(x, y);
+                    self.doc.hit(x, y)
+                })
                 .is_some_and(|h| h.is_text);
             return Some(if text { "text" } else { "default" });
         }
@@ -985,7 +1059,22 @@ impl Surface {
         self.snapshot_focus();
         let after = self.doc.get_focussed_node_id();
         self.touch_chains(before, after);
+        if let Some(f) = self.focused() {
+            self.bring_into_view(f);
+        }
         Ok(())
+    }
+
+    /// Focus scrolls an element into view (SPEC §5.3), along the axes the
+    /// document scrolls.
+    fn bring_into_view(&mut self, id: NodeId) {
+        if self.scroll_axes == 0 {
+            return;
+        }
+        self.resolve();
+        for s in scroll::into_view(&mut self.doc, id, self.scroll_axes) {
+            self.scrolled(s);
+        }
     }
 
     pub fn blur(&mut self) -> Vec<Event> {
@@ -1076,18 +1165,31 @@ impl Surface {
         }
         let mut node = self.doc.get_hover_node_id();
         let mut target = String::new();
+        let mut area = None;
         while let Some(n) = node {
             if let Some(id) = self.id_of(n).filter(|id| !id.is_empty()) {
                 target = id;
+                area = scroll::area(&self.doc, n, self.cell, self.slack());
                 break;
             }
             node = self.doc.get_node(n).and_then(|x| x.parent);
         }
+        // Where the element is (SPEC §9: `area`); a press on no element
+        // with an id has no detail.
         Some(Event {
             kind: "press",
             target,
-            detail: serde_json::Value::Null,
+            detail: area.map_or(
+                serde_json::Value::Null,
+                |a| serde_json::json!({ "area": a }),
+            ),
         })
+    }
+
+    /// Half a device pixel, in CSS pixels: an edge that close to a cell's is
+    /// on it, for `area`.
+    fn slack(&self) -> f64 {
+        0.5 / self.viewport.2.max(f32::EPSILON) as f64
     }
 
     /// After a press or a release: the surface has the keyboard while an
@@ -1125,8 +1227,11 @@ impl Surface {
         if matches!(kind, PointerKind::Down | PointerKind::Leave) {
             lead.extend(self.cancel_drag(mods));
         }
+        if self.root_bar_pointer(kind, x, y) {
+            return (lead, Vec::new());
+        }
         let mut events = self.pointer(kind, x, y, mods);
-        if self.detached {
+        if self.detached || self.on_scrollbar() {
             return (lead, events);
         }
         match kind {
@@ -1215,6 +1320,7 @@ impl Surface {
         let now = match self.pointer_at {
             Some((x, y)) if self.in_window(cell) => {
                 self.resolve();
+                let (x, y) = self.page(x, y);
                 match self.doc.hit(x, y) {
                     None if passthrough => Hovered::Out,
                     hit => {
@@ -1313,6 +1419,35 @@ impl Surface {
         false
     }
 
+    /// The mouse at CSS pixel (`x`, `y`) of the surface, for Blitz.
+    fn pointer_event(
+        &self,
+        x: f32,
+        y: f32,
+        buttons: MouseEventButtons,
+        mods: Mods,
+    ) -> BlitzPointerEvent {
+        let (page_x, page_y) = self.page(x, y);
+        BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x,
+                page_y,
+                screen_x: x,
+                screen_y: y,
+                client_x: x,
+                client_y: y,
+            },
+            button: MouseEventButton::Main,
+            buttons,
+            mods: modifiers(mods),
+            details: PointerDetails::default(),
+            element: Default::default(),
+            active_pointers: Default::default(),
+        }
+    }
+
     pub fn pointer(&mut self, kind: PointerKind, x: f32, y: f32, mods: Mods) -> Vec<Event> {
         let button = MouseEventButton::Main;
         match kind {
@@ -1320,31 +1455,16 @@ impl Surface {
             PointerKind::Up => self.buttons = MouseEventButtons::None,
             _ => {}
         }
-        let ev = BlitzPointerEvent {
-            id: BlitzPointerId::Mouse,
-            is_primary: true,
-            coords: PointerCoords {
-                page_x: x,
-                page_y: y,
-                screen_x: x,
-                screen_y: y,
-                client_x: x,
-                client_y: y,
-            },
-            button,
-            // A drag's moves reach the document as hover (SPEC §9.1): Blitz
-            // neither selects text with them nor takes them for a gesture
-            // of its own, which would cost the release its click.
-            buttons: if self.drag.is_some() && kind == PointerKind::Move {
-                MouseEventButtons::None
-            } else {
-                self.buttons
-            },
-            mods: modifiers(mods),
-            details: PointerDetails::default(),
-            element: Default::default(),
-            active_pointers: Default::default(),
+        // A drag's moves reach the document as hover (SPEC §9.1): Blitz
+        // neither selects text with them nor takes them for a gesture of
+        // its own, which would cost the release its click.
+        let buttons = if self.drag.is_some() && kind == PointerKind::Move {
+            MouseEventButtons::None
+        } else {
+            self.buttons
         };
+        let mut ev = self.pointer_event(x, y, buttons, mods);
+        ev.button = button;
         let ui = match kind {
             PointerKind::Move => UiEvent::PointerMove(ev),
             PointerKind::Down => UiEvent::PointerDown(ev),
@@ -1368,6 +1488,11 @@ impl Surface {
         // included. So the press decides, and the release keeps that unless
         // its click focused something else (a label's control).
         let want = match kind {
+            // A press on a scrollbar's thumb focuses nothing (Blitz drags it).
+            PointerKind::Down if self.doc.scrollbar_drag_target().is_some() => {
+                self.press = None;
+                None
+            }
             PointerKind::Down => {
                 let target = self.focus_target(self.doc.get_hover_node_id());
                 self.press = Some(target);
@@ -1432,6 +1557,9 @@ impl Surface {
                 } else {
                     self.finish_change(&mut events);
                     self.snapshot_focus();
+                    if let Some(a) = after {
+                        self.bring_into_view(a);
+                    }
                 }
                 self.dirty = true;
                 (true, events)
@@ -1446,13 +1574,16 @@ impl Surface {
                 | KeyName::Right
                 | KeyName::Home
                 | KeyName::End,
-                Control::Text,
+                Control::Text | Control::TextArea,
             ) if plain || key.mods.shift => {
                 let events = self.drive_key(key);
                 self.dirty = true;
                 (true, events)
             }
-            (KeyName::Up | KeyName::Down, Control::TextArea) => {
+            (
+                KeyName::Up | KeyName::Down | KeyName::PageUp | KeyName::PageDown,
+                Control::TextArea,
+            ) => {
                 let events = self.drive_key(key);
                 self.dirty = true;
                 (true, events)
@@ -1470,8 +1601,198 @@ impl Surface {
                 self.dirty = true;
                 (true, events)
             }
-            _ => (false, Vec::new()),
+            _ => self.scroll_key(key, focused),
         }
+    }
+
+    /// A key the focused element has no use for, in a document that
+    /// scrolls (SPEC §5.3): a key a browser scrolls with scrolls the
+    /// innermost box, from the focused element outward (from the root when
+    /// none is), that can still move that way. Where none can, the key goes
+    /// on to the program, as every key the surface does not use does
+    /// (§10.2), unless `overscroll-behavior` stops it.
+    fn scroll_key(&mut self, key: &Key, focused: Option<NodeId>) -> (bool, Vec<Event>) {
+        let Some(k) = scroll::key_scroll(key).filter(|_| self.scroll_axes != 0) else {
+            return (false, Vec::new());
+        };
+        self.resolve();
+        match scroll::route(&self.doc, focused, self.scroll_axes, k.axis, k.sign) {
+            Route::Terminal => (false, Vec::new()),
+            Route::Stop => (true, Vec::new()),
+            Route::Doc(s) => {
+                if scroll::scroll_key(&mut self.doc, s, self.scroll_axes, k) {
+                    self.scrolled(s);
+                }
+                (true, Vec::new())
+            }
+        }
+    }
+
+    /// Where a wheel at CSS pixel (`x`, `y`) of the surface, scrolling by
+    /// (`dx`, `dy`), goes as a gesture begins (SPEC §5.3).
+    pub fn wheel_route(&mut self, x: f32, y: f32, dx: f64, dy: f64) -> Route {
+        if self.scroll_axes == 0 {
+            return Route::Terminal;
+        }
+        self.resolve();
+        let (px, py) = self.page(x, y);
+        let from = self.doc.hit(px, py).map(|h| h.node_id);
+        let (axis, sign) = scroll::main_axis(dx, dy);
+        scroll::route(&self.doc, from, self.scroll_axes, axis, sign)
+    }
+
+    /// Scrolls `s`, which the wheel gesture at CSS pixel (`x`, `y`) is
+    /// latched to, by (`dx`, `dy`) CSS pixels, as far as it goes.
+    pub fn wheel_scroll(&mut self, s: Scroller, x: f32, y: f32, dx: f64, dy: f64) {
+        self.pointer_at = Some((x, y));
+        self.resolve();
+        if scroll::scroll_by(&mut self.doc, s, self.scroll_axes, dx, dy) {
+            self.scrolled(s);
+        }
+    }
+
+    /// After `s` scrolled: what it shows is painted again, its scrollbars
+    /// show and then fade, and what the pointer is over is found again, as
+    /// a browser finds it after a scroll.
+    fn scrolled(&mut self, s: Scroller) {
+        let now = Instant::now();
+        match s {
+            Scroller::Viewport => {
+                self.damage.full = true;
+                self.root_bar.shown = Some(now);
+            }
+            Scroller::Node(id) => {
+                let scale = self.viewport.2 as f64;
+                self.damage.touch(&self.doc, id, scale);
+                self.fade(id, now);
+            }
+        }
+        self.dirty = true;
+        if let Some((x, y)) = self.pointer_at
+            && !self.held()
+            && self.root_bar.drag.is_none()
+        {
+            let ev = self.pointer_event(x, y, MouseEventButtons::None, Mods::default());
+            self.drive(UiEvent::PointerMove(ev));
+        }
+    }
+
+    /// Element `id`'s scrollbars showed at `now`: they fade from then.
+    fn fade(&mut self, id: NodeId, now: Instant) {
+        match self.fading.iter_mut().find(|e| e.0 == id) {
+            Some(e) => e.1 = now,
+            None => self.fading.push((id, now)),
+        }
+    }
+
+    fn damage_root_bar(&mut self) {
+        for vertical in [true, false] {
+            self.damage.add(paint::root_bar_strip(&self.doc, vertical));
+        }
+        self.dirty = true;
+    }
+
+    /// When the scrollbars that fade are next painted: as their fade
+    /// begins, then every frame of it.
+    fn fade_due(&self, now: Instant) -> Option<Instant> {
+        let frame = std::time::Duration::from_millis(16);
+        let root = self
+            .root_bar
+            .shown
+            .filter(|_| self.root_bar.hover.is_none() && self.root_bar.drag.is_none());
+        root.into_iter()
+            .chain(self.fading.iter().map(|e| e.1))
+            .map(|t| {
+                let start = t + scroll::FADE_DELAY;
+                if now < start { start } else { now + frame }
+            })
+            .min()
+    }
+
+    /// Paints again the scrollbars that are fading at `now`; true if any.
+    fn fade_scrollbars(&mut self, now: Instant) -> bool {
+        let end = scroll::FADE_DELAY + scroll::FADE_DURATION;
+        let mut changed = false;
+        if let Some(t) = self.root_bar.shown
+            && self.root_bar.hover.is_none()
+            && self.root_bar.drag.is_none()
+            && now >= t + scroll::FADE_DELAY
+        {
+            self.damage_root_bar();
+            changed = true;
+            if now >= t + end {
+                self.root_bar.shown = None;
+            }
+        }
+        let scale = self.viewport.2 as f64;
+        let fading = std::mem::take(&mut self.fading);
+        for (id, t) in fading {
+            if now >= t + scroll::FADE_DELAY {
+                self.damage.touch(&self.doc, id, scale);
+                changed = true;
+            }
+            if now < t + end {
+                self.fading.push((id, t));
+            }
+        }
+        self.dirty |= changed;
+        changed
+    }
+
+    /// The root's scrollbars take the pointer where a thumb shows, as a
+    /// page's do (the document hears nothing of it), and a press there
+    /// drags the thumb. True if they took this event.
+    fn root_bar_pointer(&mut self, kind: PointerKind, x: f32, y: f32) -> bool {
+        use scroll::Axis;
+        let now = Instant::now();
+        let (x, y) = (x as f64, y as f64);
+        let axes = self.scroll_axes;
+        if let Some((axis, last)) = self.root_bar.drag {
+            if kind == PointerKind::Move {
+                let pos = if axis == Axis::X { x } else { y };
+                let d = (pos - last) * scroll::root_drag_ratio(&self.doc, axes, axis);
+                self.root_bar.drag = Some((axis, pos));
+                let (dx, dy) = if axis == Axis::X { (d, 0.0) } else { (0.0, d) };
+                if scroll::scroll_by(&mut self.doc, Scroller::Viewport, axes, dx, dy) {
+                    self.scrolled(Scroller::Viewport);
+                }
+                return true;
+            }
+            self.root_bar.drag = None;
+            self.root_bar.shown = Some(now);
+            self.damage_root_bar();
+            if kind != PointerKind::Leave {
+                return true;
+            }
+        }
+        let shows = self.root_bar.opacity(now) > 0.0;
+        let at = match kind {
+            PointerKind::Leave => None,
+            _ if shows => scroll::root_thumb_at(&self.doc, axes, x, y),
+            _ => None,
+        };
+        if at != self.root_bar.hover {
+            // Leaving a thumb starts its fade again.
+            if self.root_bar.hover.is_some() {
+                self.root_bar.shown = Some(now);
+            }
+            self.root_bar.hover = at;
+            self.damage_root_bar();
+        }
+        if kind == PointerKind::Down
+            && let Some(axis) = at
+        {
+            self.root_bar.drag = Some((axis, if axis == Axis::X { x } else { y }));
+            self.damage_root_bar();
+            return true;
+        }
+        false
+    }
+
+    /// Whether a scrollbar has the pointer: a thumb is dragged, the root's
+    /// or an element's. Nothing the pointer does then is the document's.
+    pub fn on_scrollbar(&self) -> bool {
+        self.root_bar.drag.is_some() || self.doc.scrollbar_drag_target().is_some()
     }
 
     fn drive_key(&mut self, key: &Key) -> Vec<Event> {
@@ -1516,7 +1837,10 @@ impl Surface {
         events
     }
 
-    /// Space or Enter on a button, link, checkbox or summary: a click at its centre.
+    /// Space or Enter on a button, link, checkbox or summary: a click on it,
+    /// as a browser activates a control from the keyboard. Not a press:
+    /// the element may be scrolled out of view, and the pointer stays where
+    /// it is.
     fn activate(&mut self, id: NodeId) -> Vec<Event> {
         if !paint::intact(&self.doc, id) {
             return Vec::new();
@@ -1525,8 +1849,9 @@ impl Surface {
             return Vec::new();
         };
         let (x, y) = ((r.x + r.width / 2.0) as f32, (r.y + r.height / 2.0) as f32);
-        let mut events = self.pointer(PointerKind::Down, x, y, Mods::default());
-        events.extend(self.pointer(PointerKind::Up, x, y, Mods::default()));
+        let click = self.pointer_event(x, y, MouseEventButtons::None, Mods::default());
+        let mut events =
+            self.drive_input(Input::Dom(DomEvent::new(id, DomEventData::Click(click))));
         self.keyboard = true;
         self.doc.set_focus_to(id);
         events.retain(|e| e.kind != "focus" && e.kind != "blur");
@@ -1560,16 +1885,28 @@ impl Surface {
     }
 
     fn drive(&mut self, ui: UiEvent) -> Vec<Event> {
-        let is_key = matches!(
-            ui,
-            UiEvent::KeyDown(_) | UiEvent::KeyUp(_) | UiEvent::Ime(_)
-        );
-        // A press changes `:active` along the whole chain, and may toggle a
-        // checkbox or a <details>: repaint everything (clicks are rare).
-        let is_press = matches!(ui, UiEvent::PointerDown(_) | UiEvent::PointerUp(_));
-        // A drag extends the selection, which neither hover nor focus shows.
-        let dragging =
-            matches!(ui, UiEvent::PointerMove(_)) && self.buttons != MouseEventButtons::None;
+        self.drive_input(Input::Ui(ui))
+    }
+
+    fn drive_input(&mut self, input: Input) -> Vec<Event> {
+        let (is_key, is_press, dragging) = match &input {
+            Input::Ui(ui) => (
+                matches!(
+                    ui,
+                    UiEvent::KeyDown(_) | UiEvent::KeyUp(_) | UiEvent::Ime(_)
+                ),
+                // A press changes `:active` along the whole chain, and may
+                // toggle a checkbox or a <details>: repaint everything
+                // (clicks are rare).
+                matches!(ui, UiEvent::PointerDown(_) | UiEvent::PointerUp(_)),
+                // A drag extends the selection, which neither hover nor
+                // focus shows.
+                matches!(ui, UiEvent::PointerMove(_)) && self.buttons != MouseEventButtons::None,
+            ),
+            // A click from the keyboard, as a press.
+            Input::Dom(_) => (false, true, false),
+        };
+        let bar_before = self.doc.hovered_scrollbar();
         let selected = if dragging {
             self.doc.get_text_selection_ranges()
         } else {
@@ -1583,12 +1920,17 @@ impl Surface {
         );
         let mut rec = Recorder {
             base: self.base.clone(),
+            cell: self.cell,
+            slack: self.slack(),
             ..Recorder::default()
         };
         {
             let doc: &mut dyn Document = &mut self.doc;
             let mut driver = EventDriver::new(doc, &mut rec);
-            driver.handle_ui_event(ui);
+            match input {
+                Input::Ui(ui) => driver.handle_ui_event(ui),
+                Input::Dom(e) => driver.handle_dom_event(e),
+            }
         }
         // A click on a label is a click on its control (SPEC §10.1). Blitz
         // clicks only an `input` for its label; the Recorder stopped that.
@@ -1598,7 +1940,23 @@ impl Surface {
                 .handle_dom_event(DomEvent::new(control, DomEventData::Click(click)));
             rec.label = None;
         }
-        let mut events = rec.events;
+        let mut events = std::mem::take(&mut rec.events);
+        // What Blitz scrolled itself (an element's thumb dragged) is
+        // painted again; an element's scrollbars show while the pointer is
+        // on a thumb, and fade from when it leaves.
+        let now = Instant::now();
+        let root = self.doc.try_root_element().map(|r| r.id);
+        for n in std::mem::take(&mut rec.scrolled) {
+            self.scrolled_by_blitz(n, root, now);
+        }
+        let bar_after = self.doc.hovered_scrollbar();
+        if bar_before != bar_after {
+            let scale = self.viewport.2 as f64;
+            for b in [bar_before, bar_after].into_iter().flatten() {
+                self.damage.touch(&self.doc, b.node_id, scale);
+                self.fade(b.node_id, now);
+            }
+        }
         // Form submissions arrive as navigations (Blitz submits forms by
         // navigating). They never navigate here: they become `submit`.
         let navs: Vec<NavigationOptions> = std::mem::take(&mut *self.nav.0.lock().unwrap());
@@ -1659,6 +2017,19 @@ impl Surface {
             }
         }
         events
+    }
+
+    /// Blitz scrolled `n` itself (the root for the viewport).
+    fn scrolled_by_blitz(&mut self, n: NodeId, root: Option<NodeId>, now: Instant) {
+        if Some(n) == root {
+            self.damage.full = true;
+            self.root_bar.shown = Some(now);
+        } else {
+            let scale = self.viewport.2 as f64;
+            self.damage.touch(&self.doc, n, scale);
+            self.fade(n, now);
+        }
+        self.dirty = true;
     }
 
     fn snapshot_focus(&mut self) {
@@ -1748,10 +2119,22 @@ enum Control {
     Activatable,
 }
 
+/// What a surface hands Blitz's event driver: input from the host, or a
+/// DOM event of its own (a click from the keyboard).
+enum Input {
+    Ui(UiEvent),
+    Dom(DomEvent),
+}
+
 /// Records what the program must hear about while Blitz runs default actions.
 #[derive(Default)]
 struct Recorder {
     events: Vec<Event>,
+    /// A cell's size in CSS pixels, and half a device pixel, for `area`.
+    cell: (f64, f64),
+    slack: f64,
+    /// The elements Blitz scrolled (the root for the viewport).
+    scrolled: Vec<NodeId>,
     form: Option<NodeId>,
     /// The document's base URL, for links' `url`.
     base: Option<url::Url>,
@@ -1839,6 +2222,10 @@ impl EventHandler for &mut Recorder {
                         if let Some(v) = attr(id, "value") {
                             detail.insert("value".into(), v.into());
                         }
+                        // Where the element is (SPEC §9: `area`).
+                        if let Some(a) = crate::scroll::area(&doc, id, self.cell, self.slack) {
+                            detail.insert("area".into(), a);
+                        }
                         self.events.push(Event {
                             kind: "click",
                             target,
@@ -1852,6 +2239,7 @@ impl EventHandler for &mut Recorder {
                     break;
                 }
             }
+            DomEventData::Scroll(_) => self.scrolled.push(event.target),
             DomEventData::Input(input) => {
                 let id = event.target;
                 let Some(target) = attr(id, "id") else { return };

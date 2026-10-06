@@ -64,6 +64,26 @@ directive: `img-src` for images (`<img>`, CSS backgrounds and masks),
   fetched under `img-src`. An SVG that is itself an image (`<img>`, CSS)
   loads only `data:` URLs inside it, as in a browser.
 
+## Scrolling
+
+A document scrolls only along the axes it asks for (`a=doc` with
+`scroll=1`, `2` or `3`, SPEC §5.3), as a page does: its root and its
+`overflow: auto` and `scroll` boxes, with overlay scrollbars that take
+pixels, never cells, and fade. Along an axis it did not ask for nothing
+moves, whatever its CSS, and nothing shows a scrollbar.
+
+- A terminal hands every wheel, touchpad scroll and touch drag to
+  `hotty_host_wheel` first. It returns whether the surface took it; one
+  it did not take is the terminal's, as over the cells. A gesture goes
+  where its first wheel went, as in a browser: the innermost box that can
+  still move that way, then the root, then the terminal, unless
+  `overscroll-behavior` stops it.
+- While a surface has the keyboard, the keys a browser scrolls with
+  scroll it (those its focused control does not use), and focus scrolls
+  an element into view.
+- `hotty run` does the same with the wheel reports it reads: one report
+  is a row.
+
 ## Performance
 
 Measured 2026-09-29, release build:
