@@ -8,6 +8,12 @@ Speaks the Wayland wire protocol directly (no dependencies) to create a
 zwlr_virtual_pointer_v1 and move and click it in logical pixels of an output
 of the given size. `click` presses and releases the left button; `down` and
 `up` are its halves, for a drag.
+
+    vpointer.py <width> <height> move X Y wheel N [hwheel N] [swipe DY]
+
+`wheel` turns a wheel N notches (negative: up), `hwheel` tilts it right
+(negative: left), and `swipe` scrolls DY pixels on a touchpad and lifts the
+fingers.
 """
 import os
 import socket
@@ -115,6 +121,27 @@ def main():
             c.send(pointer, 2, struct.pack("<III", ms(), BTN_LEFT, int(steps[i] == "down")))
             c.send(pointer, 4)
             i += 1
+        elif steps[i] in ("wheel", "hwheel"):  # notches of a wheel
+            axis, n = int(steps[i] == "hwheel"), int(steps[i + 1])
+            for _ in range(abs(n)):
+                sign = 1 if n > 0 else -1
+                c.send(pointer, 5, struct.pack("<I", 0))  # axis_source(wheel)
+                c.send(pointer, 7, struct.pack("<IIii", ms(), axis, 15 * 256 * sign, sign))  # axis_discrete
+                c.send(pointer, 4)
+                time.sleep(0.03)
+            i += 2
+        elif steps[i] == "swipe":  # two fingers on a touchpad, then lifted
+            dy = int(steps[i + 1])
+            step = 10 if dy > 0 else -10
+            for _ in range(abs(dy) // 10):
+                c.send(pointer, 5, struct.pack("<I", 1))  # axis_source(finger)
+                c.send(pointer, 3, struct.pack("<IIi", ms(), 0, step * 256))  # axis
+                c.send(pointer, 4)
+                time.sleep(0.016)
+            c.send(pointer, 5, struct.pack("<I", 1))
+            c.send(pointer, 6, struct.pack("<II", ms(), 0))  # axis_stop
+            c.send(pointer, 4)
+            i += 2
         elif steps[i] == "sleep":
             time.sleep(float(steps[i + 1]))
             i += 2

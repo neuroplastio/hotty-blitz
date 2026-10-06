@@ -172,16 +172,24 @@ fn the_roots_scrollbar_shows_as_it_scrolls_and_fades() {
     assert!(wheel(&mut h, 15.0, 10.0, 0.0, 30.0));
     render(&mut h);
     assert_ne!(strip(&h), rest, "a thumb shows while the root scrolls");
-    assert!(h.next_frame().is_some(), "its fade is drawn");
-    std::thread::sleep(std::time::Duration::from_millis(800));
-    render(&mut h);
+    // Drawn as a terminal draws it: one timer, set to next_frame, and a
+    // render when it fires.
+    let start = std::time::Instant::now();
+    let mut frames = 0;
+    while let Some(due) = h.next_frame() {
+        assert!(start.elapsed().as_millis() < 2000, "the fade ends");
+        std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
+        assert!(
+            h.has_dirty(),
+            "a frame of the fade is due when its timer fires"
+        );
+        render(&mut h);
+        frames += 1;
+    }
+    assert!(frames > 1, "the thumb fades over frames, not at once");
     // The rows have nothing at the right edge: once faded, the strip is
     // the background again.
     assert_eq!(strip(&h), rest, "the thumb faded");
-    assert!(
-        h.next_frame().is_none(),
-        "nothing more to draw once it faded"
-    );
     assert_eq!(differs_from_a_full_paint(&mut h), 0);
 }
 

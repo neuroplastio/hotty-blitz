@@ -176,6 +176,9 @@ pub(crate) struct Surface {
     /// Elements whose scrollbars Blitz shows, with when they last showed:
     /// they are painted again as they fade.
     fading: Vec<(NodeId, Instant)>,
+    /// When a fading scrollbar was last painted: the next frame of the
+    /// fade is due a frame later.
+    faded_at: Option<Instant>,
 }
 
 /// Where the pointer is for `hover` (SPEC §9.4): out of the window, or in
@@ -457,6 +460,7 @@ impl Surface {
             cell: cell_css(&m),
             root_bar: scroll::RootBar::default(),
             fading: Vec::new(),
+            faded_at: None,
         }
     }
 
@@ -490,11 +494,10 @@ impl Surface {
     /// When the next frame of an animated image that is seen, or of
     /// scrollbars fading, is due.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
-        let now = Instant::now();
         self.playing
             .iter()
             .filter_map(|p| p.due())
-            .chain(self.fade_due(now))
+            .chain(self.fade_due())
             .min()
     }
 
@@ -1693,8 +1696,9 @@ impl Surface {
     }
 
     /// When the scrollbars that fade are next painted: as their fade
-    /// begins, then every frame of it.
-    fn fade_due(&self, now: Instant) -> Option<Instant> {
+    /// begins, then a frame after each frame of it. A fixed instant, so
+    /// that it comes due.
+    fn fade_due(&self) -> Option<Instant> {
         let frame = std::time::Duration::from_millis(16);
         let root = self
             .root_bar
@@ -1704,7 +1708,7 @@ impl Surface {
             .chain(self.fading.iter().map(|e| e.1))
             .map(|t| {
                 let start = t + scroll::FADE_DELAY;
-                if now < start { start } else { now + frame }
+                self.faded_at.map_or(start, |p| start.max(p + frame))
             })
             .min()
     }
@@ -1734,6 +1738,9 @@ impl Surface {
             if now < t + end {
                 self.fading.push((id, t));
             }
+        }
+        if changed {
+            self.faded_at = Some(now);
         }
         self.dirty |= changed;
         changed
