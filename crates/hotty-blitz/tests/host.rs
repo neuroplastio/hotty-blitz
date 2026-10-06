@@ -1255,6 +1255,107 @@ fn a_detached_document_paints_as_if_its_controls_had_disabled() {
     assert_ne!(rgba(&detached), rgba(&enabled));
 }
 
+/// A field and a button with nothing in them, then checkboxes and radio
+/// buttons, unchecked and checked, side by side in `#box`.
+fn controls(box_style: &str) -> String {
+    format!(
+        "<style>body{{margin:0}} input,button{{position:absolute;top:0;margin:0}}
+         #f,#b{{width:40px;height:20px;padding:0}}</style>
+         <div id=box style='{box_style}'>
+         <input id=f style='left:0'><button id=b style='left:50px'></button>
+         <input type=checkbox id=c style='left:100px'><input type=checkbox checked id=cc style='left:120px'>
+         <input type=radio id=r style='left:140px'><input type=radio checked id=rc style='left:160px'></div>"
+    )
+}
+
+/// What `controls` paints: the field, the button, then the checkboxes and
+/// radio buttons, unchecked and checked. A checked checkbox is read off its
+/// check mark.
+fn control_colors(h: &Host) -> [[u8; 3]; 6] {
+    ["f", "b", "c", "cc", "r", "rc"].map(|id| {
+        let (x, y) = h.element_centre("x", id).unwrap();
+        let (x, y) = if id == "cc" {
+            (x - 4.0, y - 4.0)
+        } else {
+            (x, y)
+        };
+        pixel(h, "x", x as u32, y as u32)
+    })
+}
+
+// Field, ButtonFace (Stylo's system colors), then Chromium's checkbox fill
+// and accent, in each scheme.
+const DARK_CONTROLS: [[u8; 3]; 6] = [
+    [45, 45, 45],
+    [107, 107, 107],
+    [59, 59, 59],
+    [153, 200, 255],
+    [59, 59, 59],
+    [153, 200, 255],
+];
+const LIGHT_CONTROLS: [[u8; 3]; 6] = [
+    [255, 255, 255],
+    [220, 220, 220],
+    [255, 255, 255],
+    [0, 117, 255],
+    [255, 255, 255],
+    [0, 117, 255],
+];
+
+#[test]
+fn form_controls_follow_the_used_color_scheme() {
+    // The host stylesheet's `color-scheme` (SPEC §8) reaches the controls:
+    // Blitz fork 0011.
+    let mut h = host();
+    assert!(h.config().theme.dark);
+    doc_at(&mut h, "x", &[], &controls(""), "2");
+    assert_eq!(control_colors(&h), DARK_CONTROLS);
+
+    let mut config = h.config().clone();
+    config.theme.dark = false;
+    h.set_config(config);
+    render(&mut h);
+    assert_eq!(control_colors(&h), LIGHT_CONTROLS, "a light terminal");
+
+    // An element's own `color-scheme` wins over the terminal's.
+    let mut h = host();
+    doc_at(&mut h, "x", &[], &controls("color-scheme: light"), "2");
+    assert_eq!(control_colors(&h), LIGHT_CONTROLS);
+
+    // And the document's colors over the system colors.
+    let mut h = host();
+    let page = controls("") + "<style>#f{background:#f00} #b{background:#00f}</style>";
+    doc_at(&mut h, "x", &[], &page, "2");
+    assert_eq!(control_colors(&h)[..2], [RED, BLUE]);
+}
+
+#[test]
+fn a_new_color_scheme_repaints_controls_like_a_fresh_document() {
+    let mut inc = host();
+    doc_at(&mut inc, "x", &[], &controls(""), "2");
+    let r = replies(&inc.handle(&cmd(
+        &[
+            ("a", "delta"),
+            ("s", "x"),
+            ("op", "attr"),
+            ("t", "box"),
+            ("k", "style"),
+        ],
+        "color-scheme: light",
+    )));
+    assert_eq!(r[0].get("a"), Some("ok"));
+    let frames = render(&mut inc);
+    assert!(
+        matches!(frames[0].3, hotty_blitz::Damage::Rects(_)),
+        "a partial paint"
+    );
+    assert_eq!(control_colors(&inc), LIGHT_CONTROLS);
+
+    let mut fresh = host();
+    doc_at(&mut fresh, "x", &[], &controls("color-scheme: light"), "2");
+    assert_eq!(inc.frame("x").unwrap().rgba, fresh.frame("x").unwrap().rgba);
+}
+
 #[test]
 fn what_is_local_stays_on_a_detached_surface() {
     let mut h = host();

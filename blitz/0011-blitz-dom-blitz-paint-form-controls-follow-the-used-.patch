@@ -1,0 +1,345 @@
+From d22e3976f3bceafcaaef6de6f63e5d79e97619c1 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 14:51:15 +0200
+Subject: [PATCH] blitz-dom, blitz-paint: form controls follow the used color
+ scheme
+
+Fields were white and buttons light grey on every page, and checkboxes and
+radio buttons white with the text color as their accent, so a page with
+`color-scheme: dark` showed light controls. Chromium and Firefox take
+these controls' colors from the CSS system colors, which resolve in the
+element's used color scheme, and Stylo already resolves them that way.
+
+The UA stylesheet now gives fields `Field` and `FieldText`, and buttons
+`ButtonFace` and `ButtonText`. Their borders are the ones Chromium draws
+in each scheme, through `light-dark()`. A page's own colors still win.
+
+Checkboxes and radio buttons are drawn whole by form_controls.rs in the
+element's used color scheme (BaseDocument::used_color_scheme: the scheme
+Stylo resolves system colors in), with the colors Chromium draws for
+`accent-color: auto` (Stylo's Servo build has no `accent-color`), checked,
+unchecked and disabled, and Chromium's geometry: a 13px box, a 1px
+border, 2px corners, and a check mark and a dot in proportion to the box.
+The UA stylesheet sizes them as Chromium does and paints nothing of the
+box under them; they were 20px and 18px, over the field's background and
+border.
+
+In a light scheme, buttons are Stylo's ButtonFace, #DCDCDC, where they
+were #EFEFEF.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/assets/default.css         |  36 +++--
+ packages/blitz-dom/src/document.rs            |  21 ++-
+ .../blitz-paint/src/render/form_controls.rs   | 148 ++++++++++++------
+ 3 files changed, 143 insertions(+), 62 deletions(-)
+
+diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
+index efec5738..304402cf 100644
+--- a/packages/blitz-dom/assets/default.css
++++ b/packages/blitz-dom/assets/default.css
+@@ -58,25 +58,37 @@ input[type="hidden" i] {
+     display: none !important;
+ }
+ 
++/* Form controls take their colors from the CSS system colors, which resolve
++ * in the element's used color scheme (https://drafts.csswg.org/css-color-adjust/#color-scheme-prop),
++ * so a page with `color-scheme: dark` gets dark fields and buttons. The
++ * borders are the ones Chromium draws in each scheme. */
++
++/* Checkboxes and radio buttons are drawn whole by blitz-paint (form_controls.rs),
++ * so nothing of the box is painted under them. */
++input[type="checkbox"],
++input[type="radio"] {
++    box-sizing: border-box;
++    width: 13px;
++    height: 13px;
++    padding: 0;
++    border: none;
++    background-color: transparent;
++}
++
+ input[type="checkbox"] {
+-    width: 14px;
+-    height: 14px;
+     margin: 3px 3px 3px 4px;
+ }
+ 
+ input[type="radio"] {
+-    width: 14px;
+-    height: 14px;
+-    border-radius: 14px;
+-    border: none;
+-    margin: 3px 3px 3px 4px;
++    margin: 3px 3px 0 5px;
+ }
+ 
+ input,
+ textarea {
+-    border: 1px solid #999;
++    border: 1px solid light-dark(#767676, #858585);
+     padding: 2px;
+-    background-color: white;
++    color: FieldText;
++    background-color: Field;
+ }
+ 
+ input,
+@@ -98,11 +110,11 @@ button,
+ input[type="submit"],
+ input[type="reset"],
+ input[type="button"] {
+-    border: 1px solid #999;
++    border: 1px solid light-dark(#767676, #6B6B6B);
+     border-radius: 1px;
+     padding: 1px 6px;
+-    color: black;
+-    background-color: #EFEFEF;
++    color: ButtonText;
++    background-color: ButtonFace;
+     text-align: center;
+     display: inline-flex;
+     align-items: center;
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index a8aa7fd0..e53745cc 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -24,7 +24,7 @@ use blitz_traits::events::{DomEvent, HitResult, UiEvent};
+ use blitz_traits::navigation::{DummyNavigationProvider, NavigationProvider};
+ use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request};
+ use blitz_traits::node_id::NodeId;
+-use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
++use blitz_traits::shell::{ColorScheme, DummyShellProvider, ShellProvider, Viewport};
+ use cursor_icon::CursorIcon;
+ use linebender_resource_handle::Blob;
+ use markup5ever::{LocalName, local_name};
+@@ -2020,6 +2020,25 @@ impl BaseDocument {
+         &self.viewport
+     }
+ 
++    /// The color scheme an element with this style is drawn in: the one its
++    /// `color-scheme` names when it names only light or only dark, else the
++    /// viewport's preferred one. Stylo resolves system colors the same way,
++    /// so what paint draws in this scheme matches the element's `Field`,
++    /// `ButtonFace` and the other system colors.
++    pub fn used_color_scheme(&self, style: &ComputedValues) -> ColorScheme {
++        use style::values::specified::color::ColorSchemeFlags;
++        let flags = style.get_inherited_ui().color_scheme_bits();
++        let dark = flags.contains(ColorSchemeFlags::DARK);
++        if dark != flags.contains(ColorSchemeFlags::LIGHT) {
++            return if dark {
++                ColorScheme::Dark
++            } else {
++                ColorScheme::Light
++            };
++        }
++        self.viewport.color_scheme
++    }
++
+     pub fn viewport_mut(&mut self) -> ViewportMut<'_> {
+         ViewportMut::new(self)
+     }
+diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-paint/src/render/form_controls.rs
+index 5d365a1b..f2415c02 100644
+--- a/packages/blitz-paint/src/render/form_controls.rs
++++ b/packages/blitz-paint/src/render/form_controls.rs
+@@ -1,8 +1,9 @@
+ use super::ElementCx;
+-use crate::color::{Color, ToColorColor as _};
++use crate::color::Color;
+ use anyrender::PaintScene;
+ use blitz_dom::local_name;
+-use kurbo::{Affine, BezPath, Cap, Circle, Join, Point, RoundedRect, Stroke, Vec2};
++use blitz_traits::shell::ColorScheme;
++use kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke};
+ use peniko::Fill;
+ use style::dom::TElement as _;
+ 
+@@ -16,88 +17,137 @@ impl ElementCx<'_, '_> {
+         };
+ 
+         let type_attr = self.node.attr(local_name!("type"));
+-        let disabled = self.element.is_disabled();
++        let scheme = self.context.dom.used_color_scheme(&self.style);
++        let colors = ControlColors::new(scheme, self.element.is_disabled());
+ 
+-        // TODO this should be coming from css accent-color, but I couldn't find how to retrieve it
+-        let accent_color = if disabled {
+-            Color::from_rgba8(209, 209, 209, 255)
+-        } else {
+-            self.style.clone_color().as_srgb_color()
+-        };
+-
+-        let width = self.frame.border_box.width();
+-        let height = self.frame.border_box.height();
+-        let min_dimension = width.min(height);
+-        let scale = (min_dimension - 4.0).max(0.0) / 16.0;
+-
+-        let frame = self.frame.border_box.to_rounded_rect(scale * 2.0);
++        // The control is a square, centred in the border box.
++        let frame = self.frame.border_box;
++        let side = frame.width().min(frame.height());
++        let square = Rect::from_center_size(frame.center(), (side, side));
+ 
+         match type_attr {
+             Some("checkbox") => {
+-                draw_checkbox(scene, checked, frame, self.transform, accent_color, scale);
++                draw_checkbox(scene, checked, square, self.transform, &colors, self.scale);
+             }
+             Some("radio") => {
+-                let center = frame.center();
+-                draw_radio_button(scene, checked, center, self.transform, accent_color, scale);
++                draw_radio_button(scene, checked, square, self.transform, &colors, self.scale);
+             }
+             _ => {}
+         }
+     }
+ }
+ 
++/// The colors of a checkbox or radio button in a color scheme, those Chromium
++/// draws with `accent-color: auto` (Stylo's Servo build has no `accent-color`).
++struct ControlColors {
++    /// The fill of a checked control, and its border.
++    accent: Color,
++    /// The fill of an unchecked control.
++    field: Color,
++    /// The border of an unchecked control.
++    border: Color,
++    /// The check mark.
++    mark: Color,
++}
++
++impl ControlColors {
++    fn new(scheme: ColorScheme, disabled: bool) -> Self {
++        let rgb = Color::from_rgb8;
++        match (scheme, disabled) {
++            (ColorScheme::Light, false) => Self {
++                accent: rgb(0x00, 0x75, 0xFF),
++                field: rgb(0xFF, 0xFF, 0xFF),
++                border: rgb(0x76, 0x76, 0x76),
++                mark: rgb(0xFF, 0xFF, 0xFF),
++            },
++            (ColorScheme::Light, true) => Self {
++                accent: rgb(0xD0, 0xD0, 0xD0),
++                field: rgb(0xF7, 0xF7, 0xF7),
++                border: rgb(0xD0, 0xD0, 0xD0),
++                mark: rgb(0xEC, 0xEC, 0xEC),
++            },
++            (ColorScheme::Dark, false) => Self {
++                accent: rgb(0x99, 0xC8, 0xFF),
++                field: rgb(0x3B, 0x3B, 0x3B),
++                border: rgb(0x85, 0x85, 0x85),
++                mark: rgb(0x3B, 0x3B, 0x3B),
++            },
++            (ColorScheme::Dark, true) => Self {
++                accent: rgb(0x75, 0x75, 0x75),
++                field: rgb(0x3B, 0x3B, 0x3B),
++                border: rgb(0x62, 0x62, 0x62),
++                mark: rgb(0x3B, 0x3B, 0x3B),
++            },
++        }
++    }
++}
++
++/// A 1px border with 2px corners; checked, the box is filled with the accent
++/// and carries a check mark proportional to its size.
+ fn draw_checkbox(
+     scene: &mut impl PaintScene,
+     checked: bool,
+-    frame: RoundedRect,
++    square: Rect,
+     transform: Affine,
+-    accent_color: Color,
++    colors: &ControlColors,
+     scale: f64,
+ ) {
++    let border = scale;
++    let radius = 2.0 * scale;
++    let outer = RoundedRect::from_rect(square, radius);
+     if checked {
+-        scene.fill(Fill::NonZero, transform, accent_color, None, &frame);
+-        //Tick code derived from masonry
+-        let mut path = BezPath::new();
+-        path.move_to((2.0, 9.0));
+-        path.line_to((6.0, 13.0));
+-        path.line_to((14.0, 2.0));
+-
+-        path.apply_affine(Affine::translate(Vec2 { x: 2.0, y: 1.0 }).then_scale(scale));
++        scene.fill(Fill::NonZero, transform, colors.accent, None, &outer);
+ 
++        let (x, y, w, h) = (square.x0, square.y0, square.width(), square.height());
++        let mut path = BezPath::new();
++        path.move_to((x + w * 0.2, y + h * 0.5));
++        path.line_to((x + w * 0.4, y + h * 0.7));
++        path.line_to((x + w * 0.8, y + h * 0.2));
+         let style = Stroke {
+-            width: 2.0 * scale,
+-            join: Join::Round,
++            width: h * 0.16,
++            join: Join::Miter,
+             miter_limit: 10.0,
+-            start_cap: Cap::Round,
+-            end_cap: Cap::Round,
++            start_cap: Cap::Butt,
++            end_cap: Cap::Butt,
+             dash_pattern: Default::default(),
+             dash_offset: 0.0,
+         };
+-
+-        scene.stroke(&style, transform, Color::WHITE, None, &path);
++        scene.stroke(&style, transform, colors.mark, None, &path);
+     } else {
+-        scene.fill(Fill::NonZero, transform, Color::WHITE, None, &frame);
+-        scene.stroke(&Stroke::default(), transform, accent_color, None, &frame);
++        let inner = RoundedRect::from_rect(square.inset(-border), (radius - border).max(0.0));
++        scene.fill(Fill::NonZero, transform, colors.border, None, &outer);
++        scene.fill(Fill::NonZero, transform, colors.field, None, &inner);
+     }
+ }
+ 
++/// A 1px ring; checked, the ring takes the accent and a dot of it fills the
++/// middle.
+ fn draw_radio_button(
+     scene: &mut impl PaintScene,
+     checked: bool,
+-    center: Point,
++    square: Rect,
+     transform: Affine,
+-    accent_color: Color,
++    colors: &ControlColors,
+     scale: f64,
+ ) {
+-    let outer_ring = Circle::new(center, 8.0 * scale);
+-    let gap = Circle::new(center, 6.0 * scale);
+-    let inner_circle = Circle::new(center, 4.0 * scale);
+-    if checked {
+-        scene.fill(Fill::NonZero, transform, accent_color, None, &outer_ring);
+-        scene.fill(Fill::NonZero, transform, Color::WHITE, None, &gap);
+-        scene.fill(Fill::NonZero, transform, accent_color, None, &inner_circle);
++    let center: Point = square.center();
++    let radius = square.width() / 2.0;
++    let ring = if checked {
++        colors.accent
+     } else {
+-        const GRAY: Color = color::palette::css::GRAY;
+-        scene.fill(Fill::NonZero, transform, GRAY, None, &outer_ring);
+-        scene.fill(Fill::NonZero, transform, Color::WHITE, None, &gap);
++        colors.border
++    };
++    scene.fill(
++        Fill::NonZero,
++        transform,
++        ring,
++        None,
++        &Circle::new(center, radius),
++    );
++    let inner = Circle::new(center, (radius - scale).max(0.0));
++    scene.fill(Fill::NonZero, transform, colors.field, None, &inner);
++    if checked {
++        let dot = Circle::new(center, square.width() * 0.3);
++        scene.fill(Fill::NonZero, transform, colors.accent, None, &dot);
+     }
+ }
+-- 
+2.56.0
+

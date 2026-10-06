@@ -19,6 +19,7 @@ changes upstream is an open question.
 | `0008-blitz-dom-*` | an `<img>` shows the source `srcset`, `sizes` and `<picture>` choose (below) |
 | `0009-blitz-dom-*` | an inline SVG's `<image>` draws what the document fetches for it (below) |
 | `0010-blitz-dom-*` | an `<img>` chooses its source again when the device changes (below) |
+| `0011-blitz-dom-blitz-paint-*` | form controls follow the used color scheme (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -37,7 +38,26 @@ drawn at all. A box resized only through its containing block keeps its
 old overflow, and paint can cull it. An SVG can draw any image file on the
 disk, and an `<img>` loads its `src` alone, never a `srcset` or a
 `<picture>` source. An inline SVG's `<image>` draws no `cid:` resource
-and nothing from the network.
+and nothing from the network. Form controls are light on a dark terminal.
+
+## Form controls in the color scheme
+
+Upstream's UA stylesheet makes fields white and buttons light grey, and
+paints checkboxes and radio buttons white with the text color as their
+accent, so a surface with the host stylesheet's `color-scheme: dark`
+(HOTTY SPEC §8) showed light controls on a dark terminal. Browsers take
+these colors from the CSS system colors, which resolve in the element's
+used color scheme, and Stylo already resolves them that way. The fork's
+UA stylesheet gives fields `Field` and `FieldText`, and buttons
+`ButtonFace` and `ButtonText`. Their borders are Chromium's in each
+scheme (`light-dark()`). Checkboxes and radio buttons are drawn whole in
+the element's used color scheme (`BaseDocument::used_color_scheme`), with
+Chromium's colors for `accent-color: auto` (Stylo's Servo build has no
+`accent-color`) and its 13px geometry. A document's own colors still win.
+The shades come from Stylo's system colors, so a dark field is #2D2D2D
+where Chromium's is #3B3B3B, and a light button #DCDCDC where it is
+#EFEFEF. hotty-blitz's `form_controls_follow_the_used_color_scheme` and
+`a_new_color_scheme_repaints_controls_like_a_fresh_document` check it.
 
 ## SVG images load no files
 
