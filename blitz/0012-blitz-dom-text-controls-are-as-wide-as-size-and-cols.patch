@@ -1,0 +1,260 @@
+From 3682b0aa6ce804ccb266c75ad9f5ec024a276db6 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 14:51:15 +0200
+Subject: [PATCH] blitz-dom: text controls are as wide as size and cols, as
+ tall as rows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A text input was 300px wide, or the available width when less, whatever
+its `size`, and 0 wide at min-content. A textarea was 300px wide unless
+it had `cols`, then cols × 0.6em, and rows × 1.2em tall.
+
+Both now count characters as Chromium does
+(font_metrics::control_font_metrics). One character is the primary
+font's average width (OS/2 xAvgCharWidth), or the advance of `0` when
+the font has no average or a full-width one. An input is `size`
+characters wide (20 by default), plus the font's widest glyph (its head
+bounding box) less one character: the slack Internet Explorer added. A
+textarea is `cols` characters wide (20 by default), with no scrollbar
+gutter, since Blitz's scrollbars are overlays. That is also the
+min-content width: a text control does not shrink to fit, as in browsers.
+For Noto Sans and Noto Sans Mono at 16px, every width matches Chromium's
+to the pixel.
+
+A row (2 by default, one for an input) is the line height. With
+`line-height: normal`, that is the primary font's own (ascent, descent
+and line gap), the height Parley lays each line out in, instead of 1.2em,
+which cut off the last row in a font with taller metrics.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/font_metrics.rs | 84 ++++++++++++++++++++++++++
+ packages/blitz-dom/src/layout/mod.rs   | 84 ++++++++++++++++++--------
+ 2 files changed, 144 insertions(+), 24 deletions(-)
+
+diff --git a/packages/blitz-dom/src/font_metrics.rs b/packages/blitz-dom/src/font_metrics.rs
+index 9c7b5611..f7fdb8a9 100644
+--- a/packages/blitz-dom/src/font_metrics.rs
++++ b/packages/blitz-dom/src/font_metrics.rs
+@@ -34,6 +34,90 @@ fn query_for_font_styles<'a>(
+     query
+ }
+ 
++/// What a text control's `size`, `cols` and `rows` attributes count in.
++pub(crate) struct ControlFontMetrics {
++    /// The width of one character.
++    pub(crate) avg: f32,
++    /// The width of the widest glyph, when `avg` is the font's own average.
++    pub(crate) max: Option<f32>,
++    /// The height of a line with `line-height: normal`, as Parley lays it out.
++    pub(crate) normal_line_height: f32,
++}
++
++/// Measures a text control's primary font (the first one with a space) as
++/// Chromium does: one character is the font's average character width (OS/2
++/// `xAvgCharWidth`), and the widest glyph the width of the font's bounding box
++/// (`head`), rounded. A font with no average, or whose average is a
++/// full-width (CJK) one, measures one character as the advance of `0`, and no
++/// widest glyph.
++pub(crate) fn control_font_metrics(
++    font_ctx: &Mutex<FontContext>,
++    font_styles: &FontStyles,
++    font_size: f32,
++) -> ControlFontMetrics {
++    use parley::fontique::QueryStatus;
++    use skrifa::instance::{LocationRef, Size};
++    use skrifa::metrics::{GlyphMetrics, Metrics};
++
++    let mut font_ctx = font_ctx.lock().unwrap();
++    let font_ctx = &mut *font_ctx;
++    let mut query = query_for_font_styles(font_ctx, font_styles);
++    let variations = stylo_to_parley::font_variations(&font_styles.font_variation_settings);
++
++    let mut found = None;
++    query.matches_with(|font| {
++        let Ok(font_ref) = skrifa::FontRef::from_index(font.blob.as_ref(), font.index) else {
++            return QueryStatus::Continue;
++        };
++        let charmap = font_ref.charmap();
++        if charmap.map(' ').is_none() {
++            return QueryStatus::Continue;
++        }
++        let location = font_ref.axes().location(
++            variations
++                .iter()
++                .map(|v| (skrifa::Tag::from_be_bytes(v.tag.to_bytes()), v.value)),
++        );
++        let location_ref = LocationRef::from(&location);
++        // Scaled as Parley scales glyph advances (see `advance_of` below).
++        let metrics = Metrics::new(&font_ref, Size::unscaled(), location_ref);
++        if metrics.units_per_em == 0 {
++            return QueryStatus::Continue;
++        }
++        let scale = font_size / metrics.units_per_em as f32;
++        let zero = charmap.map('0').and_then(|glyph| {
++            GlyphMetrics::new(&font_ref, Size::unscaled(), location_ref).advance_width(glyph)
++        });
++        let zero = zero.map(|advance| advance * scale);
++        let avg = metrics
++            .average_width
++            .filter(|avg| *avg > 0.0)
++            .map(|avg| avg * scale)
++            .filter(|avg| zero.is_none_or(|zero| *avg <= zero * 1.7));
++        let (avg, max) = match avg {
++            Some(avg) => (
++                avg,
++                metrics
++                    .bounds
++                    .map(|b| ((b.x_max - b.x_min) * scale).round()),
++            ),
++            None => (zero.unwrap_or(font_size / 2.0), None),
++        };
++        let normal_line_height = (metrics.ascent - metrics.descent + metrics.leading) * scale;
++        found = Some(ControlFontMetrics {
++            avg,
++            max,
++            normal_line_height,
++        });
++        QueryStatus::Stop
++    });
++    found.unwrap_or(ControlFontMetrics {
++        avg: font_size / 2.0,
++        max: None,
++        normal_line_height: font_size * 1.2,
++    })
++}
++
+ #[derive(Clone)]
+ pub(crate) struct BlitzFontMetricsProvider {
+     pub(crate) font_ctx: Arc<Mutex<FontContext>>,
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 60149f93..d7e13364 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -5,7 +5,7 @@
+ //! This is slower, yes, but happens fast enough that it's not a huge issue.
+ 
+ use crate::node::{ComputedStyleRef, ImageData, NodeData, SpecialElementData};
+-use crate::{document::BaseDocument, dom_node_id, node::Node, taffy_node_id};
++use crate::{document::BaseDocument, dom_node_id, font_metrics, node::Node, taffy_node_id};
+ use markup5ever::{LocalName, local_name};
+ use std::cell::Ref;
+ use std::sync::Arc;
+@@ -71,6 +71,15 @@ fn tag_intrinsic_sizes(
+     (IntrinsicSizes::default(), DEFAULT_OBJECT_SIZE)
+ }
+ 
++/// The value of a text control's `size`, `cols` or `rows` attribute: a
++/// number above zero, else `default`.
++fn control_count(value: Option<&str>, default: u32) -> f32 {
++    value
++        .and_then(|val| val.trim().parse::<u32>().ok())
++        .filter(|count| *count > 0)
++        .unwrap_or(default) as f32
++}
++
+ pub(crate) fn resolve_calc_value(calc_ptr: *const (), parent_size: f32) -> f32 {
+     let calc = unsafe { &*(calc_ptr as *const CalcLengthPercentage) };
+     let result = calc.resolve(CSSPixelLength::new(parent_size));
+@@ -161,27 +170,46 @@ impl BaseDocument {
+                 // })
+             }
+             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+-                // TODO: deduplicate with single-line text input
+-                if *element_data.name.local == *"textarea" {
+-                    let rows = element_data
+-                        .attr(local_name!("rows"))
+-                        .and_then(|val| val.parse::<f32>().ok())
+-                        .unwrap_or(2.0);
++                // A text control is as wide as its `cols` or `size` characters
++                // (https://html.spec.whatwg.org/#the-textarea-element-2,
++                // https://html.spec.whatwg.org/#the-input-element-as-a-text-entry-widget),
++                // counted in the widths Chromium counts them in, and as tall as
++                // its `rows` lines (one for an input).
++                let control_metrics = |node: &Node| {
++                    let style = node.primary_styles()?;
++                    let metrics = font_metrics::control_font_metrics(
++                        &self.font_ctx,
++                        style.get_font(),
++                        font_size.unwrap_or(16.0),
++                    );
++                    let line_height = match style.clone_line_height() {
++                        style::values::computed::font::LineHeight::Normal => {
++                            metrics.normal_line_height
++                        }
++                        _ => resolved_line_height.unwrap_or(metrics.normal_line_height),
++                    };
++                    Some((metrics, line_height))
++                };
+ 
+-                    let cols = element_data
+-                        .attr(local_name!("cols"))
+-                        .and_then(|val| val.parse::<f32>().ok());
++                if *element_data.name.local == *"textarea" {
++                    let rows = control_count(element_data.attr(local_name!("rows")), 2);
++                    let cols = control_count(element_data.attr(local_name!("cols")), 20);
++                    let size = match control_metrics(node) {
++                        Some((metrics, line_height)) => taffy::Size {
++                            width: (cols * metrics.avg).ceil(),
++                            height: line_height * rows,
++                        },
++                        None => taffy::Size {
++                            width: cols * 8.0,
++                            height: 16.0 * rows,
++                        },
++                    };
+ 
+                     let output = compute_leaf_layout(
+                         inputs,
+                         &node.layout_style(),
+                         resolve_calc_value,
+-                        |_known_size, _available_space| taffy::Size {
+-                            width: cols
+-                                .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
+-                                .unwrap_or(300.0),
+-                            height: resolved_line_height.unwrap_or(16.0) * rows,
+-                        },
++                        |_known_size, _available_space| size,
+                     );
+                     if inputs.run_mode == RunMode::PerformLayout {
+                         let pb = {
+@@ -241,18 +269,26 @@ impl BaseDocument {
+                             );
+                         }
+                         None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
++                            // Chromium adds the widest glyph less one character,
++                            // as Internet Explorer did.
++                            let size = control_count(element_data.attr(local_name!("size")), 20);
++                            let size = match control_metrics(node) {
++                                Some((metrics, line_height)) => taffy::Size {
++                                    width: (size * metrics.avg
++                                        + metrics.max.map_or(0.0, |max| max - metrics.avg))
++                                    .ceil(),
++                                    height: line_height,
++                                },
++                                None => taffy::Size {
++                                    width: size * 8.0,
++                                    height: 16.0,
++                                },
++                            };
+                             return compute_leaf_layout(
+                                 inputs,
+                                 &node.layout_style(),
+                                 resolve_calc_value,
+-                                |_known_size, _available_space| taffy::Size {
+-                                    width: match inputs.available_space.width {
+-                                        AvailableSpace::Definite(limit) => limit.min(300.0),
+-                                        AvailableSpace::MinContent => 0.0,
+-                                        AvailableSpace::MaxContent => 300.0,
+-                                    },
+-                                    height: resolved_line_height.unwrap_or(16.0),
+-                                },
++                                |_known_size, _available_space| size,
+                             );
+                         }
+                         _ => {}
+-- 
+2.56.0
+

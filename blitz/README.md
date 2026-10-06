@@ -20,6 +20,7 @@ changes upstream is an open question.
 | `0009-blitz-dom-*` | an inline SVG's `<image>` draws what the document fetches for it (below) |
 | `0010-blitz-dom-*` | an `<img>` chooses its source again when the device changes (below) |
 | `0011-blitz-dom-blitz-paint-*` | form controls follow the used color scheme (below) |
+| `0012-blitz-dom-*` | text controls are as wide as `size` and `cols`, as tall as `rows` (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -38,7 +39,8 @@ drawn at all. A box resized only through its containing block keeps its
 old overflow, and paint can cull it. An SVG can draw any image file on the
 disk, and an `<img>` loads its `src` alone, never a `srcset` or a
 `<picture>` source. An inline SVG's `<image>` draws no `cid:` resource
-and nothing from the network. Form controls are light on a dark terminal.
+and nothing from the network. Form controls are light on a dark terminal,
+and every text input is 300px wide, whatever its `size`.
 
 ## Form controls in the color scheme
 
@@ -58,6 +60,26 @@ The shades come from Stylo's system colors, so a dark field is #2D2D2D
 where Chromium's is #3B3B3B, and a light button #DCDCDC where it is
 #EFEFEF. hotty-blitz's `form_controls_follow_the_used_color_scheme` and
 `a_new_color_scheme_repaints_controls_like_a_fresh_document` check it.
+
+## Text control sizes
+
+Upstream makes a text input 300px wide, or the available width when
+that is less, whatever its `size`, and a textarea 300px wide unless it
+has `cols`. The fork counts characters as Chromium does:
+- one character is the primary font's average width (OS/2
+  `xAvgCharWidth`), or the advance of `0`;
+- an input is `size` characters wide (20 by default), plus the font's
+  widest glyph less one character;
+- a textarea is `cols` characters wide (20 by default), with no scrollbar
+  gutter, because Blitz's scrollbars are overlays;
+- a row (`rows`, 2 by default) is the line height, which for
+  `line-height: normal` is the font's own, as Parley lays the text out,
+  rather than 1.2em.
+
+For Noto Sans and Noto Sans Mono at 16px, every width matches Chromium's
+to the pixel. hotty-blitz's
+`text_controls_are_as_wide_as_size_and_cols_and_as_tall_as_rows` checks
+it.
 
 ## SVG images load no files
 

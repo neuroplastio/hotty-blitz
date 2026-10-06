@@ -1357,6 +1357,61 @@ fn a_new_color_scheme_repaints_controls_like_a_fresh_document() {
 }
 
 #[test]
+fn text_controls_are_as_wide_as_size_and_cols_and_as_tall_as_rows() {
+    // Blitz fork 0012. A width depends on the font, so this checks what it
+    // counts: characters of one width, and for `size` the font's widest
+    // glyph once more. Each control has a 1px border and 2px of padding.
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0} input,textarea,div{position:absolute;left:0;margin:0;font:16px monospace}
+         .px{line-height:20px}</style>
+         <input id=d style='top:0'><input id=s20 size=20 style='top:30px'>
+         <input id=s12 size=12 style='top:60px'><input id=s4 size=4 style='top:90px'>
+         <input id=s0 size=0 style='top:120px'>
+         <textarea id=t class=px style='top:150px'></textarea>
+         <textarea id=c20 class=px cols=20 rows=2 style='top:200px'></textarea>
+         <textarea id=c10 class=px cols=10 rows=3 style='top:250px'></textarea>
+         <textarea id=n rows=2 style='top:320px'></textarea>
+         <div id=lines style='top:400px'>a<br>b</div>",
+        "30",
+    );
+    let size = |id: &str, top: f32| {
+        let (x, y) = h.element_centre("x", id).unwrap();
+        (2.0 * x, 2.0 * (y - top))
+    };
+    let w = |id: &str, top: f32| size(id, top).0;
+
+    assert_eq!(w("d", 0.0), w("s20", 30.0), "size is 20 by default");
+    assert_eq!(w("s0", 120.0), w("s20", 30.0), "and when it is not above 0");
+    let (w20, w12, w4) = (w("s20", 30.0), w("s12", 60.0), w("s4", 90.0));
+    assert!(w4 < w12 && w12 < w20, "{w4} {w12} {w20}");
+    let ch = (w20 - w12) / 8.0;
+    assert!(((w12 - w4) / 8.0 - ch).abs() <= 0.25, "{w4} {w12} {w20}");
+
+    let (c20, c10) = (w("c20", 200.0) - 6.0, w("c10", 250.0) - 6.0);
+    assert_eq!(w("t", 150.0), c20 + 6.0, "cols is 20 by default");
+    assert!((c20 - 2.0 * c10).abs() <= 1.0, "{c10} {c20}");
+    assert!((c10 - 10.0 * ch).abs() <= 2.5, "cols counts what size does");
+
+    assert_eq!(size("t", 150.0).1, 2.0 * 20.0 + 6.0, "rows is 2 by default");
+    assert_eq!(size("c20", 200.0).1, 2.0 * 20.0 + 6.0);
+    assert_eq!(size("c10", 250.0).1, 3.0 * 20.0 + 6.0);
+    // With `line-height: normal`, a row is a line as the text lays it out.
+    let two_lines = size("lines", 400.0).1;
+    assert!(
+        (size("n", 320.0).1 - 6.0 - two_lines).abs() <= 1.0,
+        "{two_lines}"
+    );
+    assert!(
+        (size("d", 0.0).1 - 6.0 - two_lines / 2.0).abs() <= 1.0,
+        "a field, one"
+    );
+}
+
+#[test]
 fn what_is_local_stays_on_a_detached_surface() {
     let mut h = host();
     doc_at(
