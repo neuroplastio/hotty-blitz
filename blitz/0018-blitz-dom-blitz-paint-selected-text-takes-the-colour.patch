@@ -1,0 +1,273 @@
+From 2e4cd7c03d089a81c02ba73d148cbca291e5f4aa Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 23:00:08 +0200
+Subject: [PATCH 18/18] blitz-dom, blitz-paint: selected text takes the colours
+ of its ::selection
+
+Selections were painted in a fixed highlight, with the text in its own
+colours. Node::selection_styles gives an element's ::selection style
+(Stylo computes it eagerly). A text's highlight is its inline root's
+::selection background, or the default one when it sets none, as the
+user agent's rule for it would; and where a ::selection style exists,
+the selected text is stroked again over the highlight, clipped to it, in
+each run's ::selection colour (decorations in currentColor follow). Text
+inputs do the same with their editor's selection.
+---
+ packages/blitz-dom/src/node/node.rs |  9 ++-
+ packages/blitz-paint/src/render.rs  | 87 ++++++++++++++++++++++++-----
+ packages/blitz-paint/src/text.rs    | 34 +++++++----
+ 3 files changed, 102 insertions(+), 28 deletions(-)
+
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 897db1f4..8827e0f4 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -23,7 +23,7 @@ use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
+ use style::invalidation::element::restyle_hints::RestyleHint;
+ use style::properties::ComputedValues;
+ use style::properties::generated::longhands::position::computed_value::T as Position;
+-use style::selector_parser::RestyleDamage;
++use style::selector_parser::{PseudoElement, RestyleDamage};
+ use style::servo_arc::Arc as ServoArc;
+ use style::shared_lock::SharedRwLock;
+ use style::stylesheets::UrlExtraData;
+@@ -1230,6 +1230,13 @@ impl Node {
+             .and_then(|stylo| stylo.primary_styles())
+     }
+ 
++    /// The style of this element's selected text (`::selection`), if a rule
++    /// gives it one.
++    pub fn selection_styles(&self) -> Option<ServoArc<ComputedValues>> {
++        let data = self.try_stylo_element_data()?.get()?;
++        data.styles.pseudos.get(&PseudoElement::Selection).cloned()
++    }
++
+     /// A lazy Taffy style backed by this node's primary stylo style.
+     ///
+     /// Panics if the node has no computed styles: layout always runs after
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index dbe0f9a9..a7d76ba3 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -864,14 +864,16 @@ impl ElementCx<'_, '_> {
+             );
+ 
+             // Render text selection highlight (if any) using cached selection ranges
+-            if let Some(&(sel_start, sel_end)) = self.context.selection_ranges.get(&self.node.id) {
+-                crate::text::draw_text_selection(
+-                    scene,
+-                    &text_layout.layout,
+-                    transform,
+-                    sel_start,
+-                    sel_end,
+-                );
++            let selection =
++                self.context
++                    .selection_ranges
++                    .get(&self.node.id)
++                    .map(|&(start, end)| {
++                        crate::text::text_selection_area(&text_layout.layout, start, end)
++                    });
++            let (highlight, recolor) = self.selection_paint();
++            if let Some(area) = &selection {
++                scene.fill(Fill::NonZero, transform, highlight, None, area);
+             }
+ 
+             // Render text
+@@ -884,10 +886,49 @@ impl ElementCx<'_, '_> {
+                 self.scale,
+                 self.node.id,
+                 &mut draw_text_context,
++                false,
+             );
++
++            // The selected text again, in the colours of its `::selection`.
++            if let Some(area) = selection.filter(|_| recolor) {
++                scene.push_clip_layer(transform, &area);
++                crate::text::stroke_text(
++                    scene,
++                    text_layout.layout.lines(),
++                    self.context.dom,
++                    transform,
++                    self.scale,
++                    self.node.id,
++                    &mut draw_text_context,
++                    true,
++                );
++                scene.pop_layer();
++            }
+         }
+     }
+ 
++    /// What selected text shows: the highlight behind it, the element's
++    /// `::selection` background or the default one, and whether a
++    /// `::selection` style colours the text itself. A `::selection` that
++    /// sets no background keeps the default one, as the user agent's rule
++    /// for it would.
++    fn selection_paint(&self) -> (Color, bool) {
++        let Some(selection) = self.node.selection_styles() else {
++            return (SELECTION_COLOR, false);
++        };
++        let color = selection.get_inherited_text().color;
++        let background = selection
++            .get_background()
++            .background_color
++            .resolve_to_absolute(&color);
++        let highlight = if background.alpha == 0.0 {
++            SELECTION_COLOR
++        } else {
++            background.as_srgb_color()
++        };
++        (highlight, true)
++    }
++
+     fn draw_text_input_text(&self, scene: &mut impl PaintScene, pos: Point) {
+         // Render the text in text inputs
+         if let Some(input_data) = self.text_input {
+@@ -912,16 +953,14 @@ impl ElementCx<'_, '_> {
+             let transform = self.transform
+                 * Affine::translate((pos.x * self.scale - scroll_x, pos.y * self.scale - scroll_y));
+ 
++            let mut selection = kurbo::BezPath::new();
++            let (highlight, recolor) = self.selection_paint();
+             if self.node.is_focussed() {
+                 // Render selection/caret
+                 for (rect, _line_idx) in input_data.editor.selection_geometry().iter() {
+-                    scene.fill(
+-                        Fill::NonZero,
+-                        transform,
+-                        SELECTION_COLOR,
+-                        None,
+-                        &convert_rect(rect),
+-                    );
++                    let rect = convert_rect(rect);
++                    scene.fill(Fill::NonZero, transform, highlight, None, &rect);
++                    selection.extend(kurbo::Shape::path_elements(&rect, 0.1));
+                 }
+                 if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
+                     let color = self.style.get_inherited_text().color;
+@@ -950,7 +989,24 @@ impl ElementCx<'_, '_> {
+                 self.scale,
+                 self.node.id,
+                 &mut draw_text_context,
++                false,
+             );
++
++            // The selected text again, in the colours of its `::selection`.
++            if recolor && !selection.elements().is_empty() {
++                scene.push_clip_layer(transform, &selection);
++                crate::text::stroke_text(
++                    scene,
++                    input_data.editor.try_layout().unwrap().lines(),
++                    self.context.dom,
++                    transform,
++                    self.scale,
++                    self.node.id,
++                    &mut draw_text_context,
++                    true,
++                );
++                scene.pop_layer();
++            }
+         }
+     }
+ 
+@@ -998,6 +1054,7 @@ impl ElementCx<'_, '_> {
+                 self.scale,
+                 self.node.id,
+                 &mut draw_text_context,
++                false,
+             );
+         }
+     }
+diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
+index c68e6fac..0c23f588 100644
+--- a/packages/blitz-paint/src/text.rs
++++ b/packages/blitz-paint/src/text.rs
+@@ -10,8 +10,8 @@ use style::values::computed::{
+ };
+ use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecorationLength};
+ 
++use crate::FONT_EMBOLDEN_ENABLED;
+ use crate::color::{Color, ToColorColor as _};
+-use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
+ 
+ /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
+ ///
+@@ -151,8 +151,14 @@ struct DecorationStackEntry {
+ }
+ 
+ /// Resolve the cached style values for a single node into a [`DecorationStackEntry`].
+-fn resolve_decoration_entry(doc: &BaseDocument, node_id: NodeId) -> DecorationStackEntry {
+-    let Some(styles) = doc.get_node(node_id).and_then(|node| node.primary_styles()) else {
++/// Its `selected` text takes the colour of its `::selection`, if it has one.
++fn resolve_decoration_entry(
++    doc: &BaseDocument,
++    node_id: NodeId,
++    selected: bool,
++) -> DecorationStackEntry {
++    let node = doc.get_node(node_id);
++    let Some(styles) = node.and_then(|node| node.primary_styles()) else {
+         return DecorationStackEntry {
+             node_id,
+             text_color: Color::BLACK,
+@@ -162,7 +168,10 @@ fn resolve_decoration_entry(doc: &BaseDocument, node_id: NodeId) -> DecorationSt
+ 
+     let itext = styles.get_inherited_text();
+     let text = styles.get_text();
+-    let text_color = itext.color.as_color_color();
++    let text_color = match node.and_then(|n| n.selection_styles()).filter(|_| selected) {
++        Some(selection) => selection.get_inherited_text().color.as_color_color(),
++        None => itext.color.as_color_color(),
++    };
+ 
+     let drawn_lines = TextDecorationLine::UNDERLINE
+         | TextDecorationLine::OVERLINE
+@@ -561,6 +570,7 @@ pub(crate) fn stroke_text<'a>(
+     scale: f64,
+     inline_root_id: NodeId,
+     context: &mut DrawTextContext,
++    selected: bool,
+ ) {
+     let DrawTextContext {
+         stack,
+@@ -621,7 +631,7 @@ pub(crate) fn stroke_text<'a>(
+                     .count();
+                 stack.truncate(shared);
+                 for &node_id in &path_scratch[shared..] {
+-                    stack.push(resolve_decoration_entry(doc, node_id));
++                    stack.push(resolve_decoration_entry(doc, node_id, selected));
+                 }
+ 
+                 // The glyph colour comes from the run's own node (the stack top): `color`
+@@ -718,21 +728,21 @@ pub(crate) fn stroke_text<'a>(
+     }
+ }
+ 
+-/// Draw selection highlight rectangles for the given byte range in a layout.
+-/// Uses Parley's Selection type for accurate geometry calculation.
+-pub(crate) fn draw_text_selection(
+-    scene: &mut impl PaintScene,
++/// The area the given byte range of a layout covers, in the layout's
++/// coordinates. Uses Parley's Selection type for accurate geometry calculation.
++pub(crate) fn text_selection_area(
+     layout: &Layout<TextBrush>,
+-    transform: Affine,
+     selection_start: usize,
+     selection_end: usize,
+-) {
++) -> kurbo::BezPath {
+     let anchor = Cursor::from_byte_index(layout, selection_start, Affinity::Downstream);
+     let focus = Cursor::from_byte_index(layout, selection_end, Affinity::Downstream);
+     let selection = Selection::new(anchor, focus);
+ 
++    let mut area = kurbo::BezPath::new();
+     selection.geometry_with(layout, |rect, _line_idx| {
+         let rect = kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1);
+-        scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
++        area.extend(kurbo::Shape::path_elements(&rect, 0.1));
+     });
++    area
+ }
+-- 
+2.56.0
+

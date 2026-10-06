@@ -497,6 +497,26 @@ impl Host {
         self.surfaces.get(name).map(|s| &s.frame)
     }
 
+    /// The resolved value of the CSS `property` on the first element of
+    /// surface `name` that `selector` matches, as getComputedStyle gives
+    /// it, or on its `::selection` with `selection` (`color` and
+    /// `background-color`). Empty when there is none. For tests of the
+    /// host stylesheet (SPEC §8): the shared vectors check the wire, not
+    /// styles.
+    #[doc(hidden)]
+    pub fn computed_style(
+        &self,
+        name: &str,
+        selector: &str,
+        property: &str,
+        selection: bool,
+    ) -> String {
+        self.surfaces
+            .get(name)
+            .map(|s| s.computed_style(selector, property, selection))
+            .unwrap_or_default()
+    }
+
     /// The surface's text, one string per terminal row it covers (SPEC §11).
     pub fn text_rows(&self, name: &str) -> Vec<String> {
         let m = self.config.metrics;

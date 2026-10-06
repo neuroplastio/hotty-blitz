@@ -24,6 +24,9 @@ changes upstream is an open question.
 | `0013-blitz-dom-*` | a scroll container's client rect does not move with its own scroll (below) |
 | `0014-blitz-dom-blitz-paint-*` | a document can lock scrolling along an axis (below) |
 | `0015-blitz-dom-*` | a scroll container is hit only within its box, its content within its clip (below) |
+| `0016-blitz-dom-*` | stylesheets of the user origin (below) |
+| `0017-blitz-dom-*` | `:focus-visible` matches; a click shows the ring only on a text field (below) |
+| `0018-blitz-dom-blitz-paint-*` | selected text takes the colours of its `::selection` (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -95,6 +98,37 @@ The shades come from Stylo's system colors, so a dark field is #2D2D2D
 where Chromium's is #3B3B3B, and a light button #DCDCDC where it is
 #EFEFEF. hotty-blitz's `form_controls_follow_the_used_color_scheme` and
 `a_new_color_scheme_repaints_controls_like_a_fresh_document` check it.
+
+## The host stylesheet's palette
+
+HOTTY SPEC §8 dresses form controls, focus, links and selected text in
+the terminal's 16 colours, with rules that must win over the engine's
+defaults and lose to any rule of the document's: a browser host puts
+them in a cascade layer of the author origin. Three patches let Blitz
+show them.
+
+- **User stylesheets** (`DocumentConfig::user_stylesheets`,
+  `add_user_stylesheet`). The host stylesheet was a second user-agent
+  sheet, where Blitz's `input { background-color: Field }` outranked
+  §8's zero-specificity `:where(input, …)`. As a sheet of the user
+  origin it wins over the user agent's whatever the specificity, and
+  every rule of the document's wins over it.
+- **`:focus-visible`** matched nothing. It matches the focus ring
+  (`ElementState::FOCUSRING`), which focus from the keyboard or a script
+  sets. Focus moved by the pointer (`set_focus_by_pointer`, which
+  Blitz's own click handling now calls) keeps it only on a text field,
+  as browsers do.
+- **`::selection`**. Selections were a fixed light blue under text in
+  its own colours. The highlight is now the inline root's (or the text
+  field's) `::selection` background, or that blue when it sets none, and
+  the selected text is stroked again over it, clipped to it, in each
+  run's `::selection` colour.
+
+What §8 asks that Blitz still cannot show: `accent-color` (Stylo's
+Servo build drops it, so checks keep the scheme's colours, above), and
+`::placeholder`, since Blitz draws no placeholder text at all.
+hotty-blitz's `tests/palette.rs` checks the computed styles in a dark
+and a light scheme, and the selection's pixels.
 
 ## Text control sizes
 

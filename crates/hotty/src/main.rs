@@ -58,6 +58,8 @@ fn main() {
             }
             c.font_family = f.get("font").unwrap_or("").to_string();
             print!("{}", hotty_blitz::style::host_css(&c));
+            // And what a document that does not scroll gets (`render`'s).
+            print!("{}", hotty_blitz::style::scroll_css(0));
             0
         }
         Some("-h" | "--help" | "help") | None => {

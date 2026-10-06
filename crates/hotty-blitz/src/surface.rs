@@ -385,7 +385,13 @@ impl Surface {
                 DocumentConfig {
                     viewport: Some(Viewport::new(w, h, m.scale, scheme(dark))),
                     base_url: Some(base.to_string()),
-                    ua_stylesheets: Some(vec![DEFAULT_CSS.to_string(), host_css.to_string()]),
+                    ua_stylesheets: Some(vec![DEFAULT_CSS.to_string()]),
+                    // The host stylesheet (SPEC §8) is the user's: it wins
+                    // over Blitz's defaults and loses to the document.
+                    user_stylesheets: Some(vec![
+                        host_css.to_string(),
+                        crate::style::scroll_css(scroll_axes).to_string(),
+                    ]),
                     net_provider: Some(Arc::new(net::Provider(store.clone()))),
                     navigation_provider: Some(nav.clone()),
                     html_parser_provider: Some(Arc::new(HtmlProvider)),
@@ -551,9 +557,35 @@ impl Surface {
         self.dirty = true;
     }
 
+    /// [`crate::Host::computed_style`].
+    pub fn computed_style(&self, selector: &str, property: &str, selection: bool) -> String {
+        let Some(node) = self.doc.query_selector(selector).ok().flatten() else {
+            return String::new();
+        };
+        if !selection {
+            return self.doc.resolved_style_value(node, property);
+        }
+        let Some(sel) = self.doc.get_node(node).and_then(|n| n.selection_styles()) else {
+            return String::new();
+        };
+        let color = sel.get_inherited_text().color;
+        let c = match property {
+            "color" => color,
+            "background-color" => sel
+                .get_background()
+                .background_color
+                .resolve_to_absolute(&color),
+            _ => return String::new(),
+        };
+        let c = c.to_color_space(style::color::ColorSpace::Srgb);
+        let [r, g, b] = [c.components.0, c.components.1, c.components.2]
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+        format!("rgb({r}, {g}, {b})")
+    }
+
     pub fn replace_host_css(&mut self, old: &str, new: &str) {
-        self.doc.remove_user_agent_stylesheet(old);
-        self.doc.add_user_agent_stylesheet(new);
+        self.doc.remove_user_stylesheet(old);
+        self.doc.add_user_stylesheet(new);
         self.damage.full = true;
     }
 

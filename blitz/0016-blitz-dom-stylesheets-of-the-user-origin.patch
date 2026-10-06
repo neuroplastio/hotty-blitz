@@ -1,0 +1,174 @@
+From 4b5796abe04ae0919344f970b226835bc25e2881 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 22:49:07 +0200
+Subject: [PATCH 16/18] blitz-dom: stylesheets of the user origin
+
+DocumentConfig::user_stylesheets and BaseDocument::add_user_stylesheet
+and remove_user_stylesheet: a user stylesheet wins over the user agent's
+and loses to the document's own, whatever the selectors' specificity, as
+the CSS cascade orders its origins. An embedder's defaults (a theme, the
+colours of form controls) can then use zero-specificity selectors such
+as :where() and still override the user agent stylesheet's.
+---
+ packages/blitz-dom/src/config.rs   |  3 +
+ packages/blitz-dom/src/document.rs | 92 ++++++++++++++++++++++++++++++
+ packages/blitz-dom/src/iframe.rs   |  1 +
+ 3 files changed, 96 insertions(+)
+
+diff --git a/packages/blitz-dom/src/config.rs b/packages/blitz-dom/src/config.rs
+index f1a9a5ed..1df6a055 100644
+--- a/packages/blitz-dom/src/config.rs
++++ b/packages/blitz-dom/src/config.rs
+@@ -37,6 +37,9 @@ pub struct DocumentConfig {
+     pub base_url: Option<String>,
+     /// User Agent stylesheets
+     pub ua_stylesheets: Option<Vec<String>>,
++    /// User stylesheets: they win over the user agent's and lose to the
++    /// document's own, whatever their selectors' specificity
++    pub user_stylesheets: Option<Vec<String>>,
+     /// Net provider to handle network requests for resources
+     pub net_provider: Option<Arc<dyn NetProvider>>,
+     /// Navigation provider to handle link clicks and form submissions
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 6780acf2..3a246b5f 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -331,6 +331,8 @@ pub struct BaseDocument {
+     /// Stylesheets added by the useragent
+     /// where the key is the hashed CSS
+     pub(crate) ua_stylesheets: HashMap<String, DocumentStyleSheet>,
++    /// Stylesheets of the user origin, where the key is the CSS
++    pub(crate) user_stylesheets: HashMap<String, DocumentStyleSheet>,
+     /// Map from form control node ID's to their associated forms node ID's
+     pub(crate) controls_to_form: HashMap<NodeId, NodeId>,
+     /// Nodes that contain sub documents
+@@ -494,6 +496,7 @@ impl BaseDocument {
+             devtool_settings: DevtoolSettings::default(),
+             url: base_url,
+             ua_stylesheets: HashMap::new(),
++            user_stylesheets: HashMap::new(),
+             nodes_to_stylesheet: BTreeMap::new(),
+             stylesheet_generation: 0,
+             font_ctx,
+@@ -557,6 +560,9 @@ impl BaseDocument {
+             }
+             None => doc.add_user_agent_stylesheet(DEFAULT_CSS),
+         }
++        for ss in config.user_stylesheets.iter().flatten() {
++            doc.add_user_stylesheet(ss);
++        }
+ 
+         // Stylo data on the root node container is needed to render the node
+         let stylo_element_data = StyloElementData {
+@@ -1205,6 +1211,25 @@ impl BaseDocument {
+         self.stylist.append_stylesheet(sheet, &self.guard.read());
+     }
+ 
++    /// Adds a stylesheet of the user origin: its rules win over the user
++    /// agent's and lose to the document's own, whatever their specificity.
++    pub fn add_user_stylesheet(&mut self, css: &str) {
++        let sheet = self.make_stylesheet(css, Origin::User);
++        self.user_stylesheets.insert(css.to_string(), sheet.clone());
++        self.stylist.append_stylesheet(sheet, &self.guard.read());
++    }
++
++    pub fn remove_user_stylesheet(&mut self, contents: &str) {
++        if let Some(sheet) = self.user_stylesheets.remove(contents) {
++            self.stylist.remove_stylesheet(sheet, &self.guard.read());
++        }
++    }
++
++    /// Iterate over the user stylesheets currently associated with this document
++    pub fn user_stylesheets(&self) -> impl Iterator<Item = &DocumentStyleSheet> {
++        self.user_stylesheets.values()
++    }
++
+     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
+         let data = Stylesheet::from_str(
+             css.as_ref(),
+@@ -3458,3 +3483,70 @@ mod font_face_override_tests {
+         );
+     }
+ }
++
++#[cfg(test)]
++mod user_stylesheet_tests {
++    use super::*;
++    use crate::{Attribute, qual_name};
++    use blitz_traits::shell::ColorScheme;
++
++    const USER: &str = "div, p { color: rgb(2, 2, 2); }";
++
++    /// `<div class="a">` and `<p class="a">`: the user agent's rule is more
++    /// specific than the user's, and the document's less specific, for both.
++    fn make_doc() -> (BaseDocument, NodeId, NodeId) {
++        let mut doc = BaseDocument::new(DocumentConfig {
++            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
++            ua_stylesheets: Some(vec![".a { color: rgb(1, 1, 1); }".to_string()]),
++            user_stylesheets: Some(vec![USER.to_string()]),
++            ..Default::default()
++        });
++        let root_id = doc.root_node().id;
++        let class = || Attribute {
++            name: qual_name!("class"),
++            value: "a".to_string(),
++        };
++        let mut mutator = doc.mutate();
++        let html = mutator.create_element(qual_name!("html"), vec![]);
++        let body = mutator.create_element(qual_name!("body"), vec![]);
++        let style = mutator.create_element(qual_name!("style"), vec![]);
++        let css = mutator.create_text_node(":where(p) { color: rgb(3, 3, 3); }");
++        let div = mutator.create_element(qual_name!("div"), vec![class()]);
++        let p = mutator.create_element(qual_name!("p"), vec![class()]);
++        mutator.append_children(style, &[css]);
++        mutator.append_children(body, &[style, div, p]);
++        mutator.append_children(html, &[body]);
++        mutator.append_children(root_id, &[html]);
++        drop(mutator);
++        doc.resolve(0.0);
++        (doc, div, p)
++    }
++
++    /// The red channel, in 0..=255.
++    fn red(doc: &BaseDocument, id: NodeId) -> u8 {
++        let c = doc.nodes[id].primary_styles().unwrap().clone_color();
++        (c.components.0 * 255.0).round() as u8
++    }
++
++    #[test]
++    fn a_user_rule_wins_over_the_user_agents_and_loses_to_the_documents() {
++        let (mut doc, div, p) = make_doc();
++        assert_eq!(
++            red(&doc, div),
++            2,
++            "the user's div wins over the user agent's .a"
++        );
++        assert_eq!(
++            red(&doc, p),
++            3,
++            "the document's :where(p) wins over the user's p"
++        );
++
++        doc.remove_user_stylesheet(USER);
++        doc.resolve(0.0);
++        assert_eq!(red(&doc, div), 1, "without it, the user agent's .a applies");
++        doc.add_user_stylesheet(USER);
++        doc.resolve(0.0);
++        assert_eq!(red(&doc, div), 2);
++    }
++}
+diff --git a/packages/blitz-dom/src/iframe.rs b/packages/blitz-dom/src/iframe.rs
+index d2683b99..2a8f0d86 100644
+--- a/packages/blitz-dom/src/iframe.rs
++++ b/packages/blitz-dom/src/iframe.rs
+@@ -58,6 +58,7 @@ impl BaseDocument {
+             viewport: None,
+             base_url,
+             ua_stylesheets: None,
++            user_stylesheets: None,
+             net_provider: Some(self.net_provider.clone()),
+             navigation_provider: Some(Arc::new(IframeNavigationProvider {
+                 node_id,
+-- 
+2.56.0
+

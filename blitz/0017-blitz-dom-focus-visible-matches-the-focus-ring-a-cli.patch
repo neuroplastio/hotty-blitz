@@ -1,0 +1,172 @@
+From 5de4f3abdaa410ec8626a62fa093e39f4a6ea82a Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 22:49:59 +0200
+Subject: [PATCH 17/18] blitz-dom: :focus-visible matches the focus ring; a
+ click shows it only on text fields
+
+:focus-visible matched nothing. It now matches what has the focus ring
+(ElementState::FOCUSRING), which focus from the keyboard or a script
+sets, as before. Focus moved by the pointer
+(BaseDocument::set_focus_by_pointer) keeps the ring only on a text
+field, as browsers do: a button or a link clicked shows none.
+---
+ packages/blitz-dom/src/document.rs       | 82 ++++++++++++++++++++++++
+ packages/blitz-dom/src/events/pointer.rs |  8 +--
+ packages/blitz-dom/src/stylo.rs          |  4 +-
+ 3 files changed, 89 insertions(+), 5 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 3a246b5f..66305810 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1781,6 +1781,27 @@ impl BaseDocument {
+         true
+     }
+ 
++    /// Focus moved by the pointer. As in browsers, the focus ring
++    /// (`:focus-visible`) shows then only on a text field, which takes
++    /// typing; a button or a link clicked shows none.
++    pub fn set_focus_by_pointer(&mut self, focus_node_id: NodeId) -> bool {
++        let changed = self.set_focus_to(focus_node_id);
++        if let Some(id) = self.focus_node_id {
++            let ring = self.nodes[id].element_data().is_some_and(|e| {
++                e.element_state.contains(ElementState::FOCUSRING) && e.text_input_data().is_none()
++            });
++            if ring {
++                self.snapshot_node_and(id, ElementState::FOCUSRING, |node| {
++                    if let Some(data) = node.element_data_mut() {
++                        data.element_state.remove(ElementState::FOCUSRING);
++                    }
++                    node.mark_ancestors_dirty();
++                });
++            }
++        }
++        changed
++    }
++
+     pub fn active_node(&mut self) -> bool {
+         let Some(hover_node_id) = self.get_hover_node_id() else {
+             return false;
+@@ -3550,3 +3571,64 @@ mod user_stylesheet_tests {
+         assert_eq!(red(&doc, div), 2);
+     }
+ }
++
++#[cfg(test)]
++mod focus_visible_tests {
++    use super::*;
++    use crate::{Attribute, qual_name};
++    use blitz_traits::shell::ColorScheme;
++
++    /// A text field and a button, and a `:focus-visible` rule.
++    fn make_doc() -> (BaseDocument, NodeId, NodeId) {
++        let mut doc = BaseDocument::new(DocumentConfig {
++            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
++            ua_stylesheets: Some(vec![
++                "* { color: rgb(1, 1, 1); } :focus-visible { color: rgb(2, 2, 2); }".to_string(),
++            ]),
++            ..Default::default()
++        });
++        let root_id = doc.root_node().id;
++        let mut mutator = doc.mutate();
++        let html = mutator.create_element(qual_name!("html"), vec![]);
++        let body = mutator.create_element(qual_name!("body"), vec![]);
++        let input = mutator.create_element(
++            qual_name!("input"),
++            vec![Attribute {
++                name: qual_name!("type"),
++                value: "text".to_string(),
++            }],
++        );
++        let button = mutator.create_element(qual_name!("button"), vec![]);
++        mutator.append_children(body, &[input, button]);
++        mutator.append_children(html, &[body]);
++        mutator.append_children(root_id, &[html]);
++        drop(mutator);
++        doc.resolve(0.0);
++        (doc, input, button)
++    }
++
++    fn ring(doc: &BaseDocument, id: NodeId) -> bool {
++        let c = doc.nodes[id].primary_styles().unwrap().clone_color();
++        (c.components.0 * 255.0).round() as u8 == 2
++    }
++
++    #[test]
++    fn the_focus_ring_shows_on_keyboard_focus_and_on_a_text_field() {
++        let (mut doc, input, button) = make_doc();
++        doc.set_focus_to(button);
++        doc.resolve(0.0);
++        assert!(
++            ring(&doc, button),
++            "focus from the keyboard or a script shows it"
++        );
++
++        doc.set_focus_by_pointer(input);
++        doc.resolve(0.0);
++        assert!(ring(&doc, input), "a text field clicked shows it");
++        assert!(!ring(&doc, button), "what lost focus shows none");
++
++        doc.set_focus_by_pointer(button);
++        doc.resolve(0.0);
++        assert!(!ring(&doc, button), "a button clicked shows none");
++    }
++}
+diff --git a/packages/blitz-dom/src/events/pointer.rs b/packages/blitz-dom/src/events/pointer.rs
+index bf39383c..3a51c7a9 100644
+--- a/packages/blitz-dom/src/events/pointer.rs
++++ b/packages/blitz-dom/src/events/pointer.rs
+@@ -543,7 +543,7 @@ pub(crate) fn handle_pointerdown(
+             generate_focus_events(
+                 doc,
+                 &mut |doc| {
+-                    doc.set_focus_to(hit.node_id);
++                    doc.set_focus_by_pointer(hit.node_id);
+                 },
+                 dispatch_event,
+             );
+@@ -656,7 +656,7 @@ pub(crate) fn handle_click(
+                     generate_focus_events(
+                         doc,
+                         &mut |doc| {
+-                            doc.set_focus_to(node_id);
++                            doc.set_focus_by_pointer(node_id);
+                         },
+                         dispatch_event,
+                     );
+@@ -684,7 +684,7 @@ pub(crate) fn handle_click(
+                     generate_focus_events(
+                         doc,
+                         &mut |doc| {
+-                            doc.set_focus_to(node_id);
++                            doc.set_focus_by_pointer(node_id);
+                         },
+                         dispatch_event,
+                     );
+@@ -710,7 +710,7 @@ pub(crate) fn handle_click(
+                             generate_focus_events(
+                                 doc,
+                                 &mut |doc| {
+-                                    doc.set_focus_to(node_id);
++                                    doc.set_focus_by_pointer(node_id);
+                                 },
+                                 dispatch_event,
+                             );
+diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
+index f1709a2a..59fa17ff 100644
+--- a/packages/blitz-dom/src/stylo.rs
++++ b/packages/blitz-dom/src/stylo.rs
+@@ -475,7 +475,9 @@ impl selectors::Element for BlitzNode<'_> {
+             NonTSPseudoClass::Enabled => self.element_state().contains(ElementState::ENABLED),
+             NonTSPseudoClass::Focus => self.element_state().contains(ElementState::FOCUS),
+             NonTSPseudoClass::FocusWithin => false,
+-            NonTSPseudoClass::FocusVisible => false,
++            NonTSPseudoClass::FocusVisible => {
++                self.element_state().contains(ElementState::FOCUSRING)
++            }
+             NonTSPseudoClass::Fullscreen => false,
+             NonTSPseudoClass::Hover => self.element_state().contains(ElementState::HOVER),
+             NonTSPseudoClass::Indeterminate => false,
+-- 
+2.56.0
+

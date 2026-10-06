@@ -1266,11 +1266,13 @@ fn a_detached_document_paints_as_if_its_controls_had_disabled() {
 }
 
 /// A field and a button with nothing in them, then checkboxes and radio
-/// buttons, unchecked and checked, side by side in `#box`.
+/// buttons, unchecked and checked, side by side in `#box`. The field and
+/// the button ask for the system colors, which the host stylesheet's
+/// palette (SPEC §8, tests/palette.rs) would otherwise replace.
 fn controls(box_style: &str) -> String {
     format!(
         "<style>body{{margin:0}} input,button{{position:absolute;top:0;margin:0}}
-         #f,#b{{width:40px;height:20px;padding:0}}</style>
+         #f,#b{{width:40px;height:20px;padding:0}} #f{{background:Field}} #b{{background:ButtonFace}}</style>
          <div id=box style='{box_style}'>
          <input id=f style='left:0'><button id=b style='left:50px'></button>
          <input type=checkbox id=c style='left:100px'><input type=checkbox checked id=cc style='left:120px'>
@@ -1293,8 +1295,8 @@ fn control_colors(h: &Host) -> [[u8; 3]; 6] {
     })
 }
 
-// Field, ButtonFace (Stylo's system colors), then Chromium's checkbox fill
-// and accent, in each scheme.
+// Field, ButtonFace (Stylo's system colors, which the page asks for), then
+// Chromium's checkbox fill and accent, in each scheme.
 const DARK_CONTROLS: [[u8; 3]; 6] = [
     [45, 45, 45],
     [107, 107, 107],
