@@ -21,6 +21,9 @@ changes upstream is an open question.
 | `0010-blitz-dom-*` | an `<img>` chooses its source again when the device changes (below) |
 | `0011-blitz-dom-blitz-paint-*` | form controls follow the used color scheme (below) |
 | `0012-blitz-dom-*` | text controls are as wide as `size` and `cols`, as tall as `rows` (below) |
+| `0013-blitz-dom-*` | a scroll container's client rect does not move with its own scroll (below) |
+| `0014-blitz-dom-blitz-paint-*` | a document can lock scrolling along an axis (below) |
+| `0015-blitz-dom-*` | a scroll container is hit only within its box, its content within its clip (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -40,7 +43,39 @@ old overflow, and paint can cull it. An SVG can draw any image file on the
 disk, and an `<img>` loads its `src` alone, never a `srcset` or a
 `<picture>` source. An inline SVG's `<image>` draws no `cid:` resource
 and nothing from the network. Form controls are light on a dark terminal,
-and every text input is 300px wide, whatever its `size`.
+and every text input is 300px wide, whatever its `size`. In a document
+that scrolls, a scrolled box reports its rect moved by its own scroll, so
+`area` and focus scroll it wrongly; a press above it lands on the items it
+scrolled out of view; and along an axis the document did not ask for, a
+fragment link, a thumb or a fling still moves it.
+
+## Scrolling
+
+HOTTY scrolls a document only along the axes it asks for (SPEC §5.1,
+§5.3), and hotty-blitz decides itself what a wheel, a touch drag or a key
+scrolls (`crates/hotty-blitz/src/scroll.rs`). Three patches make Blitz
+agree with it:
+
+- **0013:** `get_client_bounding_rect` is the border box, which a scroll
+  container's own scroll offset does not move. The position walk
+  subtracted it, so a scrolled box reported itself moved, and `area` and
+  bringing an element into view went wrong inside it. `scroll_into_view`
+  already compensated.
+- **0014:** `BaseDocument::set_scroll_axes` locks an axis: every scroll
+  target's range along it is empty, whoever scrolls (the user, a fragment
+  link, a fling, a thumb), locking puts the offsets back to zero, and no
+  scrollbar is drawn or hit there. A text input still scrolls its own text
+  to follow the caret.
+- **0015:** hit testing added a node's scroll offset to the point before
+  testing it against the node's box, so a box scrolled down took points
+  above itself and handed them to the children it had scrolled out of
+  view. The point is tested against the box first; the scroll offset moves
+  only the content, and content a box clips is not hit outside its padding
+  box, where it is not drawn.
+
+Blitz draws an element's overlay scrollbars (the `scrollbars` feature,
+which hotty-blitz turns on) but not the viewport's; hotty-blitz draws the
+root's itself, with the same look and fade.
 
 ## Form controls in the color scheme
 

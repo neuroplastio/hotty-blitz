@@ -1,0 +1,37 @@
+From 07eb7db920b8d1cdca090400b33c6e39e0a554f2 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 19:09:00 +0200
+Subject: [PATCH] blitz-dom: a scroll container's client rect does not move
+ with its own scroll
+
+getBoundingClientRect() is the border box, which a scroll container's own
+scroll offset does not move: only its content moves. Node's absolute
+position walk subtracts every scroll offset on the way up, the node's own
+included, so a scrolled container reported its box shifted by its scroll.
+scroll_into_view already compensated; get_client_bounding_rect now does
+too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index e53745cc..464b6508 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -2339,7 +2339,10 @@ impl BaseDocument {
+         }
+ 
+         let node = self.get_node(node_id)?;
+-        let pos = node.unrounded_absolute_position(0.0, 0.0);
++        // A scroll container's own scroll offset moves its content, not its box:
++        // `unrounded_absolute_position` subtracts it, so add it back.
++        let scroll = node.scroll_offset();
++        let pos = node.unrounded_absolute_position(scroll.x as f32, scroll.y as f32);
+ 
+         Some(BoundingRect {
+             x: snap_to_layout_unit(pos.x as f64 - self.viewport_scroll().x),
+-- 
+2.56.0
+

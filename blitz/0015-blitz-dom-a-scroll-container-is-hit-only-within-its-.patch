@@ -1,0 +1,135 @@
+From 32dd50debe5f63a680677c2a0914ef27b41fa4a7 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 22:26:46 +0200
+Subject: [PATCH] blitz-dom: a scroll container is hit only within its box, its
+ content within its clip
+
+hit_inner added a node's own scroll offset to the point before testing it
+against the node's box, so a box scrolled down by 100px took points up to
+100px above itself, and handed them to the children it had scrolled up
+out of view: a press above a scrolled list landed on a hidden item. The
+point is now tested against the box in border-box coordinates, and the
+scroll offset applies only to the content.
+
+Content a box clips (any overflow but `visible`, as blitz-paint clips it,
+never the root element's) is not hit outside its padding box either,
+where it is not drawn.
+
+The transform now applies before the scroll offset: a transform moves the
+box, and the scroll offset the content inside it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/node/node.rs | 63 ++++++++++++++++++++---------
+ 1 file changed, 44 insertions(+), 19 deletions(-)
+
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 4bd4d561..897db1f4 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1446,26 +1446,44 @@ impl Node {
+             .primary_styles()
+             .is_some_and(|style| style.clone_pointer_events() == PointerEvents::None);
+ 
+-        let mut x = x - self.final_layout().location.x + self.scroll_offset().x as f32;
+-        let mut y = y - self.final_layout().location.y + self.scroll_offset().y as f32;
++        // The point in this node's border-box coordinates...
++        let mut bx = x - self.final_layout().location.x;
++        let mut by = y - self.final_layout().location.y;
+ 
+         if let Some(t) = self.transform().as_deref() {
+-            let p = t.inverse() * kurbo::Point::new(x as f64 * scale, y as f64 * scale);
+-            x = (p.x / scale) as f32;
+-            y = (p.y / scale) as f32;
++            let p = t.inverse() * kurbo::Point::new(bx as f64 * scale, by as f64 * scale);
++            bx = (p.x / scale) as f32;
++            by = (p.y / scale) as f32;
+         }
+ 
+-        let size = self.final_layout().size;
+-        let matches_self = !(x < 0.0
+-            || x > size.width + self.scroll_offset().x as f32
+-            || y < 0.0
+-            || y > size.height + self.scroll_offset().y as f32);
++        // ...and in its content's, which its own scroll offset moves.
++        let mut x = bx + self.scroll_offset().x as f32;
++        let mut y = by + self.scroll_offset().y as f32;
+ 
+-        let overflow_rect = self.final_layout().scrollable_overflow_rect;
+-        let matches_content = !(x < 0.0
+-            || x > overflow_rect.right + self.scroll_offset().x as f32
+-            || y < 0.0
+-            || y > overflow_rect.bottom + self.scroll_offset().y as f32);
++        let layout = self.final_layout();
++        let size = layout.size;
++        let matches_self = !(bx < 0.0 || bx > size.width || by < 0.0 || by > size.height);
++
++        let overflow_rect = layout.scrollable_overflow_rect;
++        let matches_content = !(bx < 0.0
++            || bx > overflow_rect.right
++            || by < 0.0
++            || by > overflow_rect.bottom);
++
++        // A box that clips its overflow (as blitz-paint clips it: any overflow
++        // but `visible`, never the root element, whose overflow is the
++        // viewport's) shows none of its content outside its padding box, so
++        // none of it is hit there.
++        let content_clipped = self.parent.is_some_and(|p| {
++            !matches!(self.with(p).data, NodeData::Document(_))
++        }) && self.primary_styles().is_some_and(|style| {
++            use style::values::computed::Overflow;
++            !matches!(style.clone_overflow_x(), Overflow::Visible)
++                || !matches!(style.clone_overflow_y(), Overflow::Visible)
++        }) && (bx < layout.border.left
++            || bx > size.width - layout.border.right
++            || by < layout.border.top
++            || by > size.height - layout.border.bottom);
+ 
+         let matches_hoisted_content = match &self.stacking_context {
+             Some(sc) => {
+@@ -1511,7 +1529,7 @@ impl Node {
+         }
+ 
+         // Positive z_index hoisted children
+-        if matches_hoisted_content {
++        if matches_hoisted_content && !content_clipped {
+             if let Some(hoisted) = &self.stacking_context {
+                 for hoisted_child in hoisted.pos_z_hoisted_children().rev() {
+                     let pos = hoisted_child.position(self.tree(), self.id);
+@@ -1528,7 +1546,14 @@ impl Node {
+         }
+ 
+         // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
+-        for child_id in self.paint_children.borrow().iter().flatten().rev() {
++        for child_id in self
++            .paint_children
++            .borrow()
++            .iter()
++            .flatten()
++            .rev()
++            .filter(|_| !content_clipped)
++        {
+             let child = self.with(*child_id);
+             let child_position = child.taffy_position();
+             let mut child_x = x;
+@@ -1558,7 +1583,7 @@ impl Node {
+         }
+ 
+         // Negative z_index hoisted children
+-        if matches_hoisted_content {
++        if matches_hoisted_content && !content_clipped {
+             if let Some(hoisted) = &self.stacking_context {
+                 for hoisted_child in hoisted.neg_z_hoisted_children().rev() {
+                     let pos = hoisted_child.position(self.tree(), self.id);
+@@ -1575,7 +1600,7 @@ impl Node {
+         }
+ 
+         // Inline children
+-        if self.flags.is_inline_root() {
++        if self.flags.is_inline_root() && !content_clipped {
+             let element_data = &self.element_data().unwrap();
+             if let Some(ild) = element_data.inline_layout_data.as_ref() {
+                 let layout = &ild.layout;
+-- 
+2.56.0
+

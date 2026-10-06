@@ -1,0 +1,138 @@
+From 03e744ad5476f7b6819d6e945ecc6012c0400a4e Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Tue, 6 Oct 2026 19:09:44 +0200
+Subject: [PATCH] blitz-dom, blitz-paint: a document can lock scrolling along
+ an axis
+
+An embedder that shows a document in an area of a fixed size, and
+scrolls it itself or not at all along some axis, needs the document to
+keep still along that axis: a fragment link, an element brought into
+view, a fling or a scrollbar drag must not move it, and no scrollbar may
+promise that something would.
+
+BaseDocument::set_scroll_axes locks an axis (both are unlocked by
+default). Along a locked axis every scroll target's range is empty, so
+every scroll, whoever asks, stays at zero, and locking puts the offsets
+there. No overlay scrollbar is drawn or hit there. A text input still
+scrolls its own text, which follows the caret.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs  | 39 ++++++++++++++++++++++++++++-
+ packages/blitz-dom/src/scrolling.rs | 15 +++++++++++
+ packages/blitz-paint/src/render.rs  |  2 +-
+ 3 files changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 464b6508..6780acf2 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -301,6 +301,9 @@ pub struct BaseDocument {
+     /// When each scroll container's overlay scrollbars were last shown
+     /// (scrolled, or the pointer left the thumb); drives their fade-out
+     pub(crate) scrollbar_activity: HashMap<NodeId, Instant>,
++    /// Whether anything scrolls horizontally and vertically
++    /// ([`BaseDocument::set_scroll_axes`])
++    pub(crate) scroll_axes: (bool, bool),
+     /// Whether and what kind of scroll animation is currently in progress
+     pub(crate) scroll_animation: ScrollAnimationState,
+ 
+@@ -537,6 +540,7 @@ impl BaseDocument {
+             drag_mode: DragMode::None,
+             hovered_scrollbar: None,
+             scrollbar_activity: HashMap::new(),
++            scroll_axes: (true, true),
+             scroll_animation: ScrollAnimationState::None,
+             text_selection: TextSelection::default(),
+         };
+@@ -1864,7 +1868,7 @@ impl BaseDocument {
+         let hit = self
+             .root_element()
+             .hit_inner(x, y, self.viewport().scale_f64(), &mut scrollbar);
+-        (hit, scrollbar)
++        (hit, scrollbar.filter(|s| self.scrolls_along(s.axis)))
+     }
+ 
+     pub fn set_hover_to(&mut self, x: f32, y: f32) -> bool {
+@@ -2295,6 +2299,39 @@ impl BaseDocument {
+         self.nodes.set_viewport_scroll(scroll);
+     }
+ 
++    /// Lock scrolling along an axis, or unlock it. Along a locked axis nothing
++    /// scrolls, whoever asks (the user, a script, a fragment's navigation):
++    /// neither the viewport nor any element, and no scrollbar shows there. A
++    /// text input still scrolls its own text to follow the caret. Locking an
++    /// axis puts every scroll offset along it back to zero.
++    ///
++    /// For embedders that show a document in an area of a fixed size and
++    /// scroll it themselves, if at all, along some axes.
++    pub fn set_scroll_axes(&mut self, horizontal: bool, vertical: bool) {
++        self.scroll_axes = (horizontal, vertical);
++        let keep = |p: crate::Point<f64>| crate::Point {
++            x: if horizontal { p.x } else { 0.0 },
++            y: if vertical { p.y } else { 0.0 },
++        };
++        let viewport = keep(self.viewport_scroll());
++        self.set_viewport_scroll(viewport);
++        for (_, node) in self.nodes.iter_mut() {
++            if node.is_element() {
++                let offset = keep(*node.scroll_offset());
++                *node.scroll_offset_mut() = offset;
++            }
++        }
++        self.nodes.bump_geometry_generation();
++    }
++
++    /// Whether anything scrolls along `axis` ([`BaseDocument::set_scroll_axes`]).
++    pub fn scrolls_along(&self, axis: taffy::AbsoluteAxis) -> bool {
++        match axis {
++            taffy::AbsoluteAxis::Horizontal => self.scroll_axes.0,
++            taffy::AbsoluteAxis::Vertical => self.scroll_axes.1,
++        }
++    }
++
+     /// Find the node targeted by a URL fragment (the `#...` part of a URL).
+     ///
+     /// Per the HTML spec, this is the element whose `id` matches the fragment, falling
+diff --git a/packages/blitz-dom/src/scrolling.rs b/packages/blitz-dom/src/scrolling.rs
+index 177e9d2e..4169ba89 100644
+--- a/packages/blitz-dom/src/scrolling.rs
++++ b/packages/blitz-dom/src/scrolling.rs
+@@ -441,6 +441,21 @@ impl BaseDocument {
+         &self,
+         target: ScrollTarget,
+         include_hidden: bool,
++    ) -> (Point<f64>, Point<f64>) {
++        let (current, max) = self.unlocked_scroll_state(target, include_hidden);
++        // Nothing scrolls along a locked axis (`set_scroll_axes`).
++        let (x, y) = self.scroll_axes;
++        let max = Point {
++            x: if x { max.x } else { 0.0 },
++            y: if y { max.y } else { 0.0 },
++        };
++        (current, max)
++    }
++
++    fn unlocked_scroll_state(
++        &self,
++        target: ScrollTarget,
++        include_hidden: bool,
+     ) -> (Point<f64>, Point<f64>) {
+         match self.canonical_scroll_target(target) {
+             ScrollTarget::Viewport => {
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index 59818e5e..dbe0f9a9 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -774,7 +774,7 @@ impl ElementCx<'_, '_> {
+         const ACTIVE_CONTRAST: f32 = 1.3;
+ 
+         for axis in [AbsoluteAxis::Vertical, AbsoluteAxis::Horizontal] {
+-            if !self.node.wants_scrollbar(axis) {
++            if !self.node.wants_scrollbar(axis) || !self.context.dom.scrolls_along(axis) {
+                 continue;
+             }
+             let Some(thumb) = self.node.scrollbar_thumb(axis) else {
+-- 
+2.56.0
+
