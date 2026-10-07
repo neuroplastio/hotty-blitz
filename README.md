@@ -29,7 +29,9 @@ surfaces as images (SPEC §14). It also works across SSH:
 
 A terminal can instead link `libhotty_blitz` through the C ABI and render
 surfaces natively: sharp at any zoom, no pixels on the wire, and local
-interaction.
+interaction. [hottyterm](https://github.com/neuroplastio/hottyterm) does
+exactly that; install it with `brew install --cask neuroplastio/tap/hottyterm`
+(macOS on Apple silicon) or the AUR's `hottyterm-bin` (Arch on x86_64).
 
 ## The network
 
