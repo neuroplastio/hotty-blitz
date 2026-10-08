@@ -13,6 +13,8 @@
 //! [`encode`] is the other direction: one command, chunked and encoded;
 //! [`encode_plain`] is the same without compression, for what a host sends.
 
+pub mod keys;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use std::io::{Read, Write};

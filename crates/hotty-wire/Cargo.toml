@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 base64.workspace = true
 flate2.workspace = true
+unicode-segmentation.workspace = true

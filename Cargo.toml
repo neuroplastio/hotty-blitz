@@ -21,6 +21,7 @@ anyrender = "0.13.0"
 anyrender_vello_cpu = { version = "0.17.0", default-features = false, features = ["filters", "multithreading"] }
 
 base64 = "0.22"
+unicode-segmentation = "1.13"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
