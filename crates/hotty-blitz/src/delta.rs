@@ -184,15 +184,21 @@ pub fn apply(
         }
         "attr" => {
             let t = find(doc, target)?;
-            touch(doc, t);
             let name = attr_name()?;
+            if keeps_state(doc, t, &name) {
+                return Ok(());
+            }
+            touch(doc, t);
             doc.mutate().set_attribute(t, name, payload);
             Ok(())
         }
         "unattr" => {
             let t = find(doc, target)?;
-            touch(doc, t);
             let name = attr_name()?;
+            if keeps_state(doc, t, &name) {
+                return Ok(());
+            }
+            touch(doc, t);
             doc.mutate().clear_attribute(t, name);
             Ok(())
         }
@@ -368,6 +374,14 @@ pub fn morph_node(
     }
 }
 
+/// SPEC §6.2: a program's `value` or `checked` sets a control's current
+/// state, except while the control is focused: the user is editing it, and
+/// keeps what they typed. In Blitz the attribute is the current state, so a
+/// focused control keeps the attribute too, whichever op changes it.
+fn keeps_state(doc: &BaseDocument, id: NodeId, name: &QualName) -> bool {
+    matches!(&*name.local, "value" | "checked") && crate::surface::focused_node(doc) == Some(id)
+}
+
 fn sync_attributes(
     m: &mut DocumentMutator<'_>,
     old: NodeId,
@@ -387,10 +401,8 @@ fn sync_attributes(
     };
     let old_attrs = collect(m.doc, old);
     let new_attrs = collect(scratch, new);
-    // A control the user is editing keeps what they typed (idiomorph does the same).
-    let focused = crate::surface::focused_node(m.doc) == Some(old);
     for (name, value) in &new_attrs {
-        if focused && &*name.local == "value" {
+        if keeps_state(m.doc, old, name) {
             continue;
         }
         if !old_attrs.iter().any(|(n, v)| n == name && v == value) {
@@ -399,6 +411,9 @@ fn sync_attributes(
         }
     }
     for (name, _) in &old_attrs {
+        if keeps_state(m.doc, old, name) {
+            continue;
+        }
         if !new_attrs.iter().any(|(n, _)| n == name) {
             touch(m.doc, old);
             m.clear_attribute(old, name.clone());
