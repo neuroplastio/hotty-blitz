@@ -161,6 +161,12 @@ impl InputRouter {
             to_program.extend_from_slice(raw);
             return;
         };
+        // The key as the program reads these bytes (SPEC §10.4), which is
+        // the name a text field's keymap knows it by.
+        let key = match hotty_wire::keys::decode_keys(raw).as_slice() {
+            [Some(name)] => Key::from_spec_name(name).unwrap_or(key),
+            _ => key,
+        };
         let held = self.held.iter().position(|k| *k == base);
         if release {
             // Wherever the keyboard is now: a surface may have taken it, or
