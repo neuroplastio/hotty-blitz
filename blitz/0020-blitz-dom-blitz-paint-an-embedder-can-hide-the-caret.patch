@@ -1,0 +1,75 @@
+From ca8acfbc486f47cb9096299c2a808e471af9db2f Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Thu, 8 Oct 2026 16:14:04 +0200
+Subject: [PATCH] blitz-dom, blitz-paint: an embedder can hide the caret, to
+ blink it
+
+BaseDocument::set_caret_shown turns the focused text input's caret off
+and on; the painter skips it while it is off. Blitz paints it solid
+otherwise, as before. An embedder that blinks the caret repaints the
+input each time.
+---
+ packages/blitz-dom/src/document.rs | 15 +++++++++++++++
+ packages/blitz-paint/src/render.rs |  6 +++++-
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 66305810..65a313d8 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -284,6 +284,8 @@ pub struct BaseDocument {
+     pub(crate) last_client_pointer_position: Option<taffy::Point<f32>>,
+     /// The node which is currently focussed (if any)
+     pub(crate) focus_node_id: Option<NodeId>,
++    /// Whether the focussed text input paints its caret
++    pub(crate) caret_shown: bool,
+     /// The node which is currently active (if any)
+     pub(crate) active_node_id: Option<NodeId>,
+     /// The node which recieved a mousedown event (if any)
+@@ -509,6 +511,7 @@ impl BaseDocument {
+             hover_node_is_text: false,
+             last_client_pointer_position: None,
+             focus_node_id: None,
++            caret_shown: true,
+             active_node_id: None,
+             mousedown_node_id: None,
+             has_active_animations: false,
+@@ -663,6 +666,18 @@ impl BaseDocument {
+             .or(self.try_root_element().map(|el| el.id))
+     }
+ 
++    /// Whether the focussed text input paints its caret: true unless an
++    /// embedder that blinks the caret has turned it off.
++    pub fn caret_shown(&self) -> bool {
++        self.caret_shown
++    }
++
++    /// Shows or hides the focussed text input's caret, for an embedder that
++    /// blinks it. The embedder repaints the input.
++    pub fn set_caret_shown(&mut self, shown: bool) {
++        self.caret_shown = shown;
++    }
++
+     pub fn mutate<'doc>(&'doc mut self) -> DocumentMutator<'doc> {
+         DocumentMutator::new(self)
+     }
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index a7d76ba3..34ce63fe 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -962,7 +962,11 @@ impl ElementCx<'_, '_> {
+                     scene.fill(Fill::NonZero, transform, highlight, None, &rect);
+                     selection.extend(kurbo::Shape::path_elements(&rect, 0.1));
+                 }
+-                if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
++                if let Some(cursor) = input_data
++                    .editor
++                    .cursor_geometry(1.5)
++                    .filter(|_| self.context.dom.caret_shown())
++                {
+                     let color = self.style.get_inherited_text().color;
+                     let caret_color = match &self.style.get_inherited_ui().caret_color.0 {
+                         ColorOrAuto::Auto => color,
+-- 
+2.56.0
+

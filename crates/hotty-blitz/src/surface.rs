@@ -179,7 +179,18 @@ pub(crate) struct Surface {
     /// When a fading scrollbar was last painted: the next frame of the
     /// fade is due a frame later.
     faded_at: Option<Instant>,
+    /// When the caret last moved or woke (`wake_caret`): it blinks from
+    /// then.
+    caret_at: Instant,
+    /// The caret's blink phase as last painted: even shows it.
+    caret_phase: u32,
 }
+
+/// A text field's caret blinks as a GTK one does by default, on and off
+/// every 600 ms, and for about ten seconds after it last moved
+/// (`gtk-cursor-blink-timeout`). Then it stays on: the count is even.
+const CARET_BLINK: std::time::Duration = std::time::Duration::from_millis(600);
+const CARET_BLINKS: u32 = 16;
 
 /// Where the pointer is for `hover` (SPEC §9.4): out of the window, or in
 /// it over the nearest element with an id (empty for none).
@@ -467,6 +478,8 @@ impl Surface {
             root_bar: scroll::RootBar::default(),
             fading: Vec::new(),
             faded_at: None,
+            caret_at: Instant::now(),
+            caret_phase: 0,
         }
     }
 
@@ -493,18 +506,75 @@ impl Surface {
             changed |= p.advance(now);
         }
         changed |= self.fade_scrollbars(now);
+        changed |= self.blink(now);
         self.dirty |= changed;
         changed
     }
 
-    /// When the next frame of an animated image that is seen, or of
-    /// scrollbars fading, is due.
+    /// When the next frame of an animated image that is seen, of
+    /// scrollbars fading, or of the caret blinking is due.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
         self.playing
             .iter()
             .filter_map(|p| p.due())
             .chain(self.fade_due())
+            .chain(self.caret_due())
             .min()
+    }
+
+    /// The text field whose caret shows: the focused element, if it edits
+    /// text, while the surface holds the keyboard.
+    fn caret_node(&self) -> Option<NodeId> {
+        if !self.keyboard {
+            return None;
+        }
+        let id = self.focused()?;
+        self.doc
+            .get_node(id)?
+            .element_data()?
+            .text_input_data()
+            .map(|_| id)
+    }
+
+    /// The caret shows at once and blinks again from `now`: after a key,
+    /// a press or focus, as in a browser.
+    fn wake_caret(&mut self, now: Instant) {
+        self.caret_at = now;
+        if !self.caret_phase.is_multiple_of(2)
+            && let Some(id) = self.caret_node()
+        {
+            self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+            self.dirty = true;
+        }
+        self.caret_phase = 0;
+        self.doc.set_caret_shown(true);
+    }
+
+    /// Turns the caret on or off for `now`, damaging its field; true if it
+    /// changed.
+    fn blink(&mut self, now: Instant) -> bool {
+        let Some(id) = self.caret_node() else {
+            self.doc.set_caret_shown(true);
+            return false;
+        };
+        let phase = (now.saturating_duration_since(self.caret_at).as_millis()
+            / CARET_BLINK.as_millis())
+        .min(CARET_BLINKS as u128) as u32;
+        // Forward only, as animated images go: only a wake starts it over.
+        if phase <= self.caret_phase {
+            return false;
+        }
+        self.caret_phase = phase;
+        self.doc.set_caret_shown(phase.is_multiple_of(2));
+        self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+        true
+    }
+
+    /// When the caret next turns on or off; none once it has stopped.
+    fn caret_due(&self) -> Option<Instant> {
+        self.caret_node()?;
+        (self.caret_phase < CARET_BLINKS)
+            .then(|| self.caret_at + CARET_BLINK * (self.caret_phase + 1))
     }
 
     /// Puts each playing image's current frame into the nodes that show
@@ -1091,6 +1161,7 @@ impl Surface {
             }
         }
         self.keyboard = true;
+        self.wake_caret(Instant::now());
         self.snapshot_focus();
         let after = self.doc.get_focussed_node_id();
         self.touch_chains(before, after);
@@ -1486,7 +1557,10 @@ impl Surface {
     pub fn pointer(&mut self, kind: PointerKind, x: f32, y: f32, mods: Mods) -> Vec<Event> {
         let button = MouseEventButton::Main;
         match kind {
-            PointerKind::Down => self.buttons = MouseEventButtons::Primary,
+            PointerKind::Down => {
+                self.buttons = MouseEventButtons::Primary;
+                self.wake_caret(Instant::now());
+            }
             PointerKind::Up => self.buttons = MouseEventButtons::None,
             _ => {}
         }
@@ -1560,6 +1634,7 @@ impl Surface {
         if !self.keyboard {
             return (false, Vec::new());
         }
+        self.wake_caret(Instant::now());
         let focused = self.focused();
         let kind = focused
             .map(|id| self.control_kind(id))

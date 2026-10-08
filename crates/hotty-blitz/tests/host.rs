@@ -103,16 +103,26 @@ fn a_window_is_part_of_the_surface() {
     let place = |h: &mut Host, extra: &[(&str, &str)]| {
         let mut pairs = vec![("a", "place"), ("s", "x"), ("c", "30"), ("r", "8")];
         pairs.extend_from_slice(extra);
-        h.handle(&cmd(&pairs, "")).into_iter().find_map(|e| match e {
-            Effect::Place { cols, rows, window, .. } => Some((cols, rows, window)),
-            _ => None,
-        })
+        h.handle(&cmd(&pairs, ""))
+            .into_iter()
+            .find_map(|e| match e {
+                Effect::Place {
+                    cols, rows, window, ..
+                } => Some((cols, rows, window)),
+                _ => None,
+            })
     };
     let win = |x, y, w, h| hotty_blitz::Window { x, y, w, h };
     // The whole surface by default; a window to the edges from x and y.
     assert_eq!(place(&mut h, &[]), Some((30, 8, win(0, 0, 30, 8))));
-    assert_eq!(place(&mut h, &[("y", "3")]), Some((30, 8, win(0, 3, 30, 5))));
-    assert_eq!(place(&mut h, &[("y", "2"), ("h", "4"), ("x", "5"), ("w", "10")]), Some((30, 8, win(5, 2, 10, 4))));
+    assert_eq!(
+        place(&mut h, &[("y", "3")]),
+        Some((30, 8, win(0, 3, 30, 5)))
+    );
+    assert_eq!(
+        place(&mut h, &[("y", "2"), ("h", "4"), ("x", "5"), ("w", "10")]),
+        Some((30, 8, win(5, 2, 10, 4)))
+    );
     // The document keeps its size: the frame is the whole surface.
     let frames = render(&mut h);
     assert_eq!((frames[0].1, frames[0].2), (300, 160));
@@ -136,7 +146,10 @@ fn inline_svg_follows_its_preserve_aspect_ratio() {
                  <rect width='10' height='10' fill='#ff0000'/></svg></body>"
             ),
         ));
-        h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")],
+            "",
+        ));
         render(&mut h);
         let f = h.frame("x").unwrap();
         let i = ((20 * f.width + x) * 4) as usize;
@@ -159,7 +172,10 @@ fn an_outline_takes_its_offset_and_style() {
         "<body style='margin:0'><div style='height:40px;background:#0000ff;\
          outline:2px dashed #ff0000;outline-offset:-2px'></div></body>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")],
+        "",
+    ));
     render(&mut h);
     let f = h.frame("x").unwrap();
     let red = |x: u32, y: u32| {
@@ -171,7 +187,10 @@ fn an_outline_takes_its_offset_and_style() {
         (0..f.height).map(|y| red(0, y)).collect(),
     );
     for edge in [&top, &left] {
-        assert!(edge.iter().any(|&r| r) && edge.iter().any(|&r| !r), "{edge:?}");
+        assert!(
+            edge.iter().any(|&r| r) && edge.iter().any(|&r| !r),
+            "{edge:?}"
+        );
     }
     // A dash at each end of an edge (beside the corner, whose pixel the two
     // edges' mitre shares).
@@ -182,22 +201,52 @@ fn an_outline_takes_its_offset_and_style() {
 #[test]
 fn hide_removes_the_placement_and_keeps_the_document() {
     let mut h = host();
-    h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p id=p>one</p><input id=i>"));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<p id=p>one</p><input id=i>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")],
+        "",
+    ));
     render(&mut h);
-    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "i"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "i"), ("q", "2")],
+        "",
+    ));
     let fx = h.handle(&cmd(&[("a", "hide"), ("s", "x")], ""));
     // The keyboard goes back to the terminal, and the placement goes.
-    assert!(fx.contains(&Effect::Hide { surface: "x".into() }), "{fx:?}");
+    assert!(
+        fx.contains(&Effect::Hide {
+            surface: "x".into()
+        }),
+        "{fx:?}"
+    );
     assert!(replies(&fx).iter().any(|r| r.get("e") == Some("blur")));
     assert_eq!(h.placement("x"), None);
     // Hidden: deltas apply, nothing renders.
-    h.handle(&cmd(&[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "p"), ("q", "2")], "two"));
+    h.handle(&cmd(
+        &[
+            ("a", "delta"),
+            ("s", "x"),
+            ("op", "text"),
+            ("t", "p"),
+            ("q", "2"),
+        ],
+        "two",
+    ));
     assert!(render(&mut h).is_empty());
     assert_eq!(h.inspect("x", "p").unwrap()["text"], "two");
     // Hiding again does nothing; placing again shows it as it is now.
-    assert!(!h.handle(&cmd(&[("a", "hide"), ("s", "x"), ("q", "2")], "")).iter().any(|e| matches!(e, Effect::Hide { .. })));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+    assert!(
+        !h.handle(&cmd(&[("a", "hide"), ("s", "x"), ("q", "2")], ""))
+            .iter()
+            .any(|e| matches!(e, Effect::Hide { .. }))
+    );
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")],
+        "",
+    ));
     assert_eq!(render(&mut h).len(), 1);
 }
 
@@ -214,13 +263,19 @@ fn a_delta_to_an_element_whose_layout_box_is_gone_repaints_instead_of_panicking(
          .tip{display:none} .b:hover .tip{display:block}</style>
          <div class=b><div class=tip><b id=t>12:00</b><div>row</div></div></div>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "10")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "10")],
+        "",
+    ));
     render(&mut h);
     h.pointer("x", PointerKind::Move, 50.0, 50.0, Mods::default());
     render(&mut h);
     h.pointer("x", PointerKind::Leave, 0.0, 0.0, Mods::default());
     render(&mut h);
-    let r = replies(&h.handle(&cmd(&[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "t")], "12:01")));
+    let r = replies(&h.handle(&cmd(
+        &[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "t")],
+        "12:01",
+    )));
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(render(&mut h).len(), 1);
 }
@@ -408,7 +463,13 @@ fn a_hyperlink_is_the_terminals_and_reports_nothing() {
 <a id=out target=_blank href="../spec">Spec</a><a id=in href="../about">About</a>"#,
     ));
     h.handle(&cmd(
-        &[("a", "place"), ("s", "l"), ("c", "20"), ("r", "5"), ("q", "2")],
+        &[
+            ("a", "place"),
+            ("s", "l"),
+            ("c", "20"),
+            ("r", "5"),
+            ("q", "2"),
+        ],
         "",
     ));
     render(&mut h);
@@ -421,10 +482,21 @@ fn a_hyperlink_is_the_terminals_and_reports_nothing() {
             .count()
     };
     h.pointer("l", PointerKind::Move, 10.0, 10.0, Mods::default());
-    assert_eq!(h.hyperlink("l").as_deref(), Some("https://example.com/spec"));
-    assert_eq!(click(&mut h, 10.0), 0, "a hyperlink's click is not reported");
+    assert_eq!(
+        h.hyperlink("l").as_deref(),
+        Some("https://example.com/spec")
+    );
+    assert_eq!(
+        click(&mut h, 10.0),
+        0,
+        "a hyperlink's click is not reported"
+    );
     h.pointer("l", PointerKind::Move, 10.0, 50.0, Mods::default());
-    assert_eq!(h.hyperlink("l"), None, "a link of the program's is no hyperlink");
+    assert_eq!(
+        h.hyperlink("l"),
+        None,
+        "a link of the program's is no hyperlink"
+    );
     assert_eq!(click(&mut h, 50.0), 1);
 }
 
@@ -477,7 +549,12 @@ fn a_stylesheet_resource_arrives_after_the_document() {
 fn a_background_image_resource_paints_in_the_first_frame() {
     let mut h = host();
     h.handle(&cmd(
-        &[("a", "res"), ("id", "bg"), ("type", "image/svg+xml"), ("q", "2")],
+        &[
+            ("a", "res"),
+            ("id", "bg"),
+            ("type", "image/svg+xml"),
+            ("q", "2"),
+        ],
         "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'>\
          <rect width='20' height='20' fill='#ff0000'/></svg>",
     ));
@@ -486,7 +563,16 @@ fn a_background_image_resource_paints_in_the_first_frame() {
         "<body style='margin:0;background:#000'>\
          <div style='width:20px;height:20px;background-image:url(cid:bg)'></div></body>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "2"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     // Styling loads it; it shows now, not with whatever renders next.
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), [255, 0, 0]);
@@ -496,11 +582,21 @@ fn a_background_image_resource_paints_in_the_first_frame() {
 fn srcset_resolves_cid_resources() {
     // SPEC §7.1: cid: in srcset too, the candidate for the device's density.
     let svg = |c: &str| {
-        format!("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><rect width='20' height='20' fill='{c}'/></svg>")
+        format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><rect width='20' height='20' fill='{c}'/></svg>"
+        )
     };
     let mut h = host();
     for (id, c) in [("one", "#ff0000"), ("two", "#00ff00"), ("src", "#0000ff")] {
-        h.handle(&cmd(&[("a", "res"), ("id", id), ("type", "image/svg+xml"), ("q", "2")], &svg(c)));
+        h.handle(&cmd(
+            &[
+                ("a", "res"),
+                ("id", id),
+                ("type", "image/svg+xml"),
+                ("q", "2"),
+            ],
+            &svg(c),
+        ));
     }
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x"), ("q", "2")],
@@ -508,10 +604,23 @@ fn srcset_resolves_cid_resources() {
          <img srcset='cid:one 1x, cid:two 2x' src='cid:src' style='display:block;width:20px;height:20px'>\
          <img srcset='cid:two 2x' src='cid:src' style='display:block;width:20px;height:20px'></body>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "2"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), [255, 0, 0], "1x at scale 1");
-    assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 255], "src is the 1x candidate");
+    assert_eq!(
+        pixel(&h, "x", 10, 30),
+        [0, 0, 255],
+        "src is the 1x candidate"
+    );
 }
 
 #[test]
@@ -519,11 +628,26 @@ fn srcset_and_picture_choose_again_for_a_new_scale_or_theme() {
     // A window moved to a display of another scale, or a font zoom: the
     // candidate for the new density shows. Blitz fork 0010.
     let svg = |c: &str| {
-        format!("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><rect width='20' height='20' fill='{c}'/></svg>")
+        format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><rect width='20' height='20' fill='{c}'/></svg>"
+        )
     };
     let mut h = host();
-    for (id, c) in [("one", "#ff0000"), ("two", "#00ff00"), ("dark", "#0000ff"), ("light", "#ffffff")] {
-        h.handle(&cmd(&[("a", "res"), ("id", id), ("type", "image/svg+xml"), ("q", "2")], &svg(c)));
+    for (id, c) in [
+        ("one", "#ff0000"),
+        ("two", "#00ff00"),
+        ("dark", "#0000ff"),
+        ("light", "#ffffff"),
+    ] {
+        h.handle(&cmd(
+            &[
+                ("a", "res"),
+                ("id", id),
+                ("type", "image/svg+xml"),
+                ("q", "2"),
+            ],
+            &svg(c),
+        ));
     }
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x"), ("q", "2")],
@@ -532,7 +656,16 @@ fn srcset_and_picture_choose_again_for_a_new_scale_or_theme() {
          <picture><source media='(prefers-color-scheme: dark)' srcset='cid:dark'>\
          <img src='cid:light' style='display:block;width:20px;height:20px'></picture></body>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "2"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     let at = |h: &mut Host, scale: f32, dark: bool| {
         let mut config = h.config().clone();
         config.metrics = Metrics {
@@ -573,9 +706,22 @@ fn an_inline_svgs_image_resolves_cid_resources() {
          <svg width=20 height=20 style='display:block'><image id=im href='cid:early' width=20 height=20/></svg>\
          <svg width=20 height=20 style='display:block'><g><image xlink:href='cid:late' width=20 height=20/></g></svg></body>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "2"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     render(&mut h);
-    assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0], "sent before the document");
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        [0, 255, 0],
+        "sent before the document"
+    );
     assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 0], "not sent yet");
     res(&mut h, "late", "image/png", png([255, 0, 0]));
     render(&mut h);
@@ -608,7 +754,16 @@ fn an_svg_draws_no_image_file() {
              width='20' height='20'%3E%3Cimage href='{p}' width='20' height='20'/%3E%3C/svg%3E\"></body>"
         ),
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "2"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "2"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     render(&mut h);
     std::fs::remove_file(&file).unwrap();
     assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 0], "inline");
@@ -1745,7 +1900,13 @@ fn what_the_user_typed_stays_after_detach() {
 
 /// Places the form again, asking for presses or not (SPEC §5.2 `p`).
 fn place_form_presses(h: &mut Host, presses: bool) {
-    let mut pairs = vec![("a", "place"), ("s", "f"), ("c", "30"), ("r", "5"), ("q", "2")];
+    let mut pairs = vec![
+        ("a", "place"),
+        ("s", "f"),
+        ("c", "30"),
+        ("r", "5"),
+        ("q", "2"),
+    ];
     if presses {
         pairs.push(("p", "1"));
     }
@@ -1759,14 +1920,26 @@ fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
     place_form(&mut h);
     let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
     let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
-    assert!(caps["events"].as_array().unwrap().iter().any(|e| e == "press"));
+    assert!(
+        caps["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "press")
+    );
     // Not asked for: a press on text says nothing (SPEC §10.1).
     assert_eq!(kinds(&click(&mut h, "f", 10.0, 30.0)), vec![]);
 
     place_form_presses(&mut h, true);
     // Text: the id of the element it is in. Empty space: none.
-    assert_eq!(kinds(&click(&mut h, "f", 10.0, 30.0)), vec![ev("press", "count")]);
-    assert_eq!(kinds(&click(&mut h, "f", 250.0, 90.0)), vec![ev("press", "")]);
+    assert_eq!(
+        kinds(&click(&mut h, "f", 10.0, 30.0)),
+        vec![ev("press", "count")]
+    );
+    assert_eq!(
+        kinds(&click(&mut h, "f", 250.0, 90.0)),
+        vec![ev("press", "")]
+    );
     // A button: the press first, then what it does (SPEC §9).
     assert_eq!(
         kinds(&click(&mut h, "f", 10.0, 65.0)),
@@ -1786,9 +1959,15 @@ fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
         vec![ev("press", "count"), ev("blur", "")]
     );
     // A new document keeps the placement, and with it `p`.
-    h.handle(&cmd(&[("a", "doc"), ("s", "f"), ("q", "2")], "<p id=new style=margin:0>new</p>"));
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f"), ("q", "2")],
+        "<p id=new style=margin:0>new</p>",
+    ));
     render(&mut h);
-    assert_eq!(kinds(&click(&mut h, "f", 10.0, 10.0)), vec![ev("press", "new")]);
+    assert_eq!(
+        kinds(&click(&mut h, "f", 10.0, 10.0)),
+        vec![ev("press", "new")]
+    );
 
     // Placing again without it stops them; so does hiding.
     place_form_presses(&mut h, false);
@@ -1813,7 +1992,14 @@ fn a_press_comes_before_the_blur_it_causes_on_another_surface() {
     type_text(&mut h, "yz");
     doc_at(&mut h, "x", &[], "<p>text</p>", "2");
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2"), ("p", "1"), ("q", "2")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "2"),
+            ("p", "1"),
+            ("q", "2"),
+        ],
         "",
     ));
     let got = replies(&h.pointer("x", PointerKind::Down, 20.0, 25.0, Mods::default()));
@@ -1838,7 +2024,14 @@ fn a_press_with_alt_is_the_programs_and_gives_the_keyboard_back() {
     type_text(&mut h, "yz");
     doc_at(&mut h, "x", &[], "<p id=p data-on=click>text</p>", "2");
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2"), ("p", "1"), ("q", "2")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "2"),
+            ("p", "1"),
+            ("q", "2"),
+        ],
         "",
     ));
     let alt = Mods {
@@ -1848,15 +2041,29 @@ fn a_press_with_alt_is_the_programs_and_gives_the_keyboard_back() {
     let pairs = |fx: &[Effect]| -> Vec<(String, String)> {
         replies(fx)
             .iter()
-            .map(|c| (c.get("s").unwrap_or("").into(), c.get("e").unwrap_or("").into()))
+            .map(|c| {
+                (
+                    c.get("s").unwrap_or("").into(),
+                    c.get("e").unwrap_or("").into(),
+                )
+            })
             .collect()
     };
     let got = pairs(&h.pointer("x", PointerKind::Down, 20.0, 25.0, alt));
-    assert_eq!(got, vec![("f".into(), "change".into()), ("f".into(), "blur".into())]);
+    assert_eq!(
+        got,
+        vec![("f".into(), "change".into()), ("f".into(), "blur".into())]
+    );
     assert!(!h.is_focused("f"));
     // Alt let go: the gesture is still the program's, to its release.
-    assert_eq!(pairs(&h.pointer("x", PointerKind::Move, 22.0, 25.0, Mods::default())), vec![]);
-    assert_eq!(pairs(&h.pointer("x", PointerKind::Up, 22.0, 25.0, Mods::default())), vec![]);
+    assert_eq!(
+        pairs(&h.pointer("x", PointerKind::Move, 22.0, 25.0, Mods::default())),
+        vec![]
+    );
+    assert_eq!(
+        pairs(&h.pointer("x", PointerKind::Up, 22.0, 25.0, Mods::default())),
+        vec![]
+    );
     // The next press without Alt is the surface's again.
     let got = pairs(&h.pointer("x", PointerKind::Down, 20.0, 25.0, Mods::default()));
     assert_eq!(got, vec![("x".into(), "press".into())]);
@@ -2065,7 +2272,10 @@ fn the_capabilities_name_the_host_and_its_version() {
     let caps = serde_json::from_slice::<serde_json::Value>(&r[0].payload).unwrap();
     assert_eq!(caps["host"], "hotty-blitz");
     assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
-    let v: Vec<u32> = env!("CARGO_PKG_VERSION").split('.').map(|n| n.parse().unwrap()).collect();
+    let v: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|n| n.parse().unwrap())
+        .collect();
     assert!(v >= vec![0, 0, 3], "a=patch became a=delta in 0.0.3");
 }
 
@@ -2085,11 +2295,29 @@ fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
         &[("a", "doc"), ("s", "x"), ("q", "2")],
         "<style>html{pointer-events:none}body{margin:0}b{position:absolute;left:0;top:0;width:10px;height:20px;pointer-events:auto}</style><b></b>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "5"), ("r", "1"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "5"),
+            ("r", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     render(&mut h);
-    assert!(h.takes_pointer("x", 5.0, 10.0), "the box with pointer-events: auto takes it");
-    assert!(!h.takes_pointer("x", 30.0, 10.0), "the rest lets it through");
-    assert!(!h.takes_pointer("nope", 5.0, 10.0), "no such surface takes nothing");
+    assert!(
+        h.takes_pointer("x", 5.0, 10.0),
+        "the box with pointer-events: auto takes it"
+    );
+    assert!(
+        !h.takes_pointer("x", 30.0, 10.0),
+        "the rest lets it through"
+    );
+    assert!(
+        !h.takes_pointer("nope", 5.0, 10.0),
+        "no such surface takes nothing"
+    );
 }
 
 /// A custom property that changes a containing block's height and its
@@ -2108,25 +2336,61 @@ fn a_var_delta_lays_out_like_a_fresh_document() {
         <div class=ring><div class=line></div></div></html>"
         )
     };
-    let painted = |h: &Host| h.frame("x").unwrap().rgba.chunks(4).filter(|p| p[3] > 0).count();
+    let painted = |h: &Host| {
+        h.frame("x")
+            .unwrap()
+            .rgba
+            .chunks(4)
+            .filter(|p| p[3] > 0)
+            .count()
+    };
     let host = || {
         Host::new(Config {
-            metrics: Metrics { cell_w: 15, cell_h: 33, scale: 1.604167 },
+            metrics: Metrics {
+                cell_w: 15,
+                cell_h: 33,
+                scale: 1.604167,
+            },
             ..Config::default()
         })
     };
     let mut inc = host();
     inc.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html(5)));
-    inc.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "1"), ("q", "2")], ""));
+    inc.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     render(&mut inc);
     inc.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", "var"), ("t", "root"), ("k", "h"), ("q", "2")],
+        &[
+            ("a", "delta"),
+            ("s", "x"),
+            ("op", "var"),
+            ("t", "root"),
+            ("k", "h"),
+            ("q", "2"),
+        ],
         "6",
     ));
     render(&mut inc);
     let mut fresh = host();
     fresh.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html(6)));
-    fresh.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "1"), ("q", "2")], ""));
+    fresh.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     render(&mut fresh);
     assert!(painted(&fresh) > 0, "the fresh document paints the line");
     assert_eq!(painted(&inc), painted(&fresh));
@@ -2311,12 +2575,7 @@ fn an_image_out_of_the_window_or_not_placed_asks_for_no_timer() {
 fn a_gif_that_loops_a_number_of_times_stops_on_its_last_frame() {
     let mut h = host();
     // Played once, and once more.
-    res(
-        &mut h,
-        "g",
-        "image/gif",
-        gif(20, &[RED, GREEN], S, Some(1)),
-    );
+    res(&mut h, "g", "image/gif", gif(20, &[RED, GREEN], S, Some(1)));
     place_image(&mut h, IMG);
     render(&mut h);
     for colour in [GREEN, RED, GREEN] {
@@ -2429,7 +2688,10 @@ fn fits(h: &mut Host) -> Vec<(String, u64)> {
     replies(&h.take_events())
         .iter()
         .map(|c| {
-            assert_eq!((c.get("a"), c.get("e"), c.get("t")), (Some("ev"), Some("fit"), Some("")));
+            assert_eq!(
+                (c.get("a"), c.get("e"), c.get("t")),
+                (Some("ev"), Some("fit"), Some(""))
+            );
             let body: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
             (c.get("s").unwrap().to_string(), body["r"].as_u64().unwrap())
         })
@@ -2442,14 +2704,27 @@ fn fit_doc(h: &mut Host, n: u32, extra: &[(&str, &str)]) {
         &[("a", "doc"), ("s", "x"), ("q", "2")],
         &format!("<div id=d style='height: calc(var(--n, {n}) * var(--hotty-cell-h))'></div>"),
     ));
-    let mut pairs = vec![("a", "place"), ("s", "x"), ("c", "20"), ("f", "1"), ("q", "2")];
+    let mut pairs = vec![
+        ("a", "place"),
+        ("s", "x"),
+        ("c", "20"),
+        ("f", "1"),
+        ("q", "2"),
+    ];
     pairs.extend_from_slice(extra);
     h.handle(&cmd(&pairs, ""));
 }
 
 fn set_n(h: &mut Host, n: &str) {
     h.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", "var"), ("t", "d"), ("k", "n"), ("q", "2")],
+        &[
+            ("a", "delta"),
+            ("s", "x"),
+            ("op", "var"),
+            ("t", "d"),
+            ("k", "n"),
+            ("q", "2"),
+        ],
         n,
     ));
 }
@@ -2457,7 +2732,10 @@ fn set_n(h: &mut Host, n: &str) {
 /// The rows `r=auto` chooses for a document 30 columns wide.
 fn auto_rows(h: &mut Host, html: &str) -> u16 {
     h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], html));
-    let fx = h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("q", "2")], ""));
+    let fx = h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("q", "2")],
+        "",
+    ));
     fx.iter()
         .find_map(|e| match e {
             Effect::Place { rows, .. } => Some(*rows),
@@ -2474,7 +2752,10 @@ fn auto_rows_count_the_content_of_a_root_the_viewport_sizes() {
     let pinned = "<style>html, body { margin: 0; height: 100% }</style>";
     let mut h = host();
     // 60 paragraphs of 40 px: 120 rows, far past the 24 a viewport has.
-    let tall = format!("{pinned}{}", "<p style='margin: 0; height: 40px'>p</p>".repeat(60));
+    let tall = format!(
+        "{pinned}{}",
+        "<p style='margin: 0; height: 40px'>p</p>".repeat(60)
+    );
     assert_eq!(auto_rows(&mut h, &tall), 120);
     let short = format!("{pinned}<p style='margin: 0; height: 30px'>p</p>");
     assert_eq!(auto_rows(&mut h, &short), 2);
@@ -2495,7 +2776,16 @@ fn fit_hears_content_that_overflows_a_root_the_viewport_sizes() {
         "<style>html, body { margin: 0; height: 100% }</style>\
          <div id=d style='height: calc(var(--n, 2) * var(--hotty-cell-h))'></div>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("f", "1"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("f", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     assert_eq!(fits(&mut h), vec![], "r=auto chose the rows it needs");
     set_n(&mut h, "9");
     assert_eq!(fits(&mut h), vec![("x".to_string(), 9)]);
@@ -2526,7 +2816,16 @@ fn fit_follows_a_new_cell_size_and_a_new_document() {
         &[("a", "doc"), ("s", "x"), ("q", "2")],
         "<div style='height: 40px'></div>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("f", "1"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("f", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     assert_eq!(fits(&mut h), vec![]);
     // Rows half as tall: the same pixels need twice the rows.
     let mut c = h.config().clone();
@@ -2552,7 +2851,14 @@ fn fit_starts_from_the_placement_rows_and_needs_f_1() {
     let mut h = host();
     fit_doc(&mut h, 2, &[("r", "1")]);
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "20"), ("r", "1"), ("f", "2"), ("q", "2")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "1"),
+            ("f", "2"),
+            ("q", "2"),
+        ],
         "",
     ));
     assert_eq!(fits(&mut h), vec![]);
@@ -2613,7 +2919,13 @@ fn place_hover(h: &mut Host) {
          padding:0;width:100%;height:20px}</style><input id=a><div id=b></div><div id=c></div>",
     ));
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "10"), ("r", "3"), ("v", "1")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "10"),
+            ("r", "3"),
+            ("v", "1"),
+        ],
         "",
     ));
     render(h);
@@ -2692,7 +3004,13 @@ fn losing_the_pointer_during_a_drag_ends_it_and_then_leaves() {
         "<style>body{margin:0}div{height:20px}</style><div id=a data-on=drag></div><div id=b></div>",
     ));
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "10"), ("r", "2"), ("v", "1")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "10"),
+            ("r", "2"),
+            ("v", "1"),
+        ],
         "",
     ));
     render(&mut h);
@@ -2716,5 +3034,82 @@ fn hover_is_listed_in_the_capabilities() {
     let mut h = host();
     let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
     let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
-    assert!(caps["events"].as_array().unwrap().iter().any(|e| e == "hover"));
+    assert!(
+        caps["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "hover")
+    );
+}
+
+/// A text field's caret blinks, off and on every 600 ms, each time
+/// repainting the field only, and stays on about ten seconds after it last
+/// moved. A key shows it at once and starts the blink again; without the
+/// keyboard it does not blink.
+#[test]
+fn a_text_fields_caret_blinks_then_stays_on() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        "<style>body{margin:0} input{display:block;margin:0;padding:0;border:0;width:200px;height:20px}</style>
+         <input id=name value=x><p>Below the field, a paragraph that is painted once.</p>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "80"), ("r", "20")],
+        "",
+    ));
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "name")], ""));
+    render(&mut h);
+    let on = h.frame("f").unwrap().rgba.clone();
+    let mut shown = true;
+    for phase in 1..=16 {
+        let due = h.next_frame().expect("the caret blinks");
+        h.animate(due);
+        let frames = render(&mut h);
+        assert_eq!(frames.len(), 1, "phase {phase}");
+        match &frames[0].3 {
+            hotty_blitz::Damage::Rects(rs) => assert!(
+                rs.iter().all(|r| r.y + r.h <= 30 && r.x + r.w <= 210),
+                "phase {phase}: {rs:?}"
+            ),
+            d => panic!("phase {phase}: a blink repaints the field only: {d:?}"),
+        }
+        shown = !shown;
+        assert_eq!(h.frame("f").unwrap().rgba == on, shown, "phase {phase}");
+    }
+    assert!(shown);
+    assert_eq!(h.next_frame(), None, "the caret stays on");
+
+    let before = std::time::Instant::now();
+    type_text(&mut h, "y");
+    render(&mut h);
+    let typed = h.frame("f").unwrap().rgba.clone();
+    let due = h.next_frame().expect("a key starts the blink again");
+    assert!(due >= before + std::time::Duration::from_millis(600));
+    h.animate(due);
+    render(&mut h);
+    assert_ne!(h.frame("f").unwrap().rgba, typed, "off");
+    // A key while it is off shows it at once.
+    let out = h.key(
+        "f",
+        &Key {
+            name: KeyName::Right,
+            mods: Mods::default(),
+        },
+    );
+    assert!(out.consumed);
+    h.key(
+        "f",
+        &Key {
+            name: KeyName::Left,
+            mods: Mods::default(),
+        },
+    );
+    render(&mut h);
+    assert_eq!(h.frame("f").unwrap().rgba, typed, "on again, where it was");
+
+    h.blur("f");
+    render(&mut h);
+    assert_eq!(h.next_frame(), None, "no keyboard, no blink");
 }

@@ -28,6 +28,7 @@ changes upstream is an open question.
 | `0017-blitz-dom-*` | `:focus-visible` matches; a click shows the ring only on a text field (below) |
 | `0018-blitz-dom-blitz-paint-*` | selected text takes the colours of its `::selection` (below) |
 | `0019-blitz-dom-*` | Backspace edits a text input on macOS too (below) |
+| `0020-blitz-dom-blitz-paint-*` | an embedder can hide the caret, to blink it (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -63,6 +64,13 @@ Backspace did nothing in a text field (plexos HOTTY-BACKSPACE-01). With 0019
 the arm applies everywhere. It is the only key the text input leaves to
 Cocoa: Delete, the arrows, Home and End take the same path on every
 platform.
+
+## The caret blinks
+
+Blitz paints a focused text input's caret solid. A browser blinks it, and
+so does hotty-blitz (surface.rs): 0020 adds `BaseDocument::set_caret_shown`,
+which the painter honours, and the surface turns it off and on on the
+frame clock that plays animated images, repainting only the input.
 
 ## Scrolling
 
