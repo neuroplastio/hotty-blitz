@@ -3169,6 +3169,7 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         shift: true,
         ..Mods::default()
     };
+    // Shift with a move moves the caret, and selects nothing (SPEC §10.2).
     press(&mut h, KeyName::Left, shift);
     press(&mut h, KeyName::Left, shift);
     heard.extend(values(&press(
@@ -3176,7 +3177,7 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         KeyName::Char("Z".into()),
         Mods::default(),
     )));
-    assert_eq!(heard, ["abcx", "abcxy", "abcx", "abZ"]);
+    assert_eq!(heard, ["abcx", "abcxy", "abcx", "abZcx"]);
     render(&mut h);
 
     let ev = replies(&press(&mut h, KeyName::Enter, Mods::default()));
@@ -3184,8 +3185,8 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         let c = ev.iter().find(|c| c.get("e") == Some(e)).expect(e);
         serde_json::from_slice(&c.payload).unwrap()
     };
-    assert_eq!(payload("change")["value"], "abZ");
-    assert_eq!(payload("submit")["pw"], "abZ");
+    assert_eq!(payload("change")["value"], "abZcx");
+    assert_eq!(payload("submit")["pw"], "abZcx");
     h.blur("f");
     render(&mut h);
 
@@ -3205,7 +3206,10 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         render(h);
     };
     set_type(&mut h, "text");
-    assert_eq!(frame(&h), frame(&field("text", "abZ")));
+    assert_eq!(frame(&h), frame(&field("text", "abZcx")));
     set_type(&mut h, "password");
-    assert_eq!(frame(&h), frame(&field("text", "\u{2022}\u{2022}\u{2022}")));
+    assert_eq!(
+        frame(&h),
+        frame(&field("text", "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"))
+    );
 }

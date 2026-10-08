@@ -7,6 +7,7 @@
 
 mod anim;
 pub mod delta;
+mod edit;
 pub mod fetch;
 pub mod ffi;
 pub mod input;
@@ -298,6 +299,36 @@ impl Host {
     /// conformance vectors (conformance/README.md).
     pub fn inspect(&self, surface: &str, id: &str) -> Option<serde_json::Value> {
         self.surfaces.get(surface)?.inspect(id)
+    }
+
+    /// Text field `id` of `surface`: its value and where its caret is, a
+    /// count of characters (grapheme clusters). The test interface's
+    /// (SPEC §16), for the `edit` vectors.
+    #[doc(hidden)]
+    pub fn text_field(&self, surface: &str, id: &str) -> Option<(String, usize)> {
+        self.surfaces.get(surface)?.text_field(id)
+    }
+
+    /// Sets text field `id` of `surface`: its value, and its caret, a count
+    /// of characters. The test interface's (SPEC §16).
+    #[doc(hidden)]
+    pub fn set_text_field(&mut self, surface: &str, id: &str, value: &str, caret: usize) -> bool {
+        self.surfaces
+            .get_mut(surface)
+            .is_some_and(|s| s.set_text_field(id, value, caret))
+    }
+
+    /// Does an action of SPEC §10.2 in the focused text field of `surface`,
+    /// as a key bound to it does. The test interface's (SPEC §16).
+    #[doc(hidden)]
+    pub fn text_action(&mut self, surface: &str, action: &str) -> Vec<Effect> {
+        let Some(s) = self.surfaces.get_mut(surface) else {
+            return Vec::new();
+        };
+        s.text_action(action)
+            .into_iter()
+            .map(|e| Effect::Reply(e.encode(surface)))
+            .collect()
     }
 
     /// The centre of element `id` of `surface`, in pixels from the

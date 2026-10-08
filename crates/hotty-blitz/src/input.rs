@@ -6,7 +6,7 @@
 //! hear about comes back as [`Event`]s encoded for its stdin.
 
 use crate::Effect;
-use hotty_wire::Control;
+use hotty_wire::{Control, keys};
 
 /// Event types a host can report, for the capability reply.
 /// `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1).
@@ -57,6 +57,69 @@ pub enum KeyName {
 pub struct Key {
     pub name: KeyName,
     pub mods: Mods,
+}
+
+impl Key {
+    /// The key as HOTTY SPEC §10.4 names it, the name a text field's keymap
+    /// looks up (`Control+a`, `Alt+ArrowLeft`, `A`); `None` for a key with
+    /// no name here.
+    pub fn spec_name(&self) -> Option<String> {
+        let value = match &self.name {
+            KeyName::Char(s) => s.as_str(),
+            KeyName::Space => " ",
+            KeyName::Enter => "Enter",
+            KeyName::Tab => "Tab",
+            KeyName::Backspace => "Backspace",
+            KeyName::Delete => "Delete",
+            KeyName::Escape => "Escape",
+            KeyName::Left => "ArrowLeft",
+            KeyName::Right => "ArrowRight",
+            KeyName::Up => "ArrowUp",
+            KeyName::Down => "ArrowDown",
+            KeyName::Home => "Home",
+            KeyName::End => "End",
+            KeyName::PageUp => "PageUp",
+            KeyName::PageDown => "PageDown",
+            KeyName::Other => return None,
+        };
+        let m = self.mods;
+        let k = keys::KeyParts::new(m.ctrl, m.alt, m.meta, m.shift, value);
+        keys::parse_key(&k.name())
+    }
+
+    /// The key a name of HOTTY SPEC §10.4 names (as [`keys::decode_keys`]
+    /// reads it from what the terminal sent); `None` for a key with no
+    /// [`KeyName`].
+    pub fn from_spec_name(name: &str) -> Option<Key> {
+        let k = keys::split_key(name)?;
+        let name = match k.value.as_str() {
+            " " => KeyName::Space,
+            "Enter" => KeyName::Enter,
+            "Tab" => KeyName::Tab,
+            "Backspace" => KeyName::Backspace,
+            "Delete" => KeyName::Delete,
+            "Escape" => KeyName::Escape,
+            "ArrowLeft" => KeyName::Left,
+            "ArrowRight" => KeyName::Right,
+            "ArrowUp" => KeyName::Up,
+            "ArrowDown" => KeyName::Down,
+            "Home" => KeyName::Home,
+            "End" => KeyName::End,
+            "PageUp" => KeyName::PageUp,
+            "PageDown" => KeyName::PageDown,
+            v if keys::is_char(v) => KeyName::Char(v.to_string()),
+            _ => KeyName::Other,
+        };
+        Some(Key {
+            name,
+            mods: Mods {
+                shift: k.shift(),
+                ctrl: k.control(),
+                alt: k.alt(),
+                meta: k.meta(),
+            },
+        })
+    }
 }
 
 #[derive(Debug, Default)]

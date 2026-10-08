@@ -804,6 +804,7 @@ dependencies = [
  "stylo",
  "stylo_dom",
  "stylo_static_prefs",
+ "unicode-segmentation",
  "ureq",
  "url",
  "vello_cpu",

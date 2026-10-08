@@ -4,7 +4,8 @@
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
-use crate::{Config, Metrics, Rect, anim, delta, net, paint};
+use crate::{Config, Metrics, Rect, anim, delta, edit, net, paint};
+use hotty_wire::keys;
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
@@ -14,7 +15,7 @@ use blitz_dom::{
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_paint::paint_scene;
 use blitz_traits::events::{
-    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, KeyState,
+    BlitzInputEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, KeyState,
     MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
@@ -1688,36 +1689,15 @@ impl Surface {
                 (true, events)
             }
             (KeyName::Escape, _) => (false, Vec::new()),
-            (
-                KeyName::Char(_)
-                | KeyName::Space
-                | KeyName::Backspace
-                | KeyName::Delete
-                | KeyName::Left
-                | KeyName::Right
-                | KeyName::Home
-                | KeyName::End,
-                Control::Text | Control::TextArea,
-            ) if plain || key.mods.shift => {
-                let events = self.drive_key(key);
-                self.dirty = true;
-                (true, events)
-            }
-            (
-                KeyName::Up | KeyName::Down | KeyName::PageUp | KeyName::PageDown,
-                Control::TextArea,
-            ) => {
-                let events = self.drive_key(key);
-                self.dirty = true;
-                (true, events)
-            }
-            (KeyName::Enter, Control::Text | Control::TextArea) if plain || key.mods.shift => {
-                let mut events = Vec::new();
-                self.finish_change(&mut events);
-                self.snapshot_focus();
-                events.extend(self.drive_key(key));
-                self.dirty = true;
-                (true, events)
+            (_, Control::Text | Control::TextArea) => {
+                let id = focused.expect("a text control is focused");
+                match self.field_key(id, key, kind == Control::TextArea) {
+                    Some(events) => {
+                        self.dirty = true;
+                        (true, events)
+                    }
+                    None => self.scroll_key(key, focused),
+                }
             }
             (KeyName::Space | KeyName::Enter, Control::Activatable) if plain => {
                 let events = focused.map(|id| self.activate(id)).unwrap_or_default();
@@ -1726,6 +1706,141 @@ impl Surface {
             }
             _ => self.scroll_key(key, focused),
         }
+    }
+
+    /// A key for the focused text field `id`, which does what its keymap
+    /// says (SPEC §10.2): the default keymap, then the `data-keys` of each
+    /// element from the root to the field. `None` when the key is not the
+    /// field's: it reaches the program.
+    fn field_key(&mut self, id: NodeId, key: &Key, multiline: bool) -> Option<Vec<Event>> {
+        let name = key.spec_name()?;
+        let mut values = Vec::new();
+        let mut n = Some(id);
+        while let Some(node) = n.and_then(|n| self.doc.get_node(n)) {
+            if let Some(v) = node
+                .attrs()
+                .and_then(|a| a.iter().find(|a| &*a.name.local == "data-keys"))
+            {
+                values.push(v.value.to_string());
+            }
+            n = node.parent;
+        }
+        let keymap = keys::resolve(multiline, values.iter().rev().map(String::as_str));
+        let action = keymap.lookup(&name)?.to_string();
+        Some(self.field_action(id, key, &action, multiline))
+    }
+
+    /// Does an action of SPEC §10.2 in the text field `id`, for `key`.
+    pub(crate) fn field_action(
+        &mut self,
+        id: NodeId,
+        key: &Key,
+        action: &str,
+        multiline: bool,
+    ) -> Vec<Event> {
+        let typed = |name| Key {
+            name,
+            mods: Mods::default(),
+        };
+        match action {
+            // Typing is Blitz's: a selection is replaced, a password masked.
+            keys::INSERT => self.drive_key(key),
+            "newline" => self.drive_key(&typed(KeyName::Enter)),
+            "submit" => {
+                let mut events = Vec::new();
+                self.finish_change(&mut events);
+                self.snapshot_focus();
+                if multiline {
+                    if let Some(form) = self.ancestor_with_tag(id, "form") {
+                        self.doc.submit_form(form, form);
+                        events.extend(self.submits(Some(form)));
+                    }
+                } else {
+                    // Enter in a text input submits its form, Blitz's way.
+                    events.extend(self.drive_key(&typed(KeyName::Enter)));
+                }
+                events
+            }
+            "line-previous" | "line-next" | "page-up" | "page-down" => {
+                let rows = match action {
+                    "line-previous" | "line-next" => 1,
+                    _ => self.doc.text_input_rows_shown(id) as isize,
+                };
+                let sign = if matches!(action, "line-previous" | "page-up") { -1 } else { 1 };
+                self.doc.move_text_input_rows(id, sign * rows);
+                self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+                Vec::new()
+            }
+            _ => {
+                let Some((value, anchor, focus)) = self.doc.text_input_selection(id) else {
+                    return Vec::new();
+                };
+                let password = self
+                    .doc
+                    .get_node(id)
+                    .and_then(|n| n.element_data())
+                    .and_then(|e| e.text_input_data())
+                    .is_some_and(|t| t.password().is_some());
+                let field = edit::Field {
+                    value: &value,
+                    anchor,
+                    focus,
+                    multiline,
+                    password,
+                };
+                let Some(done) = edit::apply(&field, action) else {
+                    return Vec::new();
+                };
+                let new = done.value.unwrap_or_else(|| value.clone());
+                self.doc.set_text_input(id, &new, done.caret, done.caret);
+                self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+                if new == value {
+                    return Vec::new();
+                }
+                self.drive_input(Input::Dom(DomEvent::new(
+                    id,
+                    DomEventData::Input(BlitzInputEvent { value: new }),
+                )))
+            }
+        }
+    }
+
+    /// Text field `id`: its value and its caret, in characters.
+    pub(crate) fn text_field(&self, id: &str) -> Option<(String, usize)> {
+        let node = self.doc.get_element_by_id(id)?;
+        let (value, _, focus) = self.doc.text_input_selection(node)?;
+        let caret = edit::chars(&value[..focus]);
+        Some((value, caret))
+    }
+
+    /// Sets text field `id`'s value, and its caret, in characters.
+    pub(crate) fn set_text_field(&mut self, id: &str, value: &str, caret: usize) -> bool {
+        let Some(node) = self.doc.get_element_by_id(id) else {
+            return false;
+        };
+        let at = edit::byte_at(value, caret);
+        self.doc.set_text_input(node, value, at, at);
+        self.snapshot_focus();
+        self.dirty = true;
+        true
+    }
+
+    /// Does an action in the focused text field.
+    pub(crate) fn text_action(&mut self, action: &str) -> Vec<Event> {
+        let Some(id) = self.focused() else {
+            return Vec::new();
+        };
+        let kind = self.control_kind(id);
+        if !matches!(kind, Control::Text | Control::TextArea) {
+            return Vec::new();
+        }
+        let key = Key {
+            name: KeyName::Other,
+            mods: Mods::default(),
+        };
+        let events = self.field_action(id, &key, action, kind == Control::TextArea);
+        self.dirty = true;
+        events
     }
 
     /// A key the focused element has no use for, in a document that
@@ -2084,22 +2199,7 @@ impl Surface {
                 self.fade(b.node_id, now);
             }
         }
-        // Form submissions arrive as navigations (Blitz submits forms by
-        // navigating). They never navigate here: they become `submit`.
-        let navs: Vec<NavigationOptions> = std::mem::take(&mut *self.nav.0.lock().unwrap());
-        for nav in navs {
-            let form = rec.form.or_else(|| {
-                self.focused()
-                    .and_then(|f| self.ancestor_with_tag(f, "form"))
-            });
-            let Some(form) = form else { continue };
-            let fields = form_fields(&nav);
-            events.push(Event {
-                kind: "submit",
-                target: self.id_of(form).unwrap_or_default(),
-                detail: serde_json::Value::Object(fields),
-            });
-        }
+        events.extend(self.submits(rec.form));
         // Text inputs report `change` when focus leaves them (not per keystroke,
         // so typing costs no round trip).
         let focused = self.focused();
@@ -2157,6 +2257,27 @@ impl Surface {
             self.fade(n, now);
         }
         self.dirty = true;
+    }
+
+    /// Form submissions arrive as navigations (Blitz submits forms by
+    /// navigating). They never navigate here: they become `submit`, of
+    /// `form` or else of the focused element's form.
+    fn submits(&mut self, form: Option<NodeId>) -> Vec<Event> {
+        let navs: Vec<NavigationOptions> = std::mem::take(&mut *self.nav.0.lock().unwrap());
+        let mut events = Vec::new();
+        for nav in navs {
+            let form = form.or_else(|| {
+                self.focused()
+                    .and_then(|f| self.ancestor_with_tag(f, "form"))
+            });
+            let Some(form) = form else { continue };
+            events.push(Event {
+                kind: "submit",
+                target: self.id_of(form).unwrap_or_default(),
+                detail: serde_json::Value::Object(form_fields(&nav)),
+            });
+        }
+        events
     }
 
     fn snapshot_focus(&mut self) {

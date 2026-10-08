@@ -86,6 +86,17 @@ moves, whatever its CSS, and nothing shows a scrollbar.
 - `hotty run` does the same with the wheel reports it reads: one report
   is a row.
 
+## Text fields
+
+A focused text field types and edits only as its program's keymap says
+(SPEC §10.2): the default keymap, then each `data-keys` from the root to
+the field. A bound key does its action, a printable key without Control,
+Alt or Meta types, and every other key goes to the program. Words, lines
+and a password field are the spec's (`crates/hotty-blitz/src/edit.rs`);
+moves by rows and pages follow the field's layout. Keys are named by what
+the terminal sent (`hotty_wire::keys`, SPEC §10.4), so a remapped key is
+the key it sends.
+
 ## Performance
 
 Measured 2026-09-29, release build:

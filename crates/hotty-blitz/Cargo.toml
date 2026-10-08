@@ -10,6 +10,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 hotty-wire.workspace = true
+unicode-segmentation.workspace = true
 blitz-dom.workspace = true
 blitz-html.workspace = true
 blitz-paint.workspace = true

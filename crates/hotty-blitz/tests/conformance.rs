@@ -455,3 +455,154 @@ fn wire_vectors() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The keys section (SPEC §10.4): what hotty-wire reads from the terminal,
+/// and the names it reads from documents.
+#[test]
+fn keys_vectors() {
+    let v = vectors();
+    let mut failures = Vec::new();
+    for k in v["keys"].as_array().unwrap() {
+        let name = k["name"].as_str().unwrap();
+        if let Some(input) = k.get("input") {
+            let got = hotty_wire::keys::decode_keys(input.as_str().unwrap().as_bytes());
+            let want: Vec<Option<String>> = k["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_str().map(str::to_string))
+                .collect();
+            if got != want {
+                failures.push(format!("{name}: {got:?}, want {want:?}"));
+            }
+        } else {
+            let got = hotty_wire::keys::parse_key(k["key"].as_str().unwrap());
+            let want = k["canon"].as_str().map(str::to_string);
+            if got != want {
+                failures.push(format!("{name}: {got:?}, want {want:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The keymap section (SPEC §10.2).
+#[test]
+fn keymap_vectors() {
+    use hotty_wire::keys;
+    let v = vectors();
+    let mut failures = Vec::new();
+    for k in v["keymap"].as_array().unwrap() {
+        let name = k["name"].as_str().unwrap();
+        let terminal = k.get("terminal_keys").and_then(Value::as_bool) == Some(true);
+        let Some(lookup) = k.get("lookup") else {
+            let value = k.get("parse").and_then(Value::as_str).unwrap_or(keys::TERMINAL_KEYS);
+            let got = keys::parse_keymap(value).format();
+            if got != k["format"].as_str().unwrap() {
+                failures.push(format!("{name}: {got:?}"));
+            }
+            continue;
+        };
+        let mut values: Vec<&str> = if terminal { vec![keys::TERMINAL_KEYS] } else { vec![] };
+        values.extend(k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()));
+        let m = keys::resolve(k["multiline"].as_bool().unwrap(), values);
+        for (key, want) in lookup.as_object().unwrap() {
+            let got = m.lookup(key);
+            if got != want.as_str() {
+                failures.push(format!("{name}: {key}: {got:?}, want {want:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The edit section, in a field of a surface: an input, a password input or
+/// a textarea showing `rows` rows, in a monospace font and wide enough not
+/// to wrap, so that its rows are its lines and a place along them is a
+/// count of characters, as the vectors have them.
+#[test]
+fn edit_vectors() {
+    let v = vectors();
+    let mut failures = Vec::new();
+    for e in v["edit"].as_array().unwrap() {
+        let name = e["name"].as_str().unwrap();
+        let f = &e["field"];
+        let flag = |k: &str| f.get(k).and_then(Value::as_bool) == Some(true);
+        let rows = f.get("rows").and_then(Value::as_u64).unwrap_or(1);
+        let field = if flag("multiline") {
+            format!("<textarea id=f cols=60 rows={rows}></textarea>")
+        } else if flag("password") {
+            "<input id=f type=password size=60>".to_string()
+        } else {
+            "<input id=f size=60>".to_string()
+        };
+        let html = format!(
+            "<style>body{{margin:0}}input,textarea{{font:16px monospace;white-space:pre;padding:0;border:0}}</style>{field}"
+        );
+        let mut host = Host::new(Config::default());
+        let send = |host: &mut Host, pairs: &[(&str, &str)], payload: &str| {
+            let mut c = Control::default();
+            for &(k, v) in pairs {
+                c.set(k, v);
+            }
+            let (cmds, _) = decode(&hotty_wire::encode(&c, payload.as_bytes()));
+            for cmd in &cmds {
+                host.handle(cmd);
+            }
+            host.render_dirty(&mut |_, _, _| {});
+        };
+        send(&mut host, &[("a", "doc"), ("s", "x"), ("q", "2")], &html);
+        send(&mut host, &[("a", "place"), ("s", "x"), ("c", "80"), ("r", "10"), ("q", "2")], "");
+        send(&mut host, &[("a", "focus"), ("s", "x"), ("t", "f"), ("q", "2")], "");
+        host.set_text_field("x", "f", f["value"].as_str().unwrap(), f["caret"].as_u64().unwrap() as usize);
+        host.render_dirty(&mut |_, _, _| {});
+        let (mut value, _) = host.text_field("x", "f").unwrap();
+        for (i, st) in e["steps"].as_array().unwrap().iter().enumerate() {
+            let what = st.get("do").or(st.get("type")).unwrap().as_str().unwrap();
+            if let Some(a) = st.get("do").and_then(Value::as_str) {
+                host.text_action("x", a);
+            } else {
+                for ch in unicode_chars(what) {
+                    host.key(
+                        "x",
+                        &Key {
+                            name: KeyName::Char(ch),
+                            mods: Mods::default(),
+                        },
+                    );
+                }
+            }
+            host.render_dirty(&mut |_, _, _| {});
+            let (got, caret) = host.text_field("x", "f").unwrap();
+            let changed = got != value;
+            value = got.clone();
+            let mut bad = Vec::new();
+            if let Some(w) = st.get("value").and_then(Value::as_str)
+                && got != w
+            {
+                bad.push(format!("value {got:?}, want {w:?}"));
+            }
+            if let Some(w) = st.get("caret").and_then(Value::as_u64)
+                && caret != w as usize
+            {
+                bad.push(format!("caret {caret}, want {w}"));
+            }
+            if let Some(w) = st.get("changed").and_then(Value::as_bool)
+                && changed != w
+            {
+                bad.push(format!("changed {changed}, want {w}"));
+            }
+            if !bad.is_empty() {
+                failures.push(format!("{name} (step {}, {what}): {}", i + 1, bad.join(", ")));
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} failed:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// Text as the keys that type it: a grapheme cluster each.
+fn unicode_chars(s: &str) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    s.graphemes(true).map(str::to_string).collect()
+}
