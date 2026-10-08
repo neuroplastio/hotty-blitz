@@ -30,6 +30,7 @@ changes upstream is an open question.
 | `0019-blitz-dom-*` | Backspace edits a text input on macOS too (below) |
 | `0020-blitz-dom-blitz-paint-*` | an embedder can hide the caret, to blink it (below) |
 | `0021-blitz-dom-*` | a password input shows a mask and edits its value (below) |
+| `0022-blitz-dom-*` | an embedder can edit a text input: its value, its selection, its rows (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -91,6 +92,17 @@ shows it again, which is how a program makes a reveal toggle. hotty-blitz
 has no clipboard, and its Ctrl and Cmd keys are the program's anyway.
 blitz-dom's `text::tests` and hotty-blitz's
 `a_password_field_shows_bullets_and_reports_its_value` check it.
+
+## Text field keys
+
+A text field's keys are its program's keymap (HOTTY SPEC §10.2), so
+hotty-blitz does the editing actions itself rather than send keys Blitz's
+editor would read its own way. 0022 gives it what it needs on
+`BaseDocument`: `text_input_selection` reads a text input's value and
+selection, `set_text_input` sets both (a password field's value too, its
+mask following) and redraws, `move_text_input_rows` moves the caret by
+laid-out rows from Parley's selection, and `text_input_rows_shown` counts
+the rows the field shows, for a page.
 
 ## Scrolling
 

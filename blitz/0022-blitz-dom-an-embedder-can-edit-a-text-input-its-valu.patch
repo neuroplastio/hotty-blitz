@@ -1,0 +1,175 @@
+From 40fc7c2c2e76bbeb45690e87701de0a4b16aad86 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Thu, 8 Oct 2026 23:19:17 +0200
+Subject: [PATCH] blitz-dom: an embedder can edit a text input: its value, its
+ selection, its rows
+
+An embedder that has its own keymap for text fields (HOTTY's data-keys)
+edits them itself: it reads a field's value and selection, sets them
+(a password field's value, not its mask), moves the caret by rows as
+the field lays them out, keeping the horizontal position, and asks how
+many rows the field shows, for a page.
+---
+ packages/blitz-dom/src/document.rs  | 56 +++++++++++++++++++++
+ packages/blitz-dom/src/node/text.rs | 78 +++++++++++++++++++++++++++++
+ 2 files changed, 134 insertions(+)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 65a313d8..74a7a7e7 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -2629,6 +2629,62 @@ impl BaseDocument {
+         }
+     }
+ 
++    /// A text input's value and its selection, `(value, anchor, focus)`,
++    /// byte offsets into the value; `None` when `node_id` is not one.
++    pub fn text_input_selection(&self, node_id: NodeId) -> Option<(String, usize, usize)> {
++        let input = self.get_node(node_id)?.element_data()?.text_input_data()?;
++        let (anchor, focus) = input.value_selection();
++        Some((input.value(), anchor, focus))
++    }
++
++    /// Sets a text input's value and its selection, byte offsets into the
++    /// value, for an embedder that edits text fields itself, and keeps its
++    /// caret in view. The embedder reports the edit.
++    pub fn set_text_input(&mut self, node_id: NodeId, value: &str, anchor: usize, focus: usize) {
++        let Some(input) = self
++            .nodes
++            .get_mut(node_id)
++            .and_then(|n| n.element_data_mut())
++            .and_then(|el| el.text_input_data_mut())
++        else {
++            return;
++        };
++        let mut font_ctx = self.font_ctx.lock().unwrap();
++        input.set_value_selection(&mut font_ctx, &mut self.layout_ctx, value, anchor, focus);
++        drop(font_ctx);
++        self.clamp_text_input_scroll(node_id);
++        self.shell_provider.request_redraw();
++    }
++
++    /// Moves a text input's caret `delta` rows as it lays them out
++    /// (`TextInputData::move_rows`), and keeps it in view.
++    pub fn move_text_input_rows(&mut self, node_id: NodeId, delta: isize) {
++        let Some(input) = self
++            .nodes
++            .get_mut(node_id)
++            .and_then(|n| n.element_data_mut())
++            .and_then(|el| el.text_input_data_mut())
++        else {
++            return;
++        };
++        let mut font_ctx = self.font_ctx.lock().unwrap();
++        input.move_rows(&mut font_ctx, &mut self.layout_ctx, delta);
++        drop(font_ctx);
++        self.clamp_text_input_scroll(node_id);
++        self.shell_provider.request_redraw();
++    }
++
++    /// How many rows of text a text input shows, at least one.
++    pub fn text_input_rows_shown(&self, node_id: NodeId) -> usize {
++        let Some(node) = self.get_node(node_id) else {
++            return 1;
++        };
++        let height = node.final_layout().content_box_height();
++        node.element_data()
++            .and_then(|el| el.text_input_data())
++            .map_or(1, |input| input.rows_shown(height))
++    }
++
+     /// Recompute the scroll offset of the text input at `node_id` (if any) so that its caret
+     /// remains visible within the input's content box.
+     pub(crate) fn clamp_text_input_scroll(&mut self, node_id: NodeId) {
+diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
+index bf4dc36e..17886146 100644
+--- a/packages/blitz-dom/src/node/text.rs
++++ b/packages/blitz-dom/src/node/text.rs
+@@ -214,6 +214,84 @@ impl TextInputData {
+         }
+     }
+ 
++    /// The field's selection as `(anchor, focus)`, byte offsets into its
++    /// value: a password field's value, not its mask.
++    pub fn value_selection(&self) -> (usize, usize) {
++        let shown = self.editor.raw_text();
++        let selection = self.editor.raw_selection();
++        let (anchor, focus) = (selection.anchor().index(), selection.focus().index());
++        match &self.password {
++            Some(value) => (
++                byte_at(value, char_len(&shown[..anchor])),
++                byte_at(value, char_len(&shown[..focus])),
++            ),
++            None => (anchor, focus),
++        }
++    }
++
++    /// Sets the field's value and its selection, byte offsets into the
++    /// value, as an embedder that edits the field itself does.
++    pub(crate) fn set_value_selection(
++        &mut self,
++        font_ctx: &mut FontContext,
++        layout_ctx: &mut LayoutContext<TextBrush>,
++        value: &str,
++        anchor: usize,
++        focus: usize,
++    ) {
++        self.set_text(font_ctx, layout_ctx, value);
++        let (anchor, focus) = match &self.password {
++            Some(value) => {
++                let shown = self.editor.raw_text();
++                let at = |b: usize| byte_at(shown, char_len(&value[..b.min(value.len())]));
++                (at(anchor), at(focus))
++            }
++            None => (anchor, focus),
++        };
++        self.editor
++            .driver(font_ctx, layout_ctx)
++            .select_byte_range(anchor, focus);
++    }
++
++    /// Moves the caret `delta` rows as the field lays them out, keeping the
++    /// horizontal position a run of these moves began at; past the first
++    /// row to the start, past the last to the end. A selection collapses
++    /// first, to its start going up and to its end going down.
++    pub(crate) fn move_rows(
++        &mut self,
++        font_ctx: &mut FontContext,
++        layout_ctx: &mut LayoutContext<TextBrush>,
++        delta: isize,
++    ) {
++        let mut driver = self.editor.driver(font_ctx, layout_ctx);
++        driver.refresh_layout();
++        let selection = *driver.editor.raw_selection();
++        if !selection.is_collapsed() {
++            let range = selection.text_range();
++            driver.move_to_byte(if delta < 0 { range.start } else { range.end });
++        }
++        let selection = *driver.editor.raw_selection();
++        let moved = selection.move_lines(driver.layout(), delta, false);
++        driver.set_selection(moved);
++    }
++
++    /// How many rows of text the field's content box, `height` CSS pixels
++    /// tall, shows: at least one.
++    pub fn rows_shown(&self, height: f32) -> usize {
++        let Some(layout) = self.editor.try_layout() else {
++            return 1;
++        };
++        let row = layout
++            .lines()
++            .next()
++            .map(|l| l.metrics().line_height / layout.scale())
++            .unwrap_or(0.0);
++        if row <= 0.0 {
++            return 1;
++        }
++        ((height / row).floor() as usize).max(1)
++    }
++
+     /// Recompute [`Self::scroll_offset`] so that the caret stays visible within the input's
+     /// content box.
+     ///
+-- 
+2.56.0
+
