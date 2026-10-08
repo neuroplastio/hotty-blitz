@@ -745,7 +745,12 @@ impl Surface {
         let l = self.doc.root_element().final_layout();
         let content = l.border.top + l.scrollable_overflow_rect.bottom;
         let bottom = l.location.y + l.size.height.max(content) + l.margin.bottom;
-        let px = (bottom * m.scale).ceil() as u32;
+        // Layout rounds to whole CSS pixels, so a bottom can be up to half a
+        // pixel past where the content ends. At a scale where the rows are a
+        // fraction of a pixel (1.6, or 2 with an odd cell height), a root as
+        // tall as the viewport (`min-height: 100vh`) would otherwise count
+        // one row more than it is placed at.
+        let px = ((bottom - 0.5).max(0.0) * m.scale).ceil() as u32;
         (px.div_ceil(m.cell_h)).clamp(1, 1000) as u16
     }
 

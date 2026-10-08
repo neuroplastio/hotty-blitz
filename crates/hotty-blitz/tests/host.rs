@@ -2864,6 +2864,55 @@ fn fit_starts_from_the_placement_rows_and_needs_f_1() {
     assert_eq!(fits(&mut h), vec![]);
 }
 
+/// A root as tall as the viewport (`min-height: 100vh`) fits the rows it is
+/// placed at, at a scale where those rows are a fraction of a CSS pixel:
+/// layout rounds to whole pixels, which is not a row more. Content a pixel
+/// past a row still needs the next one.
+#[test]
+fn fit_takes_a_root_the_viewport_sizes_at_a_fractional_scale_as_placed() {
+    for (scale, cell_h, rows) in [(1.6, 29, 7), (1.6, 26, 3), (1.25, 21, 13), (2.0, 17, 3)] {
+        let mut h = Host::new(Config {
+            metrics: Metrics {
+                cell_w: 10,
+                cell_h,
+                scale,
+            },
+            ..Config::default()
+        });
+        let at = format!("scale {scale}, cells {cell_h} px, {rows} rows");
+        h.handle(&cmd(
+            &[("a", "doc"), ("s", "x"), ("q", "2")],
+            "<style>html, body { margin: 0 } body { min-height: 100vh }</style>\
+             <div id=d style='height: calc(var(--n, 1) * var(--hotty-cell-h))'></div>",
+        ));
+        let r = rows.to_string();
+        h.handle(&cmd(
+            &[
+                ("a", "place"),
+                ("s", "x"),
+                ("c", "20"),
+                ("r", &r),
+                ("f", "1"),
+                ("q", "2"),
+            ],
+            "",
+        ));
+        assert_eq!(fits(&mut h), vec![], "{at}");
+        h.handle(&cmd(
+            &[
+                ("a", "delta"),
+                ("s", "x"),
+                ("op", "attr"),
+                ("t", "d"),
+                ("k", "style"),
+                ("q", "2"),
+            ],
+            &format!("height: calc({rows} * var(--hotty-cell-h) + 1px)"),
+        ));
+        assert_eq!(fits(&mut h), vec![("x".to_string(), rows as u64 + 1)], "{at}");
+    }
+}
+
 #[test]
 fn a_detached_or_hidden_surface_hears_no_fit() {
     let mut h = host();
