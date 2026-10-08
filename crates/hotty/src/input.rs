@@ -9,7 +9,9 @@
 //!
 //! Keys go to a surface only while it holds the keyboard. Keys the focused
 //! element does not use are forwarded as the **original bytes**, which are
-//! already in the encoding the program asked the terminal for.
+//! already in the encoding the program asked the terminal for. A key's
+//! release, which the terminal reports when the program asked the kitty
+//! keyboard protocol for event types, goes where its press went.
 
 use crate::diacritics::DIACRITICS;
 use hotty_blitz::{Effect, Host, Key, KeyName, Mods, PointerKind};
@@ -36,6 +38,9 @@ pub struct InputRouter {
     /// A press with Alt held began the gesture under way: until its
     /// release, it is the program's (SPEC §9.2).
     program_press: bool,
+    /// Keys whose press a surface took, unshifted: their releases are the
+    /// surface's too, and the program never hears them.
+    held: Vec<KeyName>,
     enabled: bool,
     partial: Vec<u8>,
 }
@@ -55,6 +60,7 @@ impl InputRouter {
             pressed: None,
             pressed_at: (0.0, 0.0),
             program_press: false,
+            held: Vec::new(),
             enabled: false,
             partial: Vec::new(),
         }
@@ -95,6 +101,7 @@ impl InputRouter {
         self.ids.clear();
         self.hovered = None;
         self.pressed = None;
+        self.held.clear();
         self.enabled = false;
     }
 
@@ -149,14 +156,35 @@ impl InputRouter {
         }
     }
 
-    fn key(&mut self, raw: &[u8], key: Option<Key>, host: &mut Host, to_program: &mut Vec<u8>) {
-        let focused = host.focused_surface().map(str::to_string);
-        if let (Some(surface), Some(key)) = (focused, key) {
+    fn key(&mut self, raw: &[u8], key: Option<KeyIn>, host: &mut Host, to_program: &mut Vec<u8>) {
+        let Some(KeyIn { key, base, release }) = key else {
+            to_program.extend_from_slice(raw);
+            return;
+        };
+        let held = self.held.iter().position(|k| *k == base);
+        if release {
+            // Wherever the keyboard is now: a surface may have taken it, or
+            // given it back, between the press and the release.
+            match held {
+                Some(i) => {
+                    self.held.swap_remove(i);
+                }
+                None => to_program.extend_from_slice(raw),
+            }
+            return;
+        }
+        if let Some(surface) = host.focused_surface().map(str::to_string) {
             let outcome = host.key(&surface, &key);
             push_effects(outcome.effects, to_program);
             if outcome.consumed {
+                if held.is_none() {
+                    self.held.push(base);
+                }
                 return;
             }
+        }
+        if let Some(i) = held {
+            self.held.swap_remove(i);
         }
         to_program.extend_from_slice(raw);
     }
@@ -406,15 +434,42 @@ enum Parsed {
     },
     Key {
         len: usize,
-        key: Option<Key>,
+        key: Option<KeyIn>,
     },
+}
+
+/// A key as the terminal reported it.
+struct KeyIn {
+    key: Key,
+    /// The key itself, unshifted: what pairs a release with its press.
+    base: KeyName,
+    /// A release, which the kitty keyboard protocol reports when the program
+    /// asked for event types. A repeat is a press.
+    release: bool,
+}
+
+impl KeyIn {
+    fn press(name: KeyName, mods: Mods) -> KeyIn {
+        KeyIn {
+            base: unshifted(&name),
+            key: Key { name, mods },
+            release: false,
+        }
+    }
+}
+
+fn unshifted(name: &KeyName) -> KeyName {
+    match name {
+        KeyName::Char(s) => KeyName::Char(s.to_lowercase()),
+        n => n.clone(),
+    }
 }
 
 /// Parses one input item: an SGR mouse report, a key, or a byte.
 fn parse_one(d: &[u8]) -> Parsed {
     let key = |len, name, mods| Parsed::Key {
         len,
-        key: Some(Key { name, mods }),
+        key: Some(KeyIn::press(name, mods)),
     };
     let none = Mods::default();
     let shift = Mods {
@@ -548,27 +603,42 @@ fn parse_csi(d: &[u8]) -> Parsed {
         }
         return Parsed::Key { len, key: None };
     }
-    let nums: Vec<u32> = params
+    // Each parameter with its ':' fields, where the kitty keyboard protocol
+    // puts the shifted key (code:shifted), the event type (mods:event) and
+    // the text (codepoint:codepoint…). An empty field reads as 0.
+    let fields: Vec<Vec<u32>> = params
         .split(|&c| c == b';')
         .map(|p| {
-            std::str::from_utf8(p.split(|&c| c == b':').next().unwrap_or(p))
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)
+            p.split(|&c| c == b':')
+                .map(|f| {
+                    std::str::from_utf8(f)
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0)
+                })
+                .collect()
         })
         .collect();
-    let mods = match nums.get(1) {
-        Some(&m) if m > 1 => {
-            let m = m - 1;
-            Mods {
-                shift: m & 1 != 0,
-                alt: m & 2 != 0,
-                ctrl: m & 4 != 0,
-                meta: m & 8 != 0,
-            }
-        }
-        _ => Mods::default(),
+    let field = |i: usize, j: usize| {
+        fields
+            .get(i)
+            .and_then(|p| p.get(j))
+            .copied()
+            .unwrap_or(0)
     };
+    // 1 + a mask: Shift 1, Alt 2, Ctrl 4, Super 8, Hyper 16, Meta 32,
+    // Caps Lock 64, Num Lock 128.
+    let bits = field(1, 0).saturating_sub(1);
+    let mods = Mods {
+        shift: bits & 1 != 0,
+        alt: bits & 2 != 0,
+        ctrl: bits & 4 != 0,
+        meta: bits & 8 != 0,
+    };
+    // 1 a press, 2 a repeat, 3 a release.
+    let release = field(1, 1) == 3;
+    let code = field(0, 0);
+    let mut base = None;
     let name = match fin {
         b'A' => KeyName::Up,
         b'B' => KeyName::Down,
@@ -579,46 +649,163 @@ fn parse_csi(d: &[u8]) -> Parsed {
         b'Z' => {
             return Parsed::Key {
                 len,
-                key: Some(Key {
-                    name: KeyName::Tab,
-                    mods: Mods {
+                key: Some(KeyIn::press(
+                    KeyName::Tab,
+                    Mods {
                         shift: true,
                         ..Mods::default()
                     },
-                }),
+                )),
             };
         }
-        b'~' => match nums.first() {
-            Some(1) | Some(7) => KeyName::Home,
-            Some(4) | Some(8) => KeyName::End,
-            Some(3) => KeyName::Delete,
-            Some(5) => KeyName::PageUp,
-            Some(6) => KeyName::PageDown,
+        b'~' => match code {
+            1 | 7 => KeyName::Home,
+            4 | 8 => KeyName::End,
+            3 => KeyName::Delete,
+            5 => KeyName::PageUp,
+            6 => KeyName::PageDown,
             _ => KeyName::Other,
         },
-        b'u' => {
-            // kitty keyboard protocol: CSI code ; mods u
-            match nums.first().copied().unwrap_or(0) {
-                9 => KeyName::Tab,
-                13 => KeyName::Enter,
-                27 => KeyName::Escape,
-                127 => KeyName::Backspace,
-                32 => KeyName::Space,
-                c if c >= 32 => match char::from_u32(c) {
-                    Some(ch) => KeyName::Char(if mods.shift {
-                        ch.to_uppercase().collect()
-                    } else {
-                        ch.to_string()
-                    }),
-                    None => KeyName::Other,
-                },
-                _ => KeyName::Other,
-            }
-        }
+        // kitty keyboard protocol: CSI code ; mods u
+        b'u' => match code {
+            9 => KeyName::Tab,
+            13 => KeyName::Enter,
+            27 => KeyName::Escape,
+            127 => KeyName::Backspace,
+            32 => KeyName::Space,
+            // kitty's functional keys are in the private use area. The
+            // keypad's are the keys they stand for; the rest (modifiers,
+            // locks, media, F13 and up) type nothing.
+            57399..=57408 => KeyName::Char(char::from(b'0' + (code - 57399) as u8).to_string()),
+            57409 => KeyName::Char(".".into()),
+            57410 => KeyName::Char("/".into()),
+            57411 => KeyName::Char("*".into()),
+            57412 => KeyName::Char("-".into()),
+            57413 => KeyName::Char("+".into()),
+            57414 => KeyName::Enter,
+            57415 => KeyName::Char("=".into()),
+            57417 => KeyName::Left,
+            57418 => KeyName::Right,
+            57419 => KeyName::Up,
+            57420 => KeyName::Down,
+            57421 => KeyName::PageUp,
+            57422 => KeyName::PageDown,
+            57423 => KeyName::Home,
+            57424 => KeyName::End,
+            57426 => KeyName::Delete,
+            0xe000..=0xf8ff => KeyName::Other,
+            c if c > 32 => match char::from_u32(c) {
+                Some(ch) => {
+                    base = Some(KeyName::Char(ch.to_string()));
+                    KeyName::Char(kitty_text(&fields, ch, mods.shift, bits & 64 != 0))
+                }
+                None => KeyName::Other,
+            },
+            _ => KeyName::Other,
+        },
         _ => KeyName::Other,
     };
     Parsed::Key {
         len,
-        key: Some(Key { name, mods }),
+        key: Some(KeyIn {
+            base: base.unwrap_or_else(|| unshifted(&name)),
+            key: Key { name, mods },
+            release,
+        }),
+    }
+}
+
+/// The text a kitty key types: the text it reports (flag 16), or else its
+/// shifted key (flag 4) while Shift is held, or else the key itself, in
+/// upper case with Shift or Caps Lock.
+fn kitty_text(fields: &[Vec<u32>], key: char, shift: bool, caps: bool) -> String {
+    let text: String = fields
+        .get(2)
+        .into_iter()
+        .flatten()
+        .filter(|&&c| c != 0)
+        .filter_map(|&c| char::from_u32(c))
+        .collect();
+    if !text.is_empty() {
+        return text;
+    }
+    let shifted = fields[0].get(1).copied().filter(|&c| c != 0);
+    match shifted.and_then(char::from_u32) {
+        Some(s) if shift => s.to_string(),
+        _ if shift || caps => key.to_uppercase().collect(),
+        _ => key.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The key in `d`, which must be one whole key: its name, unshifted
+    /// name, Shift, and whether it is a release.
+    fn key(d: &str) -> (KeyName, KeyName, bool, bool) {
+        match parse_one(d.as_bytes()) {
+            Parsed::Key { len, key: Some(k) } if len == d.len() => {
+                (k.key.name, k.base, k.key.mods.shift, k.release)
+            }
+            _ => panic!("{d:?} is not one key"),
+        }
+    }
+
+    fn ch(s: &str) -> KeyName {
+        KeyName::Char(s.into())
+    }
+
+    #[test]
+    fn kitty_event_types() {
+        assert_eq!(key("\x1b[97u"), (ch("a"), ch("a"), false, false));
+        assert_eq!(key("\x1b[97;1:2u"), (ch("a"), ch("a"), false, false));
+        assert_eq!(key("\x1b[97;1:3u"), (ch("a"), ch("a"), false, true));
+        use KeyName::*;
+        assert_eq!(key("\x1b[127;1:3u"), (Backspace, Backspace, false, true));
+        assert_eq!(key("\x1b[3;1:3~"), (Delete, Delete, false, true));
+        assert_eq!(key("\x1b[1;1:3D"), (Left, Left, false, true));
+        assert_eq!(key("\x1b[1;2:3H"), (Home, Home, true, true));
+    }
+
+    #[test]
+    fn kitty_shifted_keys_and_text() {
+        // Alternate keys (flag 4): the shifted key is the second field.
+        assert_eq!(key("\x1b[97:65;2u"), (ch("A"), ch("a"), true, false));
+        assert_eq!(key("\x1b[50:64;2u"), (ch("@"), ch("2"), true, false));
+        // The release after Shift came up still pairs with the press.
+        assert_eq!(key("\x1b[50;1:3u").1, ch("2"));
+        // Without it, Shift upper-cases; so does Caps Lock.
+        assert_eq!(key("\x1b[97;2u").0, ch("A"));
+        assert_eq!(key("\x1b[97;65u"), (ch("A"), ch("a"), false, false));
+        // Associated text (flag 16) wins.
+        assert_eq!(key("\x1b[97;2;65u").0, ch("A"));
+        assert_eq!(key("\x1b[50:64;2;64u").0, ch("@"));
+    }
+
+    #[test]
+    fn kitty_functional_keys_type_nothing_but_the_keypad() {
+        use KeyName::*;
+        // Left Shift, Right Ctrl, Caps Lock, F13, Media Play.
+        for code in [57441, 57448, 57358, 57376, 57428] {
+            assert_eq!(key(&format!("\x1b[{code}u")).0, Other, "{code}");
+            assert_eq!(key(&format!("\x1b[{code};1:3u")).0, Other, "{code}");
+        }
+        assert_eq!(key("\x1b[57399u").0, ch("0"));
+        assert_eq!(key("\x1b[57408u").0, ch("9"));
+        assert_eq!(key("\x1b[57409u").0, ch("."));
+        assert_eq!(key("\x1b[57414u").0, Enter);
+        assert_eq!(key("\x1b[57417u").0, Left);
+        assert_eq!(key("\x1b[57426u").0, Delete);
+    }
+
+    #[test]
+    fn legacy_keys_are_presses() {
+        use KeyName::*;
+        assert_eq!(key("\x7f"), (Backspace, Backspace, false, false));
+        assert_eq!(key("A"), (ch("A"), ch("a"), true, false));
+        assert_eq!(key("\x1b[D"), (Left, Left, false, false));
+        assert_eq!(key("\x1b[1;5D").0, Left);
+        assert_eq!(key("\x1b[Z"), (Tab, Tab, true, false));
     }
 }

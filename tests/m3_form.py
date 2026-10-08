@@ -3,8 +3,9 @@
 
 It runs `hotty run -- python3 examples/form.py` on a pty whose size says
 cells are 10x20 px, answers the polyfill's probe, then clicks and types the
-way a terminal would report them (SGR-pixel mouse, plain keys), and reads the
-events the program logged. Nothing here renders; it tests who gets what.
+way a terminal would report them (SGR-pixel mouse; plain keys, and the kitty
+keyboard protocol with event types), and reads the events the program
+logged. Nothing here renders; it tests who gets what.
 
     python3 tests/m3_form.py [path/to/hotty]
 
@@ -34,6 +35,19 @@ def hotty_dir():
         if os.path.isfile(os.path.join(c, "SPEC.md")):
             return os.path.abspath(c)
     sys.exit("no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository")
+
+
+def kitty(code, shifted=None, mods=1):
+    key = f"{code}:{shifted}" if shifted else f"{code}"
+    return f"\x1b[{key};{mods}u".encode(), f"\x1b[{key};{mods}:3u".encode()
+
+
+SHIFT = (b"\x1b[57441;2u", b"\x1b[57441;1:3u")
+KITTY_EMAIL = b"".join(
+    [*kitty(97)]
+    + [SHIFT[0], kitty(50, 64, 2)[0], kitty(50, 64, 2)[1], SHIFT[1]]
+    + [*kitty(98), *kitty(46), *kitty(99)]
+)
 
 
 def main():
@@ -109,7 +123,11 @@ def main():
         click(166, 146, button)
         click(500, 590, button)
     send(b"\t")  # to email: name reports `change`
-    send(b"a@b.c")
+    # The email as a terminal types it under kitty flags 1|2|4|8, as plx
+    # asks: every key a CSI u press and release, Shift a key of its own, '@'
+    # Shift+2 with its shifted key. Shift types nothing and reaches the
+    # program; a typed key's release goes where its press went.
+    send(KITTY_EMAIL)
     click(166, 146)  # the checkbox (row 3): email reports `change`, notify `change`
     click(186, 226)  # Save: `click` and `submit`
     wait_for(lambda ev: any(e.get("e") == "submit" for e in ev), "submit")
@@ -152,6 +170,9 @@ def main():
     expect(sub.get("name") == "hello" and sub.get("email") == "a@b.c", f"submit fields, got {sub}")
     expect(sub.get("theme") == "dark" and sub.get("notify") == "yes", f"submit fields, got {sub}")
     expect("hello" not in keys and "a@b.c" not in keys, f"typed text leaked to the program: {keys!r}")
+    kitty_keys = [k for k in keys.split("\x1b") if k.endswith("u")]
+    want = [s.decode()[1:] for s in SHIFT]
+    expect(kitty_keys == want, f"the program heard {kitty_keys} of the kitty keys, want Shift only: {want}")
     expect("\x1b" in keys and "q" in keys, f"Esc and q must reach the program: {keys!r}")
     expect(any(e["kind"] == "exit" for e in ev), "the program exited on q")
     for f in (log, log + ".shim"):
