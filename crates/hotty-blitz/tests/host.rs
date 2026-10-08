@@ -3113,3 +3113,99 @@ fn a_text_fields_caret_blinks_then_stays_on() {
     render(&mut h);
     assert_eq!(h.next_frame(), None, "no keyboard, no blink");
 }
+
+/// A password field shows a bullet for each character of its value, and
+/// the program hears the value: as it is typed, edited, changed and
+/// submitted. A new
+/// `type` shows it. (Its value is not copied or cut, as in a browser: here
+/// Ctrl and Cmd keys are the program's anyway.)
+#[test]
+fn a_password_field_shows_bullets_and_reports_its_value() {
+    let field = |ty: &str, value: &str| {
+        let mut h = host();
+        doc_at(
+            &mut h,
+            "f",
+            &[],
+            &format!(
+                "<style>body{{margin:0}}</style><form id=login><input id=pw name=pw data-on=input type={ty} value='{value}'></form>"
+            ),
+            "2",
+        );
+        h
+    };
+    let frame = |h: &Host| h.frame("f").unwrap().rgba.clone();
+    let mut h = field("password", "abc");
+    assert_eq!(frame(&h), frame(&field("text", "\u{2022}\u{2022}\u{2022}")));
+    assert_ne!(frame(&h), frame(&field("text", "abc")));
+
+    let values = |fx: &[Effect]| -> Vec<String> {
+        replies(fx)
+            .iter()
+            .filter(|c| c.get("e") == Some("input"))
+            .map(|c| {
+                let v: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
+                v["value"].as_str().unwrap().to_string()
+            })
+            .collect()
+    };
+    let press = |h: &mut Host, name: KeyName, mods: Mods| {
+        let out = h.key("f", &Key { name, mods });
+        assert!(out.consumed);
+        out.effects
+    };
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "pw")], ""));
+    press(&mut h, KeyName::End, Mods::default());
+    let mut heard = Vec::new();
+    for c in ["x", "y"] {
+        heard.extend(values(&press(
+            &mut h,
+            KeyName::Char(c.into()),
+            Mods::default(),
+        )));
+    }
+    heard.extend(values(&press(&mut h, KeyName::Backspace, Mods::default())));
+    let shift = Mods {
+        shift: true,
+        ..Mods::default()
+    };
+    press(&mut h, KeyName::Left, shift);
+    press(&mut h, KeyName::Left, shift);
+    heard.extend(values(&press(
+        &mut h,
+        KeyName::Char("Z".into()),
+        Mods::default(),
+    )));
+    assert_eq!(heard, ["abcx", "abcxy", "abcx", "abZ"]);
+    render(&mut h);
+
+    let ev = replies(&press(&mut h, KeyName::Enter, Mods::default()));
+    let payload = |e: &str| -> serde_json::Value {
+        let c = ev.iter().find(|c| c.get("e") == Some(e)).expect(e);
+        serde_json::from_slice(&c.payload).unwrap()
+    };
+    assert_eq!(payload("change")["value"], "abZ");
+    assert_eq!(payload("submit")["pw"], "abZ");
+    h.blur("f");
+    render(&mut h);
+
+    // A reveal toggle: the program makes it a text field, and back.
+    let set_type = |h: &mut Host, ty: &str| {
+        let r = replies(&h.handle(&cmd(
+            &[
+                ("a", "delta"),
+                ("s", "f"),
+                ("op", "attr"),
+                ("t", "pw"),
+                ("k", "type"),
+            ],
+            ty,
+        )));
+        assert_eq!(r[0].get("a"), Some("ok"));
+        render(h);
+    };
+    set_type(&mut h, "text");
+    assert_eq!(frame(&h), frame(&field("text", "abZ")));
+    set_type(&mut h, "password");
+    assert_eq!(frame(&h), frame(&field("text", "\u{2022}\u{2022}\u{2022}")));
+}

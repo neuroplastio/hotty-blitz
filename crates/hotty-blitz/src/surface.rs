@@ -2168,8 +2168,7 @@ impl Surface {
 
     fn text_value(&self, id: NodeId) -> Option<String> {
         let el = self.doc.get_node(id)?.element_data()?;
-        el.text_input_data()
-            .map(|t| t.editor.raw_text().to_string())
+        el.text_input_data().map(|t| t.value())
     }
 
     fn id_of(&self, id: NodeId) -> Option<String> {

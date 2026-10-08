@@ -29,6 +29,7 @@ changes upstream is an open question.
 | `0018-blitz-dom-blitz-paint-*` | selected text takes the colours of its `::selection` (below) |
 | `0019-blitz-dom-*` | Backspace edits a text input on macOS too (below) |
 | `0020-blitz-dom-blitz-paint-*` | an embedder can hide the caret, to blink it (below) |
+| `0021-blitz-dom-*` | a password input shows a mask and edits its value (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -71,6 +72,25 @@ Blitz paints a focused text input's caret solid. A browser blinks it, and
 so does hotty-blitz (surface.rs): 0020 adds `BaseDocument::set_caret_shown`,
 which the painter honours, and the surface turns it off and on on the
 frame clock that plays animated images, repainting only the input.
+
+## Password inputs
+
+Upstream edits an `<input type=password>` as a text field, so it showed
+the password. The fork keeps a password field's value beside the editor
+(`TextInputData::password`), and the editor holds a bullet, U+2022 as in
+Chrome, for each character, so the caret, selection and hit testing work
+on what is shown. Each edit of the mask is made to the value too: every
+edit replaces the selection, or deletes a run beside a collapsed one, with
+what it inserts before the caret, so the selection before, the lengths
+and the caret after give the range and the text. The input event, form
+submission and `TextInputData::value` carry the value, and the `value`
+attribute sets it. As in a browser, the value is not copied or cut (a
+paste still types), the field composes nothing (an IME's commit still
+types), and changing `type` to or from `password` masks the value or
+shows it again, which is how a program makes a reveal toggle. hotty-blitz
+has no clipboard, and its Ctrl and Cmd keys are the program's anyway.
+blitz-dom's `text::tests` and hotty-blitz's
+`a_password_field_shows_bullets_and_reports_its_value` check it.
 
 ## Scrolling
 
