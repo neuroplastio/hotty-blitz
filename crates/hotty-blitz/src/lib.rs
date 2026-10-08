@@ -839,13 +839,26 @@ impl Host {
                     return Err(("EDETACHED", format!("surface {name} is detached")));
                 }
                 if cmd.action() == "focus" {
-                    s.focus(cmd.get("t")).map_err(|e| ("ENOTARGET", e))?;
+                    for e in s.focus(cmd.get("t")).map_err(|e| ("ENOTARGET", e))? {
+                        effects.push(Effect::Reply(e.encode(&name)));
+                    }
+                    s.dirty = true;
+                    // There is one keyboard: a surface that had it gives it
+                    // back, as for a click on another surface (SPEC §10.1).
+                    for (other_name, other) in self.surfaces.iter_mut() {
+                        if *other_name != name && other.has_focus() {
+                            for e in other.blur() {
+                                effects.push(Effect::Reply(e.encode(other_name)));
+                            }
+                            other.dirty = true;
+                        }
+                    }
                 } else {
                     for e in s.blur() {
                         effects.push(Effect::Reply(e.encode(&name)));
                     }
+                    s.dirty = true;
                 }
-                s.dirty = true;
                 Ok((Vec::new(), None))
             }
             "" => Err(("EINVAL", "missing a=<action>".into())),

@@ -1144,14 +1144,25 @@ impl Surface {
         hyperlink_url(self.doc.get_node(self.hovered_link()?)?, &self.base)
     }
 
-    pub fn focus(&mut self, target: Option<&str>) -> Result<(), String> {
+    pub fn focus(&mut self, target: Option<&str>) -> Result<Vec<Event>, String> {
         let before = self.doc.get_focussed_node_id();
-        match target {
-            Some(id) => {
-                let node = self
-                    .doc
+        let was = self.focused();
+        let want = match target {
+            Some(id) => Some(
+                self.doc
                     .get_element_by_id(id)
-                    .ok_or_else(|| id.to_string())?;
+                    .ok_or_else(|| id.to_string())?,
+            ),
+            None => None,
+        };
+        let mut events = Vec::new();
+        // Focus that leaves an edited control commits it first (SPEC §9,
+        // `change`); focusing the control again commits nothing.
+        if want.is_some() && want != was {
+            self.finish_change(&mut events);
+        }
+        match want {
+            Some(node) => {
                 self.doc.set_focus_to(node);
             }
             None => {
@@ -1162,13 +1173,15 @@ impl Surface {
         }
         self.keyboard = true;
         self.wake_caret(Instant::now());
-        self.snapshot_focus();
+        if self.focused() != was {
+            self.snapshot_focus();
+        }
         let after = self.doc.get_focussed_node_id();
         self.touch_chains(before, after);
         if let Some(f) = self.focused() {
             self.bring_into_view(f);
         }
-        Ok(())
+        Ok(events)
     }
 
     /// Focus scrolls an element into view (SPEC §5.3), along the axes the
