@@ -1,0 +1,34 @@
+From d1a9ae1fda71d86b31129ae42ea8387212fbc2be Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Thu, 8 Oct 2026 15:46:31 +0200
+Subject: [PATCH] blitz-dom: Backspace edits a text input on macOS too
+
+Upstream compiles the Backspace arm out on macOS and leaves deleting to
+an AppleStandardKeybinding("deleteBackward:") from Cocoa's text system.
+A terminal host has no Cocoa text system and sends no keybindings, so in
+hotty-blitz on macOS, Backspace in a text field did nothing (plexos
+HOTTY-BACKSPACE-01). The arm now applies on every platform. A host that
+sent the keybinding as well would delete twice; hotty-blitz's hosts send
+none.
+---
+ packages/blitz-dom/src/node/text.rs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
+index 288f74aa..86c476ec 100644
+--- a/packages/blitz-dom/src/node/text.rs
++++ b/packages/blitz-dom/src/node/text.rs
+@@ -323,8 +323,8 @@ impl TextInputData {
+                 return Some(GeneratedTextInputEvent::Input);
+             }
+ 
+-            // On macOS this is handled by the apple standard keybindings
+-            #[cfg(not(target_os = "macos"))]
++            // On macOS too: a host without Cocoa's text system (a terminal)
++            // sends no "deleteBackward:" keybinding for Backspace.
+             Key::Backspace => {
+                 if action_mod {
+                     driver.backdelete_word()
+-- 
+2.56.0
+

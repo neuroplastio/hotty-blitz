@@ -27,6 +27,7 @@ changes upstream is an open question.
 | `0016-blitz-dom-*` | stylesheets of the user origin (below) |
 | `0017-blitz-dom-*` | `:focus-visible` matches; a click shows the ring only on a text field (below) |
 | `0018-blitz-dom-blitz-paint-*` | selected text takes the colours of its `::selection` (below) |
+| `0019-blitz-dom-*` | Backspace edits a text input on macOS too (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -51,6 +52,17 @@ that scrolls, a scrolled box reports its rect moved by its own scroll, so
 `area` and focus scroll it wrongly; a press above it lands on the items it
 scrolled out of view; and along an axis the document did not ask for, a
 fragment link, a thumb or a fling still moves it.
+
+## Backspace on macOS
+
+Upstream compiles the text input's Backspace arm out on macOS: there, Cocoa's
+text system turns the key into a `deleteBackward:` standard keybinding
+(`UiEvent::AppleStandardKeybinding`), and that does the deleting. A terminal
+has no Cocoa text system and hotty-blitz sends no keybindings, so on macOS
+Backspace did nothing in a text field (plexos HOTTY-BACKSPACE-01). With 0019
+the arm applies everywhere. It is the only key the text input leaves to
+Cocoa: Delete, the arrows, Home and End take the same path on every
+platform.
 
 ## Scrolling
 
