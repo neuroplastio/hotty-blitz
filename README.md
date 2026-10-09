@@ -97,7 +97,10 @@ moves by rows and pages follow the field's layout. Keys are named by what
 the terminal sends the program (`hotty_wire::keys`, SPEC §10.4), so a
 remapped key is the key it sends: a terminal hands over the bytes its key
 encoding or a binding would write (`hotty_host_key_bytes`), and the keys a
-field does not use go on to the program as they came.
+field does not use go on to the program as they came. Any other focused
+element's `data-keys` gives keys to the program, or, in a document that
+scrolls, scrolls with them (`scroll-down`, `scroll-end`, …), after the keys
+the element uses itself; a field leaves those scroll actions out.
 
 ## Performance
 

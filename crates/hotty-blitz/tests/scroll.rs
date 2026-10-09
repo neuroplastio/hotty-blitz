@@ -382,3 +382,140 @@ fn top(h: &Host) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+fn ch(c: &str) -> KeyName {
+    KeyName::Char(c.into())
+}
+
+/// The events a key made, as (`e`, `t`).
+fn key_events(h: &mut Host, name: KeyName) -> (bool, Vec<(String, String)>) {
+    let out = h.key(
+        "x",
+        &Key {
+            name,
+            mods: Mods::default(),
+        },
+    );
+    let events = replies(&out.effects)
+        .into_iter()
+        .filter(|c| c.get("a") == Some("ev"))
+        .map(|c| {
+            (
+                c.get("e").unwrap_or("").to_string(),
+                c.get("t").unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    (out.consumed, events)
+}
+
+/// Where an element's centre is, in device pixels from the surface's top.
+fn y(h: &Host, id: &str) -> f32 {
+    h.element_centre("x", id).expect("the element").1
+}
+
+#[test]
+fn scroll_actions_scroll_the_nearest_box_then_outward_never_the_terminal() {
+    // #box is 60px high and holds 160px: it moves 100px. The page, 100px
+    // high in 80px, moves 20px.
+    let mut h = host();
+    let page = BOX.replace(
+        "<div id=box>",
+        "<div id=box tabindex=0 data-keys=\"j=scroll-down d=scroll-half-page-down \
+         g=scroll-start G=scroll-end\">",
+    );
+    place(&mut h, Some("1"), &page, "20", "4");
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "box"), ("q", "2")],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(y(&h, "b0"), 30.0);
+    // An arrow's step, then half the port.
+    assert!(key(&mut h, ch("j")));
+    render(&mut h);
+    assert_eq!(y(&h, "b0"), -10.0);
+    assert!(key(&mut h, ch("d")));
+    render(&mut h);
+    assert_eq!(y(&h, "b0"), -40.0);
+    // To the box's end; then, the box at its end, the page's.
+    assert!(key(&mut h, ch("G")));
+    render(&mut h);
+    assert_eq!(y(&h, "b0"), -70.0);
+    assert_eq!(y(&h, "top"), 10.0);
+    assert!(key(&mut h, ch("G")));
+    render(&mut h);
+    assert_eq!(y(&h, "top"), -10.0);
+    // Nothing can move down: the key is used, and the terminal moves not.
+    assert!(key(&mut h, ch("j")));
+    // Up, the box comes first again.
+    assert!(key(&mut h, ch("g")));
+    render(&mut h);
+    assert_eq!(y(&h, "b0"), 10.0);
+    assert_eq!(y(&h, "top"), -10.0);
+    // A key bound to nothing still reaches the program.
+    assert!(!key(&mut h, ch("x")));
+}
+
+#[test]
+fn a_scroll_binding_leaves_the_elements_own_keys_and_its_fields_alone() {
+    let mut h = host();
+    let page = format!(
+        "<div id=box style=\"height:40px;overflow:auto\" \
+         data-keys=\"Space=scroll-page-down j=scroll-down k=program ArrowDown=program\">\
+         <button id=b>b</button><input id=i data-on=input data-keys=\"k=scroll-up \
+         ArrowDown=scroll-down\">{ROWS}</div>"
+    );
+    place(&mut h, Some("1"), &page, "20", "4");
+    let at = y(&h, "a");
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "b"), ("q", "2")],
+        "",
+    ));
+    // Space presses the button; j, which a button does not use, scrolls.
+    assert_eq!(
+        key_events(&mut h, KeyName::Space),
+        (true, vec![("click".to_string(), "b".to_string())])
+    );
+    render(&mut h);
+    assert_eq!(y(&h, "a"), at, "Space scrolled nothing");
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "i"), ("q", "2")],
+        "",
+    ));
+    render(&mut h);
+    let at = y(&h, "a");
+    // In the field, j is typed, and a nearer scroll binding of k or of the
+    // arrow does not hide the farther program.
+    assert_eq!(
+        key_events(&mut h, ch("j")),
+        (true, vec![("input".to_string(), "i".to_string())])
+    );
+    assert_eq!(key_events(&mut h, ch("k")), (false, vec![]));
+    assert_eq!(key_events(&mut h, KeyName::Down), (false, vec![]));
+    render(&mut h);
+    assert_eq!(y(&h, "a"), at, "nothing scrolled");
+}
+
+#[test]
+fn along_an_axis_not_asked_for_a_scroll_binding_goes_on_as_if_unbound() {
+    let mut h = host();
+    let page = format!(
+        "<main id=m tabindex=0 data-keys=\"l=scroll-right j=scroll-down\" \
+         style=\"width:400px\">{ROWS}</main>"
+    );
+    place(&mut h, Some("1"), &page, "20", "4");
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "m"), ("q", "2")],
+        "",
+    ));
+    assert!(!key(&mut h, ch("l")), "the page does not scroll across");
+    assert!(key(&mut h, ch("j")));
+    // A page that asked for nothing: every binding goes on to the program.
+    place(&mut h, None, &page, "20", "4");
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "m"), ("q", "2")],
+        "",
+    ));
+    assert!(!key(&mut h, ch("j")));
+}

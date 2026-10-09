@@ -1707,7 +1707,7 @@ impl Surface {
                 (true, events)
             }
             (KeyName::Escape, _) => (false, Vec::new()),
-            _ if focused.is_some_and(|id| self.gives_program(id, key)) => (false, Vec::new()),
+            _ if focused.is_some_and(|id| self.gives_program(id, key, kind)) => (false, Vec::new()),
             (_, Control::Text | Control::TextArea) => {
                 let id = focused.expect("a text control is focused");
                 match self.field_key(id, key, kind == Control::TextArea) {
@@ -1727,11 +1727,50 @@ impl Surface {
                 let id = focused.expect("a select is focused");
                 match self.select_key(id, key) {
                     Some(events) => (true, events),
-                    None => self.scroll_key(key, focused),
+                    None => self.unused_key(key, focused),
                 }
             }
-            _ => self.scroll_key(key, focused),
+            _ => self.unused_key(key, focused),
         }
+    }
+
+    /// A key the focused element (a text field aside) does not use: a key
+    /// its keymap binds to a scroll action scrolls (SPEC §10.2, scrolling
+    /// keys), and any other goes on as the surface takes keys it does not
+    /// use (§5.3).
+    fn unused_key(&mut self, key: &Key, focused: Option<NodeId>) -> (bool, Vec<Event>) {
+        if let Some(used) = focused.and_then(|id| self.scroll_action_key(id, key)) {
+            return used;
+        }
+        self.scroll_key(key, focused)
+    }
+
+    /// A key the keymap of the focused element `id` binds to a scroll action
+    /// (SPEC §10.2, scrolling keys): it scrolls the nearest box from `id`
+    /// outward that can still move that way, as far as the key a browser
+    /// scrolls with that way would, then outward as a gesture goes, as far
+    /// as `overscroll-behavior` lets it and never past the root. Where
+    /// nothing can move, it is used and does nothing. `None` where it binds
+    /// none, and along an axis the document does not scroll, where the key
+    /// goes on as if the keymap did not bind it.
+    fn scroll_action_key(&mut self, id: NodeId, key: &Key) -> Option<(bool, Vec<Event>)> {
+        let name = key.spec_name()?;
+        let values = self.keymap_values(id);
+        let action = keys::element_keymap(values.iter().map(String::as_str))
+            .scroll(&name)?
+            .to_string();
+        let k = scroll::action_scroll(&action)?;
+        if self.scroll_axes & k.axis.bit() == 0 {
+            return None;
+        }
+        self.resolve();
+        let route = scroll::route(&self.doc, Some(id), self.scroll_axes, k.axis, k.sign);
+        if let Route::Doc(s) = route
+            && scroll::scroll_key(&mut self.doc, s, self.scroll_axes, k)
+        {
+            self.scrolled(s);
+        }
+        Some((true, Vec::new()))
     }
 
     /// The `data-keys` values of `id` and the elements above it, the root's
@@ -1752,15 +1791,22 @@ impl Surface {
         values
     }
 
-    /// Whether the focused element `id` gives `key` to the program: its
-    /// keymap binds it to `program` (SPEC §10.2, keys for the program). The
-    /// key then reaches the program before the element or a scroll uses it.
-    fn gives_program(&self, id: NodeId, key: &Key) -> bool {
+    /// Whether the focused element `id`, of kind `kind`, gives `key` to the
+    /// program: its keymap binds it to `program` (SPEC §10.2, keys for the
+    /// program). The key then reaches the program before the element or a
+    /// scroll uses it. A text field's keymap leaves scroll actions out, so a
+    /// nearer scroll binding there does not hide a farther `program`.
+    fn gives_program(&self, id: NodeId, key: &Key, kind: Control) -> bool {
         let Some(name) = key.spec_name() else {
             return false;
         };
         let values = self.keymap_values(id);
-        keys::element_keymap(values.iter().map(String::as_str)).program(&name)
+        let values = values.iter().map(String::as_str);
+        match kind {
+            Control::Text => keys::resolve(false, values).program(&name),
+            Control::TextArea => keys::resolve(true, values).program(&name),
+            _ => keys::element_keymap(values).program(&name),
+        }
     }
 
     /// A key for the focused select `id` (SPEC §10.2, selects): Up, Down,

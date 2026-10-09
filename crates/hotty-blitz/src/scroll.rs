@@ -31,7 +31,8 @@ pub enum Axis {
 }
 
 impl Axis {
-    fn bit(self) -> u8 {
+    /// The axis's bit in a document's `scroll` (SPEC §5.1).
+    pub fn bit(self) -> u8 {
         match self {
             Axis::X => 2,
             Axis::Y => 1,
@@ -287,6 +288,9 @@ pub struct KeyScroll {
 pub enum KeyStep {
     Line,
     Page,
+    /// Half the scrollport: no key a browser scrolls with, only a scroll
+    /// action (SPEC §10.2).
+    HalfPage,
     End,
 }
 
@@ -317,6 +321,25 @@ pub fn key_scroll(key: &crate::Key) -> Option<KeyScroll> {
     Some(KeyScroll { axis, sign, by })
 }
 
+/// What a scroll action of a keymap does (SPEC §10.2, scrolling keys): as
+/// the key a browser scrolls with that way, or half a page.
+pub fn action_scroll(action: &str) -> Option<KeyScroll> {
+    let (axis, sign, by) = match action {
+        "scroll-up" => (Axis::Y, -1.0, KeyStep::Line),
+        "scroll-down" => (Axis::Y, 1.0, KeyStep::Line),
+        "scroll-left" => (Axis::X, -1.0, KeyStep::Line),
+        "scroll-right" => (Axis::X, 1.0, KeyStep::Line),
+        "scroll-page-up" => (Axis::Y, -1.0, KeyStep::Page),
+        "scroll-page-down" => (Axis::Y, 1.0, KeyStep::Page),
+        "scroll-half-page-up" => (Axis::Y, -1.0, KeyStep::HalfPage),
+        "scroll-half-page-down" => (Axis::Y, 1.0, KeyStep::HalfPage),
+        "scroll-start" => (Axis::Y, -1.0, KeyStep::End),
+        "scroll-end" => (Axis::Y, 1.0, KeyStep::End),
+        _ => return None,
+    };
+    Some(KeyScroll { axis, sign, by })
+}
+
 /// Scrolls `s` as key scroll `k` does.
 pub fn scroll_key(doc: &mut BaseDocument, s: Scroller, axes: u8, k: KeyScroll) -> bool {
     let (w, h) = port(doc, s);
@@ -327,6 +350,7 @@ pub fn scroll_key(doc: &mut BaseDocument, s: Scroller, axes: u8, k: KeyScroll) -
     let by = match k.by {
         KeyStep::Line => LINE_PX,
         KeyStep::Page => (len * PAGE_FRACTION).max(1.0),
+        KeyStep::HalfPage => (len / 2.0).max(1.0),
         // To the end: as far as there is.
         KeyStep::End => f64::MAX / 4.0,
     } * k.sign;
