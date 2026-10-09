@@ -4,7 +4,9 @@
 //! what the terminal would send the program, and [`parse_key`] reads a name
 //! a document writes. A text field's keymap is the default keymap, then the
 //! `data-keys` of each element from the root to the field ([`resolve`]);
-//! [`Keymap::lookup`] says what the field does with a key.
+//! [`Keymap::lookup`] says what the field does with a key. Any other
+//! focused element's keymap ([`element_keymap`]) gives keys to the program
+//! ([`Keymap::program`]) or scrolls with them ([`Keymap::scroll`]).
 
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -32,7 +34,23 @@ pub const ACTIONS: &[&str] = &[
     "newline",
     "submit",
     "program",
+    "scroll-up",
+    "scroll-down",
+    "scroll-left",
+    "scroll-right",
+    "scroll-page-up",
+    "scroll-page-down",
+    "scroll-half-page-up",
+    "scroll-half-page-down",
+    "scroll-start",
+    "scroll-end",
 ];
+
+/// Whether an action is a scroll action, which a text field's keymap leaves
+/// out (SPEC §10.2, scrolling keys).
+pub fn scroll_action(action: &str) -> bool {
+    action.starts_with("scroll-") && ACTIONS.contains(&action)
+}
 
 /// What [`Keymap::lookup`] returns for a character the field types.
 pub const INSERT: &str = "insert";
@@ -484,19 +502,24 @@ pub struct Keymap {
 /// and Tab, Shift+Tab and Escape.
 pub fn parse_keymap(value: &str) -> Keymap {
     let mut m = Keymap::default();
-    for b in value
-        .split([' ', '\t', '\n', '\x0c', '\r'])
-        .filter(|b| !b.is_empty())
-    {
-        if let Some(i) = b.rfind('=') {
-            m.bind(&b[..i], &b[i + 1..]);
-        }
+    for (k, a) in bindings(value) {
+        m.bind(k, a);
     }
     m
 }
 
+/// A `data-keys` value's bindings as written, in order, each split at its
+/// last `=`.
+fn bindings(value: &str) -> impl Iterator<Item = (&str, &str)> {
+    value
+        .split([' ', '\t', '\n', '\x0c', '\r'])
+        .filter_map(|b| b.rfind('=').map(|i| (&b[..i], &b[i + 1..])))
+}
+
 /// A field's keymap: the default keymap, for an input or a multi-line
-/// field, then each `data-keys` value, the root's first.
+/// field, then each `data-keys` value, the root's first. A binding to a
+/// scroll action is left out where it stands, in its own value too: it
+/// neither acts nor overrides an earlier binding of its key (SPEC §10.2).
 pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -> Keymap {
     let mut m = Keymap {
         multiline,
@@ -518,16 +541,17 @@ pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -
         m.bind(k, a);
     }
     for v in values {
-        for (k, a) in parse_keymap(v).bindings {
-            m.bind(&k, &a);
+        for (k, a) in bindings(v).filter(|(_, a)| !scroll_action(a)) {
+            m.bind(k, a);
         }
     }
     m
 }
 
 /// An element's keymap outside a text field: each `data-keys` value, the
-/// root's first, with no default keymap. Only its `program` bindings count
-/// there ([`Keymap::program`]; SPEC §10.2, keys for the program).
+/// root's first, with no default keymap. Only its `program` bindings and its
+/// scroll actions count there ([`Keymap::program`], [`Keymap::scroll`];
+/// SPEC §10.2, keys for the program, scrolling keys).
 pub fn element_keymap<'a>(values: impl IntoIterator<Item = &'a str>) -> Keymap {
     let mut m = Keymap::default();
     for v in values {
@@ -572,22 +596,31 @@ impl Keymap {
             .map(|(_, a)| a.as_str())
     }
 
+    /// The action bound to a key, or, for a key with Shift it does not
+    /// bind, to the key without Shift.
+    fn bound(&self, key: &str) -> Option<&str> {
+        let k = split_key(key)?.canonical();
+        let unshifted = KeyParts {
+            mods: k.mods & !SHIFT,
+            value: k.value.clone(),
+        };
+        self.get(&k.name())
+            .or_else(|| self.get(&unshifted.name()).filter(|_| k.shift()))
+    }
+
     /// Whether the keymap gives a key to the program, before the focused
     /// element or a scroll uses it (SPEC §10.2): it binds the key to
     /// `program`, or, for a key with Shift it does not bind, the key without
     /// Shift.
     pub fn program(&self, key: &str) -> bool {
-        let Some(k) = split_key(key).map(|k| k.canonical()) else {
-            return false;
-        };
-        let unshifted = KeyParts {
-            mods: k.mods & !SHIFT,
-            value: k.value.clone(),
-        };
-        let bound = self
-            .get(&k.name())
-            .or_else(|| self.get(&unshifted.name()).filter(|_| k.shift()));
-        bound == Some("program")
+        self.bound(key) == Some("program")
+    }
+
+    /// The scroll action the keymap binds a key to, with the same fallback
+    /// without Shift, or `None` (SPEC §10.2, scrolling keys). A host asks it
+    /// of an element's keymap for a key the element does not use.
+    pub fn scroll(&self, key: &str) -> Option<&str> {
+        self.bound(key).filter(|a| scroll_action(a))
     }
 
     /// What a field with this keymap does with a key: an action, [`INSERT`]

@@ -228,3 +228,28 @@ fn an_elements_keymap_gives_keys_to_the_program() {
     assert!(!m.program("Tab"));
     assert!(!m.program("Enter"));
 }
+
+#[test]
+fn an_elements_keymap_scrolls_and_a_fields_leaves_scroll_actions_out() {
+    use crate::keys::{element_keymap, resolve, INSERT};
+    let m = element_keymap(["k=program j=program", "j=scroll-down G=scroll-end Space=scroll-page-down"]);
+    assert_eq!(m.scroll("j"), Some("scroll-down"));
+    assert!(!m.program("j"));
+    assert!(m.program("k"));
+    assert_eq!(m.scroll("k"), None);
+    assert_eq!(m.scroll("G"), Some("scroll-end"));
+    assert_eq!(m.scroll("Shift+Space"), Some("scroll-page-down"));
+    assert_eq!(m.scroll("Control+j"), None);
+    // A field: j is typed, a farther program keeps k, PageDown keeps
+    // page-down, and a scroll binding overrides nothing in its own value.
+    let f = resolve(
+        true,
+        ["k=program", "j=scroll-down k=scroll-up PageDown=scroll-page-down"],
+    );
+    assert_eq!(f.lookup("j"), Some(INSERT));
+    assert_eq!(f.lookup("k"), None);
+    assert!(f.program("k"));
+    assert_eq!(f.lookup("PageDown"), Some("page-down"));
+    let f = resolve(false, ["Control+d=delete-char-forward Control+d=scroll-half-page-down"]);
+    assert_eq!(f.lookup("Control+d"), Some("delete-char-forward"));
+}

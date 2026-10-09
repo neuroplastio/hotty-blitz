@@ -495,14 +495,20 @@ fn keymap_vectors() {
     for k in v["keymap"].as_array().unwrap() {
         let name = k["name"].as_str().unwrap();
         let terminal = k.get("terminal_keys").and_then(Value::as_bool) == Some(true);
-        if let Some(program) = k.get("program") {
+        if k.get("program").is_some() || k.get("scroll").is_some() {
             // An element's keymap outside a text field: no default (§10.2).
             let values = k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap());
             let m = keys::element_keymap(values);
-            for (key, want) in program.as_object().unwrap() {
+            for (key, want) in k.get("program").and_then(Value::as_object).into_iter().flatten() {
                 let got = m.program(key);
                 if Some(got) != want.as_bool() {
                     failures.push(format!("{name}: {key}: program {got}, want {want}"));
+                }
+            }
+            for (key, want) in k.get("scroll").and_then(Value::as_object).into_iter().flatten() {
+                let got = m.scroll(key);
+                if got != want.as_str() {
+                    failures.push(format!("{name}: {key}: scroll {got:?}, want {want:?}"));
                 }
             }
             continue;
