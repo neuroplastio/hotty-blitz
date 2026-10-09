@@ -3,7 +3,7 @@
 //! from one thread at a time, and hands it OSC 7279 bodies as its parser
 //! finishes them. Everything the host must do comes back through callbacks.
 
-use crate::{Config, Damage, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind, Rgb, Theme};
+use crate::{Config, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme};
 use hotty_wire::{Event, Scanner};
 use std::ffi::{CStr, CString, c_char, c_void};
 
@@ -460,55 +460,33 @@ pub unsafe extern "C" fn hotty_host_end_gesture(h: *mut HottyHost) {
     guard(h, (), |h| h.host.end_gesture())
 }
 
-/// A key for the focused surface. `key`: 0 text (in `text`), 1 enter, 2 tab,
-/// 3 backspace, 4 delete, 5 escape, 6 left, 7 right, 8 up, 9 down, 10 home,
-/// 11 end, 12 page up, 13 page down, 14 space. Returns true if the surface
-/// used it; otherwise the host sends the key to the program as usual.
+/// A key for the focused surface, as the bytes the terminal would send the
+/// program for it (SPEC §10.4): its key encoding, in the modes the program
+/// set, or what a binding writes. Returns true if the surface used any of
+/// the keys in them; the others then reach the program through `fx`'s
+/// replies, in order. On false the host sends the bytes to the program as
+/// usual.
 ///
 /// # Safety
-/// `h` must be valid; `text` may be null; `fx` may be null.
+/// `h` must be valid; `data` must hold `len` bytes (it may be null when
+/// `len` is 0); `fx` may be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_key(
+pub unsafe extern "C" fn hotty_host_key_bytes(
     h: *mut HottyHost,
-    key: u32,
-    text: *const c_char,
-    mod_bits: u32,
+    data: *const u8,
+    len: usize,
     fx: *const HottyEffects,
 ) -> bool {
     let fx = unsafe { fx.as_ref() };
-    let text = unsafe { name(text) };
+    if data.is_null() || len == 0 {
+        return false;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
     guard(h, false, |h| {
         let Some(surface) = h.host.focused_surface().map(str::to_string) else {
             return false;
         };
-        let name = match key {
-            0 => match text {
-                Some(t) if !t.is_empty() => KeyName::Char(t.to_string()),
-                _ => return false,
-            },
-            1 => KeyName::Enter,
-            2 => KeyName::Tab,
-            3 => KeyName::Backspace,
-            4 => KeyName::Delete,
-            5 => KeyName::Escape,
-            6 => KeyName::Left,
-            7 => KeyName::Right,
-            8 => KeyName::Up,
-            9 => KeyName::Down,
-            10 => KeyName::Home,
-            11 => KeyName::End,
-            12 => KeyName::PageUp,
-            13 => KeyName::PageDown,
-            14 => KeyName::Space,
-            _ => KeyName::Other,
-        };
-        let outcome = h.host.key(
-            &surface,
-            &Key {
-                name,
-                mods: mods(mod_bits),
-            },
-        );
+        let outcome = h.host.key_bytes(&surface, bytes);
         run_effects(outcome.effects, fx);
         outcome.consumed
     })

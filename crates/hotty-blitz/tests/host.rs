@@ -3262,3 +3262,55 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         frame(&field("text", "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"))
     );
 }
+
+/// What `key_bytes` sent the program as keys, apart from HOTTY events.
+fn passed(effects: &[Effect]) -> Vec<u8> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Reply(b) if !b.starts_with(b"\x1b]7279;") => Some(b.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// A host names a key from the bytes the terminal would send the program
+/// (SPEC §10.4), so a binding's bytes (Cmd+Left writing `\x01`, Option+Left
+/// writing `ESC b`) are the keys the field's keymap looks up. Keys the field
+/// does not use reach the program as they came.
+#[test]
+fn key_bytes_name_keys_from_what_the_program_would_read() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        &format!(
+            "<body data-keys='{}'><input id=f value='one two three'>",
+            hotty_wire::keys::TERMINAL_KEYS
+        ),
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], ""));
+    render(&mut h);
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], ""));
+    h.set_text_field("f", "f", "one two three", 13);
+
+    // ESC b: Alt+b, word-backward.
+    assert!(h.key_bytes("f", b"\x1bb").consumed);
+    assert_eq!(h.text_field("f", "f"), Some(("one two three".into(), 8)));
+    // 0x01: Control+a, line-start; then typed text.
+    assert!(h.key_bytes("f", b"\x01").consumed);
+    let out = h.key_bytes("f", b"X ");
+    assert!(out.consumed);
+    assert_eq!(h.text_field("f", "f"), Some(("X one two three".into(), 2)));
+    assert_eq!(passed(&out.effects), b"");
+
+    // Control+s is the program's: nothing used, and the host sends it.
+    let out = h.key_bytes("f", b"\x13");
+    assert!(!out.consumed);
+    assert_eq!(passed(&out.effects), b"");
+    // Some used: the rest reaches the program as it came, in order.
+    let out = h.key_bytes("f", b"y\x13\x1b[15~z");
+    assert!(out.consumed);
+    assert_eq!(passed(&out.effects), b"\x13\x1b[15~");
+    assert_eq!(h.text_field("f", "f"), Some(("X yzone two three".into(), 4)));
+}

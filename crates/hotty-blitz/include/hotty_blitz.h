@@ -92,8 +92,13 @@ bool hotty_host_wheel(hotty_host *h, const char *surface, float x, float y, floa
 /* The wheel gesture under way ended (a touchpad's fingers lifted, or its
  * momentum stopped): the next wheel begins another. */
 void hotty_host_end_gesture(hotty_host *h);
-bool hotty_host_key(hotty_host *h, uint32_t key, const char *text, uint32_t mods,
-                     const hotty_effects *fx);
+/* A key for the focused surface, as the bytes the terminal would send the
+ * program for it (SPEC 10.4): its key encoding, in the modes the program
+ * set, or what a binding writes. True if the surface used any of the keys
+ * in them; the others then reach the program through fx's replies, in
+ * order. On false, send the bytes to the program as usual. */
+bool hotty_host_key_bytes(hotty_host *h, const uint8_t *data, size_t len,
+                          const hotty_effects *fx);
 void hotty_host_blur(hotty_host *h, const char *surface, const hotty_effects *fx);
 const char *hotty_host_focused(hotty_host *h);
 /* The pointer's shape over the surface after the last pointer event, as a

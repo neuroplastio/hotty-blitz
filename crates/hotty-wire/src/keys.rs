@@ -6,6 +6,7 @@
 //! `data-keys` of each element from the root to the field ([`resolve`]);
 //! [`Keymap::lookup`] says what the field does with a key.
 
+use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// The actions a keymap binds (SPEC §10.2).
@@ -217,24 +218,27 @@ pub fn parse_key(name: &str) -> Option<String> {
 /// mouse report, a sequence it does not know, a release). An ESC at the end
 /// of the input is Escape.
 pub fn decode_keys(input: &[u8]) -> Vec<Option<String>> {
+    decode_key_spans(input).into_iter().map(|(_, k)| k).collect()
+}
+
+/// [`decode_keys`], with the bytes each key took: a host that uses some of
+/// the keys sends the program the others as they came.
+pub fn decode_key_spans(input: &[u8]) -> Vec<(Range<usize>, Option<String>)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < input.len() {
-        if input[i] != 0x1b {
+        let at = i;
+        let key = if input[i] != 0x1b {
             let (k, n) = one_key(&input[i..]);
-            out.push(k);
             i += n;
-            continue;
-        }
-        if i + 1 == input.len() {
-            out.push(Some("Escape".into()));
-            break;
-        }
-        let next = input[i + 1];
-        if next == b'O' && i + 2 < input.len() {
-            out.push(final_key(input[i + 2]).map(str::to_string));
+            k
+        } else if i + 1 == input.len() {
+            i += 1;
+            Some("Escape".into())
+        } else if input[i + 1] == b'O' && i + 2 < input.len() {
             i += 3;
-        } else if next == b'[' && i + 2 < input.len() {
+            final_key(input[i - 1]).map(str::to_string)
+        } else if input[i + 1] == b'[' && i + 2 < input.len() {
             let mut j = i + 2;
             while j < input.len() && (0x30..=0x3f).contains(&input[j]) {
                 j += 1;
@@ -243,22 +247,22 @@ pub fn decode_keys(input: &[u8]) -> Vec<Option<String>> {
             while j < input.len() && (0x20..=0x2f).contains(&input[j]) {
                 j += 1;
             }
+            i = (j + 1).min(input.len());
             if j == input.len() || !(0x40..=0x7e).contains(&input[j]) {
-                out.push(None);
-                i = j + 1;
-                continue;
+                None
+            } else {
+                csi_key(params, input[j])
             }
-            out.push(csi_key(params, input[j]));
-            i = j + 1;
         } else {
             let (k, n) = one_key(&input[i + 1..]);
-            out.push(k.and_then(|k| {
+            i += 1 + n;
+            k.and_then(|k| {
                 let mut p = split_key(&k)?;
                 p.mods |= ALT;
                 Some(p.canonical().name())
-            }));
-            i += 1 + n;
-        }
+            })
+        };
+        out.push((at..i, key));
     }
     out
 }

@@ -94,8 +94,10 @@ the field. A bound key does its action, a printable key without Control,
 Alt or Meta types, and every other key goes to the program. Words, lines
 and a password field are the spec's (`crates/hotty-blitz/src/edit.rs`);
 moves by rows and pages follow the field's layout. Keys are named by what
-the terminal sent (`hotty_wire::keys`, SPEC §10.4), so a remapped key is
-the key it sends.
+the terminal sends the program (`hotty_wire::keys`, SPEC §10.4), so a
+remapped key is the key it sends: a terminal hands over the bytes its key
+encoding or a binding would write (`hotty_host_key_bytes`), and the keys a
+field does not use go on to the program as they came.
 
 ## Performance
 

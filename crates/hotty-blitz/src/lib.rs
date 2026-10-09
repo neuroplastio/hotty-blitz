@@ -1123,6 +1123,44 @@ impl Host {
         }
     }
 
+    /// Keys for the focused element of `surface`, as the terminal would
+    /// send them to the program (SPEC §10.4: after its bindings, in the
+    /// encoding the program asked for). Each is named from its bytes. When
+    /// the surface used none, `consumed` is false and the host sends the
+    /// bytes itself; when it used some, the others reach the program as
+    /// replies, as they came and in order with the events.
+    pub fn key_bytes(&mut self, surface: &str, bytes: &[u8]) -> KeyOutcome {
+        enum Out {
+            Effect(Effect),
+            Pass(std::ops::Range<usize>),
+        }
+        let mut out = Vec::new();
+        let mut consumed = false;
+        for (span, name) in hotty_wire::keys::decode_key_spans(bytes) {
+            let used = match name.as_deref().and_then(Key::from_spec_name) {
+                Some(key) => {
+                    let o = self.key(surface, &key);
+                    out.extend(o.effects.into_iter().map(Out::Effect));
+                    o.consumed
+                }
+                None => false,
+            };
+            consumed |= used;
+            if !used {
+                out.push(Out::Pass(span));
+            }
+        }
+        let effects = out
+            .into_iter()
+            .filter_map(|o| match o {
+                Out::Effect(e) => Some(e),
+                Out::Pass(span) if consumed => Some(Effect::Reply(bytes[span].to_vec())),
+                Out::Pass(_) => None,
+            })
+            .collect();
+        KeyOutcome { consumed, effects }
+    }
+
     /// Takes the keyboard away from `surface` (the user clicked elsewhere).
     pub fn blur(&mut self, surface: &str) -> Vec<Effect> {
         let Some(s) = self.surfaces.get_mut(surface) else {
