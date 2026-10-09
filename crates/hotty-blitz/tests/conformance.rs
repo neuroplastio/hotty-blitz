@@ -483,9 +483,10 @@ fn protocol_vectors() {
     let mut failures = Vec::new();
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through as hottyterm does, and
-        // hotty-blitz sends hover, scrolls and takes touch.
-        let has =
-            |r: &Value| r == "passthrough" || r == "hover" || r == "scroll" || r == "touch";
+        // hotty-blitz sends hover, scrolls, takes touch and drags in steps.
+        let has = |r: &Value| {
+            r == "passthrough" || r == "hover" || r == "scroll" || r == "touch" || r == "steps"
+        };
         let runs = match vector.get("requires") {
             None => true,
             Some(Value::Array(all)) => all.iter().all(has),

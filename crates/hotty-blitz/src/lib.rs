@@ -721,6 +721,9 @@ impl Host {
                 }
                 // A document can ask to scroll (SPEC §5.3).
                 caps["scroll"] = serde_json::Value::Bool(true);
+                // A drag says where in an element with `data-steps` the
+                // pointer is (SPEC §9.1).
+                caps["steps"] = serde_json::Value::Bool(true);
                 Ok((Vec::new(), Some(caps.to_string().into_bytes())))
             }
             "doc" => {

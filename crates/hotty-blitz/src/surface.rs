@@ -231,18 +231,68 @@ pub enum Hovered {
     Over(String),
 }
 
-/// A drag under way (SPEC §9.1): the element that started it, and the
-/// target, the cell and the keys the program heard of last.
+/// A drag under way (SPEC §9.1): the element that started it, the
+/// counts of its `data-steps` when it started, and the target, the cell,
+/// the keys and the steps the program heard of last.
 struct Drag {
     start: String,
+    counts: (u64, u64),
     target: String,
     cell: (i32, i32),
     keys: Mods,
+    steps: Steps,
+}
+
+/// Where in a dragged element with `data-steps` the pointer is, across and
+/// down, in its steps; none along an axis whose count is 0 (SPEC §9.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Steps {
+    x: Option<u64>,
+    y: Option<u64>,
+}
+
+/// The counts of a `data-steps` value, across and down (SPEC §9.1): one
+/// or two whole numbers from 0 up, the second 0 when absent. None for
+/// anything else, which gives no steps.
+fn parse_steps(value: &str) -> Option<(u64, u64)> {
+    let mut counts = value.split_ascii_whitespace().map(|w| {
+        w.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| w.parse::<u64>().ok())
+            .flatten()
+    });
+    let x = counts.next()??;
+    let y = match counts.next() {
+        None => 0,
+        Some(y) => y?,
+    };
+    counts.next().is_none().then_some((x, y))
+}
+
+/// The step `d` CSS pixels into a box `size` long is, of `count` (SPEC
+/// §9.1): rounded to the nearest, a half up, and clamped to 0 and the
+/// count. 0 for a box with no size; none for a count of 0.
+fn step(d: f64, size: f64, count: u64) -> Option<u64> {
+    if count == 0 {
+        return None;
+    }
+    if size.is_nan() || size <= 0.0 {
+        return Some(0);
+    }
+    let at = (d / size).clamp(0.0, 1.0) * count as f64;
+    Some(((at + 0.5).floor() as u64).min(count))
 }
 
 /// A drag's event: its detail is the pointer's cell of the surface and the
-/// modifier keys held, in the spec's order (SPEC §9.1).
-fn drag_event(kind: &'static str, target: String, cell: (i32, i32), keys: Mods) -> Event {
+/// modifier keys held, in the spec's order, with its steps in an element
+/// with `data-steps` (SPEC §9.1).
+fn drag_event(
+    kind: &'static str,
+    target: String,
+    cell: (i32, i32),
+    keys: Mods,
+    steps: Steps,
+) -> Event {
     let held: Vec<&str> = [
         (keys.shift, "shift"),
         (keys.ctrl, "ctrl"),
@@ -252,10 +302,17 @@ fn drag_event(kind: &'static str, target: String, cell: (i32, i32), keys: Mods) 
     .into_iter()
     .filter_map(|(on, name)| on.then_some(name))
     .collect();
+    let mut detail = serde_json::json!({ "c": cell.0, "r": cell.1, "keys": held });
+    if let Some(x) = steps.x {
+        detail["x"] = x.into();
+    }
+    if let Some(y) = steps.y {
+        detail["y"] = y.into();
+    }
     Event {
         kind,
         target,
-        detail: serde_json::json!({ "c": cell.0, "r": cell.1, "keys": held }),
+        detail,
     }
 }
 
@@ -1403,12 +1460,16 @@ impl Surface {
                     Some(start) => {
                         // A drag selects no text, whatever its CSS (§9.1).
                         self.doc.clear_text_selection();
-                        lead.push(drag_event("dragstart", start.clone(), cell, mods));
+                        let counts = self.counts_of(&start);
+                        let steps = self.steps_at(&start, counts, x, y).unwrap_or_default();
+                        lead.push(drag_event("dragstart", start.clone(), cell, mods, steps));
                         self.drag = Some(Drag {
                             start: start.clone(),
+                            counts,
                             target: start,
                             cell,
                             keys: mods,
+                            steps,
                         });
                     }
                     // `user-select: none` (SPEC §11): Blitz anchored a
@@ -1420,23 +1481,28 @@ impl Surface {
             }
             PointerKind::Move => {
                 let target = self.drag_target_at(cell);
-                if let Some(d) = &mut self.drag {
+                let steps = self.drag.as_ref().map(|d| self.drag_steps(d, x, y));
+                if let (Some(d), Some(steps)) = (&mut self.drag, steps) {
                     // An event for each element crossed, and while there is
-                    // none, for each cell (§9.1).
-                    if target != d.target || (target.is_empty() && cell != d.cell) {
-                        lead.push(drag_event("drag", target.clone(), cell, mods));
+                    // none, for each cell; and for each step (§9.1).
+                    if target != d.target
+                        || (target.is_empty() && cell != d.cell)
+                        || steps != d.steps
+                    {
+                        lead.push(drag_event("drag", target.clone(), cell, mods, steps));
                     }
-                    (d.target, d.cell, d.keys) = (target, cell, mods);
+                    (d.target, d.cell, d.keys, d.steps) = (target, cell, mods, steps);
                 }
             }
             PointerKind::Up => {
                 if let Some(d) = self.drag.take() {
                     let target = self.drag_target_at(cell);
+                    let steps = self.drag_steps(&d, x, y);
                     // A drag is a click only where it began (§9.1).
                     if target != d.start {
                         events.retain(|e| e.kind != "click");
                     }
-                    lead.push(drag_event("dragend", target, cell, mods));
+                    lead.push(drag_event("dragend", target, cell, mods, steps));
                 }
             }
             PointerKind::Leave => {}
@@ -1454,7 +1520,40 @@ impl Surface {
         } else {
             keys
         };
-        Some(drag_event("dragend", String::new(), d.cell, keys))
+        Some(drag_event("dragend", String::new(), d.cell, keys, d.steps))
+    }
+
+    /// The counts of the `data-steps` of the element with id `id`, (0, 0)
+    /// for none (SPEC §9.1).
+    fn counts_of(&self, id: &str) -> (u64, u64) {
+        let doc: &BaseDocument = &self.doc;
+        doc.get_element_by_id(id)
+            .and_then(|n| doc.get_node(n)?.element_data())
+            .and_then(|el| el.attrs().iter().find(|a| &*a.name.local == "data-steps"))
+            .and_then(|a| parse_steps(&a.value))
+            .unwrap_or((0, 0))
+    }
+
+    /// The steps of the pointer at CSS pixel (`x`, `y`) of the surface in
+    /// the element with id `id`, whose `data-steps` has `counts` (SPEC
+    /// §9.1): measured against its border box where it is now, wherever
+    /// the pointer is. None when the element is no longer in the document.
+    fn steps_at(&self, id: &str, counts: (u64, u64), x: f32, y: f32) -> Option<Steps> {
+        if counts == (0, 0) {
+            return Some(Steps::default());
+        }
+        let doc: &BaseDocument = &self.doc;
+        let r = doc.get_client_bounding_rect(doc.get_element_by_id(id)?)?;
+        Some(Steps {
+            x: step(x as f64 - r.x, r.width, counts.0),
+            y: step(y as f64 - r.y, r.height, counts.1),
+        })
+    }
+
+    /// A drag's steps with the pointer at CSS pixel (`x`, `y`): as they
+    /// last were once its element has left the document (SPEC §9.1).
+    fn drag_steps(&self, d: &Drag, x: f32, y: f32) -> Steps {
+        self.steps_at(&d.start, d.counts, x, y).unwrap_or(d.steps)
     }
 
     /// The pans a touch at CSS pixel (`x`, `y`) of the surface, in its cell
