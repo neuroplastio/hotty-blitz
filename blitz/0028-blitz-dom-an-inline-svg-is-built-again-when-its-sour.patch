@@ -1,0 +1,152 @@
+From 4db2c30ff2e411bf02f5f3b249e8389257c9a2a3 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Sat, 10 Oct 2026 00:36:06 +0200
+Subject: [PATCH] blitz-dom: an inline svg is built again when its source
+ changes
+
+An inline <svg> is parsed once, while boxes are constructed, from its
+outer_html with currentColor resolved to the colour each element has
+then. A later colour change is style damage only, which never
+constructs it again. So an icon drawn with fill="currentColor" kept its
+first colour through:
+- a class on its parent;
+- a theme's style text;
+- :hover and :focus.
+
+Now the document keeps a hash of the source each inline svg was built
+from. When a damaged svg, or one with damaged descendants, would be
+built from another source, propagate_damage_flags marks it
+CONSTRUCT_BOX. As for a reorder, its ancestors get only
+CONSTRUCT_DESCENDENT and RELAYOUT, so a hover rebuilds the icon and
+nothing around it. A freed node's hash is dropped.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs         |  8 +++++
+ packages/blitz-dom/src/layout/construct.rs |  4 +++
+ packages/blitz-dom/src/layout/damage.rs    | 35 +++++++++++++++++++++-
+ 3 files changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 74a7a7e7..9de4d38b 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -228,6 +228,12 @@ pub struct BaseDocument {
+     pub(crate) own_relayout: HashSet<NodeId>,
+     /// Nodes whose layout children changed in this resolve's construction.
+     pub(crate) restructured: HashSet<NodeId>,
++    /// The source each inline `svg` was last built from, as a hash: its
++    /// markup with `currentColor` resolved (`Node::outer_html`). Built once,
++    /// an inline SVG is drawn from its parse; when the source it would be
++    /// built from now differs (its colour or a descendant's changed, by a
++    /// delta, a style sheet, `:hover` or `:focus`), it is built again.
++    pub(crate) inline_svg_sources: HashMap<NodeId, u64>,
+     /// Nodes whose final layout changed since `resolve_transforms` last ran,
+     /// with every box that reaches them in that walk. Their transforms and
+     /// scrollable overflow are computed again even without style damage: a
+@@ -493,6 +499,7 @@ impl BaseDocument {
+             invalidated: Vec::new(),
+             own_relayout: HashSet::new(),
+             restructured: HashSet::new(),
++            inline_svg_sources: HashMap::new(),
+             geometry_changed: HashSet::new(),
+             subdocument_depth: config.subdocument_depth,
+             devtool_settings: DevtoolSettings::default(),
+@@ -929,6 +936,7 @@ impl BaseDocument {
+     /// it so that stale NodeIds are never dereferenced after the slot is freed.
+     pub(crate) fn remove_node_from_tree(&mut self, node_id: NodeId) -> Option<Node> {
+         self.clear_interaction_state_for_removed_node(node_id);
++        self.inline_svg_sources.remove(&node_id);
+         self.nodes.remove(node_id)
+     }
+ 
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index 4d6d4ba7..55add4e9 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -467,6 +467,10 @@ fn collect_layout_children_with_wrap(
+         #[cfg(feature = "svg")]
+         if matches!(tag_name, "svg") {
+             let mut outer_html = doc.get_node(container_node_id).unwrap().outer_html();
++            doc.inline_svg_sources.insert(
++                container_node_id,
++                crate::layout::damage::source_hash(&outer_html),
++            );
+ 
+             // HACK: usvg fails to parse SVGs that don't have the SVG xmlns set. So inject it
+             // if the generated source doesn't have it.
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index 560a9258..029ffcd8 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -1,4 +1,5 @@
+ use blitz_traits::node_id::NodeId;
++use markup5ever::local_name;
+ 
+ use crate::net::ResourceHandler;
+ use crate::node::NodeFlags;
+@@ -107,6 +108,9 @@ impl BaseDocument {
+         damage_from_children.remove(REORDER_CHILDREN);
+         damage |= damage_from_children;
+ 
++        // Read before the node is borrowed below.
++        let svg_changed = !damage.contains(CONSTRUCT_BOX) && self.inline_svg_changed(node_id);
++
+         let node = &mut self.nodes[node_id];
+ 
+         // Put children back
+@@ -119,7 +123,14 @@ impl BaseDocument {
+         // Compute damage to propagate to parent
+         let mut damage_for_parent = damage; // & RestyleDamage::RELAYOUT;
+ 
+-        if reorder {
++        // An inline SVG is built again when the source it would be built from
++        // changed, as the reorder above: its own box only, so ancestors get
++        // `CONSTRUCT_DESCENDENT`, not a reconstruction of their own.
++        if svg_changed {
++            damage.insert(RestyleDamage::RELAYOUT);
++            damage_for_parent.insert(RestyleDamage::RELAYOUT);
++        }
++        if reorder || svg_changed {
+             damage.insert(CONSTRUCT_BOX);
+             damage_for_parent.insert(CONSTRUCT_DESCENDENT);
+         }
+@@ -189,6 +200,20 @@ impl BaseDocument {
+         damage_for_parent
+     }
+ 
++    /// Whether `node_id` is an inline `svg` whose source, its markup with
++    /// `currentColor` resolved, differs from the one it was last built from.
++    /// Only a damaged `svg` or one with damaged descendants gets here.
++    fn inline_svg_changed(&self, node_id: NodeId) -> bool {
++        let Some(built) = self.inline_svg_sources.get(&node_id) else {
++            return false;
++        };
++        let node = &self.nodes[node_id];
++        if !node.data.is_element_with_tag_name(&local_name!("svg")) {
++            return false;
++        }
++        source_hash(&node.outer_html()) != *built
++    }
++
+     /// Forgets the boxes construction built for a box gone `display: none`
+     /// and for its subtree: layout children, anonymous blocks, inline
+     /// layouts, table contexts, hoisted out-of-flow boxes, and the paint
+@@ -361,6 +386,14 @@ impl BaseDocument {
+ //     }
+ // }
+ 
++/// A hash of an inline SVG's source, to tell when it changed.
++pub(crate) fn source_hash(source: &str) -> u64 {
++    use std::hash::{Hash, Hasher};
++    let mut h = std::collections::hash_map::DefaultHasher::new();
++    source.hash(&mut h);
++    h.finish()
++}
++
+ pub(crate) fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues) -> RestyleDamage {
+     let box_tree_needs_rebuild = || {
+         let old_box = old.get_box();
+-- 
+2.56.0
+

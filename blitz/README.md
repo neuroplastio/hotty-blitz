@@ -36,6 +36,7 @@ changes upstream is an open question.
 | `0025-blitz-dom-*` | a box gone `display: none` forgets the boxes built under it (below) |
 | `0026-blitz-dom-*` | speculative relayout (0001) leaves nodes out of the layout tree alone (below) |
 | `0027-blitz-dom-*` | a mutation's queued work skips the nodes it freed (below) |
+| `0028-blitz-dom-*` | an inline svg is built again when its source changes: `currentColor` follows the colour (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -286,6 +287,21 @@ nothing but `data:`, as in a browser. This is how `cid:` works in an SVG
 `href` (HOTTY SPEC §7.1), and how `img-src` reaches images in SVG (§7.2).
 hotty-blitz's `an_inline_svgs_image_resolves_cid_resources` and
 `an_inline_svgs_images_are_images` check it.
+
+## Inline SVG follows its colour
+
+Blitz draws an inline `<svg>` from one usvg parse of its markup, made
+while boxes are constructed, with `currentColor` resolved to each
+element's colour then (`Node::outer_html`). A colour change later is
+style damage only, so an icon drawn with `fill="currentColor"` kept its
+first colour through a class on its parent, a theme's style text,
+`:hover` and `:focus`. The A2UI kit draws its icons that way. The fork
+keeps a hash of the source each inline svg was built from
+(`inline_svg_sources`). When an svg or anything under it is damaged and
+its source differs, `propagate_damage_flags` constructs that svg again,
+and only that one: its ancestors get `CONSTRUCT_DESCENDENT`, as for a
+reorder. hotty-blitz's `tests/svg.rs` checks the pixels after each kind
+of change.
 
 ## Request destinations
 
