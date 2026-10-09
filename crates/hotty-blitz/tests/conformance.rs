@@ -495,6 +495,18 @@ fn keymap_vectors() {
     for k in v["keymap"].as_array().unwrap() {
         let name = k["name"].as_str().unwrap();
         let terminal = k.get("terminal_keys").and_then(Value::as_bool) == Some(true);
+        if let Some(program) = k.get("program") {
+            // An element's keymap outside a text field: no default (§10.2).
+            let values = k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap());
+            let m = keys::element_keymap(values);
+            for (key, want) in program.as_object().unwrap() {
+                let got = m.program(key);
+                if Some(got) != want.as_bool() {
+                    failures.push(format!("{name}: {key}: program {got}, want {want}"));
+                }
+            }
+            continue;
+        }
         let Some(lookup) = k.get("lookup") else {
             let value = k.get("parse").and_then(Value::as_str).unwrap_or(keys::TERMINAL_KEYS);
             let got = keys::parse_keymap(value).format();

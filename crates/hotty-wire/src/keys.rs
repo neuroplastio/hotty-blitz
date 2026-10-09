@@ -527,7 +527,7 @@ pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -
 
 /// An element's keymap outside a text field: each `data-keys` value, the
 /// root's first, with no default keymap. Only its `program` bindings count
-/// there ([`Keymap::gives_program`]; SPEC §10.2, keys for the program).
+/// there ([`Keymap::program`]; SPEC §10.2, keys for the program).
 pub fn element_keymap<'a>(values: impl IntoIterator<Item = &'a str>) -> Keymap {
     let mut m = Keymap::default();
     for v in values {
@@ -576,7 +576,7 @@ impl Keymap {
     /// element or a scroll uses it (SPEC §10.2): it binds the key to
     /// `program`, or, for a key with Shift it does not bind, the key without
     /// Shift.
-    pub fn gives_program(&self, key: &str) -> bool {
+    pub fn program(&self, key: &str) -> bool {
         let Some(k) = split_key(key).map(|k| k.canonical()) else {
             return false;
         };

@@ -1760,7 +1760,7 @@ impl Surface {
             return false;
         };
         let values = self.keymap_values(id);
-        keys::element_keymap(values.iter().map(String::as_str)).gives_program(&name)
+        keys::element_keymap(values.iter().map(String::as_str)).program(&name)
     }
 
     /// A key for the focused select `id` (SPEC §10.2, selects): Up, Down,
