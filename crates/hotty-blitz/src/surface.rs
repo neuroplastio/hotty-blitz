@@ -942,6 +942,13 @@ impl Surface {
         payload: &str,
     ) -> Result<(), delta::DeltaError> {
         let scale = self.viewport.2 as f64;
+        // SPEC §6.2: the program's `selected` sets which option a select
+        // has, but not while the select is focused: the user's pick stays.
+        let kept = focused_node(&self.doc).and_then(|select| {
+            let options = self.doc.select_options(select);
+            let picked = options.into_iter().find(|&o| self.doc.option_selected(o))?;
+            Some((select, picked))
+        });
         let Surface {
             doc,
             parse_doc,
@@ -951,6 +958,12 @@ impl Surface {
         let res = delta::apply(doc, parse_doc, op, t, k, payload, &mut |d, id| {
             damage.touch(d, id, scale)
         });
+        if let Some((select, option)) = kept
+            && self.doc.option_select(option) == Some(select)
+            && self.doc.pick_option(select, option)
+        {
+            self.damage.touch(&self.doc, select, scale);
+        }
         // Nodes that show an animated image may have come or gone.
         self.anim_stale = true;
         if self.detached {
@@ -1694,6 +1707,7 @@ impl Surface {
                 (true, events)
             }
             (KeyName::Escape, _) => (false, Vec::new()),
+            _ if focused.is_some_and(|id| self.gives_program(id, key)) => (false, Vec::new()),
             (_, Control::Text | Control::TextArea) => {
                 let id = focused.expect("a text control is focused");
                 match self.field_key(id, key, kind == Control::TextArea) {
@@ -1709,16 +1723,20 @@ impl Surface {
                 self.dirty = true;
                 (true, events)
             }
+            (_, Control::Select) => {
+                let id = focused.expect("a select is focused");
+                match self.select_key(id, key) {
+                    Some(events) => (true, events),
+                    None => self.scroll_key(key, focused),
+                }
+            }
             _ => self.scroll_key(key, focused),
         }
     }
 
-    /// A key for the focused text field `id`, which does what its keymap
-    /// says (SPEC §10.2): the default keymap, then the `data-keys` of each
-    /// element from the root to the field. `None` when the key is not the
-    /// field's: it reaches the program.
-    fn field_key(&mut self, id: NodeId, key: &Key, multiline: bool) -> Option<Vec<Event>> {
-        let name = key.spec_name()?;
+    /// The `data-keys` values of `id` and the elements above it, the root's
+    /// first (SPEC §10.2).
+    fn keymap_values(&self, id: NodeId) -> Vec<String> {
         let mut values = Vec::new();
         let mut n = Some(id);
         while let Some(node) = n.and_then(|n| self.doc.get_node(n)) {
@@ -1730,7 +1748,99 @@ impl Surface {
             }
             n = node.parent;
         }
-        let keymap = keys::resolve(multiline, values.iter().rev().map(String::as_str));
+        values.reverse();
+        values
+    }
+
+    /// Whether the focused element `id` gives `key` to the program: its
+    /// keymap binds it to `program` (SPEC §10.2, keys for the program). The
+    /// key then reaches the program before the element or a scroll uses it.
+    fn gives_program(&self, id: NodeId, key: &Key) -> bool {
+        let Some(name) = key.spec_name() else {
+            return false;
+        };
+        let values = self.keymap_values(id);
+        keys::element_keymap(values.iter().map(String::as_str)).gives_program(&name)
+    }
+
+    /// A key for the focused select `id` (SPEC §10.2, selects): Up, Down,
+    /// Home, End, the page keys and a character pick an option among those
+    /// not disabled, and a pick sends `change` at once, and `input` with
+    /// `data-on~=input`. This host shows no list, so Space and Enter are the
+    /// select's but do nothing. `None` when the key is not the select's.
+    fn select_key(&mut self, id: NodeId, key: &Key) -> Option<Vec<Event>> {
+        if key.mods.ctrl || key.mods.alt || key.mods.meta {
+            return None;
+        }
+        let options: Vec<NodeId> = self
+            .doc
+            .select_options(id)
+            .into_iter()
+            .filter(|&o| !self.doc.option_disabled(o))
+            .collect();
+        let at = options.iter().position(|&o| self.doc.option_selected(o));
+        let last = options.len().checked_sub(1);
+        let pick = match &key.name {
+            KeyName::Down => last.map(|l| at.map_or(0, |i| (i + 1).min(l))),
+            KeyName::Up => last.map(|_| at.map_or(0, |i| i.saturating_sub(1))),
+            KeyName::Home | KeyName::PageUp => last.map(|_| 0),
+            KeyName::End | KeyName::PageDown => last,
+            KeyName::Space | KeyName::Enter => None,
+            KeyName::Char(c) => {
+                let c = c.to_lowercase();
+                let n = options.len();
+                let start = at.map_or(0, |i| i + 1);
+                (0..n)
+                    .map(|k| (start + k) % n)
+                    .find(|&j| self.option_label(options[j]).to_lowercase().starts_with(&c))
+            }
+            _ => return None,
+        };
+        let Some(pick) = pick.filter(|&p| Some(p) != at) else {
+            return Some(Vec::new());
+        };
+        self.doc.pick_option(id, options[pick]);
+        self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+        self.dirty = true;
+        let mut events = Vec::new();
+        if let Some(target) = self.id_of(id) {
+            let value = self.doc.select_value(id).unwrap_or_default();
+            if self.listens(id, "input") {
+                events.push(Event {
+                    kind: "input",
+                    target: target.clone(),
+                    detail: serde_json::json!({ "value": value }),
+                });
+            }
+            events.push(Event {
+                kind: "change",
+                target,
+                detail: serde_json::json!({ "value": value }),
+            });
+        }
+        Some(events)
+    }
+
+    /// An option's label: its `label` attribute, or its text, with white
+    /// space collapsed.
+    fn option_label(&self, option: NodeId) -> String {
+        let Some(node) = self.doc.get_node(option) else {
+            return String::new();
+        };
+        match node.attr(local_name!("label")) {
+            Some(label) => label.to_string(),
+            None => node.text_content().split_whitespace().collect::<Vec<_>>().join(" "),
+        }
+    }
+
+    /// A key for the focused text field `id`, which does what its keymap
+    /// says (SPEC §10.2): the default keymap, then the `data-keys` of each
+    /// element from the root to the field. `None` when the key is not the
+    /// field's: it reaches the program.
+    fn field_key(&mut self, id: NodeId, key: &Key, multiline: bool) -> Option<Vec<Event>> {
+        let name = key.spec_name()?;
+        let values = self.keymap_values(id);
+        let keymap = keys::resolve(multiline, values.iter().map(String::as_str));
         let action = keymap.lookup(&name)?.to_string();
         Some(self.field_action(id, key, &action, multiline))
     }
@@ -2358,6 +2468,7 @@ impl Surface {
         }
         match el.name.local.as_ref() {
             "button" | "a" | "summary" | "input" => Control::Activatable,
+            "select" => Control::Select,
             _ => Control::None,
         }
     }
@@ -2369,6 +2480,7 @@ enum Control {
     Text,
     TextArea,
     Activatable,
+    Select,
 }
 
 /// What a surface hands Blitz's event driver: input from the host, or a

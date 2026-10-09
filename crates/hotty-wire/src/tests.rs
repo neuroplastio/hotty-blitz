@@ -209,3 +209,22 @@ fn esc_inside_a_command_aborts_it_and_starts_a_new_sequence() {
     assert!(got.commands.is_empty());
     assert_eq!(got.bytes, b"\x1b[31mred");
 }
+
+/// An element's keymap outside a text field: only `program` counts, there
+/// is no default, a nearer binding of the key cancels a farther `program`,
+/// and an unbound key with Shift is looked up without it (SPEC §10.2).
+#[test]
+fn an_elements_keymap_gives_keys_to_the_program() {
+    let m = crate::keys::element_keymap(["ArrowDown=program End=program PageUp=program", "End=line-end"]);
+    assert!(m.gives_program("ArrowDown"));
+    assert!(m.gives_program("Shift+ArrowDown"));
+    assert!(!m.gives_program("End"));
+    assert!(m.gives_program("PageUp"));
+    assert!(!m.gives_program("ArrowUp"));
+    assert!(!m.gives_program("Control+ArrowDown"));
+    // No default keymap, and Escape and Tab cannot be bound.
+    let m = crate::keys::element_keymap(["Escape=program Tab=program"]);
+    assert!(!m.gives_program("Escape"));
+    assert!(!m.gives_program("Tab"));
+    assert!(!m.gives_program("Enter"));
+}

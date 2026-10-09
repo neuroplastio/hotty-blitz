@@ -3314,3 +3314,172 @@ fn key_bytes_name_keys_from_what_the_program_would_read() {
     assert_eq!(passed(&out.effects), b"\x13\x1b[15~");
     assert_eq!(h.text_field("f", "f"), Some(("X yzone two three".into(), 4)));
 }
+
+/// A closed select: `<select>` with one option shown (SPEC §10.2, selects).
+const SELECT: &str = "<style>*{margin:0}select,button{display:block;font:14px sans-serif}</style>
+    <form id=deploy><select id=env name=env data-on=input><option>staging<option selected>production
+    <option disabled>retired<option value=dev>development</select>
+    <button type=submit id=go>Go</button></form>";
+
+fn named(h: &mut Host, s: &str, name: KeyName) -> hotty_blitz::KeyOutcome {
+    h.key(
+        s,
+        &Key {
+            name,
+            mods: Mods::default(),
+        },
+    )
+}
+
+fn events(fx: &[Effect]) -> Vec<(String, String, String)> {
+    replies(fx)
+        .iter()
+        .filter(|c| c.get("a") == Some("ev"))
+        .map(|c| {
+            (
+                c.get("e").unwrap_or("").to_string(),
+                c.get("t").unwrap_or("").to_string(),
+                String::from_utf8_lossy(&c.payload).to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_select_picks_with_keys_repaints_as_a_full_paint_and_submits_its_pick() {
+    let place = |h: &mut Host, doc: &str| {
+        h.handle(&cmd(&[("a", "doc"), ("s", "f")], doc));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "4")],
+            "",
+        ));
+    };
+    let mut inc = host();
+    place(&mut inc, SELECT);
+    render(&mut inc);
+    inc.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "env")], ""));
+    render(&mut inc);
+    // Down passes over the disabled option; the pick is heard at once.
+    let out = named(&mut inc, "f", KeyName::Down);
+    assert!(out.consumed);
+    let value = r#"{"value":"dev"}"#.to_string();
+    assert_eq!(
+        events(&out.effects),
+        vec![
+            ("input".into(), "env".into(), value.clone()),
+            ("change".into(), "env".into(), value),
+        ]
+    );
+    // At the end, Down picks nothing; Space and Enter are the select's, and
+    // do nothing: this host shows no list.
+    for name in [KeyName::Down, KeyName::Space, KeyName::Enter] {
+        let out = named(&mut inc, "f", name);
+        assert!(out.consumed);
+        assert!(events(&out.effects).is_empty());
+    }
+    // Keys with Control are the program's.
+    let out = inc.key(
+        "f",
+        &Key {
+            name: KeyName::Down,
+            mods: Mods {
+                ctrl: true,
+                ..Mods::default()
+            },
+        },
+    );
+    assert!(!out.consumed);
+    // Leaving it sends no second change.
+    let fx = inc.handle(&cmd(&[("a", "blur"), ("s", "f")], ""));
+    assert!(
+        events(&fx).iter().all(|(e, _, _)| e != "change"),
+        "{:?}",
+        events(&fx)
+    );
+    render(&mut inc);
+    // The pick repaints as a document that had it from the start.
+    let mut full = host();
+    place(
+        &mut full,
+        &SELECT
+            .replace("<option selected>production", "<option>production")
+            .replace("<option value=dev>", "<option value=dev selected>"),
+    );
+    render(&mut full);
+    let (a, b) = (inc.frame("f").unwrap(), full.frame("f").unwrap());
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    let differing = a
+        .rgba
+        .chunks(4)
+        .zip(b.rgba.chunks(4))
+        .filter(|(p, q)| p != q)
+        .count();
+    assert_eq!(differing, 0, "{differing} pixels differ from a full paint");
+    // The form submits the pick.
+    inc.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "go")], ""));
+    let out = named(&mut inc, "f", KeyName::Enter);
+    let submit = replies(&out.effects)
+        .into_iter()
+        .find(|c| c.get("e") == Some("submit"))
+        .expect("submit");
+    let fields: serde_json::Value = serde_json::from_slice(&submit.payload).unwrap();
+    assert_eq!(fields["env"], "dev", "{fields}");
+}
+
+#[test]
+fn a_select_picks_by_its_labels_first_letters_going_round() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        "<select id=s><option>apple<option>banana<option label=Cherry>c<option>avocado</select>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "2")], ""));
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "s")], ""));
+    let mut picks = Vec::new();
+    for c in ["a", "A", "c", "z", "b"] {
+        let out = key(&mut h, "f", c);
+        assert!(out.consumed, "{c}");
+        picks.extend(events(&out.effects).into_iter().map(|(_, _, d)| d));
+    }
+    assert_eq!(
+        picks,
+        [
+            r#"{"value":"avocado"}"#,
+            r#"{"value":"apple"}"#,
+            r#"{"value":"c"}"#,
+            r#"{"value":"banana"}"#,
+        ]
+    );
+}
+
+#[test]
+fn a_program_sets_a_selects_option_except_while_it_is_focused() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "f")], SELECT));
+    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "4")], ""));
+    let selected = |h: &mut Host| {
+        h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "go")], ""));
+        let out = named(h, "f", KeyName::Enter);
+        let submit = replies(&out.effects)
+            .into_iter()
+            .find(|c| c.get("e") == Some("submit"))
+            .expect("submit");
+        let fields: serde_json::Value = serde_json::from_slice(&submit.payload).unwrap();
+        fields["env"].as_str().unwrap().to_string()
+    };
+    assert_eq!(selected(&mut h), "production");
+    // Not focused: the program's `selected` picks.
+    h.handle(&cmd(
+        &[("a", "delta"), ("s", "f"), ("op", "morph"), ("t", "env")],
+        "<select id=env name=env><option>staging<option>production<option disabled>retired<option value=dev selected>development</select>",
+    ));
+    assert_eq!(selected(&mut h), "dev");
+    // Focused: the user's pick stays, whatever the program's `selected` says.
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "env")], ""));
+    named(&mut h, "f", KeyName::Home);
+    h.handle(&cmd(
+        &[("a", "delta"), ("s", "f"), ("op", "morph"), ("t", "env")],
+        "<select id=env name=env><option>staging<option selected>production<option disabled>retired<option value=dev>development</select>",
+    ));
+    assert_eq!(selected(&mut h), "staging");
+}

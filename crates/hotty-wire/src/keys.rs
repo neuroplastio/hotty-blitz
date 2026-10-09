@@ -525,6 +525,19 @@ pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -
     m
 }
 
+/// An element's keymap outside a text field: each `data-keys` value, the
+/// root's first, with no default keymap. Only its `program` bindings count
+/// there ([`Keymap::gives_program`]; SPEC §10.2, keys for the program).
+pub fn element_keymap<'a>(values: impl IntoIterator<Item = &'a str>) -> Keymap {
+    let mut m = Keymap::default();
+    for v in values {
+        for (k, a) in parse_keymap(v).bindings {
+            m.bind(&k, &a);
+        }
+    }
+    m
+}
+
 impl Keymap {
     /// Binds a key to an action; false, binding nothing, where a host ignores
     /// the binding.
@@ -557,6 +570,24 @@ impl Keymap {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, a)| a.as_str())
+    }
+
+    /// Whether the keymap gives a key to the program, before the focused
+    /// element or a scroll uses it (SPEC §10.2): it binds the key to
+    /// `program`, or, for a key with Shift it does not bind, the key without
+    /// Shift.
+    pub fn gives_program(&self, key: &str) -> bool {
+        let Some(k) = split_key(key).map(|k| k.canonical()) else {
+            return false;
+        };
+        let unshifted = KeyParts {
+            mods: k.mods & !SHIFT,
+            value: k.value.clone(),
+        };
+        let bound = self
+            .get(&k.name())
+            .or_else(|| self.get(&unshifted.name()).filter(|_| k.shift()));
+        bound == Some("program")
     }
 
     /// What a field with this keymap does with a key: an action, [`INSERT`]

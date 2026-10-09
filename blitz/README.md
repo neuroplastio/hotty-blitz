@@ -31,6 +31,7 @@ changes upstream is an open question.
 | `0020-blitz-dom-blitz-paint-*` | an embedder can hide the caret, to blink it (below) |
 | `0021-blitz-dom-*` | a password input shows a mask and edits its value (below) |
 | `0022-blitz-dom-*` | an embedder can edit a text input: its value, its selection, its rows (below) |
+| `0023-blitz-dom-*` | a select has a selected option, submits it, and draws closed (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -103,6 +104,24 @@ selection, `set_text_input` sets both (a password field's value too, its
 mask following) and redraws, `move_text_input_rows` moves the caret by
 laid-out rows from Parley's selection, and `text_input_rows_shown` counts
 the rows the field shows, for a page.
+
+## Selects
+
+Blitz hid every `<option>` and kept no selectedness, so a select drew as
+an empty box and never reached form data. 0023 keeps an option's
+selectedness in its `ElementState::CHECKED` bit, as Gecko does, so
+`option:checked` matches it, and the mutator settles it with HTML's
+selectedness setting algorithm as options come, go, or have `selected`
+set or removed. There is no script, so no dirtiness: the attribute, set
+or removed, is the selectedness from then on. Form data has the selected
+options. A select without `multiple` draws closed, as a browser draws
+it: the selected option and an arrow, as wide as its widest option
+(every option shares one grid cell, the others hidden). Its list is not
+drawn: HOTTY lets a host show none (SPEC §10.2), and hotty-blitz picks
+with the keys alone, through `BaseDocument::pick_option`. hotty-blitz's
+`a_select_picks_with_keys_repaints_as_a_full_paint_and_submits_its_pick`
+and the select vector check it. Still not drawn: a `multiple` select, or
+one with `size` above 1, which a browser shows as a list box.
 
 ## Scrolling
 

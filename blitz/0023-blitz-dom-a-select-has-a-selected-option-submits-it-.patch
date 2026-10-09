@@ -1,0 +1,447 @@
+From d2642e9adf26a06ec8aa8e5c075077fefde33271 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Fri, 9 Oct 2026 12:37:22 +0200
+Subject: [PATCH] blitz-dom: a select has a selected option, submits it, and
+ draws closed
+
+An option's selectedness is its ElementState::CHECKED bit, as in Gecko,
+so option:checked matches it. The mutator settles it when options come,
+go, or have their selected attribute set or removed, by the selectedness
+setting algorithm: an option inserted with selected is selected, one
+whose attribute changes takes it (and, without multiple, unselects the
+others), and a select without multiple then has exactly one, the last
+selected or else the first that is not disabled. There is no script, so
+there is no dirtiness. An embedder picks an option as the user does
+(pick_option), and reads the options, their values and the select's.
+
+Form data has each selected option that is not disabled, under the
+select's name.
+
+A select without multiple draws closed, as browsers draw it: the selected
+option and an arrow, as wide as its widest option (every option sits in
+one grid cell, the others hidden). Its list is not drawn.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/assets/default.css |  36 +++++
+ packages/blitz-dom/src/form.rs        |  10 +-
+ packages/blitz-dom/src/lib.rs         |   1 +
+ packages/blitz-dom/src/mutator.rs     |  72 ++++++++++
+ packages/blitz-dom/src/select.rs      | 189 ++++++++++++++++++++++++++
+ 5 files changed, 307 insertions(+), 1 deletion(-)
+ create mode 100644 packages/blitz-dom/src/select.rs
+
+diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
+index 304402cf..57cf0b6d 100644
+--- a/packages/blitz-dom/assets/default.css
++++ b/packages/blitz-dom/assets/default.css
+@@ -160,6 +160,42 @@ option {
+     display: none;
+ }
+ 
++/* A select that shows one option, not `multiple`, shows the selected one and
++   an arrow, and is as wide as its widest option, as a browser draws a closed
++   select. Its list is not drawn. */
++select:not([multiple]) {
++    display: inline-grid;
++    grid-template-columns: auto auto;
++    align-items: center;
++    white-space: nowrap;
++    border: 1px solid light-dark(#767676, #858585);
++    padding: 2px;
++    color: FieldText;
++    background-color: Field;
++}
++
++select:not([multiple]) > optgroup {
++    display: contents;
++}
++
++select:not([multiple]) > option,
++select:not([multiple]) > optgroup > option {
++    display: block;
++    grid-area: 1 / 1;
++    visibility: hidden;
++}
++
++select:not([multiple]) > option:checked,
++select:not([multiple]) > optgroup > option:checked {
++    visibility: visible;
++}
++
++select:not([multiple])::after {
++    content: "\25BE";
++    grid-area: 1 / 2;
++    padding-inline-start: 0.5em;
++}
++
+ picture {
+     display: contents;
+ }
+diff --git a/packages/blitz-dom/src/form.rs b/packages/blitz-dom/src/form.rs
+index 82eb6ea5..8c52a22d 100644
+--- a/packages/blitz-dom/src/form.rs
++++ b/packages/blitz-dom/src/form.rs
+@@ -267,11 +267,19 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
+             continue;
+         };
+ 
+-        // TODO: If the field element is a select element,
++        // If the field element is a select element,
+         //  then for each option element in the select element's
+         //  list of options whose selectedness is true and that is not disabled,
+         //  create an entry with name and the value of the option element,
+         //  and append it to entry list.
++        if element.name.local == local_name!("select") {
++            for option_id in doc.select_options(control_id) {
++                if doc.option_selected(option_id) && !doc.option_disabled(option_id) {
++                    create_entry(name, doc.option_value(option_id).as_str().into());
++                }
++            }
++            continue;
++        }
+ 
+         // Otherwise, if the field element is an input element whose type attribute is in the Checkbox state or the Radio Button state, then:
+         if element.name.local == local_name!("input")
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index d4d9350a..f7edb98e 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -46,6 +46,7 @@ mod debug;
+ mod events;
+ mod font_metrics;
+ mod form;
++mod select;
+ mod html;
+ /// Loading of `<iframe>` elements into sub-documents.
+ mod iframe;
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index ff962491..a2e12d2d 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -56,6 +56,12 @@ pub struct DocumentMutator<'doc> {
+     title_node: Option<NodeId>,
+     style_nodes: HashSet<NodeId>,
+     form_nodes: HashSet<NodeId>,
++    /// Selects whose options changed; the options inserted with a `selected`
++    /// attribute; and those whose `selected` attribute was set or removed,
++    /// in order (see `update_selectedness`)
++    select_nodes: HashSet<NodeId>,
++    selected_options: Vec<NodeId>,
++    option_defaults: Vec<(NodeId, bool)>,
+ 
+     /// Whether an element/attribute that affect animation status has been seen
+     recompute_is_animating: bool,
+@@ -85,6 +91,9 @@ impl DocumentMutator<'_> {
+             title_node: None,
+             style_nodes: HashSet::new(),
+             form_nodes: HashSet::new(),
++            select_nodes: HashSet::new(),
++            selected_options: Vec::new(),
++            option_defaults: Vec::new(),
+             recompute_is_animating: false,
+             mutations_occurred: false,
+             #[cfg(feature = "autofocus")]
+@@ -269,6 +278,9 @@ impl DocumentMutator<'_> {
+ 
+     pub fn set_attribute(&mut self, node_id: NodeId, name: QualName, value: &str) {
+         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
++        if node_is_in_document {
++            self.option_default_changed(node_id, &name, true);
++        }
+         if node_is_in_document {
+             self.doc.snapshot_node(node_id);
+ 
+@@ -428,6 +440,9 @@ impl DocumentMutator<'_> {
+ 
+     pub fn clear_attribute(&mut self, node_id: NodeId, name: QualName) {
+         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
++        if node_is_in_document && self.doc.nodes[node_id].attr(name.local.clone()).is_some() {
++            self.option_default_changed(node_id, &name, false);
++        }
+         if node_is_in_document {
+             self.doc.snapshot_node(node_id);
+ 
+@@ -920,6 +935,17 @@ impl<'doc> DocumentMutator<'doc> {
+             self.doc.reset_form_owner(id);
+         }
+ 
++        let inserted = mem::take(&mut self.selected_options);
++        let defaults = mem::take(&mut self.option_defaults);
++        self.select_nodes.extend(
++            defaults
++                .iter()
++                .filter_map(|&(id, _)| self.doc.option_select(id)),
++        );
++        for id in self.select_nodes.drain() {
++            self.doc.update_selectedness(id, &inserted, &defaults);
++        }
++
+         #[cfg(feature = "autofocus")]
+         if let Some(node_id) = self.node_to_autofocus.take() {
+             if self.doc.get_node(node_id).is_some() {
+@@ -958,6 +984,36 @@ impl<'doc> DocumentMutator<'doc> {
+         self.eager_op_queue = ops;
+     }
+ 
++    /// An option's `selected` attribute was set or removed: its selectedness
++    /// follows (see `update_selectedness`).
++    fn option_default_changed(&mut self, node_id: NodeId, name: &QualName, selected: bool) {
++        if name.local == local_name!("selected")
++            && self.doc.nodes[node_id]
++                .data
++                .is_element_with_tag_name(&local_name!("option"))
++        {
++            self.option_defaults.push((node_id, selected));
++        }
++    }
++
++    /// A node is about to leave the document: if it is an option or an
++    /// optgroup of a select, the select's selectedness is settled again.
++    fn options_changed(&mut self, node_id: NodeId) {
++        let node = &self.doc.nodes[node_id];
++        let select = if node.data.is_element_with_tag_name(&local_name!("option")) {
++            self.doc.option_select(node_id)
++        } else if node.data.is_element_with_tag_name(&local_name!("optgroup")) {
++            node.parent.filter(|&p| {
++                self.doc.nodes[p]
++                    .data
++                    .is_element_with_tag_name(&local_name!("select"))
++            })
++        } else {
++            None
++        };
++        self.select_nodes.extend(select);
++    }
++
+     fn process_added_subtree(&mut self, node_id: NodeId) {
+         self.doc.iter_subtree_mut(node_id, |node_id, doc| {
+             let node = &mut doc.nodes[node_id];
+@@ -969,6 +1025,19 @@ impl<'doc> DocumentMutator<'doc> {
+                 doc.add_to_id_map(&id_attr, node_id);
+             }
+ 
++            // An option inserted into a select: its selectedness is settled
++            // when the mutations are flushed.
++            if doc.nodes[node_id]
++                .data
++                .is_element_with_tag_name(&local_name!("option"))
++                && let Some(select_id) = doc.option_select(node_id)
++            {
++                if doc.nodes[node_id].attr(local_name!("selected")).is_some() {
++                    self.selected_options.push(node_id);
++                }
++                self.select_nodes.insert(select_id);
++            }
++
+             let node = &mut doc.nodes[node_id];
+             let NodeData::Element(ref mut element) = node.data else {
+                 return;
+@@ -1015,6 +1084,9 @@ impl<'doc> DocumentMutator<'doc> {
+     }
+ 
+     fn process_removed_subtree(&mut self, node_id: NodeId) {
++        if self.doc.nodes[node_id].flags.is_in_document() {
++            self.options_changed(node_id);
++        }
+         self.doc.iter_subtree_mut(node_id, |node_id, doc| {
+             doc.nodes[node_id]
+                 .flags
+diff --git a/packages/blitz-dom/src/select.rs b/packages/blitz-dom/src/select.rs
+new file mode 100644
+index 00000000..bc6da174
+--- /dev/null
++++ b/packages/blitz-dom/src/select.rs
+@@ -0,0 +1,189 @@
++//! A `<select>`'s options and their selectedness.
++//!
++//! An option's selectedness is its `ElementState::CHECKED` bit, as in Gecko,
++//! so `option:checked` matches the picked option and is invalidated with it.
++//! There is no script, so an option has no dirtiness: its `selected`
++//! attribute, set or removed, is its selectedness from then on.
++//!
++//! <https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>
++
++use blitz_traits::node_id::NodeId;
++use markup5ever::local_name;
++use style_dom::ElementState;
++
++use crate::BaseDocument;
++
++impl BaseDocument {
++    /// The select's list of options: its `option` children, and those of its
++    /// `optgroup` children, in tree order.
++    pub fn select_options(&self, select_id: NodeId) -> Vec<NodeId> {
++        let mut options = Vec::new();
++        let Some(select) = self.get_node(select_id) else {
++            return options;
++        };
++        for &child_id in select.children.iter() {
++            let child = &self.nodes[child_id];
++            if child.data.is_element_with_tag_name(&local_name!("option")) {
++                options.push(child_id);
++            } else if child
++                .data
++                .is_element_with_tag_name(&local_name!("optgroup"))
++            {
++                options.extend(child.children.iter().copied().filter(|&id| {
++                    self.nodes[id]
++                        .data
++                        .is_element_with_tag_name(&local_name!("option"))
++                }));
++            }
++        }
++        options
++    }
++
++    /// The select an option belongs to: its parent, or its `optgroup`'s.
++    pub fn option_select(&self, option_id: NodeId) -> Option<NodeId> {
++        let select = local_name!("select");
++        let optgroup = local_name!("optgroup");
++        let is = |id: NodeId, name: &markup5ever::LocalName| {
++            self.nodes[id].data.is_element_with_tag_name(name)
++        };
++        let parent = self.get_node(option_id)?.parent?;
++        if is(parent, &select) {
++            return Some(parent);
++        }
++        let grandparent = self.nodes[parent].parent?;
++        (is(parent, &optgroup) && is(grandparent, &select)).then_some(grandparent)
++    }
++
++    /// Whether an option is disabled: by its `disabled` attribute, or its
++    /// `optgroup`'s.
++    pub fn option_disabled(&self, option_id: NodeId) -> bool {
++        let Some(option) = self.get_node(option_id) else {
++            return true;
++        };
++        option.attr(local_name!("disabled")).is_some()
++            || option.parent.is_some_and(|p| {
++                let parent = &self.nodes[p];
++                parent
++                    .data
++                    .is_element_with_tag_name(&local_name!("optgroup"))
++                    && parent.attr(local_name!("disabled")).is_some()
++            })
++    }
++
++    /// Whether an option is selected.
++    pub fn option_selected(&self, option_id: NodeId) -> bool {
++        self.get_node(option_id)
++            .and_then(|n| n.element_data())
++            .is_some_and(|e| e.element_state.contains(ElementState::CHECKED))
++    }
++
++    /// An option's value: its `value` attribute, or else its text with
++    /// ASCII white space stripped and collapsed.
++    pub fn option_value(&self, option_id: NodeId) -> String {
++        let Some(option) = self.get_node(option_id) else {
++            return String::new();
++        };
++        if let Some(value) = option.attr(local_name!("value")) {
++            return value.to_string();
++        }
++        option
++            .text_content()
++            .split_ascii_whitespace()
++            .collect::<Vec<_>>()
++            .join(" ")
++    }
++
++    /// The select's value: its first selected option's.
++    pub fn select_value(&self, select_id: NodeId) -> Option<String> {
++        self.select_options(select_id)
++            .into_iter()
++            .find(|&o| self.option_selected(o))
++            .map(|o| self.option_value(o))
++    }
++
++    /// Picks an option of a select, as the user does: the option is selected
++    /// and, unless the select is `multiple`, no other is. Returns whether the
++    /// selectedness of any option changed.
++    pub fn pick_option(&mut self, select_id: NodeId, option_id: NodeId) -> bool {
++        let options = self.select_options(select_id);
++        if !options.contains(&option_id) {
++            return false;
++        }
++        let multiple = self.nodes[select_id]
++            .attr(local_name!("multiple"))
++            .is_some();
++        let picked: Vec<bool> = options
++            .iter()
++            .map(|&o| o == option_id || (multiple && self.option_selected(o)))
++            .collect();
++        self.set_selectedness(&options, &picked)
++    }
++
++    /// Runs the selectedness setting algorithm on a select after its options
++    /// changed. `inserted` are the options inserted with a `selected`
++    /// attribute, which are selected. `defaults` are the options whose
++    /// `selected` attribute was set (`true`) or removed (`false`), in the
++    /// order it happened: each takes it as its selectedness, and unless the
++    /// select is `multiple`, an option that becomes selected leaves no other
++    /// selected. Then, unless the select is `multiple`, one option is
++    /// selected: the last selected one, or else the first that is not
++    /// disabled.
++    pub(crate) fn update_selectedness(
++        &mut self,
++        select_id: NodeId,
++        inserted: &[NodeId],
++        defaults: &[(NodeId, bool)],
++    ) {
++        if self.get_node(select_id).is_none() {
++            return;
++        }
++        let options = self.select_options(select_id);
++        let multiple = self.nodes[select_id]
++            .attr(local_name!("multiple"))
++            .is_some();
++        let mut picked: Vec<bool> = options
++            .iter()
++            .map(|&o| self.option_selected(o) || inserted.contains(&o))
++            .collect();
++        for &(option_id, selected) in defaults {
++            let Some(i) = options.iter().position(|&o| o == option_id) else {
++                continue;
++            };
++            if selected && !multiple {
++                picked.fill(false);
++            }
++            picked[i] = selected;
++        }
++        if !multiple {
++            match picked.iter().rposition(|&p| p) {
++                Some(last) => {
++                    picked.fill(false);
++                    picked[last] = true;
++                }
++                None => {
++                    if let Some(first) = options.iter().position(|&o| !self.option_disabled(o)) {
++                        picked[first] = true;
++                    }
++                }
++            }
++        }
++        self.set_selectedness(&options, &picked);
++    }
++
++    fn set_selectedness(&mut self, options: &[NodeId], picked: &[bool]) -> bool {
++        let mut changed = false;
++        for (&option_id, &selected) in options.iter().zip(picked) {
++            if self.option_selected(option_id) == selected {
++                continue;
++            }
++            changed = true;
++            self.snapshot_node_and(option_id, ElementState::CHECKED, |node| {
++                if let Some(element) = node.element_data_mut() {
++                    element.element_state.set(ElementState::CHECKED, selected);
++                }
++                node.mark_ancestors_dirty();
++            });
++        }
++        changed
++    }
++}
+-- 
+2.56.0
+
