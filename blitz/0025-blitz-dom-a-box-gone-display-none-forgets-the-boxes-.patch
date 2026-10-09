@@ -1,0 +1,124 @@
+From 4916e70e69b8dc4cfdb6d8811d496c3b6bab0324 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Fri, 9 Oct 2026 22:37:46 +0200
+Subject: [PATCH] blitz-dom: a box gone display: none forgets the boxes built
+ under it
+
+A box that goes display: none gets no construction of its own: its
+parent constructs again and may not list it any more (an inline parent
+does not), and its subtree, unstyled from then on, reports no damage,
+not even a removal. So the box and its subtree kept their layout
+children, anonymous blocks, inline layouts, table contexts, hoisted
+out-of-flow boxes and paint trees, and a mutation under it left them
+naming freed nodes. Taffy still visits a hidden box's children and
+hoisted boxes (hidden layout, rounding), and paint its paint children:
+"invalid SlotMap key used" at node_from_id, or an unwrap in paint.
+
+Damage propagation, which visits every restyled node, now has a box
+whose display is none forget all of that, for itself and its former
+subtree, freeing their anonymous blocks. Shown again, the subtree is
+styled and constructed afresh. In debug builds,
+assert_layout_parents_consistent held no more after such a mutation;
+it holds again.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/layout/damage.rs | 68 ++++++++++++++++++++++++-
+ 1 file changed, 67 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index cd72aea4..560a9258 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -4,7 +4,8 @@ use crate::net::ResourceHandler;
+ use crate::node::NodeFlags;
+ use crate::tree::NodeTree;
+ use crate::{
+-    BaseDocument, net::ImageHandler, node::ImageResourceData, node::Status, util::ImageLayerKind,
++    BaseDocument, net::ImageHandler, node::ImageResourceData, node::SpecialElementData,
++    node::Status, util::ImageLayerKind,
+ };
+ use style::properties::ComputedValues;
+ use style::properties::generated::longhands::position::computed_value::T as Position;
+@@ -73,6 +74,13 @@ impl BaseDocument {
+             }
+         }
+ 
++        if self.nodes[node_id]
++            .display_style()
++            .is_some_and(|d| d.outside() == DisplayOutside::None)
++        {
++            self.deconstruct(node_id);
++        }
++
+         let mut damage_from_children = RestyleDamage::empty();
+         let children = std::mem::take(&mut self.nodes[node_id].children);
+         for child in children.iter() {
+@@ -181,6 +189,64 @@ impl BaseDocument {
+         damage_for_parent
+     }
+ 
++    /// Forgets the boxes construction built for a box gone `display: none`
++    /// and for its subtree: layout children, anonymous blocks, inline
++    /// layouts, table contexts, hoisted out-of-flow boxes, and the paint
++    /// tree built from them. Nothing constructs them while it stays hidden.
++    /// Its parent constructs again, and may not list it any more (an inline
++    /// parent does not); its subtree is unstyled and reports no damage, not
++    /// even a removal. Kept, they named the nodes a delta freed under it,
++    /// which Taffy (hidden layout, rounding) and paint still visited. Shown
++    /// again, the subtree is styled and constructed afresh. A box with
++    /// nothing left to forget costs a look.
++    fn deconstruct(&mut self, node_id: NodeId) {
++        let node = &mut self.nodes[node_id];
++        let children = node.layout_children.get_mut().take();
++        // A hidden box Taffy lays out (in a block or flex parent, say) has
++        // children, none; one never constructed stays so.
++        if children.is_some() {
++            *node.layout_children.get_mut() = Some(ThinVec::new());
++        }
++        self.forget_boxes(node_id);
++        for child_id in children.into_iter().flatten() {
++            if self.nodes.contains_key(child_id) {
++                self.deconstruct_subtree(child_id);
++            }
++        }
++    }
++
++    fn deconstruct_subtree(&mut self, node_id: NodeId) {
++        let children = self.nodes[node_id].layout_children.get_mut().take();
++        self.forget_boxes(node_id);
++        for child_id in children.into_iter().flatten() {
++            if self.nodes.contains_key(child_id) {
++                self.deconstruct_subtree(child_id);
++            }
++        }
++    }
++
++    /// What construction, layout and the paint tree keep on a box besides
++    /// its layout children.
++    fn forget_boxes(&mut self, node_id: NodeId) {
++        use taffy::LayoutContainingBlock as _;
++        self.clear_hoisted_children(crate::taffy_node_id(node_id));
++        let node = &mut self.nodes[node_id];
++        node.flags.reset_construction_flags();
++        *node.paint_children.get_mut() = None;
++        node.stacking_context = None;
++        node.sc_contribution_cache.get_mut().clear();
++        if let Some(element) = node.element_data_mut() {
++            element.take_inline_layout();
++            if matches!(element.special_data, SpecialElementData::TableRoot(_)) {
++                element.special_data = SpecialElementData::None;
++            }
++        }
++        // Their children were the box's, deconstructed by the caller.
++        for anon_id in std::mem::take(&mut node.anonymous_blocks) {
++            self.deallocate_anonymous_block(anon_id);
++        }
++    }
++
+     /// Whether this resolve keeps evicted layout caches for
+     /// `speculate_layout`: only incremental relayouts of a laid-out tree.
+     pub(crate) fn speculating(&self) -> bool {
+-- 
+2.56.0
+

@@ -1,0 +1,37 @@
+From 6f4470afbf81fcbf7e3535a892ba7fd40b05a22f Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Fri, 9 Oct 2026 22:37:46 +0200
+Subject: [PATCH] blitz-dom: a table emptied of its rows forgets them
+
+Construction returns early for a node with no children, before the table
+branch that builds a table's context, so a table whose rows a mutation
+removed kept the context it was built with. Paint read its rows from
+there (draw_table_row_backgrounds) and found freed nodes. Construction
+now drops a table context with the inline layout, before anything else,
+and builds it again while the node is a table with children.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/layout/construct.rs | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index d94fdd41..4d6d4ba7 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -431,6 +431,12 @@ fn collect_layout_children_with_wrap(
+         .reset_construction_flags();
+     if let Some(element_data) = doc.nodes[container_node_id].element_data_mut() {
+         element_data.take_inline_layout();
++        // A table's context names its rows: it is built again below while
++        // the node is a table with children. Kept, it outlived the rows a
++        // delta removed, and paint read them.
++        if matches!(element_data.special_data, SpecialElementData::TableRoot(_)) {
++            element_data.special_data = SpecialElementData::None;
++        }
+     }
+ 
+     flush_pseudo_elements(doc, container_node_id);
+-- 
+2.56.0
+

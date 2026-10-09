@@ -32,6 +32,10 @@ changes upstream is an open question.
 | `0021-blitz-dom-*` | a password input shows a mask and edits its value (below) |
 | `0022-blitz-dom-*` | an embedder can edit a text input: its value, its selection, its rows (below) |
 | `0023-blitz-dom-*` | a select has a selected option, submits it, and draws closed (below) |
+| `0024-blitz-dom-*` | a table emptied of its rows forgets them (below) |
+| `0025-blitz-dom-*` | a box gone `display: none` forgets the boxes built under it (below) |
+| `0026-blitz-dom-*` | speculative relayout (0001) leaves nodes out of the layout tree alone (below) |
+| `0027-blitz-dom-*` | a mutation's queued work skips the nodes it freed (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -55,7 +59,41 @@ and every text input is 300px wide, whatever its `size`. In a document
 that scrolls, a scrolled box reports its rect moved by its own scroll, so
 `area` and focus scroll it wrongly; a press above it lands on the items it
 scrolled out of view; and along an axis the document did not ask for, a
-fragment link, a thumb or a fling still moves it.
+fragment link, a thumb or a fling still moves it. And some deltas panic:
+one that empties a table, one under a box that went `display: none`, or one
+that inserts a form control and removes it again.
+
+## Freed nodes
+
+A delta frees the nodes it removes. Layout data, and a mutation's own queue,
+outlived them and named them ("invalid SlotMap key used"), which in hottyterm
+turned HOTTY off for the terminal. hotty-blitz's `fuzz` test found
+them; `stale_nodes` has each, shrunk.
+
+- **Tables (0024).** Construction returned before the table branch for a
+  node with no children, so a table emptied of its rows kept its table
+  context, and paint read the rows from it. The context now goes with the
+  inline layout, first, and is built again while the node is a table with
+  children.
+- **Hidden boxes (0025).** A box that goes `display: none` is not
+  constructed again (its parent is, and an inline parent no longer lists
+  it), and its subtree, unstyled, reports no damage, not even a removal.
+  It kept its layout children, anonymous blocks, inline layout, hoisted
+  out-of-flow boxes and paint tree, as did the boxes under it, and Taffy
+  (hidden layout, rounding) and paint still visit a hidden box. Damage
+  propagation now has a hidden box forget all of it, for its former subtree
+  too. Shown again, the subtree is constructed afresh. Blitz's own debug
+  check, `assert_layout_parents_consistent`, failed after such a delta; it
+  holds again.
+- **Speculation (0026).** `speculate_layout` (0001) asked nodes that had
+  just left the layout tree about their layout parent and laid out their
+  children, both possibly freed. It now passes over a node unless each
+  layout parent up to the root element lists it; its old container lays out
+  again, as for any unsettled child.
+- **A mutation's queue (0027).** The mutator queues work for its flush (a
+  form control's form owner, a style element's sheet, a select's
+  selectedness); a control inserted and freed by the same mutation stayed
+  queued. The flush now skips nodes no longer there.
 
 ## Backspace on macOS
 

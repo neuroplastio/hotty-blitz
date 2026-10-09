@@ -1,0 +1,112 @@
+From 6d41d26b94a2ac129286fe542f34c587163beed5 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Fri, 9 Oct 2026 22:37:46 +0200
+Subject: [PATCH] blitz-dom: speculative relayout leaves nodes out of the
+ layout tree alone
+
+speculate_layout went through every node whose cache damage cleared,
+including ones that left the layout tree in the same frame: removed, or
+gone display: none or display: contents. Their layout parent can be an
+anonymous block construction freed (is_item indexed it), and their
+layout children nodes freed since (answers_as_before laid them out).
+A node now counts only while each layout parent up to the root element
+lists it among its layout children; one that does not is unsettled, as
+before, and its old container lays out again. The answers are memoised
+per pass, so a deep tree's shared ancestors are walked once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/layout/speculate.rs | 54 ++++++++++++++++++++--
+ 1 file changed, 49 insertions(+), 5 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/speculate.rs b/packages/blitz-dom/src/layout/speculate.rs
+index 8cdd2eef..50e77f2e 100644
+--- a/packages/blitz-dom/src/layout/speculate.rs
++++ b/packages/blitz-dom/src/layout/speculate.rs
+@@ -19,7 +19,7 @@
+ //! - construction left its layout children as they were,
+ //! - every child whose cache was cleared gave the same answers.
+ 
+-use std::collections::HashSet;
++use std::collections::{HashMap, HashSet};
+ 
+ use blitz_traits::node_id::NodeId;
+ use style::values::specified::box_::DisplayInside;
+@@ -61,8 +61,14 @@ impl BaseDocument {
+ 
+         // Containers with a child that answers differently (or unknowably).
+         let mut unsettled: HashSet<NodeId> = HashSet::new();
++        let mut live: HashMap<NodeId, bool> = HashMap::new();
+         for (_, id) in order {
+             let settled = match evicted.remove(&id) {
++                // A node out of the layout tree (removed, or in a subtree
++                // that went `display: none`) is no longer constructed: its
++                // layout parent and children may name freed nodes. Its old
++                // container, if any, was restructured and lays out again.
++                _ if !self.in_layout_tree(id, &mut live) => false,
+                 Some(old)
+                     if !own.contains(&id)
+                         && !restructured.contains(&id)
+@@ -85,6 +91,45 @@ impl BaseDocument {
+         }
+     }
+ 
++    /// Whether `id` is in the layout tree as construction left it: up to
++    /// the root element, every node's layout parent is there and lists it
++    /// among its layout children. `live` remembers the answers of a pass.
++    fn in_layout_tree(&self, id: NodeId, live: &mut HashMap<NodeId, bool>) -> bool {
++        let root = self.root_element().id;
++        let mut path = Vec::new();
++        let mut current = id;
++        let answer = loop {
++            if let Some(&known) = live.get(&current) {
++                break known;
++            }
++            path.push(current);
++            if current == root {
++                break true;
++            }
++            // Stale pointers could, in principle, go round.
++            if path.len() > self.nodes.len() {
++                break false;
++            }
++            let Some(parent) = self.nodes[current].layout_parent.get() else {
++                break false;
++            };
++            let listed = self.nodes.get(parent).is_some_and(|p| {
++                p.layout_children
++                    .borrow()
++                    .as_ref()
++                    .is_some_and(|children| children.contains(&current))
++            });
++            if !listed {
++                break false;
++            }
++            current = parent;
++        };
++        for node in path {
++            live.insert(node, answer);
++        }
++        answer
++    }
++
+     /// Ask a node every question it was asked last time; true when every
+     /// answer is the same. The final layout goes last, so the subtree ends up
+     /// laid out as its container expects.
+@@ -151,10 +196,9 @@ impl BaseDocument {
+         let node = &self.nodes[id];
+         !node.is_anonymous()
+             && node.element_data().is_some()
+-            && node
+-                .layout_parent
+-                .get()
+-                .is_some_and(|p| !self.nodes[p].is_anonymous() && self.is_flex_or_grid(p))
++            && node.layout_parent.get().is_some_and(|p| {
++                self.nodes.get(p).is_some_and(|p| !p.is_anonymous()) && self.is_flex_or_grid(p)
++            })
+     }
+ 
+     fn box_depth(&self, id: NodeId) -> usize {
+-- 
+2.56.0
+

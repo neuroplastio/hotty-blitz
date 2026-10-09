@@ -1,0 +1,42 @@
+From 2235d9e3ba4013b7cec13bb588056ea97352b4a6 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Fri, 9 Oct 2026 22:59:56 +0200
+Subject: [PATCH] blitz-dom: a mutation's queued work skips the nodes it freed
+
+DocumentMutator queues work for flush: a form control's form owner, a
+style element's sheet, a select's selectedness, the title. A mutation
+that inserts a form control and frees it again before flushing (hotty-
+blitz morphing an id given twice, on two tags) left the freed node in
+form_nodes, and reset_form_owner indexed it: "invalid SlotMap key used"
+at form.rs. flush now drops queued nodes that are no longer there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/mutator.rs | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index a2e12d2d..fe85c1fa 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -921,6 +921,17 @@ impl<'doc> DocumentMutator<'doc> {
+             self.doc.has_canvas = self.doc.compute_has_canvas();
+         }
+ 
++        // The nodes queued below may have been freed since, by the same
++        // mutation (a form control inserted, then removed): their work goes.
++        let nodes = &self.doc.nodes;
++        let live = |id: &NodeId| nodes.contains_key(*id);
++        self.title_node = self.title_node.filter(live);
++        self.style_nodes.retain(live);
++        self.form_nodes.retain(live);
++        self.select_nodes.retain(live);
++        self.selected_options.retain(live);
++        self.option_defaults.retain(|(id, _)| live(id));
++
+         if let Some(id) = self.title_node {
+             let title = self.doc.nodes[id].text_content();
+             self.doc.shell_provider.set_window_title(title);
+-- 
+2.56.0
+

@@ -103,7 +103,9 @@ pub fn apply(
                         continue;
                     };
                     match m.doc.get_element_by_id(&id) {
-                        Some(old) => morph_node(&mut m, old, scratch, k, touch),
+                        Some(old) => {
+                            morph_node(&mut m, old, scratch, k, touch);
+                        }
                         None => missing.push(id),
                     }
                 }
@@ -147,7 +149,9 @@ pub fn apply(
                     .and_then(|id| m.doc.get_element_by_id(&id))
                     .filter(|&old| m.parent_id(old) == Some(t));
                 match existing {
-                    Some(old) => morph_node(&mut m, old, scratch, k, touch),
+                    Some(old) => {
+                        morph_node(&mut m, old, scratch, k, touch);
+                    }
                     None => fresh.push(build(&mut m, scratch, k)),
                 }
             }
@@ -336,22 +340,24 @@ fn shape(doc: &BaseDocument, id: NodeId) -> Shape {
 }
 
 /// Makes `old` (live) look like `new` (scratch), keeping `old`'s identity
-/// wherever the two are the same kind of node.
+/// wherever the two are the same kind of node. Returns the node in its
+/// place: `old`, or what replaced it (`old` is then freed).
 pub fn morph_node(
     m: &mut DocumentMutator<'_>,
     old: NodeId,
     scratch: &BaseDocument,
     new: NodeId,
     touch: &mut dyn FnMut(&BaseDocument, NodeId),
-) {
+) -> NodeId {
     match (shape(m.doc, old), shape(scratch, new)) {
         (Shape::Text(a), Shape::Text(b)) => {
             if a != b {
                 touch(m.doc, old);
                 m.set_node_text(old, &b);
             }
+            old
         }
-        (Shape::Comment, Shape::Comment) => {}
+        (Shape::Comment, Shape::Comment) => old,
         (Shape::Element(na, ia), Shape::Element(nb, ib))
             if na == nb && (ia == ib || ia.is_none() || ib.is_none()) =>
         {
@@ -361,6 +367,7 @@ pub fn morph_node(
                 .map(|n| n.children.to_vec())
                 .unwrap_or_default();
             morph_children(m, old, scratch, &kids, touch);
+            old
         }
         _ => {
             touch(m.doc, old);
@@ -370,6 +377,7 @@ pub fn morph_node(
             let built = build(m, scratch, new);
             m.insert_nodes_before(old, &[built]);
             m.remove_and_drop_node(old);
+            built
         }
     }
 }
@@ -488,11 +496,10 @@ pub fn morph_children(
     // Morph the kept nodes, build the new ones, and put everything in order
     // under `old_parent`, moving (not recreating) the kept ones.
     for (i, (keep, nk)) in plan.into_iter().enumerate() {
+        // A kept node of another kind (an id moved to another tag) is
+        // replaced, and its replacement is what goes in order.
         let want = match keep {
-            Some(ok) => {
-                morph_node(m, ok, scratch, nk, touch);
-                ok
-            }
+            Some(ok) => morph_node(m, ok, scratch, nk, touch),
             None => build(m, scratch, nk),
         };
         let current = m.child_ids(old_parent);

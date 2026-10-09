@@ -6,9 +6,9 @@ CARGO ?= mise x -- cargo
 HOTTY_DIR ?= $(abspath $(patsubst %/SPEC.md,%,$(firstword $(wildcard ../hotty/SPEC.md ../../hotty/main/SPEC.md))))
 export HOTTY_DIR
 
-.PHONY: check build release test clippy fmt corpus bench oracle blitz hotty
+.PHONY: check build release test fuzz clippy fmt corpus bench oracle blitz hotty
 
-check: build test clippy test-pty   ## the gate
+check: build test clippy test-pty fuzz   ## the gate
 
 hotty:
 	@test -n "$(HOTTY_DIR)" || { echo "no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
@@ -27,6 +27,9 @@ test: blitz hotty
 
 test-pty: release hotty   ## input routing through the polyfill, this script as the terminal
 	python3 tests/m3_form.py
+
+fuzz: blitz   ## random deltas, rendered, in a release build: no panic (tests/fuzz.rs)
+	$(CARGO) test --release -q -p hotty-blitz --test fuzz
 
 clippy: blitz
 	$(CARGO) clippy --workspace -q -- -D warnings
