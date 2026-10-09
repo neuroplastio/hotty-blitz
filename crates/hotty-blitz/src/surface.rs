@@ -1671,6 +1671,10 @@ impl Surface {
             }
         };
         self.pointer_at = Some((x, y));
+        // Blitz hit-tests the boxes as last laid out: a delta since then
+        // may have freed some of them (SPEC §6), so lay out first, as
+        // takes_pointer does.
+        self.resolve();
         let before = self.focused();
         let mut events = self.drive(ui);
         // A click takes the keyboard only by focusing an element that takes

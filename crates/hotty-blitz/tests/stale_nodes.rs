@@ -4,12 +4,14 @@
 //! turned HOTTY off. Found by fuzzing random deltas against layout, and
 //! shrunk.
 
-use hotty_blitz::{Config, Host, Metrics};
+use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
 use hotty_wire::Command;
 
 enum Step<'a> {
     Delta(&'a str, &'a str, Option<&'a str>, &'a str),
     Render,
+    /// The mouse moved to device pixel (x, y) of the surface.
+    Move(f32, f32),
 }
 use Step::*;
 
@@ -36,6 +38,9 @@ fn run(doc: &str, steps: &[Step]) {
                 host.handle(&cmd(&pairs, payload));
             }
             Render => host.render_dirty(&mut |_, _, _| {}),
+            Move(x, y) => {
+                host.pointer("f", PointerKind::Move, *x, *y, Mods::default());
+            }
         }
     }
     host.render_dirty(&mut |_, _, _| {});
@@ -155,5 +160,16 @@ fn a_flex_item_gone_display_contents() {
             Delta("prepend", "p", None, ""),
             Render,
         ],
+    );
+}
+
+/// The mouse moved over a surface after a delta freed an element there,
+/// before the next frame: Blitz hit-tested the boxes as last laid out, the
+/// freed one among them.
+#[test]
+fn a_pointer_moved_before_the_frame_after_a_removal() {
+    run(
+        r#"<div id=a style="height:20px">a</div>"#,
+        &[Delta("remove", "a", None, ""), Move(5.0, 10.0)],
     );
 }
