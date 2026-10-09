@@ -11,7 +11,7 @@
 use blitz_dom::node::ScrollbarWidth;
 use blitz_dom::{BaseDocument, NodeId, ScrollBehavior};
 use std::time::{Duration, Instant};
-use style::values::computed::{Overflow, OverscrollBehavior};
+use style::values::computed::{Overflow, OverscrollBehavior, TouchAction};
 
 /// The axes a document asked to scroll along (`scroll`, SPEC §5.1): 1
 /// vertically, 2 horizontally, 3 both. Anything else is none.
@@ -252,6 +252,45 @@ pub fn route(doc: &BaseDocument, from: Option<NodeId>, axes: u8, axis: Axis, sig
         cur = next;
     }
     Route::Terminal
+}
+
+/// Whether `id` is an element the user scrolls in a document that scrolls
+/// along `axes` (SPEC §5.3): its `overflow` is `auto` or `scroll` along one
+/// of them. In a document that scrolls along none, nothing does.
+fn scrolls(doc: &BaseDocument, id: NodeId, axes: u8) -> bool {
+    [Axis::X, Axis::Y].into_iter().any(|a| {
+        axes & a.bit() != 0 && matches!(overflow(doc, id, a), Overflow::Auto | Overflow::Scroll)
+    })
+}
+
+/// The pans a touch on `from` may make, (horizontal, vertical), as Pointer
+/// Events determine them from CSS `touch-action` (SPEC §9.1): the values of
+/// `from` and of its ancestors up to the nearest element that scrolls
+/// (§5.3), or the root, all of them. `pan-x` allows a horizontal pan,
+/// `pan-y` a vertical one, `auto` and `manipulation` both, and any other
+/// value (`none`, `pinch-zoom`) neither. Stylo parses no `pan-left`,
+/// `pan-right`, `pan-up` or `pan-down`: a declaration with them is
+/// invalid, and leaves the value it would have replaced.
+pub fn touch_pans(doc: &BaseDocument, from: NodeId, axes: u8) -> (bool, bool) {
+    let root = root(doc);
+    let (mut x, mut y) = (true, true);
+    let mut cur = Some(from);
+    while let Some(id) = cur {
+        let Some(node) = doc.get_node(id) else { break };
+        if node.is_element() {
+            if let Some(style) = node.primary_styles() {
+                let t = style.clone_touch_action();
+                let both = t.intersects(TouchAction::AUTO | TouchAction::MANIPULATION);
+                x &= both || t.contains(TouchAction::PAN_X);
+                y &= both || t.contains(TouchAction::PAN_Y);
+            }
+            if Some(id) == root || scrolls(doc, id, axes) {
+                break;
+            }
+        }
+        cur = node.parent;
+    }
+    (x, y)
 }
 
 /// Scrolls `s` to (`x`, `y`), clamped; true if it moved.

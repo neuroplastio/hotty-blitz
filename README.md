@@ -74,7 +74,7 @@ A document scrolls only along the axes it asks for (`a=doc` with
 pixels, never cells, and fade. Along an axis it did not ask for nothing
 moves, whatever its CSS, and nothing shows a scrollbar.
 
-- A terminal hands every wheel, touchpad scroll and touch drag to
+- A terminal hands every wheel, touchpad scroll and touch pan (below) to
   `hotty_host_wheel` first. It returns whether the surface took it; one
   it did not take is the terminal's, as over the cells. A gesture goes
   where its first wheel went, as in a browser: the innermost box that can
@@ -85,6 +85,39 @@ moves, whatever its CSS, and nothing shows a scrollbar.
   an element into view.
 - `hotty run` does the same with the wheel reports it reads: one report
   is a row.
+
+## Touch
+
+A terminal passes every phase of a touch that begins over a surface
+(where `hotty_host_takes_pointer` is true) to `hotty_host_touch`
+(`Host::touch`), taps included, and none of it to
+`hotty_host_pointer`: down, move, up, cancel (a second finger, or the
+platform cancelled it) and long press (the terminal took it for one).
+hotty-blitz decides whose the touch is (SPEC §9.1) and says so on every
+phase: the terminal's (0), undecided (1: hold its moves) or the
+surface's (2).
+
+- A touch drags an element with `drag` in its `data-on` and an id when the
+  `touch-action` of the element touched allows no pan along its first
+  move past the tap slop, 8 CSS px (`TAP_SLOP`, GTK's drag threshold and
+  the addon's): the larger of the move's two deltas, a tie being a pan.
+  The value is Pointer Events': the touched element's and its ancestors'
+  up to the nearest element that scrolls, so `none`, `pinch-zoom` and a
+  `pan-x` or `pan-y` across the move drag; `auto` and `manipulation`
+  pan. Stylo parses no `pan-left`, `pan-right`, `pan-up` or `pan-down`.
+- A drag is a press when it is decided: `press` and `dragstart` at the
+  cell where the touch began, what the press causes (focus), and a
+  `drag` at once if the finger is already over another element. Then
+  drags as for a mouse, and its lift ends it as a mouse drag ends
+  (`dragend`, and a `click` if it lifts over the element it began on). A cancel ends it
+  with `dragend` and an empty target, and the rest of the gesture is the
+  terminal's.
+- A pan is the terminal's: it scrolls with it, `hotty_host_wheel` first,
+  from where the touch began, and the pan presses nothing. Touches with
+  Alt held at touch-down, on no drag element, on a detached surface or
+  after a long press never drag. A tap, a touch that never went past the
+  slop, is a click where the finger lifted: a press there, never a drag.
+- A touch hovers nothing.
 
 ## Text fields
 

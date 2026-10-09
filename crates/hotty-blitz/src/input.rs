@@ -137,6 +137,44 @@ pub struct WheelOutcome {
     pub effects: Vec<Effect>,
 }
 
+/// A finger's phase, as the terminal reports a touch ([`crate::Host::touch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchPhase {
+    /// The first finger touched: a touch begins.
+    Down,
+    /// It moved.
+    Move,
+    /// It lifted.
+    Up,
+    /// A second finger touched, or the platform cancelled the touch: the
+    /// rest of the gesture is the terminal's, until the next `Down`.
+    Cancel,
+    /// The terminal took the touch for a long press: it never drags.
+    LongPress,
+}
+
+/// Whose a touch is, so far ([`crate::Host::touch`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Touch {
+    /// The terminal's: it scrolls with the touch, or taps or long-presses
+    /// with it, as with any touch.
+    #[default]
+    Terminal,
+    /// Not decided yet: it may still drag. The terminal holds it, neither
+    /// scrolling with it nor taking it for a long press's moves.
+    Undecided,
+    /// The surface's: it drags (SPEC §9.1). The terminal does nothing with
+    /// it.
+    Surface,
+}
+
+/// What became of a touch's phase ([`crate::Host::touch`]).
+#[derive(Debug, Default)]
+pub struct TouchOutcome {
+    pub touch: Touch,
+    pub effects: Vec<Effect>,
+}
+
 /// Something the program should hear about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {

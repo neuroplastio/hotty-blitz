@@ -23,7 +23,10 @@ use hotty_wire::{Command, Control};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub use input::{Event, Key, KeyName, KeyOutcome, Mods, PointerKind, WheelOutcome};
+pub use input::{
+    Event, Key, KeyName, KeyOutcome, Mods, PointerKind, Touch, TouchOutcome, TouchPhase,
+    WheelOutcome,
+};
 pub use surface::{Damage, Frame, Timings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +190,8 @@ pub struct Host {
     /// The wheel gesture under way (SPEC §5.3): where its first wheel sent
     /// it, which the rest of it follows.
     gesture: Option<Gesture>,
+    /// The touch under way (Host::touch).
+    finger: Option<Finger>,
     frame_log: Option<FrameLog>,
     /// The surface whose document the host is working in (empty: none),
     /// so that a panic there costs that surface alone ([`Host::recover`]).
@@ -201,6 +206,23 @@ fn enter(working: &mut String, surface: &str) {
     working.clear();
     working.push_str(surface);
 }
+
+/// A touch under way (SPEC §9.1): the surface it began on, where, with
+/// which keys held, the pans the touched element allows while it may still
+/// drag, whose it is so far, and whether it can still be a tap (it has not
+/// gone past the slop, and is no long press).
+struct Finger {
+    surface: String,
+    start: (f32, f32),
+    mods: Mods,
+    pans: (bool, bool),
+    touch: Touch,
+    tap: bool,
+}
+
+/// How far a finger moves, in CSS pixels, before its touch is a pan or a
+/// drag rather than a tap: GTK's drag threshold, and xterm-addon-hotty's.
+pub const TAP_SLOP: f32 = 8.0;
 
 /// A wheel gesture: a wheel's notches, or a touchpad's scroll and its
 /// momentum, as long as they come within [`GESTURE`] of each other.
@@ -267,6 +289,7 @@ impl Host {
             passthrough: false,
             fits: Vec::new(),
             gesture: None,
+            finger: None,
             frame_log: FrameLog::open(),
             working: String::new(),
             lost: Vec::new(),
@@ -962,7 +985,7 @@ impl Host {
     /// counted from the surface's top left even outside it (negative, or
     /// past its size). A host that loses the pointer before the release
     /// sends `Leave`, which ends the drag. Mouse and pen only: a host passes
-    /// a touch as a tap (`Down` and `Up` where it lifts), never its moves.
+    /// a touch, a tap too, to [`Host::touch`].
     ///
     /// A press with Alt held is the program's (SPEC §9.2): it and the rest
     /// of its gesture, to the release, reach no surface. The host reports
@@ -975,6 +998,20 @@ impl Host {
         x: f32,
         y: f32,
         mods: Mods,
+    ) -> Vec<Effect> {
+        self.pointer_with(surface, kind, x, y, mods, true)
+    }
+
+    /// [`Host::pointer`], reporting `hover` only when `hover` is true: a
+    /// touch's drag hovers nothing (SPEC §9.4).
+    fn pointer_with(
+        &mut self,
+        surface: &str,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        mods: Mods,
+        hover: bool,
     ) -> Vec<Effect> {
         enter(&mut self.working, surface);
         // A press begins a gesture, and decides whose it is: a release the
@@ -1003,6 +1040,7 @@ impl Host {
         // Where the pointer is now, for `hover` (SPEC §9.4): not while a
         // button is held, and at the release after everything it caused.
         let hovered = match kind {
+            _ if !hover => None,
             PointerKind::Down => None,
             PointerKind::Move if s.held() => None,
             _ => s.hovered(cell, self.passthrough),
@@ -1072,6 +1110,216 @@ impl Host {
             PointerKind::Move | PointerKind::Leave => {}
         }
         effects
+    }
+
+    /// A finger on `surface`, the one its touch began on, at device pixel
+    /// (`x`, `y`) of it, counted from its top left even outside it. `mods`
+    /// as for a pointer event. A terminal passes every phase of a touch that
+    /// begins over a surface here, and none of it to [`Host::pointer`].
+    ///
+    /// A touch drags an element that opts in to drags when the
+    /// `touch-action` of the touched element allows no pan along the
+    /// touch's first move past [`TAP_SLOP`] (SPEC §9.1); one that never
+    /// goes past it is a tap. hotty-blitz decides, and says whose the touch
+    /// is:
+    /// - `Down`: [`Touch::Undecided`] when it may drag, and the terminal
+    ///   then holds its moves; [`Touch::Terminal`] otherwise (no such
+    ///   element under it, Alt held, the surface detached or not placed),
+    ///   and the terminal may scroll with its moves.
+    /// - `Move`: `Undecided` until the finger has gone past the slop. Then
+    ///   [`Touch::Surface`] if it drags, and every move after is the
+    ///   surface's, wherever the finger goes; or `Terminal`, a pan: the
+    ///   terminal scrolls with it from where it began, as with any touch
+    ///   ([`Host::wheel`] first).
+    /// - `Up`: `Surface` when the surface took the touch: the end of a
+    ///   drag, or a tap, which it takes as a click where the finger lifted
+    ///   (a press there, never a drag). `Terminal` after a pan or a long
+    ///   press.
+    /// - `Cancel` (a second finger, or the platform cancelled the touch):
+    ///   a drag ends, with `dragend`; the rest of the gesture is the
+    ///   terminal's.
+    /// - `LongPress`: the terminal took the touch for one before it
+    ///   dragged. It never drags, nor taps.
+    ///
+    /// A touch that drags is a press when it does (SPEC §9.1), at the cell
+    /// where it began: `press`, `dragstart`, then what the press causes,
+    /// and a `drag` at once if the finger is already over another element.
+    /// A touch hovers nothing (§9.4).
+    pub fn touch(
+        &mut self,
+        surface: &str,
+        phase: TouchPhase,
+        x: f32,
+        y: f32,
+        mods: Mods,
+    ) -> TouchOutcome {
+        enter(&mut self.working, surface);
+        let mut out = TouchOutcome::default();
+        match phase {
+            TouchPhase::Down => {
+                // A touch that never lifted: its drag ends.
+                out.effects = self.cancel_touch();
+                let pans = if mods.alt {
+                    None
+                } else {
+                    self.touch_pans(surface, x, y)
+                };
+                out.touch = if pans.is_some() {
+                    Touch::Undecided
+                } else {
+                    Touch::Terminal
+                };
+                self.finger = Some(Finger {
+                    surface: surface.to_string(),
+                    start: (x, y),
+                    mods,
+                    pans: pans.unwrap_or((true, true)),
+                    touch: out.touch,
+                    tap: true,
+                });
+            }
+            TouchPhase::Move => {
+                let scale = self.config.metrics.scale.max(f32::EPSILON);
+                let Some(f) = self.finger.as_mut() else {
+                    return out;
+                };
+                let (dx, dy) = ((x - f.start.0) / scale, (y - f.start.1) / scale);
+                if f.tap && dx.hypot(dy) >= TAP_SLOP {
+                    f.tap = false;
+                }
+                match f.touch {
+                    Touch::Terminal => {}
+                    Touch::Surface => {
+                        let s = f.surface.clone();
+                        out.touch = Touch::Surface;
+                        out.effects = self.pointer_with(&s, PointerKind::Move, x, y, mods, false);
+                    }
+                    Touch::Undecided if f.tap => out.touch = Touch::Undecided,
+                    Touch::Undecided => {
+                        // Along the larger delta; a tie pans (SPEC §9.1).
+                        let pan = if dx.abs() > dy.abs() {
+                            f.pans.0
+                        } else if dy.abs() > dx.abs() {
+                            f.pans.1
+                        } else {
+                            true
+                        };
+                        if pan {
+                            f.touch = Touch::Terminal;
+                        } else {
+                            f.touch = Touch::Surface;
+                            let (s, start, keys) = (f.surface.clone(), f.start, f.mods);
+                            out.touch = Touch::Surface;
+                            out.effects = self.touch_drag(&s, start, keys, (x, y), mods);
+                        }
+                    }
+                }
+            }
+            TouchPhase::Up => {
+                let Some(f) = self.finger.take() else {
+                    return out;
+                };
+                if f.touch == Touch::Surface {
+                    out.touch = Touch::Surface;
+                    out.effects = self.pointer_with(&f.surface, PointerKind::Up, x, y, mods, false);
+                } else if f.tap && self.surfaces.get(&f.surface).is_some_and(|s| s.placed) {
+                    out.touch = Touch::Surface;
+                    out.effects = self.tap(&f.surface, x, y, f.mods);
+                }
+            }
+            TouchPhase::Cancel => {
+                out.effects = self.cancel_touch();
+                if let Some(f) = self.finger.as_mut() {
+                    f.tap = false;
+                }
+            }
+            TouchPhase::LongPress => {
+                if let Some(f) = self.finger.as_mut() {
+                    if f.touch == Touch::Surface {
+                        out.touch = Touch::Surface;
+                    } else {
+                        f.touch = Touch::Terminal;
+                        f.tap = false;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A tap at device pixel (`x`, `y`) of `surface`, where the finger
+    /// lifted: a click there, which presses (SPEC §9.1: a tap presses at its
+    /// lift) but never drags, whatever the keys held (§9.2), and hovers
+    /// nothing (§9.4).
+    fn tap(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> Vec<Effect> {
+        let mods = Mods { alt: false, ..mods };
+        if let Some(s) = self.surfaces.get_mut(surface) {
+            s.tapping = true;
+        }
+        let mut effects = Vec::new();
+        for kind in [PointerKind::Move, PointerKind::Down, PointerKind::Up] {
+            effects.extend(self.pointer_with(surface, kind, x, y, mods, false));
+        }
+        if let Some(s) = self.surfaces.get_mut(surface) {
+            s.tapping = false;
+        }
+        effects
+    }
+
+    /// The pans a touch at device pixel (`x`, `y`) of `surface` leaves the
+    /// touched element, when it may drag there (Surface::touch_pans).
+    fn touch_pans(&mut self, surface: &str, x: f32, y: f32) -> Option<(bool, bool)> {
+        let m = self.config.metrics;
+        let s = self.surfaces.get_mut(surface).filter(|s| s.placed)?;
+        let cell = (
+            (x / m.cell_w.max(1) as f32).floor() as i32,
+            (y / m.cell_h.max(1) as f32).floor() as i32,
+        );
+        s.touch_pans(x / m.scale, y / m.scale, cell)
+    }
+
+    /// A touch becomes a drag (SPEC §9.1): the press it is, at device
+    /// pixel `start` where the finger touched with `keys` held, then the
+    /// move to `now`, which is a `drag` if the finger is already over
+    /// another element.
+    fn touch_drag(
+        &mut self,
+        surface: &str,
+        start: (f32, f32),
+        keys: Mods,
+        now: (f32, f32),
+        mods: Mods,
+    ) -> Vec<Effect> {
+        let scale = self.config.metrics.scale.max(f32::EPSILON);
+        // The document learns where the finger touched, as a pointer's
+        // move would tell it; the program hears nothing of it.
+        if let Some(s) = self.surfaces.get_mut(surface) {
+            s.pointer(PointerKind::Move, start.0 / scale, start.1 / scale, keys);
+        }
+        let mut effects =
+            self.pointer_with(surface, PointerKind::Down, start.0, start.1, keys, false);
+        effects.extend(self.pointer_with(surface, PointerKind::Move, now.0, now.1, mods, false));
+        effects
+    }
+
+    /// The touch under way is the terminal's from now: if it drags, its
+    /// drag ends, with `dragend` and no target (SPEC §9.1).
+    fn cancel_touch(&mut self) -> Vec<Effect> {
+        let Some(f) = self.finger.as_mut() else {
+            return Vec::new();
+        };
+        let dragged = f.touch == Touch::Surface;
+        f.touch = Touch::Terminal;
+        let name = f.surface.clone();
+        enter(&mut self.working, &name);
+        match self.surfaces.get_mut(&name) {
+            Some(s) if dragged => s
+                .touch_cancel()
+                .into_iter()
+                .map(|e| Effect::Reply(e.encode(&name)))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// A wheel's turn, a touchpad's scroll or a touch drag over `surface`,

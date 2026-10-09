@@ -177,6 +177,9 @@ pub(crate) struct Surface {
     pub window: Option<crate::Window>,
     /// A drag under way (SPEC §9.1).
     drag: Option<Drag>,
+    /// A touch's tap is being passed as a press and a release
+    /// (Host::touch): its press starts no drag (SPEC §9.1).
+    pub tapping: bool,
     /// Where the pointer is, in CSS pixels, while it is over the surface.
     pointer_at: Option<(f32, f32)>,
     /// The focused text input and its value when it gained focus, for `change`.
@@ -492,6 +495,7 @@ impl Surface {
             press: None,
             window: None,
             drag: None,
+            tapping: false,
             pointer_at: None,
             focus_value: None,
             buttons: MouseEventButtons::None,
@@ -1390,7 +1394,12 @@ impl Surface {
         match kind {
             PointerKind::Down => {
                 let pressed = self.doc.get_hover_node_id();
-                match self.drag_start(pressed) {
+                let start = if self.tapping {
+                    None
+                } else {
+                    self.drag_start(pressed)
+                };
+                match start {
                     Some(start) => {
                         // A drag selects no text, whatever its CSS (§9.1).
                         self.doc.clear_text_selection();
@@ -1446,6 +1455,33 @@ impl Surface {
             keys
         };
         Some(drag_event("dragend", String::new(), d.cell, keys))
+    }
+
+    /// The pans a touch at CSS pixel (`x`, `y`) of the surface, in its cell
+    /// `cell`, leaves the touched element, (horizontal, vertical), when the
+    /// touch may drag (SPEC §9.1): the element is in one with `drag` in its
+    /// `data-on` and an id, and its `touch-action` keeps it from panning at
+    /// least one way. None when it can only pan, as any touch does.
+    pub fn touch_pans(&mut self, x: f32, y: f32, cell: (i32, i32)) -> Option<(bool, bool)> {
+        if self.detached || !self.in_window(cell) {
+            return None;
+        }
+        self.resolve();
+        let (px, py) = self.page(x, y);
+        let hit = self.doc.hit(px, py)?.node_id;
+        self.drag_start(Some(hit))?;
+        let pans = scroll::touch_pans(&self.doc, hit, self.scroll_axes);
+        (pans != (true, true)).then_some(pans)
+    }
+
+    /// A touch's drag ends before the finger lifts (SPEC §9.1: a second
+    /// finger): `dragend`, with no target, at the last cell the program
+    /// heard of, and the press it was is let go without a click.
+    pub fn touch_cancel(&mut self) -> Vec<Event> {
+        let (lead, _) = self.pointer_input(PointerKind::Leave, 0.0, 0.0, (0, 0), Mods::default());
+        self.buttons = MouseEventButtons::None;
+        self.press = None;
+        lead
     }
 
     /// Whether a button is down on the surface: from a press it took to

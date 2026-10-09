@@ -3,7 +3,9 @@
 //! from one thread at a time, and hands it OSC 7279 bodies as its parser
 //! finishes them. Everything the host must do comes back through callbacks.
 
-use crate::{Config, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme};
+use crate::{
+    Config, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme, Touch, TouchPhase,
+};
 use hotty_wire::{Event, Scanner};
 use std::ffi::{CStr, CString, c_char, c_void};
 
@@ -394,8 +396,9 @@ fn mods(bits: u32) -> Mods {
 }
 
 /// A pointer event at surface pixel `(x, y)`. `kind`: 0 move, 1 down, 2 up, 3 leave;
-/// down and up are the primary button's, or a tap's (SPEC §10.1): pass no
-/// other button. `mods`: 1 shift, 2 ctrl, 4 alt, 8 super. A press also takes the keyboard
+/// down and up are the primary button's (SPEC §10.1): pass no other button,
+/// and no touch, which goes to `hotty_host_touch`. `mods`: 1 shift, 2 ctrl,
+/// 4 alt, 8 super. A press also takes the keyboard
 /// from any other surface that has it (SPEC §10.1): its events come through
 /// `fx` too. From a press to its release the pointer is the surface's, for
 /// drags (SPEC §9.1): every move comes here, with `(x, y)` counted from its
@@ -460,6 +463,55 @@ pub unsafe extern "C" fn hotty_host_wheel(
         let out = h.host.wheel(surface, x, y, dx, dy, mods(mod_bits));
         run_effects(out.effects, fx);
         out.taken
+    })
+}
+
+/// A finger on `surface`, the surface its touch began on, at device pixel
+/// `(x, y)` of it, counted from its top left even outside it (negative, or
+/// past its size). Pass every phase of a touch that begins over a surface
+/// (where `hotty_host_takes_pointer` is true) here, down first, and none of
+/// it to `hotty_host_pointer`. `phase`: 0 down (the first finger touched),
+/// 1 move, 2 up (it lifted), 3 cancel (a second finger touched, or the
+/// platform cancelled the touch), 4 long press (the terminal took the touch
+/// for one). `mods` as for a pointer event. Returns
+/// whose the touch is: 0 the terminal's (it scrolls with it, through
+/// `hotty_host_wheel` first, or takes it for a long press, as with any
+/// touch), 1 undecided (it may still drag: hold its moves), 2 the surface's
+/// (a drag, or on up a tap, which the surface took as a click where the
+/// finger lifted: do nothing with it). A touch drags an element that opts in
+/// when its `touch-action` allows no pan along the touch's first move past 8
+/// CSS pixels (SPEC §9.1); its events come through `fx`. See `Host::touch`.
+///
+/// # Safety
+/// `h` must be valid; `surface` may be null; `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_touch(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    phase: u32,
+    x: f32,
+    y: f32,
+    mod_bits: u32,
+    fx: *const HottyEffects,
+) -> u32 {
+    let surface = unsafe { name(surface) }.unwrap_or("");
+    let fx = unsafe { fx.as_ref() };
+    let phase = match phase {
+        0 => TouchPhase::Down,
+        1 => TouchPhase::Move,
+        2 => TouchPhase::Up,
+        3 => TouchPhase::Cancel,
+        4 => TouchPhase::LongPress,
+        _ => return 0,
+    };
+    guard(h, 0, |h| {
+        let out = h.host.touch(surface, phase, x, y, mods(mod_bits));
+        run_effects(out.effects, fx);
+        match out.touch {
+            Touch::Terminal => 0,
+            Touch::Undecided => 1,
+            Touch::Surface => 2,
+        }
     })
 }
 

@@ -71,13 +71,14 @@ void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
  * hotty_host_render. */
 void hotty_host_events(hotty_host *h, const hotty_effects *fx);
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
-/* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's,
- * or a tap's (SPEC 10.1): pass no other button. A press also takes the
+/* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's
+ * (SPEC 10.1): pass no other button. A press also takes the
  * keyboard from any other surface that has it; its events come through fx.
  * From a press to its release the pointer is the surface's: pass it every
  * move, with x and y counted from its top left even outside it (negative, or
  * past its size), for drags (SPEC 9.1). Pass leave if the pointer is lost
- * before the release: it ends a drag. Pass no touch moves: touch scrolls.
+ * before the release: it ends a drag. Pass no touch here, not even a tap: a
+ * touch over a surface goes to hotty_host_touch.
  * A placement with v=1 hears hover (SPEC 9.4) from moves, releases and
  * leaves: pass leave whenever the pointer goes off the surface (onto the
  * cells, another surface, a part it lets through, or out of the window). */
@@ -99,6 +100,25 @@ bool hotty_host_wheel(hotty_host *h, const char *surface, float x, float y, floa
 /* The wheel gesture under way ended (a touchpad's fingers lifted, or its
  * momentum stopped): the next wheel begins another. */
 void hotty_host_end_gesture(hotty_host *h);
+/* A finger on surface, the one its touch began on, at device pixel (x, y) of
+ * it, counted from its top left even outside it. Pass every phase of a touch
+ * that begins over a surface (where hotty_host_takes_pointer is true) here,
+ * down first, and none of it to hotty_host_pointer. phase: 0 down (the
+ * first finger touched), 1 move, 2 up (it lifted), 3 cancel (a second finger
+ * touched, or the platform cancelled the touch), 4 long press (the terminal
+ * took the touch for one). mods as for pointer events. Returns whose the touch is:
+ *   0 the terminal's: scroll with it (hotty_host_wheel first), or take it
+ *     for a long press, as with any touch;
+ *   1 undecided: it may still drag, so hold its moves (no scroll yet);
+ *   2 the surface's: a drag, or on up a tap, which the surface took as a
+ *     click where the finger lifted; do nothing with it.
+ * A move past the 8 CSS px tap slop decides an undecided touch: a drag (2)
+ * when the touched element opts in to drags and its touch-action allows no
+ * pan along the move, else a pan (0), which the terminal scrolls from where
+ * the touch began. A second finger is cancel: the rest of the gesture is the
+ * terminal's until the next down (SPEC 9.1). Events come through fx. */
+uint32_t hotty_host_touch(hotty_host *h, const char *surface, uint32_t phase, float x, float y,
+                          uint32_t mods, const hotty_effects *fx);
 /* A key for the focused surface, as the bytes the terminal would send the
  * program for it (SPEC 10.4): its key encoding, in the modes the program
  * set, or what a binding writes. True if the surface used any of the keys
