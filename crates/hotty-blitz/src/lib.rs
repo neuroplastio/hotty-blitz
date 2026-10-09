@@ -188,6 +188,18 @@ pub struct Host {
     /// it, which the rest of it follows.
     gesture: Option<Gesture>,
     frame_log: Option<FrameLog>,
+    /// The surface whose document the host is working in (empty: none),
+    /// so that a panic there costs that surface alone ([`Host::recover`]).
+    working: String,
+    /// What surfaces lost to a panic leave the embedder to do: delete
+    /// their pictures. [`Host::take_events`] hands them over.
+    lost: Vec<Effect>,
+}
+
+/// Notes that the host now works in `surface`'s document ([`Host::recover`]).
+fn enter(working: &mut String, surface: &str) {
+    working.clear();
+    working.push_str(surface);
 }
 
 /// A wheel gesture: a wheel's notches, or a touchpad's scroll and its
@@ -256,6 +268,8 @@ impl Host {
             fits: Vec::new(),
             gesture: None,
             frame_log: FrameLog::open(),
+            working: String::new(),
+            lost: Vec::new(),
         }
     }
 
@@ -316,6 +330,7 @@ impl Host {
     /// of characters. The test interface's (SPEC §16).
     #[doc(hidden)]
     pub fn set_text_field(&mut self, surface: &str, id: &str, value: &str, caret: usize) -> bool {
+        enter(&mut self.working, surface);
         self.surfaces
             .get_mut(surface)
             .is_some_and(|s| s.set_text_field(id, value, caret))
@@ -325,6 +340,7 @@ impl Host {
     /// as a key bound to it does. The test interface's (SPEC §16).
     #[doc(hidden)]
     pub fn text_action(&mut self, surface: &str, action: &str) -> Vec<Effect> {
+        enter(&mut self.working, surface);
         let Some(s) = self.surfaces.get_mut(surface) else {
             return Vec::new();
         };
@@ -351,6 +367,7 @@ impl Host {
     /// The next render delivers `surface`'s whole frame, changed or not: for
     /// an adapter that must show it anew and no longer has its pixels.
     pub fn redeliver(&mut self, surface: &str) {
+        enter(&mut self.working, surface);
         if let Some(s) = self.surfaces.get_mut(surface).filter(|s| s.placed) {
             s.redeliver = true;
             s.dirty = true;
@@ -362,7 +379,9 @@ impl Host {
     /// frame, or something a document fetched arrived.
     pub fn has_dirty(&self) -> bool {
         let now = std::time::Instant::now();
-        self.store.has_delivered()
+        // Lost surfaces' deletions go out with the next frame's events.
+        !self.lost.is_empty()
+            || self.store.has_delivered()
             || self
                 .surfaces
                 .values()
@@ -421,8 +440,9 @@ impl Host {
         if docs.is_empty() {
             return;
         }
-        for s in self.surfaces.values_mut() {
+        for (name, s) in self.surfaces.iter_mut() {
             if docs.contains(&s.doc_id()) {
+                enter(&mut self.working, name);
                 s.net_arrived();
             }
         }
@@ -432,8 +452,9 @@ impl Host {
     /// at `now`; the surfaces that changed are dirty. [`Host::render_dirty`]
     /// does it with the current time.
     pub fn animate(&mut self, now: std::time::Instant) {
-        for s in self.surfaces.values_mut() {
+        for (name, s) in self.surfaces.iter_mut() {
             if s.placed {
+                enter(&mut self.working, name);
                 s.advance(now);
             }
         }
@@ -456,6 +477,32 @@ impl Host {
         })
     }
 
+    /// The host is in no surface's document until a call enters one.
+    pub(crate) fn leave(&mut self) {
+        self.working.clear();
+    }
+
+    /// After a panic: the surface the host was working in goes, as if the
+    /// program had deleted it, since its document may be broken; the
+    /// others stay. A panic in no surface's document takes them all, as a
+    /// full reset would. The program hears nothing (the protocol has no
+    /// event for it); what it sends the lost surfaces gets ENOENT. Returns
+    /// the surface lost, if it was one.
+    pub(crate) fn recover(&mut self) -> Option<String> {
+        let name = std::mem::take(&mut self.working);
+        self.gesture = None;
+        self.program_press = false;
+        if self.surfaces.contains_key(&name) {
+            let deleted = self.remove_surface(&name);
+            self.lost.extend(deleted);
+            Some(name)
+        } else {
+            let all = self.reset();
+            self.lost.extend(all);
+            None
+        }
+    }
+
     /// Renders every placed surface whose document changed, calling `out`
     /// with its frame and what changed.
     pub fn render_dirty(&mut self, out: &mut dyn FnMut(&str, &Frame, &Damage)) {
@@ -467,6 +514,7 @@ impl Host {
             if !(s.dirty && s.placed) {
                 continue;
             }
+            enter(&mut self.working, name);
             let damage = s.render(&metrics, dark, &mut self.renderers);
             if let Some(rows) = s.fit_event.take() {
                 match self.fits.iter_mut().find(|(n, _)| n == name) {
@@ -509,7 +557,8 @@ impl Host {
     /// at most one per surface, with the rows of the last frame drawn.
     /// Take them after [`Host::render_dirty`].
     pub fn take_events(&mut self) -> Vec<Effect> {
-        std::mem::take(&mut self.fits)
+        let lost = std::mem::take(&mut self.lost);
+        let fits = std::mem::take(&mut self.fits)
             .into_iter()
             .filter(|(name, _)| {
                 self.surfaces
@@ -523,8 +572,8 @@ impl Host {
                     detail: serde_json::json!({ "r": rows }),
                 };
                 Effect::Reply(e.encode(&name))
-            })
-            .collect()
+            });
+        lost.into_iter().chain(fits).collect()
     }
 
     pub fn frame(&self, name: &str) -> Option<&Frame> {
@@ -562,10 +611,12 @@ impl Host {
 
     pub fn handle(&mut self, cmd: &Command) -> Vec<Effect> {
         let start = self.frame_log.is_some().then(std::time::Instant::now);
+        enter(&mut self.working, cmd.get("s").unwrap_or_default());
         let effects = self.handle_command(cmd);
         // The animated images the command had documents load start now.
         let now = std::time::Instant::now();
-        for s in self.surfaces.values_mut() {
+        for (name, s) in self.surfaces.iter_mut() {
+            enter(&mut self.working, name);
             s.adopt_animations(now);
         }
         if let (Some(start), Some(log)) = (start, &mut self.frame_log) {
@@ -925,6 +976,7 @@ impl Host {
         y: f32,
         mods: Mods,
     ) -> Vec<Effect> {
+        enter(&mut self.working, surface);
         // A press begins a gesture, and decides whose it is: a release the
         // host lost does not leave the next one the program's.
         if kind == PointerKind::Down {
@@ -1049,6 +1101,7 @@ impl Host {
         dy: f32,
         mods: Mods,
     ) -> WheelOutcome {
+        enter(&mut self.working, surface);
         let (dx, dy) = if mods.shift && dx == 0.0 {
             (dy, 0.0)
         } else {
@@ -1113,6 +1166,7 @@ impl Host {
     /// A key for the focused element of `surface`. `consumed` is false when
     /// the element has no use for it; the host then forwards it to the program.
     pub fn key(&mut self, surface: &str, key: &Key) -> KeyOutcome {
+        enter(&mut self.working, surface);
         let Some(s) = self.surfaces.get_mut(surface) else {
             return KeyOutcome::default();
         };
@@ -1133,6 +1187,7 @@ impl Host {
     /// bytes itself; when it used some, the others reach the program as
     /// replies, as they came and in order with the events.
     pub fn key_bytes(&mut self, surface: &str, bytes: &[u8]) -> KeyOutcome {
+        enter(&mut self.working, surface);
         enum Out {
             Effect(Effect),
             Pass(std::ops::Range<usize>),
@@ -1166,6 +1221,7 @@ impl Host {
 
     /// Takes the keyboard away from `surface` (the user clicked elsewhere).
     pub fn blur(&mut self, surface: &str) -> Vec<Effect> {
+        enter(&mut self.working, surface);
         let Some(s) = self.surfaces.get_mut(surface) else {
             return Vec::new();
         };
@@ -1194,6 +1250,7 @@ impl Host {
     /// for a surface there is no such: the host then hands the pointer to
     /// what is below the surface, another placement or the cells (SPEC §9.3).
     pub fn takes_pointer(&mut self, surface: &str, x: f32, y: f32) -> bool {
+        enter(&mut self.working, surface);
         let scale = self.config.metrics.scale;
         self.surfaces
             .get_mut(surface)

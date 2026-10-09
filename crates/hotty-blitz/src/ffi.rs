@@ -84,8 +84,9 @@ pub type HottyFrameFn = extern "C" fn(
 
 pub struct HottyHost {
     host: Host,
-    /// Set after a panic: the host stops doing anything rather than risk
-    /// running on broken state inside the terminal.
+    /// Set after a panic the host could not recover from (see `guard`):
+    /// it stops doing anything rather than risk running on broken state
+    /// inside the terminal.
     dead: bool,
     scanner: Scanner,
     /// The name returned by `hotty_host_focused`, kept alive here.
@@ -96,7 +97,10 @@ pub struct HottyHost {
     hyperlink: Option<CString>,
 }
 
-/// Runs `f` on a live host, catching panics at the C boundary.
+/// Runs `f` on a live host, catching panics at the C boundary. A panic
+/// costs the surface whose document the host was working in (`Host::recover`;
+/// all of them when it was in none), not the host: the other surfaces keep
+/// drawing and taking commands. Only a panic while recovering disables it.
 fn guard<R>(h: *mut HottyHost, default: R, f: impl FnOnce(&mut HottyHost) -> R) -> R {
     let Some(host) = (unsafe { h.as_mut() }) else {
         return default;
@@ -104,11 +108,21 @@ fn guard<R>(h: *mut HottyHost, default: R, f: impl FnOnce(&mut HottyHost) -> R) 
     if host.dead {
         return default;
     }
+    host.host.leave();
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(unsafe { &mut *h }))) {
         Ok(r) => r,
         Err(_) => {
-            eprintln!("hotty-blitz: host panicked; HOTTY is disabled for this terminal");
-            host.dead = true;
+            let host = unsafe { &mut *h };
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.host.recover())) {
+                Ok(Some(name)) => {
+                    eprintln!("hotty-blitz: surface {name} panicked and is deleted")
+                }
+                Ok(None) => eprintln!("hotty-blitz: host panicked; every surface is deleted"),
+                Err(_) => {
+                    eprintln!("hotty-blitz: host panicked; HOTTY is disabled for this terminal");
+                    host.dead = true;
+                }
+            }
             default
         }
     }
@@ -661,5 +675,70 @@ mod tests {
         let derived = unsafe { config(&c_config(0.0)) };
         assert_eq!(derived.font_size, None);
         assert!(crate::style::host_css(&derived).contains("font-size: 13.6px;"));
+    }
+
+    /// A host with surfaces `a` and `b`, placed and drawn.
+    fn two_surfaces() -> *mut HottyHost {
+        let h = unsafe { hotty_host_new(&c_config(0.0)) };
+        let host = unsafe { &mut (*h).host };
+        for s in ["a", "b"] {
+            let cmd = |pairs: &[(&str, &str)], payload: &str| {
+                hotty_wire::Command::new(
+                    pairs.iter().copied().collect(),
+                    payload.as_bytes().to_vec(),
+                )
+            };
+            host.handle(&cmd(&[("a", "doc"), ("s", s), ("q", "2")], "<p>x</p>"));
+            host.handle(&cmd(&[("a", "place"), ("s", s), ("c", "4"), ("r", "1"), ("q", "2")], ""));
+        }
+        host.render_dirty(&mut |_, _, _| {});
+        h
+    }
+
+    fn names(h: *mut HottyHost) -> Vec<String> {
+        unsafe { &(*h).host }.surface_names().map(String::from).collect()
+    }
+
+    #[test]
+    fn a_panic_in_a_surface_costs_that_surface() {
+        let h = two_surfaces();
+        guard(h, (), |h| {
+            crate::enter(&mut h.host.working, "a");
+            panic!("a broken document");
+        });
+        let host = unsafe { &mut *h };
+        assert!(!host.dead);
+        assert_eq!(names(h), ["b"]);
+        // Its picture goes with the next events; the host still has them due.
+        assert!(host.host.has_dirty());
+        let events = host.host.take_events();
+        assert!(matches!(&events[..], [Effect::Delete { surface }] if surface == "a"));
+        assert!(!host.host.has_dirty());
+        // The other surface still takes commands.
+        let ok = guard(h, false, |h| {
+            h.host.handle(&hotty_wire::Command::new(
+                [("a", "delta"), ("s", "b"), ("op", "text"), ("t", "p"), ("q", "2")]
+                    .into_iter()
+                    .collect(),
+                b"y".to_vec(),
+            ));
+            true
+        });
+        assert!(ok);
+        unsafe { hotty_host_free(h) };
+    }
+
+    #[test]
+    fn a_panic_in_no_surface_costs_them_all_but_not_the_host() {
+        let h = two_surfaces();
+        // A call that names no surface: what an earlier call entered no
+        // longer counts.
+        guard(h, (), |h| crate::enter(&mut h.host.working, "a"));
+        guard(h, (), |_| panic!("no surface's fault"));
+        let host = unsafe { &mut *h };
+        assert!(!host.dead);
+        assert!(names(h).is_empty());
+        assert_eq!(host.host.take_events().len(), 2);
+        unsafe { hotty_host_free(h) };
     }
 }

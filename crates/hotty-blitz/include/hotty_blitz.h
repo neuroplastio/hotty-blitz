@@ -1,5 +1,11 @@
 /* hotty-blitz C ABI (PoC-2). See crates/hotty-blitz/src/ffi.rs for the contract.
- * One host per terminal, used from one thread at a time. */
+ * One host per terminal, used from one thread at a time.
+ *
+ * No call unwinds into the caller. A panic costs the surface whose document
+ * the host was working in (all of them when it was in none): it is deleted,
+ * and its remove comes with the next hotty_host_events, which
+ * hotty_host_has_dirty asks for. The host carries on; only a panic while
+ * recovering stops it for good, and every call then does nothing. */
 #ifndef HOTTY_BLITZ_H
 #define HOTTY_BLITZ_H
 #include <stdbool.h>
@@ -60,7 +66,8 @@ void hotty_host_redeliver(hotty_host *h, const char *surface);
 void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
 /* What rendering found for the program, through fx->reply: fit events (SPEC
  * 5.2: a placement with f=1 hears the rows its document needs), at most one
- * per surface, with the rows of the last frame drawn. Call after
+ * per surface, with the rows of the last frame drawn; and, through
+ * fx->remove, the surfaces a panic cost (above). Call after
  * hotty_host_render. */
 void hotty_host_events(hotty_host *h, const hotty_effects *fx);
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
