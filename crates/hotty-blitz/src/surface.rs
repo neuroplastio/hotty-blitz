@@ -100,6 +100,36 @@ impl NavigationProvider for NavQueue {
     }
 }
 
+/// Render contexts by bucketed size, shared by a host's surfaces, so that
+/// painting a rectangle does not allocate one (the fixed cost that dominated
+/// small deltas). vello_cpu paints each context on a pool of worker threads
+/// of its own, so the host keeps a few, the most recently used: kept per
+/// surface, they were hundreds of idle threads once a program had shown a
+/// few dozen surfaces.
+#[derive(Default)]
+pub(crate) struct Renderers(Vec<((u32, u32), VelloCpuImageRenderer)>);
+
+impl Renderers {
+    /// How many contexts a host keeps.
+    const KEPT: usize = 8;
+
+    /// The context for `bucket`, made if there is none; it becomes the most
+    /// recently used, and the least recently used goes past `KEPT`.
+    fn get(&mut self, bucket: (u32, u32)) -> &mut VelloCpuImageRenderer {
+        let entry = match self.0.iter().position(|(k, _)| *k == bucket) {
+            Some(i) => self.0.remove(i),
+            None => {
+                if self.0.len() >= Self::KEPT {
+                    self.0.remove(0);
+                }
+                (bucket, VelloCpuImageRenderer::new(bucket.0, bucket.1))
+            }
+        };
+        self.0.push(entry);
+        &mut self.0.last_mut().expect("just pushed").1
+    }
+}
+
 pub(crate) struct Surface {
     doc: HtmlDocument,
     /// Where delta fragments are parsed (see delta.rs).
@@ -129,9 +159,6 @@ pub(crate) struct Surface {
     /// is showing the surface anew (a placement) and needs every pixel.
     pub redeliver: bool,
     pub frame: Frame,
-    /// Render contexts by bucketed size, so painting a rectangle does not
-    /// allocate one (the fixed cost that dominated small deltas).
-    renderers: Vec<((u32, u32), VelloCpuImageRenderer)>,
     scratch: Vec<u8>,
     /// What to repaint at the next render (paint.rs).
     damage: paint::Tracker,
@@ -456,7 +483,6 @@ impl Surface {
                 generation: 0,
                 timings: Timings::default(),
             },
-            renderers: Vec::new(),
             scratch: Vec::new(),
             damage: paint::Tracker::full(),
             viewport: (w, h, m.scale, dark),
@@ -757,7 +783,7 @@ impl Surface {
     /// Renders what changed since the last render: only the damaged
     /// rectangles are painted, each into a target of its own size. `None`:
     /// nothing changed on screen.
-    pub fn render(&mut self, m: &Metrics, dark: bool) -> Option<Damage> {
+    pub fn render(&mut self, m: &Metrics, dark: bool, renderers: &mut Renderers) -> Option<Damage> {
         let (w, h) = (self.cols as u32 * m.cell_w, self.rows as u32 * m.cell_h);
         if w == 0 || h == 0 {
             return None;
@@ -826,7 +852,7 @@ impl Surface {
             self.frame.height = h;
         }
         for r in &rects {
-            self.paint_rect(*r, scale, w, h);
+            self.paint_rect(*r, scale, w, h, renderers);
         }
         let t3 = std::time::Instant::now();
         self.frame.timings = Timings {
@@ -857,22 +883,11 @@ impl Surface {
     }
 
     /// Paints rectangle `r` of the surface into the frame.
-    fn paint_rect(&mut self, r: Rect, scale: f64, w: u32, h: u32) {
+    fn paint_rect(&mut self, r: Rect, scale: f64, w: u32, h: u32, renderers: &mut Renderers) {
         // Render into a context of the rectangle's size rounded up to 64 px,
         // reused across frames; only `r` is copied out.
         let bucket = (r.w.div_ceil(64) * 64, r.h.div_ceil(64) * 64);
-        let idx = match self.renderers.iter().position(|(k, _)| *k == bucket) {
-            Some(i) => i,
-            None => {
-                if self.renderers.len() >= 12 {
-                    self.renderers.remove(0);
-                }
-                self.renderers
-                    .push((bucket, VelloCpuImageRenderer::new(bucket.0, bucket.1)));
-                self.renderers.len() - 1
-            }
-        };
-        let renderer = &mut self.renderers[idx].1;
+        let renderer = renderers.get(bucket);
         let r_render = Rect {
             x: r.x,
             y: r.y,

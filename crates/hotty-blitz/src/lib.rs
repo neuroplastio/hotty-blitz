@@ -170,6 +170,8 @@ pub struct Host {
     store: Arc<net::Store>,
     font_ctx: FontContext,
     surfaces: BTreeMap<String, surface::Surface>,
+    /// Render contexts the surfaces share (surface.rs).
+    renderers: surface::Renderers,
     /// Surfaces created so far, for their order (SPEC §5.2).
     created: u32,
     /// A press with Alt held began the gesture under way: it and the rest
@@ -247,6 +249,7 @@ impl Host {
             css,
             font_ctx: FontContext::default(),
             surfaces: BTreeMap::new(),
+            renderers: surface::Renderers::default(),
             created: 0,
             program_press: false,
             passthrough: false,
@@ -464,7 +467,7 @@ impl Host {
             if !(s.dirty && s.placed) {
                 continue;
             }
-            let damage = s.render(&metrics, dark);
+            let damage = s.render(&metrics, dark, &mut self.renderers);
             if let Some(rows) = s.fit_event.take() {
                 match self.fits.iter_mut().find(|(n, _)| n == name) {
                     Some(f) => f.1 = rows,
