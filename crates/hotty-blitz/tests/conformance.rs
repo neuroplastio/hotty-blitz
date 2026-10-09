@@ -1,7 +1,7 @@
 //! The shared conformance vectors (conformance/README.md), run against
 //! hotty-blitz. The xterm.js addon runs the same file.
 
-use hotty_blitz::{Config, Effect, Host, Key, KeyName, Mods, PointerKind};
+use hotty_blitz::{Config, Effect, Host, Key, KeyName, Mods, PointerKind, Touch, TouchPhase};
 use hotty_wire::{Command, Control, Event, Scanner};
 use serde_json::Value;
 
@@ -20,6 +20,18 @@ struct Mouse {
     y: f32,
     /// While the button is down: whether its press passed through.
     down: Option<bool>,
+    /// The finger of touch steps.
+    finger: Finger,
+}
+
+/// Where the vectors' finger is (touch steps): the surface its touch began
+/// on (empty over the cells, or where the surface lets it through), where
+/// it is, and where the terminal last scrolled with it from.
+#[derive(Default)]
+struct Finger {
+    surface: String,
+    at: (f32, f32),
+    from: (f32, f32),
 }
 
 fn vectors() -> Value {
@@ -163,7 +175,8 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
                 let old = std::mem::take(&mut mouse.surface);
                 send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut sent);
             }
-            *mouse = Mouse { surface: s, x, y, down: mouse.down };
+            mouse.surface = s;
+            (mouse.x, mouse.y) = (x, y);
             PointerKind::Move
         }
         "down" => PointerKind::Down,
@@ -238,6 +251,85 @@ fn wheel_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
     check_events(step, &events(&from_host(&sent)?))
 }
 
+/// The centre of a step's cell `at`, in device pixels of its surface.
+fn cell_centre(step: &Value) -> (f32, f32) {
+    let m = Config::default().metrics;
+    let at = &step["at"];
+    let (c, r) = (at[0].as_f64().unwrap(), at[1].as_f64().unwrap());
+    (
+        ((c + 0.5) * m.cell_w as f64) as f32,
+        ((r + 0.5) * m.cell_h as f64) as f32,
+    )
+}
+
+/// A finger, as hottyterm passes a touch (conformance/README): a touch that
+/// begins over a surface, where it takes the pointer, goes to `Host::touch`
+/// phase by phase, and one the terminal is given back scrolls as a wheel
+/// would, the content following the finger from where the terminal last
+/// scrolled with it (the moves it held while the touch was undecided
+/// included). A move is one jump.
+fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
+    host.render_dirty(&mut |_, _, _| {});
+    let mut sent = Vec::new();
+    let keep = |effects: Vec<Effect>, sent: &mut Vec<u8>| {
+        for e in effects {
+            if let Effect::Reply(b) = e {
+                sent.extend(b);
+            }
+        }
+    };
+    let mut terminal = false;
+    let f = &mut mouse.finger;
+    match step["touch"].as_str().unwrap() {
+        "down" => {
+            let s = step["s"].as_str().unwrap().to_string();
+            let at = cell_centre(step);
+            let over = host.is_placed(&s) && host.takes_pointer(&s, at.0, at.1);
+            *f = Finger {
+                surface: if over { s } else { String::new() },
+                at,
+                from: at,
+            };
+            if over {
+                let out = host.touch(&f.surface, TouchPhase::Down, at.0, at.1, mods(step));
+                keep(out.effects, &mut sent);
+            }
+        }
+        "move" => {
+            f.at = cell_centre(step);
+            let touch = if f.surface.is_empty() {
+                Touch::Terminal
+            } else {
+                let out = host.touch(&f.surface, TouchPhase::Move, f.at.0, f.at.1, mods(step));
+                keep(out.effects, &mut sent);
+                out.touch
+            };
+            match touch {
+                Touch::Terminal => {
+                    let (dx, dy) = (f.at.0 - f.from.0, f.at.1 - f.from.1);
+                    let out = host.wheel(&f.surface, f.at.0, f.at.1, -dx, -dy, Mods::default());
+                    keep(out.effects, &mut sent);
+                    terminal = !out.taken;
+                    f.from = f.at;
+                }
+                Touch::Surface => f.from = f.at,
+                Touch::Undecided => {}
+            }
+        }
+        "up" => {
+            if !f.surface.is_empty() {
+                let out = host.touch(&f.surface, TouchPhase::Up, f.at.0, f.at.1, mods(step));
+                keep(out.effects, &mut sent);
+            }
+            host.end_gesture();
+            *f = Finger::default();
+        }
+        other => return Err(format!("unknown touch {other}")),
+    }
+    check_terminal(step, terminal)?;
+    check_events(step, &events(&from_host(&sent)?))
+}
+
 fn check_terminal(step: &Value, terminal: bool) -> Result<(), String> {
     match step.get("terminal").and_then(Value::as_bool) {
         Some(want) if want != terminal => Err(format!("terminal: want {want}, got {terminal}")),
@@ -296,6 +388,8 @@ fn key_step(host: &mut Host, step: &Value) -> Result<(), String> {
 fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     if step.get("pointer").is_some() {
         pointer_step(host, mouse, step)
+    } else if step.get("touch").is_some() {
+        touch_step(host, mouse, step)
     } else if step.get("key").is_some() {
         key_step(host, step)
     } else if let Some(ctl) = step.get("send") {
@@ -389,8 +483,9 @@ fn protocol_vectors() {
     let mut failures = Vec::new();
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through as hottyterm does, and
-        // hotty-blitz sends hover and scrolls.
-        let has = |r: &Value| r == "passthrough" || r == "hover" || r == "scroll";
+        // hotty-blitz sends hover, scrolls and takes touch.
+        let has =
+            |r: &Value| r == "passthrough" || r == "hover" || r == "scroll" || r == "touch";
         let runs = match vector.get("requires") {
             None => true,
             Some(Value::Array(all)) => all.iter().all(has),
