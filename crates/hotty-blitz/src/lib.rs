@@ -187,6 +187,9 @@ pub struct Host {
     /// `fit` events renders found (SPEC §5.2), at most one per surface:
     /// the rows of the last frame drawn.
     fits: Vec<(String, u16)>,
+    /// Surfaces whose size in CSS pixels changed with the terminal's font,
+    /// owed a `resize` (SPEC §5.3, §9).
+    resizes: Vec<String>,
     /// The wheel gesture under way (SPEC §5.3): where its first wheel sent
     /// it, which the rest of it follows.
     gesture: Option<Gesture>,
@@ -288,6 +291,7 @@ impl Host {
             program_press: false,
             passthrough: false,
             fits: Vec::new(),
+            resizes: Vec::new(),
             gesture: None,
             finger: None,
             frame_log: FrameLog::open(),
@@ -302,9 +306,19 @@ impl Host {
 
     /// New cell size, theme or font: every surface restyles and re-renders at
     /// the new pixel size, with no help from the program (PoC-2's promise).
+    /// A zoom (SPEC §5.3) changes `scale` with the cells, so a cell keeps its
+    /// size in CSS pixels and the layout stays. A new font changes it: each
+    /// placed surface is laid out again and owes the program a `resize`.
     pub fn set_config(&mut self, config: Config) {
         if config == self.config {
             return;
+        }
+        if font_resizes(&self.config, &config) {
+            for (name, s) in &self.surfaces {
+                if s.placed && !s.is_detached() && !self.resizes.contains(name) {
+                    self.resizes.push(name.clone());
+                }
+            }
         }
         let css = style::host_css(&config);
         for s in self.surfaces.values_mut() {
@@ -576,11 +590,32 @@ impl Host {
         }
     }
 
-    /// The events rendering produced, for the program: `fit` (SPEC §5.2),
-    /// at most one per surface, with the rows of the last frame drawn.
-    /// Take them after [`Host::render_dirty`].
+    /// The events rendering produced, for the program: `resize` (SPEC §9)
+    /// after the terminal's font changed, with the surface's size in CSS
+    /// pixels now, and `fit` (SPEC §5.2), at most one each per surface,
+    /// with the rows of the last frame drawn. Take them after
+    /// [`Host::render_dirty`].
     pub fn take_events(&mut self) -> Vec<Effect> {
         let lost = std::mem::take(&mut self.lost);
+        let m = self.config.metrics;
+        let resizes: Vec<Effect> = std::mem::take(&mut self.resizes)
+            .into_iter()
+            .filter_map(|name| {
+                let s = self.surfaces.get(&name)?;
+                if !s.placed || s.is_detached() {
+                    return None;
+                }
+                let (w, h) = css_cell(&m);
+                // To a hundredth of a CSS pixel: no f32 noise on the wire.
+                let px = |v: f32| (f64::from(v) * 100.0).round() / 100.0;
+                let e = Event {
+                    kind: "resize",
+                    target: String::new(),
+                    detail: serde_json::json!({ "w": px(w * s.cols as f32), "h": px(h * s.rows as f32) }),
+                };
+                Some(Effect::Reply(e.encode(&name)))
+            })
+            .collect();
         let fits = std::mem::take(&mut self.fits)
             .into_iter()
             .filter(|(name, _)| {
@@ -596,7 +631,7 @@ impl Host {
                 };
                 Effect::Reply(e.encode(&name))
             });
-        lost.into_iter().chain(fits).collect()
+        lost.into_iter().chain(resizes).chain(fits).collect()
     }
 
     pub fn frame(&self, name: &str) -> Option<&Frame> {
@@ -1564,4 +1599,25 @@ fn window(cmd: &Command, cols: u16, rows: u16) -> Result<Window, (&'static str, 
         return Err(("EINVAL", "the window is not inside the surface".into()));
     }
     Ok(Window { x, y, w, h })
+}
+
+/// A cell's size in CSS pixels.
+fn css_cell(m: &Metrics) -> (f32, f32) {
+    let scale = if m.scale > 0.0 { m.scale } else { 1.0 };
+    (m.cell_w as f32 / scale, m.cell_h as f32 / scale)
+}
+
+/// Whether a new config is the terminal's font changing a cell's size in
+/// CSS pixels, which owes each placed surface a `resize` (SPEC §5.3). A
+/// zoom keeps the font's size in CSS pixels, and moves a cell's only by
+/// the rounding of device pixels, so it owes none. A font derived from the
+/// cell (`font_size: None`) changes with it.
+fn font_resizes(old: &Config, new: &Config) -> bool {
+    let (ow, oh) = css_cell(&old.metrics);
+    let (nw, nh) = css_cell(&new.metrics);
+    let cell = (ow - nw).abs() > 1e-3 || (oh - nh).abs() > 1e-3;
+    let font = old.font_family != new.font_family
+        || old.font_size != new.font_size
+        || new.font_size.is_none();
+    cell && font
 }

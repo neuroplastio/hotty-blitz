@@ -2687,6 +2687,8 @@ fn fits(h: &mut Host) -> Vec<(String, u64)> {
     render(h);
     replies(&h.take_events())
         .iter()
+        // A cell changed with the font also owes `resize` (resize_*).
+        .filter(|c| c.get("e") != Some("resize"))
         .map(|c| {
             assert_eq!(
                 (c.get("a"), c.get("e"), c.get("t")),
@@ -2838,6 +2840,93 @@ fn fit_follows_a_new_cell_size_and_a_new_document() {
         "<div style='height: 60px'></div>",
     ));
     assert_eq!(fits(&mut h), vec![("x".to_string(), 6)]);
+}
+
+/// A cell of `w`×`h` device pixels at `scale`.
+fn cells(w: u32, h: u32, scale: f32) -> Metrics {
+    Metrics {
+        cell_w: w,
+        cell_h: h,
+        scale,
+    }
+}
+
+/// The `resize` events the host owes after rendering: surface, w, h.
+fn resizes(h: &mut Host) -> Vec<(String, f64, f64)> {
+    render(h);
+    replies(&h.take_events())
+        .iter()
+        .filter(|c| c.get("e") == Some("resize"))
+        .map(|c| {
+            assert_eq!(c.get("t"), Some(""));
+            let body: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
+            let n = |k: &str| body[k].as_f64().unwrap();
+            (c.get("s").unwrap().to_string(), n("w"), n("h"))
+        })
+        .collect()
+}
+
+#[test]
+fn resize_follows_a_font_change_and_not_a_zoom() {
+    // SPEC §5.3: a new font changes a cell's size in CSS pixels, and each
+    // placed surface hears its size now; a zoom changes the scale with the
+    // cells, and nothing.
+    let mut h = host();
+    let mut c = h.config().clone();
+    c.font_size = Some(16.0);
+    h.set_config(c);
+    doc_at(&mut h, "x", &[], "<p>x</p>", "2");
+    let hidden = [("a", "doc"), ("s", "hidden"), ("q", "2")];
+    h.handle(&cmd(&hidden, "<p>h</p>"));
+    assert_eq!(resizes(&mut h), vec![]);
+
+    // Zoom ×1.2: 12×24 device px at scale 1.2 is the same 10×20 CSS cell.
+    let mut c = h.config().clone();
+    c.metrics = cells(12, 24, 1.2);
+    h.set_config(c);
+    assert_eq!(resizes(&mut h), vec![], "a zoom");
+    // Rounding: 11×23 at 1.1 is not quite 10×20, and still a zoom.
+    let mut c = h.config().clone();
+    c.metrics = cells(11, 23, 1.1);
+    h.set_config(c);
+    assert_eq!(resizes(&mut h), vec![], "a zoom, rounded");
+
+    // A bigger font: 13×26 CSS px a cell, 30×2 cells. The unplaced
+    // surface hears nothing; one resize however many changes before.
+    let mut c = h.config().clone();
+    c.metrics = cells(12, 24, 1.0);
+    c.font_size = Some(18.0);
+    h.set_config(c.clone());
+    c.metrics = cells(13, 26, 1.0);
+    h.set_config(c);
+    assert_eq!(resizes(&mut h), vec![("x".to_string(), 390.0, 52.0)]);
+    assert_eq!(resizes(&mut h), vec![], "heard once");
+
+    // A detached surface hears nothing (§5.5).
+    h.handle(&cmd(&[("a", "detach"), ("s", "x"), ("q", "2")], ""));
+    let mut c = h.config().clone();
+    c.font_size = Some(20.0);
+    c.metrics = cells(14, 28, 1.0);
+    h.set_config(c);
+    assert_eq!(resizes(&mut h), vec![]);
+}
+
+#[test]
+fn resize_follows_a_cell_when_the_font_comes_from_it() {
+    // With no font size, the font is the cell's: a new cell is a new font.
+    let mut h = host();
+    assert_eq!(h.config().font_size, None);
+    doc_at(&mut h, "x", &[], "<p>x</p>", "2");
+    let mut c = h.config().clone();
+    c.metrics.cell_h = 24;
+    h.set_config(c);
+    assert_eq!(resizes(&mut h), vec![("x".to_string(), 300.0, 48.0)]);
+    // At a fractional scale, to a hundredth of a CSS pixel: 45 / 1.4 × 2
+    // is 64.2857…, and f32 adds its own digits.
+    let mut c = h.config().clone();
+    c.metrics = cells(21, 45, 1.4);
+    h.set_config(c);
+    assert_eq!(resizes(&mut h), vec![("x".to_string(), 450.0, 64.29)]);
 }
 
 #[test]
