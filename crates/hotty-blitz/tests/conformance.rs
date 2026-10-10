@@ -392,6 +392,50 @@ fn key_step(host: &mut Host, step: &Value) -> Result<(), String> {
     check_events(step, &events(&from_host(&sent)?))
 }
 
+/// Whether a body's value `v`, at `at`, is of the type `t` gives
+/// (conformance/README, Send): `"int"`, `"float"`, `"str"` or `"bool"`;
+/// `[T]`, an array of T; `{"name": T, …}`, a map with those fields, and
+/// `{"*": T}`, a map of any names to T. A field the map lacks, or one `t`
+/// does not name, is not checked. An int is not a float, whole or not.
+fn check_type(v: &Value, t: &Value, at: &str) -> Result<(), String> {
+    let is = match t {
+        Value::String(name) => match name.as_str() {
+            "int" => v.is_i64() || v.is_u64(),
+            "float" => v.is_f64(),
+            "str" => v.is_string(),
+            "bool" => v.is_boolean(),
+            _ => return Err(format!("{at}: no type {t}")),
+        },
+        Value::Array(of) => {
+            let [of] = of.as_slice() else {
+                return Err(format!("{at}: an array's type names one type, not {t}"));
+            };
+            if let Some(a) = v.as_array() {
+                for (i, x) in a.iter().enumerate() {
+                    check_type(x, of, &format!("{at}[{i}]"))?;
+                }
+            }
+            v.is_array()
+        }
+        Value::Object(fields) => {
+            if let Some(m) = v.as_object() {
+                for (k, x) in m {
+                    if let Some(of) = fields.get(k).or_else(|| fields.get("*")) {
+                        check_type(x, of, &format!("{at}.{k}"))?;
+                    }
+                }
+            }
+            v.is_object()
+        }
+        _ => return Err(format!("{at}: no type {t}")),
+    };
+    if is {
+        Ok(())
+    } else {
+        Err(format!("{at} is not {t}: {v}"))
+    }
+}
+
 /// Failures, one line each, so a run reports every disagreement at once.
 fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     if step.get("pointer").is_some() {
@@ -444,6 +488,11 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                 let got = replies.first().ok_or("expected a reply, got none")?;
                 let body = read_body(&got.payload)?;
                 for (k, v) in want.as_object().unwrap() {
+                    if k == "types" {
+                        check_type(&body, v, "body")
+                            .map_err(|e| format!("reply types: {e} ({})", got.control.encode()))?;
+                        continue;
+                    }
                     let have = match k.as_str() {
                         "code" | "detail" => {
                             body.get(k).and_then(Value::as_str).map(str::to_string)
@@ -523,6 +572,51 @@ fn protocol_vectors() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// The reader the tests check the host's bodies with fails every body the
+/// decode vectors have an SDK fail for what no host sends (SDK.md §3.9),
+/// and reads the ints at the edge of what a body carries: so a body the
+/// host sends that holds what it must not fails a test.
+#[test]
+fn the_reader_fails_what_no_host_sends() {
+    let v = vectors();
+    let d = v["decode"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| {
+            d["name"]
+                .as_str()
+                .unwrap()
+                .starts_with("a body that holds, anywhere")
+        })
+        .expect("the decode vector of what no host sends");
+    let unhex = |s: &str| -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    };
+    let bodies = d["bodies"].as_array().unwrap();
+    let messages = d["messages"].as_array().unwrap();
+    let mut failed = 0;
+    for (body, m) in bodies.iter().zip(messages) {
+        let b = unhex(body["hex"].as_str().unwrap());
+        // Each is a reply whose capabilities decode or not, or the event
+        // whose detail does not.
+        let decodes = m.get("caps").is_some_and(|c| !c.is_null());
+        match (decodes, read_body(&b)) {
+            (false, Err(_)) => failed += 1,
+            (false, Ok(v)) => panic!("{body} reads as {v}"),
+            // A timestamp msgpack defines, which an SDK skips in a field it
+            // does not know, but no field has a host send.
+            (true, Err(e)) if e.contains("no field of HOTTY 0.2") => {}
+            (true, Err(e)) => panic!("{body}: {e}"),
+            (true, Ok(_)) => {}
+        }
+    }
+    assert_eq!(failed, 14);
 }
 
 #[test]

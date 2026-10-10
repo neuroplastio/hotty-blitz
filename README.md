@@ -55,7 +55,13 @@ a=ev:s=form:e=resize:t=  {"w": 500.0, "h": 147.0}
   never. Bytes are `h'…'` in hex, a timestamp (extension −1) `t'…'` in
   RFC 3339, another extension `ext(<type>, h'…')`.
 - A body that is not one msgpack map says why after `  !`: not a map, bytes
-  after it, nested deeper than 32 levels, or not msgpack.
+  after it, nested deeper than 32 levels, or not msgpack. So does one that
+  holds, anywhere in it, what no host sends (SPEC §3.3), which fails the
+  whole body for its reader: a nil, a key that is not a string, a string
+  that is not UTF-8, an int further than 2^53 − 1 from zero, or a
+  timestamp of another size, with a second's nanoseconds or more, or past
+  2^53 − 1 seconds. Each kind is said once, at the byte it is first at
+  (`  !a nil at byte 13, and 2 more`), and the body is shown all the same.
 - In text, `\` and control characters are escaped (`\n`, `\e`); a
   resource that is not text shows its size and first bytes.
 - `--all` prints the bytes between messages too, as `(bytes)` lines; a

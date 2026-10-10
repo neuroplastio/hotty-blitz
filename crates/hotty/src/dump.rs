@@ -10,7 +10,11 @@
 //!   never; bytes are `h'…'` in hex, a timestamp (extension −1) `t'…'` in
 //!   RFC 3339, and any other extension `ext(<type>, h'…')`. What makes it
 //!   no body follows `  !`: not one map, bytes after it, nested deeper
-//!   than 32 levels, or not msgpack at all;
+//!   than 32 levels, or not msgpack at all; or, anywhere in it, what no
+//!   host sends (§3.3), which fails the whole body for its reader (SDK.md
+//!   §3.9): a nil, a key that is not a str, a str that is not UTF-8, an
+//!   int further than 2^53 − 1 from zero, or a timestamp of another size,
+//!   with a second's nanoseconds or more, or seconds past 2^53 − 1;
 //! - what a program sends (a document, a delta) as its text, with `\` and
 //!   control characters escaped, or a resource that is not text as hex.
 //!
@@ -131,6 +135,8 @@ fn hex(b: &[u8]) -> String {
 
 /// How deep a body may nest (SPEC §3.3): its map is level 1.
 const LEVELS: usize = 32;
+/// The largest int a body carries, either way from zero (SPEC §3.3).
+const MAX_INT: u64 = (1 << 53) - 1;
 /// How deep this renders: past this it stops, whatever the body.
 const LIMIT: usize = 256;
 
@@ -150,6 +156,7 @@ fn render(b: &[u8]) -> Result<(String, Vec<String>), String> {
         at: 0,
         deepest: 0,
         out: String::new(),
+        held: Vec::new(),
     };
     r.value(1)?;
     let mut notes = Vec::new();
@@ -163,6 +170,12 @@ fn render(b: &[u8]) -> Result<(String, Vec<String>), String> {
     if r.deepest > LEVELS {
         notes.push(format!("nested {} levels deep", r.deepest));
     }
+    for h in &r.held {
+        notes.push(match h.more {
+            0 => format!("{} at byte {}", h.what, h.at),
+            n => format!("{} at byte {}, and {n} more", h.what, h.at),
+        });
+    }
     Ok((r.out, notes))
 }
 
@@ -173,6 +186,16 @@ struct Reader<'a> {
     /// The deepest level a map or an array is at.
     deepest: usize,
     out: String,
+    /// What the body holds that no host sends, each kind once.
+    held: Vec<Held>,
+}
+
+/// A kind of value no host sends (SPEC §3.3): where the body first holds
+/// it, and how many more it holds.
+struct Held {
+    what: String,
+    at: usize,
+    more: usize,
 }
 
 impl<'a> Reader<'a> {
@@ -201,8 +224,17 @@ impl<'a> Reader<'a> {
         Ok(((v << shift) as i64) >> shift)
     }
 
+    /// That the body holds, at byte `at`, what no host sends.
+    fn holds(&mut self, what: String, at: usize) {
+        match self.held.iter_mut().find(|h| h.what == what) {
+            Some(h) => h.more += 1,
+            None => self.held.push(Held { what, at, more: 0 }),
+        }
+    }
+
     /// One value at `level` (the body's map is 1).
     fn value(&mut self, level: usize) -> Result<(), String> {
+        let at = self.at;
         let tag = self.take(1)?[0];
         let len = |r: &mut Self, n| r.uint(n).map(|v| v as usize);
         match tag {
@@ -211,11 +243,23 @@ impl<'a> Reader<'a> {
             0xcc => self.uint(1).map(|v| self.number(v))?,
             0xcd => self.uint(2).map(|v| self.number(v))?,
             0xce => self.uint(4).map(|v| self.number(v))?,
-            0xcf => self.uint(8).map(|v| self.number(v))?,
+            0xcf => {
+                let v = self.uint(8)?;
+                self.number(v);
+                if v > MAX_INT {
+                    self.holds("an int further than 2^53 − 1 from zero".into(), at);
+                }
+            }
             0xd0 => self.int(1).map(|v| self.number(v))?,
             0xd1 => self.int(2).map(|v| self.number(v))?,
             0xd2 => self.int(4).map(|v| self.number(v))?,
-            0xd3 => self.int(8).map(|v| self.number(v))?,
+            0xd3 => {
+                let v = self.int(8)?;
+                self.number(v);
+                if v.unsigned_abs() > MAX_INT {
+                    self.holds("an int further than 2^53 − 1 from zero".into(), at);
+                }
+            }
             0xca => {
                 let v = f32::from_bits(self.uint(4)? as u32);
                 self.float(f64::from(v), format!("{v:?}"));
@@ -224,13 +268,16 @@ impl<'a> Reader<'a> {
                 let v = f64::from_bits(self.uint(8)?);
                 self.float(v, format!("{v:?}"));
             }
-            0xc0 => self.out.push_str("null"),
+            0xc0 => {
+                self.out.push_str("null");
+                self.holds("a nil".into(), at);
+            }
             0xc2 => self.out.push_str("false"),
             0xc3 => self.out.push_str("true"),
-            0xa0..=0xbf => self.str((tag & 0x1f) as usize)?,
-            0xd9 => len(self, 1).and_then(|n| self.str(n))?,
-            0xda => len(self, 2).and_then(|n| self.str(n))?,
-            0xdb => len(self, 4).and_then(|n| self.str(n))?,
+            0xa0..=0xbf => self.str((tag & 0x1f) as usize, at)?,
+            0xd9 => len(self, 1).and_then(|n| self.str(n, at))?,
+            0xda => len(self, 2).and_then(|n| self.str(n, at))?,
+            0xdb => len(self, 4).and_then(|n| self.str(n, at))?,
             0xc4 => len(self, 1).and_then(|n| self.bin(n))?,
             0xc5 => len(self, 2).and_then(|n| self.bin(n))?,
             0xc6 => len(self, 4).and_then(|n| self.bin(n))?,
@@ -240,15 +287,15 @@ impl<'a> Reader<'a> {
             0x80..=0x8f => self.map((tag & 0x0f) as usize, level)?,
             0xde => len(self, 2).and_then(|n| self.map(n, level))?,
             0xdf => len(self, 4).and_then(|n| self.map(n, level))?,
-            0xd4 => self.ext(1)?,
-            0xd5 => self.ext(2)?,
-            0xd6 => self.ext(4)?,
-            0xd7 => self.ext(8)?,
-            0xd8 => self.ext(16)?,
-            0xc7 => len(self, 1).and_then(|n| self.ext(n))?,
-            0xc8 => len(self, 2).and_then(|n| self.ext(n))?,
-            0xc9 => len(self, 4).and_then(|n| self.ext(n))?,
-            0xc1 => return Err(format!("0xc1 at byte {} is no msgpack", self.at - 1)),
+            0xd4 => self.ext(1, at)?,
+            0xd5 => self.ext(2, at)?,
+            0xd6 => self.ext(4, at)?,
+            0xd7 => self.ext(8, at)?,
+            0xd8 => self.ext(16, at)?,
+            0xc7 => len(self, 1).and_then(|n| self.ext(n, at))?,
+            0xc8 => len(self, 2).and_then(|n| self.ext(n, at))?,
+            0xc9 => len(self, 4).and_then(|n| self.ext(n, at))?,
+            0xc1 => return Err(format!("0xc1 at byte {at} is no msgpack")),
         }
         Ok(())
     }
@@ -269,9 +316,12 @@ impl<'a> Reader<'a> {
         });
     }
 
-    fn str(&mut self, n: usize) -> Result<(), String> {
+    fn str(&mut self, n: usize, at: usize) -> Result<(), String> {
         let s = self.take(n)?;
         quote(s, &mut self.out);
+        if std::str::from_utf8(s).is_err() {
+            self.holds("a str that is not UTF-8".into(), at);
+        }
         Ok(())
     }
 
@@ -310,6 +360,11 @@ impl<'a> Reader<'a> {
             if i > 0 {
                 self.out.push_str(", ");
             }
+            if let Some(&tag) = self.b.get(self.at)
+                && !matches!(tag, 0xa0..=0xbf | 0xd9..=0xdb)
+            {
+                self.holds("a key that is not a str".into(), self.at);
+            }
             self.value(inner)?;
             self.out.push_str(": ");
             self.value(inner)?;
@@ -318,13 +373,21 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// An extension of `n` bytes after its type: a timestamp for −1.
-    fn ext(&mut self, n: usize) -> Result<(), String> {
+    /// An extension of `n` bytes after its type: a timestamp for −1,
+    /// shown as `ext` where msgpack does not define it.
+    fn ext(&mut self, n: usize, at: usize) -> Result<(), String> {
         let ty = self.take(1)?[0] as i8;
         let data = self.take(n)?;
         match (ty, timestamp(data)) {
-            (-1, Some(t)) => {
+            (-1, Ok((sec, t))) => {
                 let _ = write!(self.out, "t'{t}'");
+                if sec.unsigned_abs() > MAX_INT {
+                    self.holds("a timestamp past 2^53 − 1 seconds from 1970".into(), at);
+                }
+            }
+            (-1, Err(why)) => {
+                let _ = write!(self.out, "ext(-1, h'{}')", hex(data));
+                self.holds(why, at);
             }
             _ => {
                 let _ = write!(self.out, "ext({ty}, h'{}')", hex(data));
@@ -358,11 +421,12 @@ fn quote(b: &[u8], out: &mut String) {
     out.push('"');
 }
 
-/// msgpack's timestamp (extension −1) in RFC 3339, in UTC: 32 bits of
-/// seconds; 30 of nanoseconds and 34 of seconds; or 32 of nanoseconds and
-/// 64 of signed seconds. None for any other length, or nanoseconds past a
-/// second.
-fn timestamp(data: &[u8]) -> Option<String> {
+/// msgpack's timestamp (extension −1): its seconds from 1970, and it in
+/// RFC 3339, in UTC. 32 bits of seconds; 30 of nanoseconds and 34 of
+/// seconds; or 32 of nanoseconds and 64 of signed seconds. What msgpack
+/// does not define is no timestamp: another length, or a second's
+/// nanoseconds or more.
+fn timestamp(data: &[u8]) -> Result<(i64, String), String> {
     let be = |b: &[u8]| b.iter().fold(0u64, |v, &x| v << 8 | u64::from(x));
     let (sec, nsec) = match data.len() {
         4 => (be(data) as i64, 0),
@@ -371,10 +435,10 @@ fn timestamp(data: &[u8]) -> Option<String> {
             ((v & 0x3_ffff_ffff) as i64, (v >> 34) as u32)
         }
         12 => (be(&data[4..]) as i64, be(&data[..4]) as u32),
-        _ => return None,
+        n => return Err(format!("a timestamp of {n} bytes")),
     };
     if nsec >= 1_000_000_000 {
-        return None;
+        return Err("a timestamp of a second's nanoseconds or more".into());
     }
     let (days, secs) = (sec.div_euclid(86_400), sec.rem_euclid(86_400));
     let (y, m, d) = civil(days);
@@ -389,7 +453,7 @@ fn timestamp(data: &[u8]) -> Option<String> {
         let _ = write!(t, ".{}", frac.trim_end_matches('0'));
     }
     t.push('Z');
-    Some(t)
+    Ok((sec, t))
 }
 
 /// The date `days` after 1970-01-01, in the proleptic Gregorian calendar
@@ -458,10 +522,11 @@ mod tests {
 
     #[test]
     fn bytes_times_and_extensions_are_in_sight() {
-        // bin, nil, a timestamp in each of its forms, another extension.
+        // bin, nil (which no host sends), a timestamp in each of its forms,
+        // another extension.
         assert_eq!(
             shown("82a162c40200ffa16ec0"),
-            r#"{"b": h'00ff', "n": null}"#
+            r#"{"b": h'00ff', "n": null}  !a nil at byte 9"#
         );
         assert_eq!(
             shown("81a174d6ff6704ac00"),
@@ -476,10 +541,11 @@ mod tests {
             r#"{"t": t'1969-12-31T23:59:58.000000001Z'}"#
         );
         assert_eq!(shown("81a165d40501"), r#"{"e": ext(5, h'01')}"#);
-        // A str that is not UTF-8, and one that needs escapes.
+        // A str that is not UTF-8 (which no host sends), and one that
+        // needs escapes.
         assert_eq!(
             shown("82a173a2ff41a171a4220a5c09"),
-            r#"{"s": "\xffA", "q": "\"\n\\\t"}"#
+            r#"{"s": "\xffA", "q": "\"\n\\\t"}  !a str that is not UTF-8 at byte 3"#
         );
     }
 
@@ -496,11 +562,11 @@ mod tests {
         );
         assert_eq!(shown("81c1c0"), "h'81c1c0'  !0xc1 at byte 1 is no msgpack");
         // 33 levels: a map holding 32 arrays.
-        let deep = format!("81a161{}c0", "91".repeat(32));
+        let deep = format!("81a161{}01", "91".repeat(32));
         assert_eq!(
             shown(&deep),
             format!(
-                r#"{{"a": {}null{}}}  !nested 33 levels deep"#,
+                r#"{{"a": {}1{}}}  !nested 33 levels deep"#,
                 "[".repeat(32),
                 "]".repeat(32)
             )
@@ -577,5 +643,35 @@ mod tests {
             }
         }
         assert!(checked >= 40, "only {checked} bodies checked");
+    }
+
+    /// The decode vector of what no host sends (SDK.md §3.9): each body an
+    /// SDK fails is flagged, and the two it reads are not.
+    #[test]
+    fn what_no_host_sends_in_the_vectors_is_flagged() {
+        let v = vectors();
+        let d = v["decode"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| {
+                d["name"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("a body that holds, anywhere")
+            })
+            .expect("the decode vector of what no host sends");
+        let bodies = d["bodies"].as_array().unwrap();
+        let messages = d["messages"].as_array().unwrap();
+        let mut flagged = 0;
+        for (twin, m) in bodies.iter().zip(messages) {
+            let line = shown(twin["hex"].as_str().unwrap());
+            // A reply whose capabilities decode or not, or the event whose
+            // detail does not.
+            let decodes = m.get("caps").is_some_and(|c| !c.is_null());
+            assert_eq!(line.contains("  !"), !decodes, "{line}");
+            flagged += usize::from(!decodes);
+        }
+        assert_eq!(flagged, 14);
     }
 }

@@ -3,6 +3,14 @@
 //! its fields has a type, as the spec's tables give it: an int goes out as
 //! an int, a float as a float even when it is whole (`scale: 2.0`), and a
 //! field the host has nothing for is left out, never sent as nil.
+//!
+//! Nothing here writes what a body may not hold (§3.3), which would fail
+//! the whole body for its reader: no nil (an `Option` is skipped when
+//! `None`), no key but a str (fields by name, and maps from `String` or a
+//! directive's name), no str but UTF-8 (Rust's), and no int further than
+//! [`MAX_INT`] from zero: an int is narrow enough to stay within it, or is
+//! held there, as `area` is where it is measured, a step by its count
+//! (`data-steps`, §9.1), and `limits` here.
 
 use crate::policy::Policy;
 use serde::Serialize;
@@ -62,8 +70,15 @@ pub struct Cell {
 /// The host's limits (SPEC §13).
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Limits {
-    /// The resource store's size, in bytes.
+    /// The resource store's size, in bytes: at most [`MAX_INT`] as it is
+    /// sent, however large the store.
+    #[serde(serialize_with = "capped")]
     pub resources: u64,
+}
+
+/// An int as a body carries it: at most [`MAX_INT`].
+fn capped<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64((*v).min(MAX_INT as u64))
 }
 
 /// The body of `a=err` (SPEC §3.6).
@@ -163,5 +178,20 @@ mod tests {
             b"\x83\xa1c\xff\xa1r\xcd\x01\x2c\xa4keys\x90"
         );
         assert_eq!(float(1.6), 1.6);
+    }
+
+    #[test]
+    fn a_limit_past_the_ints_a_body_carries_is_the_most_it_carries() {
+        // {"resources": 2^53 - 1}, as uint 64.
+        let most = b"\x81\xa9resources\xcf\x00\x1f\xff\xff\xff\xff\xff\xff";
+        for resources in [MAX_INT as u64, MAX_INT as u64 + 1, u64::MAX] {
+            assert_eq!(encode(&Limits { resources }), most, "{resources}");
+        }
+        assert_eq!(
+            encode(&Limits {
+                resources: 64 << 20
+            }),
+            b"\x81\xa9resources\xce\x04\0\0\0"
+        );
     }
 }

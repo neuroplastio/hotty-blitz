@@ -65,6 +65,130 @@ fn all_shows_the_bytes_between_messages() {
     assert_eq!(messages, plain.lines().collect::<Vec<_>>());
 }
 
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// A host's body that holds what no host sends (SPEC §3.3), anywhere in
+/// it, which fails it for its reader (SDK.md §3.9), is flagged after `  !`,
+/// each kind once with the byte it is first at, and shown all the same.
+#[test]
+fn what_no_host_sends_is_flagged() {
+    let reply = "a=ok:n=1:re=q";
+    let change = "a=ev:s=f:e=change:t=box";
+    let cases = [
+        // A nil, in a field and deeper, and how many more there are.
+        (
+            reply,
+            "82a176a3302e32a57363616c65c0",
+            r#"{"v": "0.2", "scale": null}  !a nil at byte 13"#,
+        ),
+        (
+            reply,
+            "82a16192c0c0a16281a163c0",
+            r#"{"a": [null, null], "b": {"c": null}}  !a nil at byte 4, and 2 more"#,
+        ),
+        (
+            change,
+            "82a7636865636b6564c0a576616c7565a161",
+            r#"{"checked": null, "value": "a"}  !a nil at byte 9"#,
+        ),
+        // A key that is not a str: the body's own, or a nested map's.
+        (
+            reply,
+            "8201a161a176a3302e32",
+            r#"{1: "a", "v": "0.2"}  !a key that is not a str at byte 1"#,
+        ),
+        (
+            reply,
+            "81a16681c40178a161",
+            r#"{"f": {h'78': "a"}}  !a key that is not a str at byte 4"#,
+        ),
+        // A str that is not UTF-8: a value, a key, a surrogate.
+        (
+            reply,
+            "81a166a2c328",
+            r#"{"f": "\xc3("}  !a str that is not UTF-8 at byte 3"#,
+        ),
+        (
+            reply,
+            "81a2c328a161",
+            r#"{"\xc3(": "a"}  !a str that is not UTF-8 at byte 1"#,
+        ),
+        (
+            reply,
+            "81a166a3eda080",
+            r#"{"f": "\xed\xa0\x80"}  !a str that is not UTF-8 at byte 3"#,
+        ),
+        // An int further than 2^53 − 1 from zero, either way; at it, none.
+        (
+            reply,
+            "81a166cf0020000000000000",
+            r#"{"f": 9007199254740992}  !an int further than 2^53 − 1 from zero at byte 3"#,
+        ),
+        (
+            reply,
+            "81a166d3ffe0000000000000",
+            r#"{"f": -9007199254740992}  !an int further than 2^53 − 1 from zero at byte 3"#,
+        ),
+        (
+            reply,
+            "81a16692cf001fffffffffffffd3ffe0000000000001",
+            r#"{"f": [9007199254740991, -9007199254740991]}"#,
+        ),
+        // A timestamp of another size, of a second's nanoseconds, or past
+        // 2^53 − 1 seconds; the most nanoseconds it may have.
+        (
+            reply,
+            "81a166d5ff0000",
+            r#"{"f": ext(-1, h'0000')}  !a timestamp of 2 bytes at byte 3"#,
+        ),
+        (
+            reply,
+            "81a166d7ffee6b280000000000",
+            r#"{"f": ext(-1, h'ee6b280000000000')}  !a timestamp of a second's nanoseconds or more at byte 3"#,
+        ),
+        (
+            reply,
+            "81a166c70cff000000000020000000000000",
+            r#"{"f": t'285428751-11-12T07:36:32Z'}  !a timestamp past 2^53 − 1 seconds from 1970 at byte 3"#,
+        ),
+        (
+            reply,
+            "81a166c70cff3b9ac9ff0000000000000000",
+            r#"{"f": t'1970-01-01T00:00:00.999999999Z'}"#,
+        ),
+        // Several kinds, each said, after what makes it no body.
+        (
+            reply,
+            "82a161c001a1ff",
+            r#"{"a": null, 1: "\xff"}  !a nil at byte 3  !a key that is not a str at byte 4  !a str that is not UTF-8 at byte 5"#,
+        ),
+        (
+            reply,
+            "81a161c0c0",
+            r#"{"a": null}  !1 byte(s) after it: h'c0'  !a nil at byte 3"#,
+        ),
+    ];
+    let mut stream = Vec::new();
+    for (control, hex, _) in &cases {
+        let control = control
+            .split(':')
+            .map(|kv| kv.split_once('=').unwrap())
+            .collect();
+        stream.extend(hotty_wire::encode(&control, &unhex(hex)));
+    }
+    let out = dump(&[], &stream);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), cases.len(), "{out}");
+    for ((control, hex, want), line) in cases.iter().zip(lines) {
+        assert_eq!(line, format!("{control}  {want}"), "{hex}");
+    }
+}
+
 /// The bytes a program writes, with text and other sequences between its
 /// commands.
 fn program() -> Vec<u8> {
