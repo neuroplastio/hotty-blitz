@@ -262,20 +262,17 @@ pub fn merge(mut rects: Vec<Rect>, slack: u32, max: usize) -> Vec<Rect> {
             && a.y <= b.y + b.h + slack
             && b.y <= a.y + a.h + slack
     };
-    let mut changed = true;
-    while changed {
-        changed = false;
-        'outer: for i in 0..rects.len() {
-            for j in i + 1..rects.len() {
-                if near(&rects[i], &rects[j]) {
-                    rects[i] = union(rects[i], rects[j]);
-                    rects.swap_remove(j);
-                    changed = true;
-                    break 'outer;
-                }
-            }
+    // Each rectangle absorbs the kept ones it is near, and grown, those it
+    // is near then, so no two kept ones are ever near: one pass, O(n²).
+    // Merging only grows boxes, so any order ends at the same rectangles.
+    let mut kept: Vec<Rect> = Vec::with_capacity(rects.len());
+    for mut r in rects {
+        while let Some(k) = kept.iter().position(|o| near(o, &r)) {
+            r = union(r, kept.swap_remove(k));
         }
+        kept.push(r);
     }
+    rects = kept;
     while rects.len() > max {
         let mut best = (0, 1, u64::MAX);
         for i in 0..rects.len() {
@@ -617,6 +614,79 @@ pub fn root_bar_strip(doc: &blitz_dom::BaseDocument, vertical: bool) -> DevRect 
             y0: (h - band).max(0.0),
             x1: w,
             y1: h,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The merge as it was: start over after every union.
+    fn merge_restarting(mut rects: Vec<Rect>, slack: u32) -> Vec<Rect> {
+        let union = |a: Rect, b: Rect| {
+            let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+            Rect {
+                x,
+                y,
+                w: (a.x + a.w).max(b.x + b.w) - x,
+                h: (a.y + a.h).max(b.y + b.h) - y,
+            }
+        };
+        let near = |a: &Rect, b: &Rect| {
+            a.x <= b.x + b.w + slack
+                && b.x <= a.x + a.w + slack
+                && a.y <= b.y + b.h + slack
+                && b.y <= a.y + a.h + slack
+        };
+        let mut changed = true;
+        while changed {
+            changed = false;
+            'outer: for i in 0..rects.len() {
+                for j in i + 1..rects.len() {
+                    if near(&rects[i], &rects[j]) {
+                        rects[i] = union(rects[i], rects[j]);
+                        rects.swap_remove(j);
+                        changed = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        rects
+    }
+
+    #[test]
+    fn merge_ends_where_restarting_did() {
+        // Scattered rectangles, some chains of near ones: the same set of
+        // rectangles comes out, in some order.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as u32
+        };
+        for round in 0..300 {
+            let n = 1 + round % 60;
+            let rects: Vec<Rect> = (0..n)
+                .map(|_| Rect {
+                    x: next(2000),
+                    y: next(1200),
+                    w: 1 + next(200),
+                    h: 1 + next(120),
+                })
+                .collect();
+            let key = |r: &Rect| (r.x, r.y, r.w, r.h);
+            let mut got = merge(rects.clone(), 16, usize::MAX);
+            let mut want = merge_restarting(rects, 16);
+            got.sort_by_key(key);
+            want.sort_by_key(key);
+            assert_eq!(
+                got.iter().map(key).collect::<Vec<_>>(),
+                want.iter().map(key).collect::<Vec<_>>(),
+                "round {round}"
+            );
         }
     }
 }
