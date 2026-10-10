@@ -324,23 +324,45 @@ fn drag_event(
 /// document keeps what it had when it was built, until the next `a=doc`.
 fn requested_network(doc: &HtmlDocument) -> Policy {
     let doc = doc.inner();
-    let Some(id) = doc
-        .query_selector("meta[name='hotty-network' i]")
-        .ok()
-        .flatten()
-    else {
-        return Policy::default();
-    };
-    doc.get_node(id)
-        .and_then(|n| n.attr(local_name!("content")))
-        .map(Policy::parse)
-        .unwrap_or_default()
+    first_element(&doc, |el| {
+        &*el.name.local == "meta"
+            && el
+                .attr(local_name!("name"))
+                .is_some_and(|n| n.eq_ignore_ascii_case("hotty-network"))
+    })
+    .and_then(|id| {
+        doc.get_node(id)?
+            .attr(local_name!("content"))
+            .map(Policy::parse)
+    })
+    .unwrap_or_default()
+}
+
+/// The first element in tree order that `matches`. A plain walk, since it
+/// runs over the whole document at every `a=doc`: Stylo's `query_selector`
+/// matched every element against the selector, most of building a large
+/// flat document (`hotty bench --only flat`: 1.3-1.6 s of CPU, now 0.7-0.8).
+fn first_element(
+    doc: &BaseDocument,
+    matches: impl Fn(&blitz_dom::node::ElementData) -> bool,
+) -> Option<NodeId> {
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let node = doc.get_node(id)?;
+        if node.element_data().is_some_and(&matches) {
+            return Some(id);
+        }
+        stack.extend(node.children.iter().rev().copied());
+    }
+    None
 }
 
 /// A document's first `<base href>`, when it is an absolute http(s) URL.
 fn declared_base(doc: &HtmlDocument) -> Option<url::Url> {
     let doc = doc.inner();
-    let id = doc.query_selector("base[href]").ok().flatten()?;
+    let id = first_element(&doc, |el| {
+        &*el.name.local == "base" && el.attr(local_name!("href")).is_some()
+    })?;
     let href = doc
         .get_node(id)?
         .attrs()?
