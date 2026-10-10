@@ -893,14 +893,18 @@ impl Surface {
             let margin = (8.0 * scale).ceil();
             let rects = self.damage.take(&self.doc, scale, w, h, margin);
             // Many small rectangles can cost more than one full paint: each
-            // carries a fixed overhead (measured ~0.2 ms, the cost of ~64k
-            // pixels here). Past that point, paint the frame once instead.
-            const PER_RECT_PX: u64 = 64 * 1024;
+            // carries a fixed overhead (the scene walked again, the render
+            // context dispatched to its workers). Measured on the corpus,
+            // kit surfaces and `hotty bench` (gov R-5), it is 10-20% of a
+            // full paint on large surfaces and at least ~64k pixels' worth
+            // on small ones. Past that point, paint the frame once instead.
+            let area = w as u64 * h as u64;
+            let per_rect = (area / 10).max(64 * 1024);
             let cost: u64 = rects
                 .iter()
-                .map(|r| r.w as u64 * r.h as u64 + PER_RECT_PX)
+                .map(|r| r.w as u64 * r.h as u64 + per_rect)
                 .sum();
-            if cost > w as u64 * h as u64 {
+            if cost > area {
                 vec![Rect { x: 0, y: 0, w, h }]
             } else {
                 rects
