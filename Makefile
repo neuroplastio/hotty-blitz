@@ -15,7 +15,7 @@ hotty:
 
 blitz:   ## the forks Cargo.toml patches in: Blitz at ../blitz, vello_cpu at ../vello_cpu (blitz/, vello/)
 	@test -f ../blitz/packages/blitz-dom/src/layout/speculate.rs || scripts/blitz-fork.sh
-	@test -d ../vello_cpu/.git || scripts/vello-fork.sh
+	@test "$$(git -C ../vello_cpu rev-list --count published..hotty 2>/dev/null)" = "$$(ls vello/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
 
 build: blitz
 	$(CARGO) build --workspace

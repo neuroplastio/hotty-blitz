@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Sat, 10 Oct 2026 19:30:14 +0200
+Subject: [PATCH] vello_cpu: a render context takes at most 4 workers by
+ default
+
+The default was one worker per core but one, up to 8. Measured in
+hotty-blitz (a 300-frame dashboard replay and its bench, on a Ryzen 5
+5600X and a Ryzen AI laptop), 4 workers paint small partial frames
+faster than 8 at about 35% less CPU, and a full 3.45 Mpx paint within
+~5% of 8: past 2 workers it barely gets faster, the main thread's share
+(scene, strips, dispatch) dominating. Each worker also adds dispatch and
+idle spinning to every small paint.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/render.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/render.rs b/src/render.rs
+index ecc8a87..68d33c6 100644
+--- a/src/render.rs
++++ b/src/render.rs
+@@ -192,12 +192,15 @@ impl Default for RenderSettings {
+     fn default() -> Self {
+         Self {
+             level: Level::try_detect().unwrap_or(Level::baseline()),
++            // At most 4 workers: past 2, a full paint barely gets faster
++            // (the main thread's share dominates), while each worker adds
++            // dispatch and idle spinning to every small paint.
+             #[cfg(feature = "multithreading")]
+             num_threads: (std::thread::available_parallelism()
+                 .unwrap()
+                 .get()
+                 .saturating_sub(1) as u16)
+-                .min(8),
++                .min(4),
+             #[cfg(not(feature = "multithreading"))]
+             num_threads: 0,
+         }
+-- 
+2.56.0
+

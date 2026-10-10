@@ -10,7 +10,7 @@ text, and renders on the CPU. This repository holds:
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | `blitz/` | the patches on Blitz: among them, a delta costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
-| `vello/` | the patch on vello_cpu, the renderer: flushing waits for its workers without spinning ([vello/README.md](vello/README.md)) |
+| `vello/` | the patches on vello_cpu, the renderer: flushing waits for its workers without spinning, and at most 4 of them ([vello/README.md](vello/README.md)) |
 
 ## Try it
 

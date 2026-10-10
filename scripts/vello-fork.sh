@@ -16,9 +16,20 @@ VERSION=0.1.0
 SHA256=ac7349e1f55f6b801c7c277958df4ea53e7f20f21e8014910ad888b2ecda93ea
 
 if [ -d "$FORK/.git" ]; then
-  # Already there: say where it stands against the patches, change nothing.
-  have=$(git -C "$FORK" rev-list --count published..hotty 2>/dev/null || echo "?")
-  want=$(ls "$HERE"/vello/*.patch | wc -l)
+  have=$(git -C "$FORK" rev-list --count published..hotty 2>/dev/null || echo 0)
+  set -- "$HERE"/vello/*.patch
+  want=$#
+  # Behind, clean, and its commits are the first patches: apply the rest.
+  # Anything else is someone's work in progress: say where it stands, change
+  # nothing.
+  if [ "$have" -lt "$want" ] && [ -z "$(git -C "$FORK" status --porcelain)" ] &&
+    [ "$(git -C "$FORK" log --reverse --format=%s published..hotty)" = \
+      "$(for p in "$@"; do git mailinfo /dev/null /dev/null <"$p" | sed -n 's/^Subject: //p'; done | head -n "$have")" ]; then
+    shift "$have"
+    git -C "$FORK" am -q "$@"
+    echo "vello_cpu fork at $FORK: $# patch(es) applied"
+    exit 0
+  fi
   echo "vello_cpu fork at $FORK: $have commit(s) on $VERSION, $want patch(es) in vello/"
   exit 0
 fi

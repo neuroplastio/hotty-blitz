@@ -40,7 +40,8 @@ stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 
 # The vello_cpu fork (../vello_cpu, branch `hotty`, made by
 # scripts/vello-fork.sh from the published package and the patches in
-# vello/): flushing waits for the workers without spinning.
+# vello/): flushing waits for the workers without spinning, and a context
+# takes at most 4 of them.
 [patch.crates-io]
 vello_cpu = { path = "../vello_cpu" }
 
