@@ -1,4 +1,4 @@
-a=q:n=1
+a=q:n=1:v=0.2
 a=doc:s=form:q=2  <style>body{margin:0;font:16px monospace}.row{height:var(--hotty-cell-h)}#level{width:calc(10*var(--hotty-cell-w));height:var(--hotty-cell-h);background:#446}</style><form id=settings><div class=row>Name <input id=name name=name size=10></div><div class=row><label><input type=checkbox id=notify name=notify value=yes> notify</label></div><div class=row><div id=level data-on=drag data-steps=10></div></div><div class=row id=status></div><button id=save value=now>Save</button></form>
 a=place:s=form:c=40:r=auto:n=2:f=1:v=1:p=1
 a=delta:s=form:op=text:t=status:q=2  saved ✓\n

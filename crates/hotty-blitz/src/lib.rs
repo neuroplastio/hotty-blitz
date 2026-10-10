@@ -31,6 +31,10 @@ pub use input::{
 };
 pub use surface::{Damage, Frame, Timings};
 
+/// The HOTTY version this host speaks, its only one (SPEC §4): a query
+/// that does not list it is answered with `EVERSION`.
+pub const VERSION: &str = "0.2";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
@@ -750,9 +754,20 @@ impl Host {
         };
         match cmd.action() {
             "q" => {
+                // `v` lists the versions the program speaks, comma-separated
+                // (SPEC §4), and this host answers in the highest it shares:
+                // 0.2 when an entry is exactly that, whatever the others and
+                // their order. Otherwise, a query with no `v` too, EVERSION,
+                // its detail the versions this host speaks.
+                if !cmd
+                    .get("v")
+                    .is_some_and(|v| v.split(',').any(|v| v == VERSION))
+                {
+                    return Err(("EVERSION", VERSION.to_string()));
+                }
                 let m = self.config.metrics;
                 let caps = body::Caps {
-                    v: "0.2",
+                    v: VERSION,
                     ops: &[
                         "morph", "inner", "replace", "append", "prepend", "before", "after",
                         "remove", "attr", "unattr", "text", "var",

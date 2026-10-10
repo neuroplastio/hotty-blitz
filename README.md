@@ -12,6 +12,11 @@ text, and renders on the CPU. This repository holds:
 | `blitz/` | the patches on Blitz: among them, a delta costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
 | `vello/` | the patches on vello_cpu, the renderer: flushing waits for its workers without spinning, and at most 4 of them ([vello/README.md](vello/README.md)) |
 
+The host speaks HOTTY 0.2 and no other version. It answers a query that
+lists 0.2 among the versions its program speaks (`a=q:n=1:v=0.2`, SPEC §4)
+with its capabilities, and any other, one with no `v` too, with `EVERSION`:
+a program of 0.1 finds no host.
+
 ## Try it
 
 Needs [mise](https://mise.jdx.dev) and a checkout of `neuroplastio/hotty`

@@ -74,7 +74,7 @@ fn at(h: &mut Host, kind: PointerKind, x: f32, y: f32) -> Vec<Drag> {
 
 #[test]
 fn data_steps_is_one_or_two_whole_numbers_and_the_host_says_it_reads_them() {
-    let caps = host().handle(&cmd(&[("a", "q"), ("n", "1")], ""));
+    let caps = host().handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], ""));
     let Some(Effect::Reply(b)) = caps.first() else {
         panic!("no reply to q");
     };

@@ -493,6 +493,28 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                             .map_err(|e| format!("reply types: {e} ({})", got.control.encode()))?;
                         continue;
                     }
+                    if k == "body" {
+                        // Fields the body of an `a=ok` must have, equal as
+                        // values, each of its type (conformance/README):
+                        // an int is not a float, whole or not. Fields it
+                        // does not name are not checked.
+                        if got.get("a") != Some("ok") {
+                            return Err(format!(
+                                "reply body: want the body of an a=ok, got {}",
+                                got.control.encode()
+                            ));
+                        }
+                        for (f, want) in v.as_object().unwrap() {
+                            let have = body.get(f).unwrap_or(&Value::Null);
+                            if have != want {
+                                return Err(format!(
+                                    "reply body {f}: want {want}, got {have} ({})",
+                                    got.control.encode()
+                                ));
+                            }
+                        }
+                        continue;
+                    }
                     let have = match k.as_str() {
                         "code" | "detail" => {
                             body.get(k).and_then(Value::as_str).map(str::to_string)

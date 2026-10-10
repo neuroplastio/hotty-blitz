@@ -48,7 +48,7 @@ fn render(h: &mut Host) -> Vec<(String, u32, u32, hotty_blitz::Damage)> {
 #[test]
 fn query_answers_with_capabilities() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "7")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "7"), ("v", "0.2")], "")));
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(r[0].get("n"), Some("7"));
@@ -478,7 +478,7 @@ fn links_report_href_and_url_with_or_without_an_id() {
     );
 
     // This host fetches nothing from the network (SPEC §7.2), and says so.
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["net"], serde_json::json!({}));
 }
@@ -1938,7 +1938,7 @@ fn place_form_presses(h: &mut Host, presses: bool) {
 fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
     let mut h = host();
     place_form(&mut h);
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")));
     let caps = body(&r[0].payload);
     assert!(
         caps["events"]
@@ -2123,7 +2123,7 @@ const CELLS: &str = "<style>body{margin:0}i{position:absolute;width:30px;height:
 #[test]
 fn a_drag_comes_after_its_press_and_before_the_blur_it_causes() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")));
     let caps = body(&r[0].payload);
     assert!(
         caps["events"]
@@ -2288,7 +2288,7 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
 #[test]
 fn the_capabilities_name_the_host_and_its_version() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["host"], "hotty-blitz");
     assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
@@ -2305,7 +2305,7 @@ fn the_capabilities_name_the_host_and_its_version() {
 fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
     let mut h = host();
     let caps = |h: &mut Host| {
-        let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
+        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
         body(&r[0].payload)
     };
     assert!(caps(&mut h).get("passthrough").is_none());
@@ -3196,7 +3196,7 @@ fn losing_the_pointer_during_a_drag_ends_it_and_then_leaves() {
 #[test]
 fn hover_is_listed_in_the_capabilities() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
     let caps = body(&r[0].payload);
     assert!(
         caps["events"]

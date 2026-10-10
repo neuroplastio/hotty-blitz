@@ -242,7 +242,7 @@ fn img(url: &str) -> String {
 fn the_capabilities_report_the_hosts_half() {
     let mut h = host();
     let caps = |h: &mut Host| -> serde_json::Value {
-        let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
+        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
         body(&r[0].payload)["net"].clone()
     };
     assert_eq!(

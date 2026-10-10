@@ -220,7 +220,7 @@ fn program() -> Vec<u8> {
         hotty_wire::encode(&pairs.iter().copied().collect(), payload)
     };
     s.extend(b"$ python3 form.py\r\n");
-    s.extend(cmd(&[("a", "q"), ("n", "1")], b""));
+    s.extend(cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], b""));
     s.extend(b"\x1b[c\x1b[?2026h");
     // Long enough to be compressed (o=z).
     s.extend(cmd(
@@ -313,7 +313,10 @@ fn terminal() -> Vec<u8> {
         h.render_dirty(&mut |_, _, _| {});
         keep(h.take_events(), s);
     };
-    keep(h.handle(&cmd(&[("a", "q"), ("n", "1")], "")), &mut s);
+    keep(
+        h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")),
+        &mut s,
+    );
     s.extend(b"\x1b[?62;22c");
     keep(
         h.handle(&cmd(&[("a", "doc"), ("s", "form"), ("q", "2")], FORM)),

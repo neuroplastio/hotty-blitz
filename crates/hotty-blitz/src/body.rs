@@ -43,6 +43,7 @@ pub fn float(v: f32) -> f64 {
 /// The capabilities (SPEC §4): the body of the reply to `a=q`.
 #[derive(Clone, Debug, Serialize)]
 pub struct Caps {
+    /// The version the host answers in, which the query listed (§4).
     pub v: &'static str,
     pub ops: &'static [&'static str],
     pub events: &'static [&'static str],
