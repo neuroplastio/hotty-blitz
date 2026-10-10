@@ -1483,6 +1483,22 @@ impl Host {
         }
     }
 
+    /// A key for `surface` as the user pressed it, named as SPEC §10.4
+    /// writes it (`Meta+ArrowLeft`), offered before the terminal's own
+    /// shortcuts and translations. `consumed` is false, with no effects,
+    /// when the surface has no use for it or the name does not parse: the
+    /// terminal then goes on, and offers the key again as bytes
+    /// ([`Host::key_bytes`]).
+    pub fn key_pressed(&mut self, surface: &str, name: &str) -> KeyOutcome {
+        match hotty_wire::keys::parse_key(name)
+            .as_deref()
+            .and_then(Key::from_spec_name)
+        {
+            Some(key) => self.key(surface, &key),
+            None => KeyOutcome::default(),
+        }
+    }
+
     /// Keys for the focused element of `surface`, as the terminal would
     /// send them to the program (SPEC §10.4: after its bindings, in the
     /// encoding the program asked for). Each is named from its bytes. When

@@ -561,6 +561,12 @@ pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -
         ("PageUp", "page-up"),
         ("PageDown", "page-down"),
         ("Control+a", "select-all"),
+        ("Meta+ArrowLeft", "line-start"),
+        ("Meta+ArrowRight", "line-end"),
+        ("Meta+ArrowUp", "input-start"),
+        ("Meta+ArrowDown", "input-end"),
+        ("Meta+Backspace", "delete-to-line-start"),
+        ("Meta+a", "select-all"),
         ("Enter", if multiline { "newline" } else { "submit" }),
     ] {
         m.bind(k, a);

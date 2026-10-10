@@ -119,6 +119,16 @@ void hotty_host_end_gesture(hotty_host *h);
  * terminal's until the next down (SPEC 9.1). Events come through fx. */
 uint32_t hotty_host_touch(hotty_host *h, const char *surface, uint32_t phase, float x, float y,
                           uint32_t mods, const hotty_effects *fx);
+/* A key for the focused surface as the user pressed it, offered first,
+ * before the terminal's own shortcuts and the bindings that translate keys
+ * (SPEC 10.4): name, UTF-8, as SPEC 10.4 writes it (Meta+ArrowLeft,
+ * Control+Backspace), from the key event, with the platform's command key
+ * as Meta. For keys that type no text. True if the surface used it; its
+ * events go through fx, and the terminal does nothing more with the key.
+ * On false nothing happened: go on with the shortcuts, then
+ * hotty_host_key_bytes. */
+bool hotty_host_key_pressed(hotty_host *h, const uint8_t *name, size_t len,
+                            const hotty_effects *fx);
 /* A key for the focused surface, as the bytes the terminal would send the
  * program for it (SPEC 10.4): its key encoding, in the modes the program
  * set, or what a binding writes. True if the surface used any of the keys

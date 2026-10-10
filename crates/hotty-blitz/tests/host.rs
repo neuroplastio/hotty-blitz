@@ -3365,6 +3365,47 @@ fn passed(effects: &[Effect]) -> Vec<u8> {
         .collect()
 }
 
+/// A key offered as the user pressed it (SPEC §10.4), before the terminal's
+/// shortcuts and translations: Command+ArrowLeft is Meta+ArrowLeft, the
+/// line's start, not the 0x01 (Control+a, select all) a macOS terminal
+/// sends for it; Control+Backspace deletes a word, not what 0x08
+/// (Control+h) would do. A key the surface does not use does nothing, and
+/// leaves the terminal to go on.
+#[test]
+fn key_pressed_is_offered_before_the_terminal_translates_it() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        "<input id=f data-on=input value='one two'>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")],
+        "",
+    ));
+    render(&mut h);
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], ""));
+    h.set_text_field("f", "f", "one two", 7, 7);
+
+    assert!(h.key_pressed("f", "Control+Backspace").consumed);
+    assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 4)));
+    assert!(h.key_pressed("f", "Meta+ArrowLeft").consumed);
+    assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 0)));
+    assert!(h.key_pressed("f", "Meta+Shift+ArrowRight").consumed);
+    assert_eq!(
+        (h.text_field("f", "f"), h.text_anchor("f", "f")),
+        (Some(("one ".into(), 4)), Some(0))
+    );
+    assert!(h.key_pressed("f", "Meta+a").consumed);
+
+    // Not the field's: nothing happens, and the terminal goes on.
+    for name in ["Control+s", "Escape", "F5", "not a key"] {
+        let out = h.key_pressed("f", name);
+        assert!(!out.consumed, "{name}");
+        assert!(out.effects.is_empty(), "{name}");
+    }
+    assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 4)));
+}
+
 /// A host names a key from the bytes the terminal would send the program
 /// (SPEC §10.4), so a binding's bytes (Cmd+Left writing `\x01`, Option+Left
 /// writing `ESC b`) are the keys the field's keymap looks up. Keys the field

@@ -526,6 +526,43 @@ pub unsafe extern "C" fn hotty_host_end_gesture(h: *mut HottyHost) {
     guard(h, (), |h| h.host.end_gesture())
 }
 
+/// A key for the focused surface as the user pressed it, offered first,
+/// before the terminal's own shortcuts and the bindings that translate keys
+/// (SPEC §10.4): `name` is its name, UTF-8, as SPEC §10.4 writes it
+/// (`Meta+ArrowLeft`, `Control+Backspace`), from the key event, with the
+/// platform's command key as Meta. For keys that type no text. Returns true
+/// if the surface used it; its events then go through `fx`, and the
+/// terminal does nothing more with the key. On false nothing happened: the
+/// terminal goes on, with its shortcuts and then
+/// [`hotty_host_key_bytes`].
+///
+/// # Safety
+/// `h` must be valid; `name` must hold `len` bytes (it may be null when
+/// `len` is 0); `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_key_pressed(
+    h: *mut HottyHost,
+    name: *const u8,
+    len: usize,
+    fx: *const HottyEffects,
+) -> bool {
+    let fx = unsafe { fx.as_ref() };
+    if name.is_null() || len == 0 {
+        return false;
+    }
+    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+        return false;
+    };
+    guard(h, false, |h| {
+        let Some(surface) = h.host.focused_surface().map(str::to_string) else {
+            return false;
+        };
+        let outcome = h.host.key_pressed(&surface, name);
+        run_effects(outcome.effects, fx);
+        outcome.consumed
+    })
+}
+
 /// A key for the focused surface, as the bytes the terminal would send the
 /// program for it (SPEC §10.4): its key encoding, in the modes the program
 /// set, or what a binding writes. Returns true if the surface used any of
