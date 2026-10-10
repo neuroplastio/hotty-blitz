@@ -12,7 +12,8 @@
 //!   no body follows `  !`: not one map, bytes after it, nested deeper
 //!   than 32 levels, or not msgpack at all; or, anywhere in it, what no
 //!   host sends (§3.3), which fails the whole body for its reader (SDK.md
-//!   §3.9): a nil, a key that is not a str, a str that is not UTF-8, an
+//!   §3.9): a nil, a key that is not a str, a key given twice in one map
+//!   (as the str it is, whatever its form), a str that is not UTF-8, an
 //!   int further than 2^53 − 1 from zero, or a timestamp of another size,
 //!   with a second's nanoseconds or more, or seconds past 2^53 − 1;
 //! - what a program sends (a document, a delta) as its text, with `\` and
@@ -22,6 +23,7 @@
 //! body however it was written, wrong or not.
 
 use hotty_wire::{Command, Event, Scanner};
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 
@@ -356,16 +358,33 @@ impl<'a> Reader<'a> {
     fn map(&mut self, n: usize, level: usize) -> Result<(), String> {
         let inner = self.nest(level)?;
         self.out.push('{');
+        // The map's keys so far, as the strs they are: a fixstr and a str 8
+        // of one name are one key.
+        let mut keys = HashSet::new();
         for i in 0..n {
             if i > 0 {
                 self.out.push_str(", ");
             }
-            if let Some(&tag) = self.b.get(self.at)
-                && !matches!(tag, 0xa0..=0xbf | 0xd9..=0xdb)
-            {
-                self.holds("a key that is not a str".into(), self.at);
-            }
+            let at = self.at;
+            // A str's bytes start after its tag and length.
+            let head = match self.b.get(at) {
+                Some(0xa0..=0xbf) => Some(1),
+                Some(0xd9) => Some(2),
+                Some(0xda) => Some(3),
+                Some(0xdb) => Some(5),
+                Some(_) => {
+                    self.holds("a key that is not a str".into(), at);
+                    None
+                }
+                None => None,
+            };
             self.value(inner)?;
+            let b = self.b;
+            if let Some(head) = head
+                && !keys.insert(&b[at + head..self.at])
+            {
+                self.holds("a key given twice".into(), at);
+            }
             self.out.push_str(": ");
             self.value(inner)?;
         }
@@ -646,7 +665,7 @@ mod tests {
     }
 
     /// The decode vector of what no host sends (SDK.md §3.9): each body an
-    /// SDK fails is flagged, and the two it reads are not.
+    /// SDK fails is flagged, and the three it reads are not.
     #[test]
     fn what_no_host_sends_in_the_vectors_is_flagged() {
         let v = vectors();
@@ -672,6 +691,6 @@ mod tests {
             assert_eq!(line.contains("  !"), !decodes, "{line}");
             flagged += usize::from(!decodes);
         }
-        assert_eq!(flagged, 14);
+        assert_eq!(flagged, 18);
     }
 }

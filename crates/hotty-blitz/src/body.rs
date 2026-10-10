@@ -7,10 +7,13 @@
 //! Nothing here writes what a body may not hold (§3.3), which would fail
 //! the whole body for its reader: no nil (an `Option` is skipped when
 //! `None`), no key but a str (fields by name, and maps from `String` or a
-//! directive's name), no str but UTF-8 (Rust's), and no int further than
-//! [`MAX_INT`] from zero: an int is narrow enough to stay within it, or is
-//! held there, as `area` is where it is measured, a step by its count
-//! (`data-steps`, §9.1), and `limits` here.
+//! directive's name), no key twice in one map (a struct's fields have
+//! names of their own, none flattened or renamed into another's, and a
+//! map's keys are a `BTreeMap`'s, each directive's name its own), no str
+//! but UTF-8 (Rust's), and no int further than [`MAX_INT`] from zero: an
+//! int is narrow enough to stay within it, or is held there, as `area` is
+//! where it is measured, a step by its count (`data-steps`, §9.1), and
+//! `limits` here.
 
 use crate::policy::Policy;
 use serde::Serialize;

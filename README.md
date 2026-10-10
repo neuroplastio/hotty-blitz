@@ -57,8 +57,9 @@ a=ev:s=form:e=resize:t=  {"w": 500.0, "h": 147.0}
 - A body that is not one msgpack map says why after `  !`: not a map, bytes
   after it, nested deeper than 32 levels, or not msgpack. So does one that
   holds, anywhere in it, what no host sends (SPEC §3.3), which fails the
-  whole body for its reader: a nil, a key that is not a string, a string
-  that is not UTF-8, an int further than 2^53 − 1 from zero, or a
+  whole body for its reader: a nil, a key that is not a string, a key
+  given twice in one map (a fixstr and a str 8 of one name are one key), a
+  string that is not UTF-8, an int further than 2^53 − 1 from zero, or a
   timestamp of another size, with a second's nanoseconds or more, or past
   2^53 − 1 seconds. Each kind is said once, at the byte it is first at
   (`  !a nil at byte 13, and 2 more`), and the body is shown all the same.

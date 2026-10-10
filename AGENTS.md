@@ -19,9 +19,9 @@ for the hotty repository.
 - **A body is typed** (SPEC §3.3): every reply and event body is a serde
   type in `src/body.rs`, written as one msgpack map, each field as the
   spec's tables type it, and holds nothing §3.3 has no host send (nil, a
-  key that is not a str, an int past 2^53 − 1). Tests read bodies back
-  with `tests/common`, which keeps `2.0` a float and fails such a body;
-  `hotty dump` shows a captured stream's, and flags it.
+  key that is not a str or is given twice, an int past 2^53 − 1). Tests
+  read bodies back with `tests/common`, which keeps `2.0` a float and
+  fails such a body; `hotty dump` shows a captured stream's, and flags it.
 - **The C ABI** (`include/hotty_blitz.h`, `src/ffi.rs`) is what terminals
   link. Change both together, and say so in the commit message: forks
   pinned to an older ABI break.

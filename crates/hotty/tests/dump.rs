@@ -107,6 +107,29 @@ fn what_no_host_sends_is_flagged() {
             "81a16681c40178a161",
             r#"{"f": {h'78': "a"}}  !a key that is not a str at byte 4"#,
         ),
+        // A key given twice in one map, whatever its values: the body's
+        // own, or a nested map's, as a fixstr and a str 8 of one name; and
+        // how many more. One name in two maps is not.
+        (
+            reply,
+            "83a176a3302e32a176a3302e32a67363726f6c6cc3",
+            r#"{"v": "0.2", "v": "0.2", "scroll": true}  !a key given twice at byte 7"#,
+        ),
+        (
+            reply,
+            "81a16682a16101d9016102",
+            r#"{"f": {"a": 1, "a": 2}}  !a key given twice at byte 7"#,
+        ),
+        (
+            reply,
+            "83a16101a16102a16103",
+            r#"{"a": 1, "a": 2, "a": 3}  !a key given twice at byte 4, and 1 more"#,
+        ),
+        (
+            reply,
+            "82a176a3302e32a16681a176a3302e33",
+            r#"{"v": "0.2", "f": {"v": "0.3"}}"#,
+        ),
         // A str that is not UTF-8: a value, a key, a surrogate.
         (
             reply,

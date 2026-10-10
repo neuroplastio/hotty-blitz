@@ -22,12 +22,14 @@ pub fn body(payload: &[u8]) -> Value {
 /// is one msgpack map, with nothing after it, nested at most 32 levels
 /// deep, and holds, anywhere in it, only what SPEC §3.3 has a host send
 /// (which a reader fails the whole body for, SDK.md §3.9): no nil (a field
-/// the host has nothing for is left out), no key but a str, no str but
-/// UTF-8, and no int further than 2^53 − 1 from zero. Nor bin or an
-/// extension, as no field has a host send one: a timestamp is said apart
-/// when msgpack does not define it, or §3.3 does not let it through (4, 8
-/// or 12 bytes, nanoseconds under a second, seconds at most 2^53 − 1 from
-/// 1970).
+/// the host has nothing for is left out), no key but a str, no key given
+/// twice in one map (keys compared as the strs they are, whatever their
+/// form: a fixstr "v" and a str 8 "v" are one key; one name in two maps is
+/// two), no str but UTF-8, and no int further than 2^53 − 1 from zero. Nor
+/// bin or an extension, as no field has a host send one: a timestamp is
+/// said apart when msgpack does not define it, or §3.3 does not let it
+/// through (4, 8 or 12 bytes, nanoseconds under a second, seconds at most
+/// 2^53 − 1 from 1970).
 pub fn read_body(payload: &[u8]) -> Result<Value, String> {
     if payload.is_empty() {
         return Ok(Value::Null);
@@ -154,7 +156,13 @@ impl<'a> Reader<'a> {
             let Value::String(k) = self.value(inner)? else {
                 unreachable!("a str reads as a string");
             };
-            m.insert(k, self.value(inner)?);
+            if m.contains_key(&k) {
+                return Err(format!(
+                    "holds the key {k:?} twice in one map, again at byte {key}"
+                ));
+            }
+            let v = self.value(inner)?;
+            m.insert(k, v);
         }
         Ok(Value::Object(m))
     }

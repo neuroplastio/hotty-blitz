@@ -574,24 +574,15 @@ fn protocol_vectors() {
     );
 }
 
-/// The reader the tests check the host's bodies with fails every body the
-/// decode vectors have an SDK fail for what no host sends (SDK.md §3.9),
-/// and reads the ints at the edge of what a body carries: so a body the
-/// host sends that holds what it must not fails a test.
-#[test]
-fn the_reader_fails_what_no_host_sends() {
-    let v = vectors();
+/// The decode vector whose name starts with `name`: each body's bytes,
+/// and the message it is in.
+fn decode_vector(v: &Value, name: &str) -> Vec<(Vec<u8>, Value)> {
     let d = v["decode"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|d| {
-            d["name"]
-                .as_str()
-                .unwrap()
-                .starts_with("a body that holds, anywhere")
-        })
-        .expect("the decode vector of what no host sends");
+        .find(|d| d["name"].as_str().unwrap().starts_with(name))
+        .unwrap_or_else(|| panic!("no decode vector \"{name}…\""));
     let unhex = |s: &str| -> Vec<u8> {
         (0..s.len())
             .step_by(2)
@@ -600,23 +591,74 @@ fn the_reader_fails_what_no_host_sends() {
     };
     let bodies = d["bodies"].as_array().unwrap();
     let messages = d["messages"].as_array().unwrap();
+    bodies
+        .iter()
+        .zip(messages)
+        .map(|(b, m)| (unhex(b["hex"].as_str().unwrap()), m.clone()))
+        .collect()
+}
+
+/// The reader the tests check the host's bodies with fails every body the
+/// decode vectors have an SDK fail for what no host sends (SDK.md §3.9),
+/// and reads the ints at the edge of what a body carries, and one name in
+/// two maps: so a body the host sends that holds what it must not fails a
+/// test.
+#[test]
+fn the_reader_fails_what_no_host_sends() {
+    let v = vectors();
     let mut failed = 0;
-    for (body, m) in bodies.iter().zip(messages) {
-        let b = unhex(body["hex"].as_str().unwrap());
+    for (b, m) in decode_vector(&v, "a body that holds, anywhere") {
         // Each is a reply whose capabilities decode or not, or the event
         // whose detail does not.
         let decodes = m.get("caps").is_some_and(|c| !c.is_null());
         match (decodes, read_body(&b)) {
             (false, Err(_)) => failed += 1,
-            (false, Ok(v)) => panic!("{body} reads as {v}"),
+            (false, Ok(v)) => panic!("{b:02x?} reads as {v}"),
             // A timestamp msgpack defines, which an SDK skips in a field it
             // does not know, but no field has a host send.
             (true, Err(e)) if e.contains("no field of HOTTY 0.2") => {}
-            (true, Err(e)) => panic!("{body}: {e}"),
+            (true, Err(e)) => panic!("{e}"),
             (true, Ok(_)) => {}
         }
     }
-    assert_eq!(failed, 14);
+    assert_eq!(failed, 18);
+}
+
+/// What the tests check a host's body with, the reader and then a reply's
+/// `types`, fails every body of the decode vector of a field holding
+/// another kind of value than its type (SDK.md §3.9): the reader fails bin
+/// and extensions, as no field has a host send one, and the types of "the
+/// capabilities are each of their type" an array where a capability is a
+/// map, or a map where it is an array. An event's body has no `types`: the
+/// reader must fail it.
+#[test]
+fn the_reader_and_the_types_fail_another_kind() {
+    let v = vectors();
+    let types = v["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| {
+            t["name"]
+                .as_str()
+                .unwrap()
+                .starts_with("the capabilities are each of their type")
+        })
+        .and_then(|t| t["steps"][0]["reply"].get("types"))
+        .expect("the capabilities' types");
+    let mut failed = 0;
+    for (b, m) in decode_vector(&v, "a field a reader knows holding another kind") {
+        match (read_body(&b), m.get("caps")) {
+            (Err(_), _) => {}
+            (Ok(body), Some(_)) => assert!(
+                check_type(&body, types, "body").is_err(),
+                "{body} is of its types"
+            ),
+            (Ok(body), None) => panic!("{body} reads, and has no types"),
+        }
+        failed += 1;
+    }
+    assert_eq!(failed, 8);
 }
 
 #[test]
