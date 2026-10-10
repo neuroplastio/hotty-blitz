@@ -2,6 +2,9 @@
 //! reach. Painting, scrollbars, the axes a document did not ask for, and the
 //! keys a control keeps.
 
+mod common;
+
+use common::body;
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty_wire::{Command, Event, Scanner};
 
@@ -71,7 +74,7 @@ fn press(h: &mut Host, x: f32, y: f32) -> (String, serde_json::Value) {
         .into_iter()
         .find(|c| c.get("e") == Some("press"))
         .expect("a press");
-    let detail = serde_json::from_slice(&p.payload).unwrap_or(serde_json::Value::Null);
+    let detail = body(&p.payload);
     (p.get("t").unwrap_or("").to_string(), detail)
 }
 
@@ -270,7 +273,7 @@ fn along_an_axis_not_asked_for_nothing_moves() {
         .into_iter()
         .find(|c| c.get("e") == Some("click"))
         .expect("a click");
-    let detail: serde_json::Value = serde_json::from_slice(&click.payload).unwrap();
+    let detail = body(&click.payload);
     // Brought into view down (row 5 of 4, so scrolled 2 rows), never across.
     assert_eq!(
         detail["area"],

@@ -8,6 +8,7 @@
 //! from the pointer (or the focused element) outward, then the root, then
 //! the terminal, unless `overscroll-behavior` stops it on the way.
 
+use crate::body::{Area, MAX_INT};
 use blitz_dom::node::ScrollbarWidth;
 use blitz_dom::{BaseDocument, NodeId, ScrollBehavior};
 use std::time::{Duration, Instant};
@@ -472,12 +473,7 @@ pub fn into_view(doc: &mut BaseDocument, id: NodeId, axes: u8) -> Vec<Scroller> 
 /// whole, where it is clipped or scrolled away. `cell` is a cell's size in
 /// CSS pixels, and `slack` half a device pixel: an edge that close to a
 /// cell's is on it, as layout places boxes at fractions of a pixel.
-pub fn area(
-    doc: &BaseDocument,
-    id: NodeId,
-    cell: (f64, f64),
-    slack: f64,
-) -> Option<serde_json::Value> {
+pub fn area(doc: &BaseDocument, id: NodeId, cell: (f64, f64), slack: f64) -> Option<Area> {
     let r = doc.get_client_bounding_rect(id)?;
     let (cw, ch) = cell;
     if cw <= 0.0 || ch <= 0.0 {
@@ -487,12 +483,14 @@ pub fn area(
     let row = ((r.y + slack) / ch).floor();
     let right = ((r.x + r.width - slack) / cw).ceil();
     let bottom = ((r.y + r.height - slack) / ch).ceil();
-    Some(serde_json::json!({
-        "c": c as i64,
-        "r": row as i64,
-        "w": (right - c).max(0.0) as i64,
-        "h": (bottom - row).max(0.0) as i64,
-    }))
+    // An int a body carries (SPEC §3.3), however far away the box is.
+    let int = |v: f64| (v as i64).clamp(-MAX_INT, MAX_INT);
+    Some(Area {
+        c: int(c),
+        r: int(row),
+        w: int((right - c).max(0.0)),
+        h: int((bottom - row).max(0.0)),
+    })
 }
 
 /// How long overlay scrollbars stay after they last showed, and how long

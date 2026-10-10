@@ -1,6 +1,9 @@
 //! The shared conformance vectors (conformance/README.md), run against
 //! hotty-blitz. The xterm.js addon runs the same file.
 
+mod common;
+
+use common::read_body;
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Mods, PointerKind, Touch, TouchPhase};
 use hotty_wire::{Command, Control, Event, Scanner};
 use serde_json::Value;
@@ -65,8 +68,9 @@ fn decode(bytes: &[u8]) -> (Vec<Command>, usize) {
     (commands, invalid)
 }
 
-/// What the host sent, decoded. A host sends nothing malformed, and never
-/// compresses (SPEC §3.3): no sequence it sends carries `o`.
+/// What the host sent, decoded. A host sends nothing malformed, never
+/// compresses, and each body it sends is one msgpack map (SPEC §3.3): no
+/// sequence it sends carries `o`.
 fn from_host(bytes: &[u8]) -> Result<Vec<Command>, String> {
     let head = b"\x1b]7279;";
     let mut rest = bytes;
@@ -82,7 +86,12 @@ fn from_host(bytes: &[u8]) -> Result<Vec<Command>, String> {
         }
     }
     match decode(bytes) {
-        (msgs, 0) => Ok(msgs),
+        (msgs, 0) => {
+            for m in &msgs {
+                read_body(&m.payload).map_err(|e| format!("{}: {e}", m.control.encode()))?;
+            }
+            Ok(msgs)
+        }
         (_, n) => Err(format!("the host sent {n} malformed message(s)")),
     }
 }
@@ -100,11 +109,8 @@ fn check_events(step: &Value, got: &[&Command]) -> Result<(), String> {
     };
     let want = want.as_array().unwrap();
     let show = |c: &&Command| {
-        format!(
-            "{} {}",
-            c.control.encode(),
-            String::from_utf8_lossy(&c.payload)
-        )
+        let body = read_body(&c.payload).map_or_else(|e| e, |b| b.to_string());
+        format!("{} {body}", c.control.encode())
     };
     if got.len() != want.len() {
         return Err(format!(
@@ -117,7 +123,9 @@ fn check_events(step: &Value, got: &[&Command]) -> Result<(), String> {
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
         for (k, v) in w.as_object().unwrap() {
             if k == "detail" {
-                let body: Value = serde_json::from_slice(&g.payload).unwrap_or(Value::Null);
+                // Equal as values, each of its type (conformance/README):
+                // an int is not a float, whole or not.
+                let body = read_body(&g.payload)?;
                 if &body != v {
                     return Err(format!("event {}: detail want {v}, got {}", i + 1, show(g)));
                 }
@@ -434,7 +442,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
             )),
             Some(want) => {
                 let got = replies.first().ok_or("expected a reply, got none")?;
-                let body: Value = serde_json::from_slice(&got.payload).unwrap_or(Value::Null);
+                let body = read_body(&got.payload)?;
                 for (k, v) in want.as_object().unwrap() {
                     let have = match k.as_str() {
                         "code" | "detail" => {

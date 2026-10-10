@@ -1,5 +1,8 @@
 //! Host behaviour, end to end through commands: what a program can rely on.
 
+mod common;
+
+use common::body;
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty_wire::{Command, Event, Scanner};
 
@@ -49,9 +52,35 @@ fn query_answers_with_capabilities() {
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(r[0].get("n"), Some("7"));
-    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    let caps = body(&r[0].payload);
     assert_eq!(caps["cell"]["h"], 20);
     assert!(caps["ops"].as_array().unwrap().iter().any(|o| o == "morph"));
+    // Each field as its type (SPEC §3.3, §4): the scale a float though
+    // whole, and nothing this host does not do, not even as false.
+    let want = serde_json::json!({
+        "v": "0.2",
+        "cell": {"w": 10, "h": 20},
+        "scale": 1.0,
+        "scheme": "dark",
+        "limits": {"resources": 64 << 20},
+        "net": {},
+        "scroll": true,
+        "steps": true,
+        "host": "hotty-blitz",
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    for (k, v) in want.as_object().unwrap() {
+        assert_eq!(&caps[k], v, "{k}");
+    }
+    assert!(caps["scale"].is_f64());
+    assert!(
+        caps["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e.is_string())
+    );
+    assert_eq!(caps.get("passthrough"), None);
 }
 
 #[test]
@@ -316,7 +345,7 @@ fn a_missing_target_is_an_error_and_quiet_suppresses_ok() {
         "2",
     )));
     assert_eq!(r[0].get("a"), Some("err"));
-    assert!(String::from_utf8_lossy(&r[0].payload).contains("ENOTARGET"));
+    assert_eq!(body(&r[0].payload)["code"], "ENOTARGET");
     let r = replies(&h.handle(&cmd(
         &[
             ("a", "delta"),
@@ -378,7 +407,7 @@ fn morph_keeps_what_the_user_typed_and_change_comes_on_blur() {
         .find(|c| c.get("e") == Some("change"))
         .expect("change on blur");
     assert_eq!(change.get("t"), Some("name"));
-    let v: serde_json::Value = serde_json::from_slice(&change.payload).unwrap();
+    let v = body(&change.payload);
     assert!(v["value"].as_str().unwrap().contains("yz"), "{v}");
 }
 
@@ -425,7 +454,7 @@ fn links_report_href_and_url_with_or_without_an_id() {
     };
     let first = click(&mut h, 10.0);
     assert_eq!(first.get("t"), Some(""));
-    let detail: serde_json::Value = serde_json::from_slice(&first.payload).unwrap();
+    let detail = body(&first.payload);
     assert_eq!(
         detail,
         serde_json::json!({
@@ -437,7 +466,7 @@ fn links_report_href_and_url_with_or_without_an_id() {
     );
     let second = click(&mut h, 50.0);
     assert_eq!(second.get("t"), Some("ext"));
-    let detail: serde_json::Value = serde_json::from_slice(&second.payload).unwrap();
+    let detail = body(&second.payload);
     assert_eq!(
         detail,
         serde_json::json!({
@@ -450,7 +479,7 @@ fn links_report_href_and_url_with_or_without_an_id() {
 
     // This host fetches nothing from the network (SPEC §7.2), and says so.
     let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
-    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    let caps = body(&r[0].payload);
     assert_eq!(caps["net"], serde_json::json!({}));
 }
 
@@ -818,7 +847,7 @@ fn submitting_a_form_reports_its_fields() {
         .find(|c| c.get("e") == Some("submit"))
         .expect("submit");
     assert_eq!(submit.get("t"), Some("settings"));
-    let fields: serde_json::Value = serde_json::from_slice(&submit.payload).unwrap();
+    let fields = body(&submit.payload);
     assert_eq!(fields["ok"], "yes");
     assert!(fields["name"].as_str().unwrap().contains("yz"), "{fields}");
 }
@@ -873,12 +902,7 @@ fn partial_repaint_matches_a_full_paint() {
         let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
         c.extend(ctl.iter().copied());
         let r = replies(&inc.handle(&cmd(&c, payload)));
-        assert_eq!(
-            r[0].get("a"),
-            Some("ok"),
-            "{:?}",
-            String::from_utf8_lossy(&r[0].payload)
-        );
+        assert_eq!(r[0].get("a"), Some("ok"), "{}", body(&r[0].payload));
         for (_, _, _, d) in render(&mut inc) {
             if matches!(d, hotty_blitz::Damage::Rects(_)) {
                 partial += 1;
@@ -1233,7 +1257,7 @@ fn a_click_inside_on_what_takes_no_focus_commits_and_gives_the_keyboard_back() {
     // value, then the surface sends blur.
     let got = click(&mut h, "f", 10.0, 30.0);
     assert_eq!(kinds(&got), vec![ev("change", "name"), ev("blur", "")]);
-    let v: serde_json::Value = serde_json::from_slice(&got[0].payload).unwrap();
+    let v = body(&got[0].payload);
     assert!(v["value"].as_str().unwrap().contains("yz"), "{v}");
     assert!(!h.is_focused("f"));
     assert!(!key(&mut h, "f", "q").consumed);
@@ -1325,7 +1349,7 @@ fn detaching_gives_the_keyboard_back_without_change_or_blur() {
     assert!(!k.consumed && k.effects.is_empty());
     // It never has the keyboard again, nor sends what it held back.
     let r = replies(&h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "name")], "")));
-    assert!(String::from_utf8_lossy(&r[0].payload).contains("EDETACHED"));
+    assert_eq!(body(&r[0].payload)["code"], "EDETACHED");
     assert!(h.blur("f").is_empty());
     assert_eq!(kinds(&click(&mut h, "f", 10.0, 5.0)), vec![]);
 }
@@ -1686,12 +1710,7 @@ fn a_detached_surface_paints_partially_as_it_would_in_full() {
             let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
             c.extend(ctl.iter().copied());
             let r = replies(&h.handle(&cmd(&c, payload)));
-            assert_eq!(
-                r[0].get("a"),
-                Some("ok"),
-                "{:?}",
-                String::from_utf8_lossy(&r[0].payload)
-            );
+            assert_eq!(r[0].get("a"), Some("ok"), "{}", body(&r[0].payload));
             if render_each {
                 for (_, _, _, d) in render(h) {
                     partial += matches!(d, hotty_blitz::Damage::Rects(_)) as u32;
@@ -1802,7 +1821,7 @@ fn a_click_on_a_label_is_a_click_on_its_control() {
     // A checkbox: toggled, and focused.
     let got = click(&mut h, "f", 10.0, 50.0);
     assert_eq!(kinds(&got), vec![ev("focus", "c"), ev("change", "c")]);
-    let v: serde_json::Value = serde_json::from_slice(&got[1].payload).unwrap();
+    let v = body(&got[1].payload);
     assert_eq!(v["checked"], true);
     h.blur("f");
     // A button: clicked, and focused.
@@ -1824,8 +1843,9 @@ fn on_a_detached_surface_focus_is_edetached_and_blur_does_nothing() {
         c.extend(t.map(|t| ("t", t)));
         let r = replies(&h.handle(&cmd(&c, "")));
         assert_eq!(r.len(), 1, "{t:?}");
-        assert!(
-            String::from_utf8_lossy(&r[0].payload).contains("EDETACHED"),
+        assert_eq!(
+            body(&r[0].payload)["code"],
+            "EDETACHED",
             "{t:?}: {:?}",
             r[0].control.encode()
         );
@@ -1919,7 +1939,7 @@ fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
     let mut h = host();
     place_form(&mut h);
     let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
-    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    let caps = body(&r[0].payload);
     assert!(
         caps["events"]
             .as_array()
@@ -2079,7 +2099,7 @@ fn drags(ev: &[Command]) -> Vec<(String, String, serde_json::Value)> {
             (
                 c.get("e").unwrap_or("").to_string(),
                 c.get("t").unwrap_or("").to_string(),
-                serde_json::from_slice(&c.payload).unwrap_or(serde_json::Value::Null),
+                body(&c.payload),
             )
         })
         .collect()
@@ -2104,7 +2124,7 @@ const CELLS: &str = "<style>body{margin:0}i{position:absolute;width:30px;height:
 fn a_drag_comes_after_its_press_and_before_the_blur_it_causes() {
     let mut h = host();
     let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1")], "")));
-    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    let caps = body(&r[0].payload);
     assert!(
         caps["events"]
             .as_array()
@@ -2269,7 +2289,7 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
 fn the_capabilities_name_the_host_and_its_version() {
     let mut h = host();
     let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
-    let caps = serde_json::from_slice::<serde_json::Value>(&r[0].payload).unwrap();
+    let caps = body(&r[0].payload);
     assert_eq!(caps["host"], "hotty-blitz");
     assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
     let v: Vec<u32> = env!("CARGO_PKG_VERSION")
@@ -2286,7 +2306,7 @@ fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
     let mut h = host();
     let caps = |h: &mut Host| {
         let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
-        serde_json::from_slice::<serde_json::Value>(&r[0].payload).unwrap()
+        body(&r[0].payload)
     };
     assert!(caps(&mut h).get("passthrough").is_none());
     h.set_passthrough(true);
@@ -2694,8 +2714,10 @@ fn fits(h: &mut Host) -> Vec<(String, u64)> {
                 (c.get("a"), c.get("e"), c.get("t")),
                 (Some("ev"), Some("fit"), Some(""))
             );
-            let body: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
-            (c.get("s").unwrap().to_string(), body["r"].as_u64().unwrap())
+            (
+                c.get("s").unwrap().to_string(),
+                body(&c.payload)["r"].as_u64().unwrap(),
+            )
         })
         .collect()
 }
@@ -2859,8 +2881,12 @@ fn resizes(h: &mut Host) -> Vec<(String, f64, f64)> {
         .filter(|c| c.get("e") == Some("resize"))
         .map(|c| {
             assert_eq!(c.get("t"), Some(""));
-            let body: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
-            let n = |k: &str| body[k].as_f64().unwrap();
+            let b = body(&c.payload);
+            // Floats, whole or not (SPEC §9: `{"w": float, "h": float}`).
+            let n = |k: &str| {
+                assert!(b[k].is_f64(), "{k} is not a float: {b}");
+                b[k].as_f64().unwrap()
+            };
             (c.get("s").unwrap().to_string(), n("w"), n("h"))
         })
         .collect()
@@ -3034,7 +3060,7 @@ fn hovers(fx: &[Effect]) -> Vec<(String, String, serde_json::Value)> {
             (
                 c.get("s").unwrap_or("").to_string(),
                 c.get("t").unwrap_or("").to_string(),
-                serde_json::from_slice(&c.payload).unwrap_or(serde_json::Value::Null),
+                body(&c.payload),
             )
         })
         .collect()
@@ -3171,7 +3197,7 @@ fn losing_the_pointer_during_a_drag_ends_it_and_then_leaves() {
 fn hover_is_listed_in_the_capabilities() {
     let mut h = host();
     let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
-    let caps: serde_json::Value = serde_json::from_slice(&r[0].payload).unwrap();
+    let caps = body(&r[0].payload);
     assert!(
         caps["events"]
             .as_array()
@@ -3282,7 +3308,7 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
             .iter()
             .filter(|c| c.get("e") == Some("input"))
             .map(|c| {
-                let v: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
+                let v = body(&c.payload);
                 v["value"].as_str().unwrap().to_string()
             })
             .collect()
@@ -3322,7 +3348,7 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
     let ev = replies(&press(&mut h, KeyName::Enter, Mods::default()));
     let payload = |e: &str| -> serde_json::Value {
         let c = ev.iter().find(|c| c.get("e") == Some(e)).expect(e);
-        serde_json::from_slice(&c.payload).unwrap()
+        body(&c.payload)
     };
     assert_eq!(payload("change")["value"], "abZ");
     assert_eq!(payload("submit")["pw"], "abZ");
@@ -3470,7 +3496,7 @@ fn events(fx: &[Effect]) -> Vec<(String, String, String)> {
             (
                 c.get("e").unwrap_or("").to_string(),
                 c.get("t").unwrap_or("").to_string(),
-                String::from_utf8_lossy(&c.payload).to_string(),
+                body(&c.payload).to_string(),
             )
         })
         .collect()
@@ -3553,7 +3579,7 @@ fn a_select_picks_with_keys_repaints_as_a_full_paint_and_submits_its_pick() {
         .into_iter()
         .find(|c| c.get("e") == Some("submit"))
         .expect("submit");
-    let fields: serde_json::Value = serde_json::from_slice(&submit.payload).unwrap();
+    let fields = body(&submit.payload);
     assert_eq!(fields["env"], "dev", "{fields}");
 }
 
@@ -3595,7 +3621,7 @@ fn a_program_sets_a_selects_option_except_while_it_is_focused() {
             .into_iter()
             .find(|c| c.get("e") == Some("submit"))
             .expect("submit");
-        let fields: serde_json::Value = serde_json::from_slice(&submit.payload).unwrap();
+        let fields = body(&submit.payload);
         fields["env"].as_str().unwrap().to_string()
     };
     assert_eq!(selected(&mut h), "production");

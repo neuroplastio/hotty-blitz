@@ -6,7 +6,7 @@ text, and renders on the CPU. This repository holds:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events, and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of HOTTY 0.2: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | `blitz/` | the patches on Blitz: among them, a delta costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |

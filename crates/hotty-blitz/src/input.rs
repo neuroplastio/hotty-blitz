@@ -6,6 +6,7 @@
 //! hear about comes back as [`Event`]s encoded for its stdin.
 
 use crate::Effect;
+use crate::body::{self, Detail};
 use hotty_wire::{Control, keys};
 
 /// Event types a host can report, for the capability reply.
@@ -177,11 +178,12 @@ pub struct TouchOutcome {
 }
 
 /// Something the program should hear about.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Event {
     pub kind: &'static str,
     pub target: String,
-    pub detail: serde_json::Value,
+    /// Its body, a msgpack map (SPEC §9); none for a kind that has none.
+    pub detail: Option<Detail>,
 }
 
 impl Event {
@@ -191,11 +193,7 @@ impl Event {
         c.set("s", surface);
         c.set("e", self.kind);
         c.set("t", self.target.as_str());
-        let body = if self.detail.is_null() {
-            Vec::new()
-        } else {
-            self.detail.to_string().into_bytes()
-        };
+        let body = self.detail.as_ref().map(body::encode).unwrap_or_default();
         hotty_wire::encode_plain(&c, &body)
     }
 }

@@ -6,6 +6,7 @@
 //! HTML; both hand commands to a [`Host`] and draw the frames it produces.
 
 mod anim;
+pub mod body;
 pub mod delta;
 mod edit;
 pub mod fetch;
@@ -19,6 +20,7 @@ pub mod style;
 mod surface;
 
 use blitz_dom::FontContext;
+use body::Detail;
 use hotty_wire::{Command, Control};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -628,7 +630,10 @@ impl Host {
                 let e = Event {
                     kind: "resize",
                     target: String::new(),
-                    detail: serde_json::json!({ "w": px(w * s.cols as f32), "h": px(h * s.rows as f32) }),
+                    detail: Some(Detail::Resize {
+                        w: px(w * s.cols as f32),
+                        h: px(h * s.rows as f32),
+                    }),
                 };
                 Some(Effect::Reply(e.encode(&name)))
             })
@@ -644,7 +649,7 @@ impl Host {
                 let e = Event {
                     kind: "fit",
                     target: String::new(),
-                    detail: serde_json::json!({ "r": rows }),
+                    detail: Some(Detail::Fit { r: rows }),
                 };
                 Effect::Reply(e.encode(&name))
             });
@@ -713,13 +718,11 @@ impl Host {
             }
             Err((code, detail)) => {
                 if quiet < 2 {
-                    let body = serde_json::json!({ "code": code, "detail": detail }).to_string();
-                    effects.push(Effect::Reply(reply(
-                        "err",
-                        cmd,
-                        Vec::new(),
-                        Some(body.into_bytes()),
-                    )));
+                    let err = body::encode(&body::Error {
+                        code,
+                        detail: &detail,
+                    });
+                    effects.push(Effect::Reply(reply("err", cmd, Vec::new(), Some(err))));
                 }
             }
         }
@@ -748,35 +751,43 @@ impl Host {
         match cmd.action() {
             "q" => {
                 let m = self.config.metrics;
-                let caps = serde_json::json!({
-                    "v": "0.1",
-                    "host": "hotty-blitz",
+                let caps = body::Caps {
+                    v: "0.2",
+                    ops: &[
+                        "morph", "inner", "replace", "append", "prepend", "before", "after",
+                        "remove", "attr", "unattr", "text", "var",
+                    ],
+                    events: input::EVENTS,
+                    cell: body::Cell {
+                        w: m.cell_w,
+                        h: m.cell_h,
+                    },
+                    scale: body::float(m.scale),
+                    scheme: if self.config.theme.dark {
+                        "dark"
+                    } else {
+                        "light"
+                    },
+                    limits: body::Limits {
+                        resources: self.store.quota as u64,
+                    },
+                    // The host's half of the network policy (SPEC §7.2):
+                    // empty unless its user granted something.
+                    net: self.store.host_policy(),
+                    passthrough: self.passthrough,
+                    // A document can ask to scroll (SPEC §5.3).
+                    scroll: true,
+                    // A drag says where in an element with `data-steps` the
+                    // pointer is (SPEC §9.1).
+                    steps: true,
+                    host: "hotty-blitz",
                     // Raised with a change a program may need to know of
                     // (SPEC §15): 0.0.2 paints a box resized through a var
                     // delta (Blitz fork 0005); 0.0.3 takes `a=delta`, which
                     // was `a=patch`, and no longer the old name.
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "ops": ["morph", "inner", "replace", "append", "prepend", "before", "after",
-                            "remove", "attr", "unattr", "text", "var"],
-                    "events": input::EVENTS,
-                    "cell": { "w": m.cell_w, "h": m.cell_h },
-                    "scale": m.scale,
-                    "scheme": if self.config.theme.dark { "dark" } else { "light" },
-                    "limits": { "resources": self.store.quota },
-                    // The host's half of the network policy (SPEC §7.2):
-                    // empty unless its user granted something.
-                    "net": self.store.host_policy().to_json(),
-                });
-                let mut caps = caps;
-                if self.passthrough {
-                    caps["passthrough"] = serde_json::Value::Bool(true);
-                }
-                // A document can ask to scroll (SPEC §5.3).
-                caps["scroll"] = serde_json::Value::Bool(true);
-                // A drag says where in an element with `data-steps` the
-                // pointer is (SPEC §9.1).
-                caps["steps"] = serde_json::Value::Bool(true);
-                Ok((Vec::new(), Some(caps.to_string().into_bytes())))
+                    version: env!("CARGO_PKG_VERSION"),
+                };
+                Ok((Vec::new(), Some(body::encode(&caps))))
             }
             "doc" => {
                 let name = surface_name()?.to_string();

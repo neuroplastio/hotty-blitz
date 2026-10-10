@@ -1,6 +1,9 @@
 //! The network (SPEC §7.2), against an HTTP server on 127.0.0.1: a surface
 //! fetches what both halves of the policy allow, and nothing else.
 
+mod common;
+
+use common::body;
 use hotty_blitz::{Config, Host, Metrics};
 use hotty_wire::{Command, Event, Scanner};
 use std::collections::HashMap;
@@ -240,7 +243,7 @@ fn the_capabilities_report_the_hosts_half() {
     let mut h = host();
     let caps = |h: &mut Host| -> serde_json::Value {
         let r = replies(&h.handle(&cmd(&[("a", "q")], "")));
-        serde_json::from_slice::<serde_json::Value>(&r[0].payload).unwrap()["net"].clone()
+        body(&r[0].payload)["net"].clone()
     };
     assert_eq!(
         caps(&mut h),
@@ -619,8 +622,7 @@ fn a_fetched_image_that_changes_the_height_is_heard_with_fit() {
         (fits[0].get("e"), fits[0].get("s")),
         (Some("fit"), Some("a"))
     );
-    let body: serde_json::Value = serde_json::from_slice(&fits[0].payload).unwrap();
-    assert_eq!(body, serde_json::json!({ "r": 3 }));
+    assert_eq!(body(&fits[0].payload), serde_json::json!({ "r": 3 }));
 }
 
 #[test]

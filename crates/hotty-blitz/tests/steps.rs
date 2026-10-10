@@ -3,6 +3,9 @@
 //! value's parsing, the rounding, the clamping, a touch, and what a delta
 //! does to a drag under way.
 
+mod common;
+
+use common::body;
 use hotty_blitz::{Config, Effect, Host, Metrics, Mods, PointerKind, TouchPhase};
 use hotty_wire::{Command, Event, Scanner};
 
@@ -46,7 +49,7 @@ fn drags(effects: &[Effect]) -> Vec<Drag> {
                     && c.get("a") == Some("ev")
                     && c.get("e").is_some_and(|k| k.starts_with("drag"))
                 {
-                    let d: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
+                    let d = body(&c.payload);
                     out.push((
                         c.get("e").unwrap().to_string(),
                         c.get("t").unwrap_or("").to_string(),
@@ -75,16 +78,13 @@ fn data_steps_is_one_or_two_whole_numbers_and_the_host_says_it_reads_them() {
     let Some(Effect::Reply(b)) = caps.first() else {
         panic!("no reply to q");
     };
-    assert!(String::from_utf8_lossy(b).contains("\"steps\":true") || {
-        let mut found = false;
-        Scanner::new().feed(b, &mut |e| {
-            if let Event::Command(c) = e {
-                let v: serde_json::Value = serde_json::from_slice(&c.payload).unwrap();
-                found = v["steps"] == true;
-            }
-        });
-        found
+    let mut steps = None;
+    Scanner::new().feed(b, &mut |e| {
+        if let Event::Command(c) = e {
+            steps = Some(body(&c.payload)["steps"].clone());
+        }
     });
+    assert_eq!(steps, Some(serde_json::Value::Bool(true)));
 
     // At the middle of the box: half of each count.
     for (value, want) in [
@@ -100,6 +100,9 @@ fn data_steps_is_one_or_two_whole_numbers_and_the_host_says_it_reads_them() {
         ("4 2 1", (None, None)),
         ("four", (None, None)),
         ("", (None, None)),
+        // The most a body's int holds (SPEC §3.3), and one past it.
+        ("9007199254740991", (Some(4503599627370496), None)),
+        ("9007199254740992", (None, None)),
     ] {
         let mut h = host();
         place(&mut h, &format!("<div id=t data-on=drag data-steps=\"{value}\">t</div>"));

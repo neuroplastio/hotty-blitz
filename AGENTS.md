@@ -16,6 +16,10 @@ for the hotty repository.
   export the patch again with `git format-patch` into `blitz/`. vello_cpu
   is forked the same way: the published package plus `vello/*.patch`, at
   `../vello_cpu` (vello/README.md).
+- **A body is typed** (SPEC §3.3): every reply and event body is a serde
+  type in `src/body.rs`, written as one msgpack map, each field as the
+  spec's tables type it. Tests read bodies back with `tests/common`, which
+  keeps `2.0` a float.
 - **The C ABI** (`include/hotty_blitz.h`, `src/ffi.rs`) is what terminals
   link. Change both together, and say so in the commit message: forks
   pinned to an older ABI break.

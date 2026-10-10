@@ -29,6 +29,9 @@ anyrender_vello_cpu.workspace = true
 vello_cpu = { version = "0.1", default-features = false, features = ["png"] }
 base64.workspace = true
 serde.workspace = true
+# The bodies a host sends are msgpack (SPEC §3.3, body.rs).
+rmp-serde.workspace = true
+# `Host::inspect`, a debugging view of an element: not a HOTTY body.
 serde_json.workspace = true
 keyboard-types = "0.7"
 stylo_static_prefs = "0.21"

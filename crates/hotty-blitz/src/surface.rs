@@ -1,6 +1,7 @@
 //! One surface: a Blitz document, its placement size, its last frame, and the
 //! glue that turns host input into DOM events and DOM events into HOTTY ones.
 
+use crate::body::{Detail, MAX_INT};
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
@@ -22,6 +23,7 @@ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::Body;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::{Code, Key as KbKey, Location, Modifiers};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use style::values::computed::UserSelect;
@@ -256,13 +258,15 @@ pub(crate) struct Steps {
 
 /// The counts of a `data-steps` value, across and down (SPEC §9.1): one
 /// or two whole numbers from 0 up, the second 0 when absent. None for
-/// anything else, which gives no steps.
+/// anything else, which gives no steps, and for a count past the ints a
+/// body carries (§3.3), since a step can be its count.
 fn parse_steps(value: &str) -> Option<(u64, u64)> {
     let mut counts = value.split_ascii_whitespace().map(|w| {
         w.bytes()
             .all(|b| b.is_ascii_digit())
             .then(|| w.parse::<u64>().ok())
             .flatten()
+            .filter(|&n| n <= MAX_INT as u64)
     });
     let x = counts.next()??;
     let y = match counts.next() {
@@ -305,17 +309,16 @@ fn drag_event(
     .into_iter()
     .filter_map(|(on, name)| on.then_some(name))
     .collect();
-    let mut detail = serde_json::json!({ "c": cell.0, "r": cell.1, "keys": held });
-    if let Some(x) = steps.x {
-        detail["x"] = x.into();
-    }
-    if let Some(y) = steps.y {
-        detail["y"] = y.into();
-    }
     Event {
         kind,
         target,
-        detail,
+        detail: Some(Detail::Drag {
+            c: cell.0,
+            r: cell.1,
+            keys: held,
+            x: steps.x,
+            y: steps.y,
+        }),
     }
 }
 
@@ -386,7 +389,7 @@ fn keyboard_event(kind: &'static str) -> Event {
     Event {
         kind,
         target: String::new(),
-        detail: serde_json::Value::Null,
+        detail: None,
     }
 }
 
@@ -1431,10 +1434,7 @@ impl Surface {
         Some(Event {
             kind: "press",
             target,
-            detail: area.map_or(
-                serde_json::Value::Null,
-                |a| serde_json::json!({ "area": a }),
-            ),
+            detail: area.map(|area| Detail::Press { area }),
         })
     }
 
@@ -1493,7 +1493,7 @@ impl Surface {
         events.push(Event {
             kind: "focus",
             target,
-            detail: serde_json::Value::Null,
+            detail: None,
         });
     }
 
@@ -1707,12 +1707,15 @@ impl Surface {
             Hovered::Out => Event {
                 kind: "hover",
                 target: String::new(),
-                detail: serde_json::json!({ "out": true }),
+                detail: Some(Detail::Out { out: true }),
             },
             Hovered::Over(t) => Event {
                 kind: "hover",
                 target: t.clone(),
-                detail: serde_json::json!({ "c": cell.0, "r": cell.1 }),
+                detail: Some(Detail::Hover {
+                    c: cell.0,
+                    r: cell.1,
+                }),
             },
         };
         self.hover = Some(now);
@@ -2084,13 +2087,15 @@ impl Surface {
                 events.push(Event {
                     kind: "input",
                     target: target.clone(),
-                    detail: serde_json::json!({ "value": value }),
+                    detail: Some(Detail::Value {
+                        value: value.clone(),
+                    }),
                 });
             }
             events.push(Event {
                 kind: "change",
                 target,
-                detail: serde_json::json!({ "value": value }),
+                detail: Some(Detail::Value { value }),
             });
         }
         Some(events)
@@ -2621,7 +2626,7 @@ impl Surface {
         events.retain(|e| {
             !e.target.is_empty()
                 || matches!(e.kind, "focus" | "blur")
-                || (e.kind == "click" && e.detail.get("href").is_some())
+                || matches!(e.detail, Some(Detail::Click { href: Some(_), .. }))
         });
         if is_press {
             self.damage.full = true;
@@ -2683,7 +2688,7 @@ impl Surface {
             events.push(Event {
                 kind: "submit",
                 target: self.id_of(form).unwrap_or_default(),
-                detail: serde_json::Value::Object(form_fields(&nav)),
+                detail: Some(Detail::Fields(form_fields(&nav))),
             });
         }
         events
@@ -2704,7 +2709,7 @@ impl Surface {
             events.push(Event {
                 kind: "change",
                 target,
-                detail: serde_json::json!({ "value": new }),
+                detail: Some(Detail::Value { value: new }),
             });
         }
     }
@@ -2870,28 +2875,23 @@ impl EventHandler for &mut Recorder {
                     let target = attr(id, "id");
                     if target.is_some() || link {
                         let target = target.unwrap_or_default();
-                        let mut detail = serde_json::Map::new();
-                        if let Some(href) = href {
-                            if link && let Some(url) = link_url(&self.base, &href) {
-                                detail.insert("url".into(), url.into());
-                            }
-                            detail.insert("href".into(), href.into());
-                        }
-                        if let Some(v) = attr(id, "value") {
-                            detail.insert("value".into(), v.into());
-                        }
                         // Where the element is (SPEC §9: `area`).
-                        if let Some(a) = crate::scroll::area(&doc, id, self.cell, self.slack) {
-                            detail.insert("area".into(), a);
-                        }
+                        let area = crate::scroll::area(&doc, id, self.cell, self.slack);
+                        let value = attr(id, "value");
+                        let url = href
+                            .as_deref()
+                            .filter(|_| link)
+                            .and_then(|h| link_url(&self.base, h));
+                        let some = area.is_some() || href.is_some() || value.is_some();
                         self.events.push(Event {
                             kind: "click",
                             target,
-                            detail: if detail.is_empty() {
-                                serde_json::Value::Null
-                            } else {
-                                serde_json::Value::Object(detail)
-                            },
+                            detail: some.then_some(Detail::Click {
+                                area,
+                                href,
+                                url,
+                                value,
+                            }),
                         });
                     }
                     break;
@@ -2912,13 +2912,18 @@ impl EventHandler for &mut Recorder {
                         self.events.push(Event {
                             kind: "change",
                             target,
-                            detail: serde_json::json!({ "checked": checked, "value": attr(id, "value") }),
+                            detail: Some(Detail::Checked {
+                                checked,
+                                value: attr(id, "value"),
+                            }),
                         });
                     }
                     _ if wants(id, "input") => self.events.push(Event {
                         kind: "input",
                         target,
-                        detail: serde_json::json!({ "value": input.value }),
+                        detail: Some(Detail::Value {
+                            value: input.value.clone(),
+                        }),
                     }),
                     _ => {}
                 }
@@ -2928,10 +2933,10 @@ impl EventHandler for &mut Recorder {
     }
 }
 
-fn form_fields(nav: &NavigationOptions) -> serde_json::Map<String, serde_json::Value> {
-    let mut map = serde_json::Map::new();
+fn form_fields(nav: &NavigationOptions) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
     let mut add = |k: String, v: String| {
-        map.insert(k, v.into());
+        map.insert(k, v);
     };
     match &nav.document_resource {
         Body::Form(data) => {
