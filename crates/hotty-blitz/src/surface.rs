@@ -894,12 +894,16 @@ impl Surface {
             let rects = self.damage.take(&self.doc, scale, w, h, margin);
             // Many small rectangles can cost more than one full paint: each
             // carries a fixed overhead (the scene walked again, the render
-            // context dispatched to its workers). Measured on the corpus,
-            // kit surfaces and `hotty bench` (gov R-5), it is 10-20% of a
-            // full paint on large surfaces and at least ~64k pixels' worth
-            // on small ones. Past that point, paint the frame once instead.
+            // context dispatched to its workers). Measured with `hotty
+            // bench` and dash.py (gov R-5), it is 2-10% of a full paint on
+            // large surfaces, most where a wide container's children are
+            // all walked, and at least ~64k pixels' worth on small ones.
+            // Past that point, paint the frame once instead: a sixteenth of
+            // it a rectangle keeps dash.py's eight rectangles partial and
+            // `hotty bench`'s sixteen scattered cells whole, as their
+            // timings say.
             let area = w as u64 * h as u64;
-            let per_rect = (area / 10).max(64 * 1024);
+            let per_rect = (area / 16).max(64 * 1024);
             let cost: u64 = rects
                 .iter()
                 .map(|r| r.w as u64 * r.h as u64 + per_rect)
