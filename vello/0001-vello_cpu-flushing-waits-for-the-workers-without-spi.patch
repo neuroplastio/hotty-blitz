@@ -1,0 +1,50 @@
+From bda1bb91ca9c0d5ba4913466e377514cb2199990 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Sat, 10 Oct 2026 19:04:22 +0200
+Subject: [PATCH] vello_cpu: flushing waits for the workers without spinning
+
+`MultiThreadedDispatcher::flush` drains the recorded commands with
+`record_finished_commands(false)`, which looped on `try_recv` until every
+worker had dropped its sender: the main thread spun at full speed for as
+long as the workers took to finish the last batch. It now blocks in the
+ordered channel's `recv`, which returns the tasks in the same order and
+fails once the senders are gone and nothing is buffered, so the loop ends
+where it did.
+
+In hotty-blitz painting a 10 Hz dashboard (about 0.45 Mpx of 3.5 Mpx
+changing a frame, 8 workers), the painting thread's instructions fell by
+39% and the process's by 23%; frame times did not change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/dispatch/multi_threaded.rs | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/src/dispatch/multi_threaded.rs b/src/dispatch/multi_threaded.rs
+index 557076b..a553819 100644
+--- a/src/dispatch/multi_threaded.rs
++++ b/src/dispatch/multi_threaded.rs
+@@ -302,7 +302,19 @@ impl MultiThreadedDispatcher {
+ 
+     fn record_finished_commands(&mut self, abort_empty: bool) {
+         loop {
+-            match self.recorded_command_receiver.as_mut().unwrap().try_recv() {
++            // When flushing, block until the next task (in order) arrives or
++            // every worker has hung up. Spinning on `try_recv` here kept the
++            // main thread busy for as long as the workers took.
++            let next = if abort_empty {
++                self.recorded_command_receiver.as_mut().unwrap().try_recv()
++            } else {
++                self.recorded_command_receiver
++                    .as_mut()
++                    .unwrap()
++                    .recv()
++                    .map_err(|_| TryRecvError::Disconnected)
++            };
++            match next {
+                 Ok(mut task) => {
+                     let num_tasks = task.allocation_group.recorded_commands.len();
+                     for cmd in task.allocation_group.recorded_commands.drain(0..num_tasks) {
+-- 
+2.56.0
+

@@ -13,8 +13,9 @@ check: build test clippy test-pty fuzz   ## the gate
 hotty:
 	@test -n "$(HOTTY_DIR)" || { echo "no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
 
-blitz:   ## the Blitz fork Cargo.toml patches in, at ../blitz (blitz/README.md)
+blitz:   ## the forks Cargo.toml patches in: Blitz at ../blitz, vello_cpu at ../vello_cpu (blitz/, vello/)
 	@test -f ../blitz/packages/blitz-dom/src/layout/speculate.rs || scripts/blitz-fork.sh
+	@test -d ../vello_cpu/.git || scripts/vello-fork.sh
 
 build: blitz
 	$(CARGO) build --workspace

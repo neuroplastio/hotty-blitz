@@ -38,6 +38,12 @@ blitz-traits = { path = "../blitz/packages/blitz-traits" }
 debug_timer = { path = "../blitz/packages/debug_timer" }
 stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 
+# The vello_cpu fork (../vello_cpu, branch `hotty`, made by
+# scripts/vello-fork.sh from the published package and the patches in
+# vello/): flushing waits for the workers without spinning.
+[patch.crates-io]
+vello_cpu = { path = "../vello_cpu" }
+
 [profile.release]
 lto = "thin"
 debug = false

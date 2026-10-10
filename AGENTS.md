@@ -7,12 +7,15 @@ for the hotty repository.
 - **`make check` is the gate:** build, tests (including the shared
   conformance vectors from the hotty checkout), clippy with `-D warnings`,
   and the pty test. It needs a hotty checkout (`HOTTY_DIR`, or next to this
-  repository) and sets up the Blitz fork at `../blitz` when missing.
+  repository) and sets up the forks at `../blitz` and `../vello_cpu` when
+  missing.
 - **Release builds only for numbers.** A debug build of Stylo is orders of
   magnitude slower.
 - **Blitz stays upstream code:** a pinned commit plus `blitz/*.patch`, never
   a vendored copy. After changing the fork (branch `hotty` in `../blitz`),
-  export the patch again with `git format-patch` into `blitz/`.
+  export the patch again with `git format-patch` into `blitz/`. vello_cpu
+  is forked the same way: the published package plus `vello/*.patch`, at
+  `../vello_cpu` (vello/README.md).
 - **The C ABI** (`include/hotty_blitz.h`, `src/ffi.rs`) is what terminals
   link. Change both together, and say so in the commit message: forks
   pinned to an older ABI break.

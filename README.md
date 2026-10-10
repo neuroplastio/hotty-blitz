@@ -10,6 +10,7 @@ text, and renders on the CPU. This repository holds:
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | `blitz/` | the patches on Blitz: among them, a delta costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
+| `vello/` | the patch on vello_cpu, the renderer: flushing waits for its workers without spinning ([vello/README.md](vello/README.md)) |
 
 ## Try it
 
@@ -17,7 +18,7 @@ Needs [mise](https://mise.jdx.dev) and a checkout of `neuroplastio/hotty`
 next to this repository (or `HOTTY_DIR`).
 
 ```
-mise install && make release       # also clones and patches Blitz at ../blitz
+mise install && make release       # also patches Blitz at ../blitz and vello_cpu at ../vello_cpu
 ./target/release/hotty run -- python3 ../hotty/examples/dash.py
 ./target/release/hotty render ../hotty/corpus/01-card.html -o card.png
 ```
@@ -185,4 +186,5 @@ Chromium. The known gaps:
 
 Apache-2.0 ([LICENSE](LICENSE)).
 - Blitz is MIT OR Apache-2.0, and the patch in `blitz/` is Apache-2.0.
+- vello_cpu is Apache-2.0 OR MIT, and the patch in `vello/` is Apache-2.0.
 - Stylo is MPL-2.0 and stays a dependency.
