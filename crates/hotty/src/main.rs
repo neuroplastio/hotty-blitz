@@ -1,6 +1,7 @@
 //! `hotty`: render HTML the way a HOTTY host would, and be one.
 
 mod diacritics;
+mod dump;
 mod input;
 mod kitty;
 mod run;
@@ -22,7 +23,9 @@ usage:
                                               --net: what surfaces may fetch, in CSP syntax
                                               (\"img-src https:\"); nothing without it
   hotty send   <key=value>… [< payload]      write one HOTTY command to stdout
-  hotty dump   [< captured-stream]           decode the HOTTY commands in a stream
+  hotty dump   [FILE] [--all]                the HOTTY messages in a captured stream (stdin
+                                              without FILE), one line each, msgpack bodies
+                                              as JSON; --all: the other bytes too
   hotty bench  [--frames N] [--only size|flat|nested]
                                               delta cost vs delta size and vs document size
   hotty replay <stream> [--cell WxH] [--scale S] [--runs N]
@@ -42,7 +45,7 @@ fn main() {
         Some("show") => cmd_render(&args[1..], true),
         Some("run") => cmd_run(&args[1..]),
         Some("send") => cmd_send(&args[1..]),
-        Some("dump") => cmd_dump(),
+        Some("dump") => dump::run(&args[1..]),
         Some("replay") => cmd_replay(&args[1..]),
         Some("bench") => cmd_bench(&args[1..]),
         Some("css") => {
@@ -366,40 +369,6 @@ fn cmd_send(args: &[String]) -> i32 {
     let mut o = std::io::stdout().lock();
     let _ = o.write_all(&hotty_wire::encode(&control, &payload));
     let _ = o.flush();
-    0
-}
-
-fn cmd_dump() -> i32 {
-    let mut input = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut input);
-    let mut s = Scanner::new();
-    let (mut passthrough, mut n) = (0usize, 0usize);
-    s.feed(&input, &mut |e| match e {
-        Event::Bytes(b) => passthrough += b.len(),
-        Event::Seq(_, b) => passthrough += b.len(),
-        Event::Command(c) => {
-            n += 1;
-            let body = String::from_utf8_lossy(&c.payload);
-            let preview: String = body
-                .chars()
-                .take(160)
-                .collect::<String>()
-                .replace('\n', "⏎");
-            println!(
-                "{:>4}  {}  ({} bytes){}",
-                n,
-                c.control.encode(),
-                c.payload.len(),
-                if preview.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n      {preview}")
-                }
-            );
-        }
-        Event::Invalid(e) => println!("   !  invalid: {e}"),
-    });
-    println!("{n} HOTTY commands, {passthrough} other bytes");
     0
 }
 

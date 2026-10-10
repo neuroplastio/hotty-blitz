@@ -21,6 +21,7 @@ next to this repository (or `HOTTY_DIR`).
 mise install && make release       # also patches Blitz at ../blitz and vello_cpu at ../vello_cpu
 ./target/release/hotty run -- python3 ../hotty/examples/dash.py
 ./target/release/hotty render ../hotty/corpus/01-card.html -o card.png
+./target/release/hotty dump capture.bin     # the HOTTY messages in a captured stream
 ```
 
 `hotty run` works in any terminal with kitty graphics (kitty, Ghostty, and
@@ -33,6 +34,32 @@ surfaces natively: sharp at any zoom, no pixels on the wire, and local
 interaction. [hottyterm](https://github.com/neuroplastio/hottyterm) does
 exactly that; install it with `brew install --cask neuroplastio/tap/hottyterm`
 (macOS on Apple silicon) or the AUR's `hottyterm-bin` (Arch on x86_64).
+
+## Reading the wire
+
+A host's replies and events carry msgpack bodies (SPEC §3.3), in base64,
+which no one reads off a terminal. `hotty dump [FILE]` reads a captured
+stream from FILE or stdin, a program's output or what its terminal gave it
+to read (util-linux's `script -I in.bin -O out.bin`), and prints one line
+for each HOTTY message, its chunks joined and `o=z` inflated: its control,
+then its body as JSON with each value's type in sight, or what a program
+sent as its text.
+
+```
+a=ok:n=1:re=q  {"v": "0.2", "ops": ["morph", …], "cell": {"w": 20, "h": 42}, "scale": 2.0, …}
+a=delta:s=form:op=text:t=status:q=2  saved ✓\n
+a=ev:s=form:e=resize:t=  {"w": 500.0, "h": 147.0}
+```
+
+- A float always has a fraction or an exponent (`2.0`, `1e-7`), and an int
+  never. Bytes are `h'…'` in hex, a timestamp (extension −1) `t'…'` in
+  RFC 3339, another extension `ext(<type>, h'…')`.
+- A body that is not one msgpack map says why after `  !`: not a map, bytes
+  after it, nested deeper than 32 levels, or not msgpack.
+- In text, `\` and control characters are escaped (`\n`, `\e`); a
+  resource that is not text shows its size and first bytes.
+- `--all` prints the bytes between messages too, as `(bytes)` lines; a
+  sequence that does not decode is an `(invalid)` line.
 
 ## The network
 

@@ -1,0 +1,25 @@
+a=ok:n=1:re=q  {"v": "0.2", "ops": ["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var"], "events": ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit", "hover"], "cell": {"w": 20, "h": 42}, "scale": 2.0, "scheme": "dark", "limits": {"resources": 67108864}, "net": {}, "passthrough": true, "scroll": true, "steps": true, "host": "hotty-blitz", "version": "0.0.3"}
+a=ok:n=2:s=form:re=place:c=40:r=6
+a=err:n=3:s=nope:re=delta  {"code": "ENOENT", "detail": "no surface nope"}
+a=ev:s=form:e=hover:t=notify  {"c": 1, "r": 1}
+a=ev:s=form:e=press:t=notify  {"area": {"c": 0, "r": 1, "w": 2, "h": 1}}
+a=ev:s=form:e=focus:t=notify
+a=ev:s=form:e=change:t=notify  {"checked": true, "value": "yes"}
+a=ev:s=form:e=hover:t=name  {"c": 12, "r": 0}
+a=ev:s=form:e=press:t=name  {"area": {"c": 4, "r": 0, "w": 16, "h": 2}}
+a=ev:s=form:e=focus:t=name
+a=ev:s=form:e=hover:t=level  {"c": 5, "r": 2}
+a=ev:s=form:e=press:t=level  {"area": {"c": 0, "r": 2, "w": 10, "h": 1}}
+a=ev:s=form:e=dragstart:t=level  {"c": 5, "r": 2, "keys": [], "x": 5}
+a=ev:s=form:e=change:t=name  {"value": "ada"}
+a=ev:s=form:e=blur:t=
+a=ev:s=form:e=drag:t=level  {"c": 8, "r": 2, "keys": ["shift"], "x": 9}
+a=ev:s=form:e=dragend:t=level  {"c": 8, "r": 2, "keys": ["shift"], "x": 9}
+a=ev:s=form:e=hover:t=save  {"c": 2, "r": 4}
+a=ev:s=form:e=press:t=save  {"area": {"c": 0, "r": 4, "w": 6, "h": 2}}
+a=ev:s=form:e=focus:t=save
+a=ev:s=form:e=click:t=save  {"area": {"c": 0, "r": 4, "w": 6, "h": 2}, "value": "now"}
+a=ev:s=form:e=submit:t=settings  {"name": "ada", "notify": "yes"}
+a=ev:s=form:e=hover:t=  {"out": true}
+a=ev:s=form:e=resize:t=  {"w": 500.0, "h": 147.0}
+a=ev:s=form:e=fit:t=  {"r": 5}
