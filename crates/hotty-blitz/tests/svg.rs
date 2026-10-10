@@ -151,3 +151,35 @@ fn an_attribute_changed_inside_an_svg_is_drawn() {
     delta(&mut h, "attr", "r", Some("fill"), "#00f");
     assert_eq!(pixel(&h, "x", W.0, W.1), BLUE);
 }
+
+#[test]
+fn current_color_from_a_color_mix_is_drawn() {
+    // color-mix() computes to an sRGB colour that serializes as
+    // color(srgb …), as oklab and display-p3 colours do. usvg reads only
+    // rgb(), and drew the icon black: every icon in a kit's muted text.
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<style>body{margin:0}div{width:40px;height:40px;\
+         color:color-mix(in srgb, #f00 50%, #00f)}</style>\
+         <div><svg width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">\
+         <rect width=\"40\" height=\"40\" fill=\"currentColor\"/></svg></div>",
+    ));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "10"),
+            ("r", "2"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    let [r, g, b] = pixel(&h, "x", 20, 20);
+    assert!(
+        r.abs_diff(128) <= 1 && g == 0 && b.abs_diff(128) <= 1,
+        "half red, half blue: {:?}",
+        [r, g, b]
+    );
+}

@@ -37,6 +37,7 @@ changes upstream is an open question.
 | `0026-blitz-dom-*` | speculative relayout (0001) leaves nodes out of the layout tree alone (below) |
 | `0027-blitz-dom-*` | a mutation's queued work skips the nodes it freed (below) |
 | `0028-blitz-dom-*` | an inline svg is built again when its source changes: `currentColor` follows the colour (below) |
+| `0029-blitz-dom-*` | an inline svg's `currentColor` is written as `rgb()`, so a `color-mix()` colour draws (below) |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -302,6 +303,13 @@ its source differs, `propagate_damage_flags` constructs that svg again,
 and only that one: its ancestors get `CONSTRUCT_DESCENDENT`, as for a
 reorder. hotty-blitz's `tests/svg.rs` checks the pixels after each kind
 of change.
+
+`outer_html` writes that colour with `to_css_string`, and a colour that
+computes to anything but legacy sRGB, such as a `color-mix()`, oklab or
+display-p3, comes out as `color(srgb …)`. usvg doesn't parse that and
+drew the icon black: every icon in the A2UI kit's muted text. 0029
+writes it as `rgb()` or `rgba()` (`into_srgb_legacy`). `tests/svg.rs`
+checks a `color-mix()`.
 
 ## Request destinations
 
