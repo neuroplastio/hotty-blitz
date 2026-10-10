@@ -3307,7 +3307,8 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         shift: true,
         ..Mods::default()
     };
-    // Shift with a move moves the caret, and selects nothing (SPEC §10.2).
+    // Shift with a move selects (SPEC §10.2), and typing replaces what is
+    // selected.
     press(&mut h, KeyName::Left, shift);
     press(&mut h, KeyName::Left, shift);
     heard.extend(values(&press(
@@ -3315,7 +3316,7 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         KeyName::Char("Z".into()),
         Mods::default(),
     )));
-    assert_eq!(heard, ["abcx", "abcxy", "abcx", "abZcx"]);
+    assert_eq!(heard, ["abcx", "abcxy", "abcx", "abZ"]);
     render(&mut h);
 
     let ev = replies(&press(&mut h, KeyName::Enter, Mods::default()));
@@ -3323,8 +3324,8 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         let c = ev.iter().find(|c| c.get("e") == Some(e)).expect(e);
         serde_json::from_slice(&c.payload).unwrap()
     };
-    assert_eq!(payload("change")["value"], "abZcx");
-    assert_eq!(payload("submit")["pw"], "abZcx");
+    assert_eq!(payload("change")["value"], "abZ");
+    assert_eq!(payload("submit")["pw"], "abZ");
     h.blur("f");
     render(&mut h);
 
@@ -3344,11 +3345,11 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         render(h);
     };
     set_type(&mut h, "text");
-    assert_eq!(frame(&h), frame(&field("text", "abZcx")));
+    assert_eq!(frame(&h), frame(&field("text", "abZ")));
     set_type(&mut h, "password");
     assert_eq!(
         frame(&h),
-        frame(&field("text", "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"))
+        frame(&field("text", "\u{2022}\u{2022}\u{2022}"))
     );
 }
 
@@ -3381,16 +3382,16 @@ fn key_bytes_name_keys_from_what_the_program_would_read() {
     h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], ""));
     render(&mut h);
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], ""));
-    h.set_text_field("f", "f", "one two three", 13);
+    h.set_text_field("f", "f", "one two three", 13, 13);
 
     // ESC b: Alt+b, word-backward.
     assert!(h.key_bytes("f", b"\x1bb").consumed);
     assert_eq!(h.text_field("f", "f"), Some(("one two three".into(), 8)));
-    // 0x01: Control+a, line-start; then typed text.
+    // 0x01: Control+a, select-all; then typed text, in its place.
     assert!(h.key_bytes("f", b"\x01").consumed);
     let out = h.key_bytes("f", b"X ");
     assert!(out.consumed);
-    assert_eq!(h.text_field("f", "f"), Some(("X one two three".into(), 2)));
+    assert_eq!(h.text_field("f", "f"), Some(("X ".into(), 2)));
     assert_eq!(passed(&out.effects), b"");
 
     // Control+s is the program's: nothing used, and the host sends it.
@@ -3401,7 +3402,7 @@ fn key_bytes_name_keys_from_what_the_program_would_read() {
     let out = h.key_bytes("f", b"y\x13\x1b[15~z");
     assert!(out.consumed);
     assert_eq!(passed(&out.effects), b"\x13\x1b[15~");
-    assert_eq!(h.text_field("f", "f"), Some(("X yzone two three".into(), 4)));
+    assert_eq!(h.text_field("f", "f"), Some(("X yz".into(), 4)));
 }
 
 /// A closed select: `<select>` with one option shown (SPEC §10.2, selects).

@@ -2087,16 +2087,19 @@ impl Surface {
         let values = self.keymap_values(id);
         let keymap = keys::resolve(multiline, values.iter().map(String::as_str));
         let action = keymap.lookup(&name)?.to_string();
-        Some(self.field_action(id, key, &action, multiline))
+        let extend = keymap.selects(&name);
+        Some(self.field_action(id, key, &action, multiline, extend))
     }
 
-    /// Does an action of SPEC §10.2 in the text field `id`, for `key`.
+    /// Does an action of SPEC §10.2 in the text field `id`, for `key`; with
+    /// `extend`, a move selects, as with Shift.
     pub(crate) fn field_action(
         &mut self,
         id: NodeId,
         key: &Key,
         action: &str,
         multiline: bool,
+        extend: bool,
     ) -> Vec<Event> {
         let typed = |name| Key {
             name,
@@ -2121,13 +2124,13 @@ impl Surface {
                 }
                 events
             }
-            "line-previous" | "line-next" | "page-up" | "page-down" => {
+            "line-previous" | "line-next" | "page-up" | "page-down" if multiline => {
                 let rows = match action {
                     "line-previous" | "line-next" => 1,
                     _ => self.doc.text_input_rows_shown(id) as isize,
                 };
                 let sign = if matches!(action, "line-previous" | "page-up") { -1 } else { 1 };
-                self.doc.move_text_input_rows(id, sign * rows);
+                self.doc.move_text_input_rows(id, sign * rows, extend);
                 self.damage.touch(&self.doc, id, self.viewport.2 as f64);
                 Vec::new()
             }
@@ -2148,11 +2151,11 @@ impl Surface {
                     multiline,
                     password,
                 };
-                let Some(done) = edit::apply(&field, action) else {
+                let Some(done) = edit::apply(&field, action, extend) else {
                     return Vec::new();
                 };
                 let new = done.value.unwrap_or_else(|| value.clone());
-                self.doc.set_text_input(id, &new, done.caret, done.caret);
+                self.doc.set_text_input(id, &new, done.anchor, done.caret);
                 self.damage.touch(&self.doc, id, self.viewport.2 as f64);
                 if new == value {
                     return Vec::new();
@@ -2173,20 +2176,36 @@ impl Surface {
         Some((value, caret))
     }
 
-    /// Sets text field `id`'s value, and its caret, in characters.
-    pub(crate) fn set_text_field(&mut self, id: &str, value: &str, caret: usize) -> bool {
+    /// Text field `id`'s selection's anchor, in characters: its caret when
+    /// nothing is selected.
+    pub(crate) fn text_anchor(&self, id: &str) -> Option<usize> {
+        let node = self.doc.get_element_by_id(id)?;
+        let (value, anchor, _) = self.doc.text_input_selection(node)?;
+        Some(edit::chars(&value[..anchor]))
+    }
+
+    /// Sets text field `id`'s value, and its selection's anchor and its
+    /// caret, in characters.
+    pub(crate) fn set_text_field(
+        &mut self,
+        id: &str,
+        value: &str,
+        anchor: usize,
+        caret: usize,
+    ) -> bool {
         let Some(node) = self.doc.get_element_by_id(id) else {
             return false;
         };
-        let at = edit::byte_at(value, caret);
-        self.doc.set_text_input(node, value, at, at);
+        let (anchor, caret) = (edit::byte_at(value, anchor), edit::byte_at(value, caret));
+        self.doc.set_text_input(node, value, anchor, caret);
         self.snapshot_focus();
         self.dirty = true;
         true
     }
 
-    /// Does an action in the focused text field.
-    pub(crate) fn text_action(&mut self, action: &str) -> Vec<Event> {
+    /// Does an action in the focused text field; with `extend`, as with
+    /// Shift.
+    pub(crate) fn text_action(&mut self, action: &str, extend: bool) -> Vec<Event> {
         let Some(id) = self.focused() else {
             return Vec::new();
         };
@@ -2198,7 +2217,7 @@ impl Surface {
             name: KeyName::Other,
             mods: Mods::default(),
         };
-        let events = self.field_action(id, &key, action, kind == Control::TextArea);
+        let events = self.field_action(id, &key, action, kind == Control::TextArea, extend);
         self.dirty = true;
         events
     }

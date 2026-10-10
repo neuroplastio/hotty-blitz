@@ -31,6 +31,7 @@ pub const ACTIONS: &[&str] = &[
     "page-down",
     "input-start",
     "input-end",
+    "select-all",
     "newline",
     "submit",
     "program",
@@ -60,23 +61,36 @@ pub const INSERT: &str = "insert";
 pub fn multiline_action(action: &str) -> bool {
     matches!(
         action,
-        "line-previous"
+        "line-previous" | "line-next" | "page-up" | "page-down" | "newline"
+    )
+}
+
+/// Whether an action is a move, which selects with Shift (SPEC §10.2).
+pub fn move_action(action: &str) -> bool {
+    matches!(
+        action,
+        "char-backward"
+            | "char-forward"
+            | "word-backward"
+            | "word-forward"
+            | "line-start"
+            | "line-end"
+            | "line-previous"
             | "line-next"
             | "page-up"
             | "page-down"
             | "input-start"
             | "input-end"
-            | "newline"
     )
 }
 
-/// The SDK's keymap (SDK.md §3.10), bubbles' text input and text area, as a
-/// `data-keys` value.
+/// The SDK's keymap (SDK.md §3.10), bubbles' text input and text area, but
+/// Control+a selects all, as a `data-keys` value.
 pub const TERMINAL_KEYS: &str = concat!(
     "ArrowLeft=char-backward Control+b=char-backward ArrowRight=char-forward Control+f=char-forward ",
     "Alt+ArrowLeft=word-backward Control+ArrowLeft=word-backward Alt+b=word-backward ",
     "Alt+ArrowRight=word-forward Control+ArrowRight=word-forward Alt+f=word-forward ",
-    "Home=line-start Control+a=line-start End=line-end Control+e=line-end ",
+    "Home=line-start End=line-end Control+e=line-end ",
     "Backspace=delete-char-backward Control+h=delete-char-backward ",
     "Delete=delete-char-forward Control+d=delete-char-forward ",
     "Alt+Backspace=delete-word-backward Control+w=delete-word-backward Control+Backspace=delete-word-backward ",
@@ -85,7 +99,7 @@ pub const TERMINAL_KEYS: &str = concat!(
     "ArrowUp=line-previous Control+p=line-previous ArrowDown=line-next Control+n=line-next ",
     "PageUp=page-up PageDown=page-down ",
     "Alt+<=input-start Control+Home=input-start Alt+>=input-end Control+End=input-end ",
-    "Control+m=newline",
+    "Control+a=select-all Control+m=newline",
 );
 
 const MODIFIERS: [&str; 4] = ["Control", "Alt", "Meta", "Shift"];
@@ -528,14 +542,25 @@ pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -
     for (k, a) in [
         ("ArrowLeft", "char-backward"),
         ("ArrowRight", "char-forward"),
+        ("Control+ArrowLeft", "word-backward"),
+        ("Control+ArrowRight", "word-forward"),
+        ("Alt+ArrowLeft", "word-backward"),
+        ("Alt+ArrowRight", "word-forward"),
         ("Home", "line-start"),
         ("End", "line-end"),
+        ("Control+Home", "input-start"),
+        ("Control+End", "input-end"),
         ("Backspace", "delete-char-backward"),
         ("Delete", "delete-char-forward"),
+        ("Control+Backspace", "delete-word-backward"),
+        ("Control+Delete", "delete-word-forward"),
+        ("Alt+Backspace", "delete-word-backward"),
+        ("Alt+Delete", "delete-word-forward"),
         ("ArrowUp", "line-previous"),
         ("ArrowDown", "line-next"),
         ("PageUp", "page-up"),
         ("PageDown", "page-down"),
+        ("Control+a", "select-all"),
         ("Enter", if multiline { "newline" } else { "submit" }),
     ] {
         m.bind(k, a);
@@ -645,5 +670,13 @@ impl Keymap {
             None if is_char(&k.value) && k.mods & (CONTROL | ALT | META) == 0 => Some(INSERT),
             None => None,
         }
+    }
+
+    /// Whether a field with this keymap selects with a key (SPEC §10.2,
+    /// Shift selects): it looks up a move, and the key's name has Shift.
+    /// The field then moves its caret and keeps its anchor.
+    pub fn selects(&self, key: &str) -> bool {
+        split_key(key).is_some_and(|k| k.canonical().shift())
+            && self.lookup(key).is_some_and(move_action)
     }
 }

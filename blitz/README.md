@@ -38,6 +38,7 @@ changes upstream is an open question.
 | `0027-blitz-dom-*` | a mutation's queued work skips the nodes it freed (below) |
 | `0028-blitz-dom-*` | an inline svg is built again when its source changes: `currentColor` follows the colour (below) |
 | `0029-blitz-dom-*` | an inline svg's `currentColor` is written as `rgb()`, so a `color-mix()` colour draws (below) |
+| `0030-blitz-dom-*` | a row move can extend the selection, as Shift+ArrowDown does in a textarea |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches

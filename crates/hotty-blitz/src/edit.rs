@@ -15,17 +15,19 @@ pub(crate) struct Field<'a> {
     pub password: bool,
 }
 
-/// What an action left: the value, when it changed, and the caret, a byte
-/// offset into the value it left.
+/// What an action left: the value, when it changed, and the selection,
+/// byte offsets into the value it left: collapsed, the anchor is the caret.
 pub(crate) struct Edited {
     pub value: Option<String>,
+    pub anchor: usize,
     pub caret: usize,
 }
 
-/// Does `action` to the field. `None` for an action this does not do: the
-/// moves by rows, `newline`, `submit` and `program`, and the multi-line
-/// actions in an input.
-pub(crate) fn apply(f: &Field, action: &str) -> Option<Edited> {
+/// Does `action` to the field; with `extend`, a move keeps the selection's
+/// anchor and moves the caret from where it is, as Shift does (SPEC §10.2).
+/// `None` for an action this does not do: the moves by rows, `newline`,
+/// `submit` and `program`, and the multi-line actions in an input.
+pub(crate) fn apply(f: &Field, action: &str, extend: bool) -> Option<Edited> {
     let c: Vec<&str> = f.value.graphemes(true).collect();
     let at = |byte: usize| index_of(&c, byte);
     let (lo, hi) = (f.anchor.min(f.focus), f.anchor.max(f.focus));
@@ -70,38 +72,55 @@ pub(crate) fn apply(f: &Field, action: &str) -> Option<Edited> {
         p
     };
     // A move starts from the selection's start when it goes back, from its
-    // end otherwise; char-backward and char-forward stop there.
-    let (back, forward) = if selected { (start, end) } else { (p, p) };
-    let moved = |to: usize| Edited {
-        value: None,
-        caret: byte_of(&c, to),
+    // end otherwise; char-backward and char-forward stop there. With Shift,
+    // it starts from the caret, and the anchor stays.
+    let (back, forward) = if selected && !extend {
+        (start, end)
+    } else {
+        (p, p)
+    };
+    let moved = |to: usize| {
+        let caret = byte_of(&c, to);
+        Edited {
+            value: None,
+            anchor: if extend { f.anchor } else { caret },
+            caret,
+        }
     };
     let delete = |a: usize, b: usize| {
         let (a, b) = if selected { (start, end) } else { (a, b) };
         if a >= b {
+            let caret = byte_of(&c, a);
             return Edited {
                 value: None,
-                caret: byte_of(&c, a),
+                anchor: caret,
+                caret,
             };
         }
         let before = c[..a].concat();
         let caret = before.len();
         Edited {
             value: Some(before + &c[b..].concat()),
+            anchor: caret,
             caret,
         }
     };
     Some(match action {
-        "char-backward" if selected => moved(start),
-        "char-forward" if selected => moved(end),
+        "select-all" => Edited {
+            value: None,
+            anchor: 0,
+            caret: f.value.len(),
+        },
+        "char-backward" if selected && !extend => moved(start),
+        "char-forward" if selected && !extend => moved(end),
         "char-backward" => moved(p.saturating_sub(1)),
         "char-forward" => moved((p + 1).min(n)),
         "word-backward" => moved(word_back(back)),
         "word-forward" => moved(word_forward(forward)),
         "line-start" => moved(line(back).0),
         "line-end" => moved(line(forward).1),
-        "input-start" if f.multiline => moved(0),
-        "input-end" if f.multiline => moved(n),
+        "input-start" => moved(0),
+        "input-end" => moved(n),
         "delete-char-backward" => delete(p.saturating_sub(1), p),
         "delete-char-forward" => delete(p, (p + 1).min(n)),
         "delete-word-backward" => delete(word_back(p), p),

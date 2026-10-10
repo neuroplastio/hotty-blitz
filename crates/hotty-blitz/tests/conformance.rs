@@ -626,6 +626,12 @@ fn keymap_vectors() {
                 failures.push(format!("{name}: {key}: {got:?}, want {want:?}"));
             }
         }
+        for (key, want) in k.get("selects").and_then(Value::as_object).into_iter().flatten() {
+            let got = m.selects(key);
+            if Some(got) != want.as_bool() {
+                failures.push(format!("{name}: {key}: selects {got}, want {want}"));
+            }
+        }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -668,15 +674,25 @@ fn edit_vectors() {
         send(&mut host, &[("a", "doc"), ("s", "x"), ("q", "2")], &html);
         send(&mut host, &[("a", "place"), ("s", "x"), ("c", "80"), ("r", "10"), ("q", "2")], "");
         send(&mut host, &[("a", "focus"), ("s", "x"), ("t", "f"), ("q", "2")], "");
-        host.set_text_field("x", "f", f["value"].as_str().unwrap(), f["caret"].as_u64().unwrap() as usize);
+        let caret = f["caret"].as_u64().unwrap() as usize;
+        let anchor = f.get("anchor").and_then(Value::as_u64).map_or(caret, |a| a as usize);
+        host.set_text_field("x", "f", f["value"].as_str().unwrap(), anchor, caret);
         host.render_dirty(&mut |_, _, _| {});
         let (mut value, _) = host.text_field("x", "f").unwrap();
         for (i, st) in e["steps"].as_array().unwrap().iter().enumerate() {
-            let what = st.get("do").or(st.get("type")).unwrap().as_str().unwrap();
+            let what = match st.get("select").and_then(Value::as_array) {
+                Some(s) => format!("select {s:?}"),
+                None => st.get("do").or(st.get("extend")).or(st.get("type")).unwrap().as_str().unwrap().to_string(),
+            };
             if let Some(a) = st.get("do").and_then(Value::as_str) {
-                host.text_action("x", a);
+                host.text_action("x", a, false);
+            } else if let Some(a) = st.get("extend").and_then(Value::as_str) {
+                host.text_action("x", a, true);
+            } else if let Some(s) = st.get("select").and_then(Value::as_array) {
+                let at = |i: usize| s[i].as_u64().unwrap() as usize;
+                host.set_text_field("x", "f", &value, at(0), at(1));
             } else {
-                for ch in unicode_chars(what) {
+                for ch in unicode_chars(&what) {
                     host.key(
                         "x",
                         &Key {
@@ -700,6 +716,12 @@ fn edit_vectors() {
                 && caret != w as usize
             {
                 bad.push(format!("caret {caret}, want {w}"));
+            }
+            let anchor = host.text_anchor("x", "f").unwrap();
+            if let Some(w) = st.get("anchor").and_then(Value::as_u64)
+                && anchor != w as usize
+            {
+                bad.push(format!("anchor {anchor}, want {w}"));
             }
             if let Some(w) = st.get("changed").and_then(Value::as_bool)
                 && changed != w

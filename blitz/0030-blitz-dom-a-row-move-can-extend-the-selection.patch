@@ -1,0 +1,78 @@
+From 14801f95cf9d5e195d48cff5cd5db852594073eb Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Sat, 10 Oct 2026 16:41:47 +0200
+Subject: [PATCH] blitz-dom: a row move can extend the selection
+
+TextInputData::move_rows, and Document::move_text_input_rows, take
+`extend`: with it, the selection's anchor stays and the caret moves from
+where it is, as Shift+ArrowDown does in a browser's textarea. Without
+it, a selection collapses first, as before. parley's move_lines already
+extends; this passes the flag through.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs  | 7 ++++---
+ packages/blitz-dom/src/node/text.rs | 9 ++++++---
+ 2 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 9de4d38b..16166d67 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -2665,8 +2665,9 @@ impl BaseDocument {
+     }
+ 
+     /// Moves a text input's caret `delta` rows as it lays them out
+-    /// (`TextInputData::move_rows`), and keeps it in view.
+-    pub fn move_text_input_rows(&mut self, node_id: NodeId, delta: isize) {
++    /// (`TextInputData::move_rows`), and keeps it in view. With `extend`,
++    /// the selection's anchor stays where it is, as Shift keeps it.
++    pub fn move_text_input_rows(&mut self, node_id: NodeId, delta: isize, extend: bool) {
+         let Some(input) = self
+             .nodes
+             .get_mut(node_id)
+@@ -2676,7 +2677,7 @@ impl BaseDocument {
+             return;
+         };
+         let mut font_ctx = self.font_ctx.lock().unwrap();
+-        input.move_rows(&mut font_ctx, &mut self.layout_ctx, delta);
++        input.move_rows(&mut font_ctx, &mut self.layout_ctx, delta, extend);
+         drop(font_ctx);
+         self.clamp_text_input_scroll(node_id);
+         self.shell_provider.request_redraw();
+diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
+index 17886146..97e26a92 100644
+--- a/packages/blitz-dom/src/node/text.rs
++++ b/packages/blitz-dom/src/node/text.rs
+@@ -256,22 +256,25 @@ impl TextInputData {
+     /// Moves the caret `delta` rows as the field lays them out, keeping the
+     /// horizontal position a run of these moves began at; past the first
+     /// row to the start, past the last to the end. A selection collapses
+-    /// first, to its start going up and to its end going down.
++    /// first, to its start going up and to its end going down, unless
++    /// `extend`: then its anchor stays, and the caret moves from where it
++    /// is.
+     pub(crate) fn move_rows(
+         &mut self,
+         font_ctx: &mut FontContext,
+         layout_ctx: &mut LayoutContext<TextBrush>,
+         delta: isize,
++        extend: bool,
+     ) {
+         let mut driver = self.editor.driver(font_ctx, layout_ctx);
+         driver.refresh_layout();
+         let selection = *driver.editor.raw_selection();
+-        if !selection.is_collapsed() {
++        if !extend && !selection.is_collapsed() {
+             let range = selection.text_range();
+             driver.move_to_byte(if delta < 0 { range.start } else { range.end });
+         }
+         let selection = *driver.editor.raw_selection();
+-        let moved = selection.move_lines(driver.layout(), delta, false);
++        let moved = selection.move_lines(driver.layout(), delta, extend);
+         driver.set_selection(moved);
+     }
+ 
+-- 
+2.56.0
+
