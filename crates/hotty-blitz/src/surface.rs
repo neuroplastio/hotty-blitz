@@ -184,6 +184,9 @@ pub(crate) struct Surface {
     pointer_at: Option<(f32, f32)>,
     /// The focused text input and its value when it gained focus, for `change`.
     focus_value: Option<(NodeId, String)>,
+    /// The element the program knows has focus: the last `focus` named it,
+    /// or the program's `a=focus` gave it (SPEC §10.1).
+    told: Option<NodeId>,
     buttons: MouseEventButtons,
     started: std::time::Instant,
     /// The document's base URL (SPEC §7.3), when it declares an absolute
@@ -555,6 +558,7 @@ impl Surface {
             tapping: false,
             pointer_at: None,
             focus_value: None,
+            told: None,
             buttons: MouseEventButtons::None,
             base,
             started: std::time::Instant::now(),
@@ -1061,6 +1065,7 @@ impl Surface {
         self.detached = true;
         self.keyboard = false;
         self.focus_value = None;
+        self.told = None;
         self.press = None;
         // A drag under way ends with nothing more reported (SPEC §9.1).
         self.drag = None;
@@ -1273,6 +1278,8 @@ impl Surface {
         }
         let after = self.doc.get_focussed_node_id();
         self.touch_chains(before, after);
+        // No echo (SPEC §10.1): the program knows where it put focus.
+        self.told = self.focused();
         if let Some(f) = self.focused() {
             self.bring_into_view(f);
         }
@@ -1296,6 +1303,7 @@ impl Surface {
         self.finish_change(&mut events);
         self.move_focus(None);
         let had = std::mem::replace(&mut self.keyboard, false);
+        self.told = None;
         if had {
             events.push(keyboard_event("blur"));
         }
@@ -1407,8 +1415,9 @@ impl Surface {
     }
 
     /// After a press or a release: the surface has the keyboard while an
-    /// element in it has focus, and the program hears when that changes.
-    /// A text field focus leaves commits its value first.
+    /// element in it has focus, and the program hears when that changes,
+    /// and where the user put focus (SPEC §10.1). A text field focus leaves
+    /// commits its value first.
     fn keyboard_follows_focus(&mut self, events: &mut Vec<Event>) {
         let focused = self.focused();
         if self.focus_value.as_ref().map(|(n, _)| *n) != focused {
@@ -1418,10 +1427,44 @@ impl Surface {
         let had = self.keyboard;
         self.keyboard = focused.is_some();
         match (had, self.keyboard) {
-            (true, false) => events.push(keyboard_event("blur")),
-            (false, true) => events.push(keyboard_event("focus")),
-            _ => {}
+            (true, false) => {
+                self.told = None;
+                events.push(keyboard_event("blur"));
+            }
+            (false, true) => {
+                self.told = None;
+                self.tell_focus(events);
+            }
+            (true, true) => self.tell_focus(events),
+            (false, false) => {}
         }
+    }
+
+    /// `focus` naming the focused element, when it is another than the one
+    /// the program knows (SPEC §10.1): `t` is the nearest element with an
+    /// id, from it outward, and empty if none has.
+    fn tell_focus(&mut self, events: &mut Vec<Event>) {
+        let Some(now) = self.focused() else {
+            return;
+        };
+        if self.told == Some(now) {
+            return;
+        }
+        self.told = Some(now);
+        let mut node = Some(now);
+        let mut target = String::new();
+        while let Some(n) = node {
+            if let Some(id) = self.id_of(n).filter(|id| !id.is_empty()) {
+                target = id;
+                break;
+            }
+            node = self.doc.get_node(n).and_then(|x| x.parent);
+        }
+        events.push(Event {
+            kind: "focus",
+            target,
+            detail: serde_json::Value::Null,
+        });
     }
 
     /// A pointer event from the host (Host::pointer) at CSS pixel (`x`,
@@ -1849,10 +1892,12 @@ impl Surface {
                     self.finish_change(&mut events);
                     self.move_focus(None);
                     self.keyboard = false;
+                    self.told = None;
                     events.push(keyboard_event("blur"));
                 } else {
                     self.finish_change(&mut events);
                     self.snapshot_focus();
+                    self.tell_focus(&mut events);
                     if let Some(a) = after {
                         self.bring_into_view(a);
                     }

@@ -1212,7 +1212,7 @@ fn a_click_takes_the_keyboard_only_through_an_element_that_takes_focus() {
     place_form(&mut h);
     // A button takes focus, and with it the keyboard.
     let k = kinds(&click(&mut h, "f", 10.0, 65.0));
-    assert_eq!(k, vec![ev("focus", ""), ev("click", "go")]);
+    assert_eq!(k, vec![ev("focus", "go"), ev("click", "go")]);
     assert!(h.is_focused("f"));
     // Text does not: a click on it gives the keyboard back.
     assert_eq!(kinds(&click(&mut h, "f", 10.0, 30.0)), vec![ev("blur", "")]);
@@ -1645,7 +1645,7 @@ fn a_document_without_d_gives_the_surface_back() {
     doc_at(&mut h, "x", &[], form, "2");
     assert_eq!(
         kinds(&click(&mut h, "x", 10.0, 25.0)),
-        vec![ev("focus", ""), ev("click", "b")]
+        vec![ev("focus", "b"), ev("click", "b")]
     );
     let r = replies(&h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "i")], "")));
     assert_eq!(r[0].get("a"), Some("ok"));
@@ -1751,7 +1751,7 @@ fn a_hyperlink_takes_no_keyboard() {
     assert!(!h.is_focused("l"));
     // A link of the program's takes the keyboard...
     let k = kinds(&click(&mut h, "l", 10.0, 30.0));
-    assert_eq!(k, vec![ev("focus", ""), ev("click", "in")]);
+    assert_eq!(k, vec![ev("focus", "in"), ev("click", "in")]);
     // ...which a click on the hyperlink, taking no focus, gives back.
     assert_eq!(kinds(&click(&mut h, "l", 10.0, 10.0)), vec![ev("blur", "")]);
 }
@@ -1773,7 +1773,7 @@ fn only_the_first_summary_of_a_details_takes_focus() {
     );
     assert!(!h.is_focused("d"));
     let k = kinds(&click(&mut h, "d", 10.0, 10.0));
-    assert_eq!(k, vec![ev("focus", ""), ev("click", "s1")]);
+    assert_eq!(k, vec![ev("focus", "s1"), ev("click", "s1")]);
     assert!(h.is_focused("d"));
 }
 
@@ -1795,19 +1795,19 @@ fn a_click_on_a_label_is_a_click_on_its_control() {
     // A text field: its label focuses it, and typing goes into it.
     assert_eq!(
         kinds(&click(&mut h, "f", 10.0, 10.0)),
-        vec![ev("focus", "")]
+        vec![ev("focus", "t")]
     );
     assert!(key(&mut h, "f", "q").consumed);
     h.blur("f");
     // A checkbox: toggled, and focused.
     let got = click(&mut h, "f", 10.0, 50.0);
-    assert_eq!(kinds(&got), vec![ev("focus", ""), ev("change", "c")]);
+    assert_eq!(kinds(&got), vec![ev("focus", "c"), ev("change", "c")]);
     let v: serde_json::Value = serde_json::from_slice(&got[1].payload).unwrap();
     assert_eq!(v["checked"], true);
     h.blur("f");
     // A button: clicked, and focused.
     let k = kinds(&click(&mut h, "f", 10.0, 90.0));
-    assert_eq!(k, vec![ev("focus", ""), ev("click", "b")]);
+    assert_eq!(k, vec![ev("focus", "b"), ev("click", "b")]);
     h.blur("f");
     // A disabled button: nothing, through its label or not.
     assert_eq!(click(&mut h, "f", 10.0, 130.0), vec![]);
@@ -1943,7 +1943,7 @@ fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
     // A button: the press first, then what it does (SPEC §9).
     assert_eq!(
         kinds(&click(&mut h, "f", 10.0, 65.0)),
-        vec![ev("press", "go"), ev("focus", ""), ev("click", "go")]
+        vec![ev("press", "go"), ev("focus", "go"), ev("click", "go")]
     );
     // Space activates the button: a click, but no press.
     let space = h.key(
