@@ -25,7 +25,8 @@ pub const OSC_NUMBER: &str = "7279";
 pub const CHUNK: usize = 4096;
 /// A single chunk larger than this is refused; it cannot be a well-formed one.
 const MAX_CHUNK_BYTES: usize = 1 << 20;
-/// A reassembled command larger than this is refused.
+/// A command whose base64, or whose payload once decoded, is larger than
+/// this is refused.
 const MAX_COMMAND_BYTES: usize = 64 << 20;
 
 const ESC: u8 = 0x1b;
@@ -265,6 +266,11 @@ pub struct Scanner {
     /// The chunk being collected (control + payload) of a HOTTY OSC.
     ours: Vec<u8>,
     partial: Option<Partial>,
+    /// A chunked command was dropped as too large: its further chunks are
+    /// dropped too, as they come, until its last.
+    dropping: bool,
+    /// The most bytes a command takes, as base64 and once decoded.
+    max: usize,
 }
 
 impl Default for Scanner {
@@ -280,6 +286,8 @@ impl Scanner {
             pending: Vec::with_capacity(32),
             ours: Vec::new(),
             partial: None,
+            dropping: false,
+            max: MAX_COMMAND_BYTES,
         }
     }
 
@@ -401,6 +409,7 @@ impl Scanner {
                                 sink(Event::Invalid("chunk too large".into()));
                                 self.ours.clear();
                                 self.partial = None;
+                                self.dropping = true;
                                 self.state = State::OursDiscard;
                             }
                         }
@@ -496,15 +505,22 @@ impl Scanner {
             }
         };
         let more = control.get("m") == Some("1");
+        let continuation = control.get("m").is_some() && control.only_chunk_keys();
+        if std::mem::take(&mut self.dropping) && continuation && self.partial.is_none() {
+            // A further chunk of a command dropped as too large.
+            self.dropping = more;
+            return;
+        }
         match self.partial.take() {
             Some(mut p) if control.only_chunk_keys() => {
                 p.b64.extend_from_slice(payload);
-                if p.b64.len() > MAX_COMMAND_BYTES {
+                if p.b64.len() > self.max {
                     sink(Event::Invalid("command too large".into()));
+                    self.dropping = more;
                 } else if more {
                     self.partial = Some(p);
                 } else {
-                    emit(sink, p.control, &p.b64);
+                    emit(sink, p.control, &p.b64, self.max);
                 }
             }
             interrupted => {
@@ -517,7 +533,7 @@ impl Scanner {
                         b64: payload.to_vec(),
                     });
                 } else {
-                    emit(sink, control, payload);
+                    emit(sink, control, payload, self.max);
                 }
             }
         }
@@ -542,8 +558,8 @@ fn parse_params(bytes: &[u8]) -> Vec<u16> {
         .collect()
 }
 
-fn emit(sink: &mut dyn FnMut(Event<'_>), mut control: Control, b64: &[u8]) {
-    match decode_payload(&control, b64) {
+fn emit(sink: &mut dyn FnMut(Event<'_>), mut control: Control, b64: &[u8], max: usize) {
+    match decode_payload(&control, b64, max) {
         Ok(payload) => {
             control.0.retain(|(k, _)| k != "m" && k != "o");
             sink(Event::Command(Command { control, payload }))
@@ -552,7 +568,10 @@ fn emit(sink: &mut dyn FnMut(Event<'_>), mut control: Control, b64: &[u8]) {
     }
 }
 
-fn decode_payload(control: &Control, b64: &[u8]) -> Result<Vec<u8>, String> {
+/// The payload a command's base64 holds, after zlib when it is `o=z`; one
+/// that inflates to more than max bytes is refused, and inflating stops
+/// past it.
+fn decode_payload(control: &Control, b64: &[u8], max: usize) -> Result<Vec<u8>, String> {
     let cleaned: Vec<u8> = b64
         .iter()
         .copied()
@@ -567,9 +586,12 @@ fn decode_payload(control: &Control, b64: &[u8]) -> Result<Vec<u8>, String> {
         Some("z") => {
             let mut out = Vec::new();
             flate2::read::ZlibDecoder::new(&raw[..])
-                .take(MAX_COMMAND_BYTES as u64)
+                .take(max as u64 + 1)
                 .read_to_end(&mut out)
                 .map_err(|e| format!("bad zlib: {e}"))?;
+            if out.len() > max {
+                return Err("command too large".into());
+            }
             Ok(out)
         }
         Some(other) => Err(format!("unknown compression o={other}")),

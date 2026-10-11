@@ -253,3 +253,64 @@ fn an_elements_keymap_scrolls_and_a_fields_leaves_scroll_actions_out() {
     let f = resolve(false, ["Control+d=delete-char-forward Control+d=scroll-half-page-down"]);
     assert_eq!(f.lookup("Control+d"), Some("delete-char-forward"));
 }
+
+/// What a scanner whose commands take at most `max` bytes makes of input.
+fn scan_max(input: &[u8], max: usize) -> Collected {
+    let mut s = Scanner::new();
+    s.max = max;
+    let mut out = Collected::default();
+    s.feed(input, &mut |e| match e {
+        Event::Bytes(b) => out.bytes.extend_from_slice(b),
+        Event::Seq(seq, raw) => {
+            out.bytes.extend_from_slice(raw);
+            out.seqs.push(seq);
+        }
+        Event::Command(c) => out.commands.push(c),
+        Event::Invalid(e) => out.invalid.push(e),
+    });
+    out
+}
+
+fn zlib_b64(data: &[u8]) -> String {
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    z.write_all(data).unwrap();
+    B64.encode(z.finish().unwrap())
+}
+
+#[test]
+fn zlib_past_the_limit_is_refused_not_cut_short() {
+    let bomb = zlib_b64(&[0; 4096]);
+    let input = |max| scan_max(format!("\x1b]7279;a=res:id=x:o=z;{bomb}\x1b\\").as_bytes(), max);
+    let got = input(4096);
+    assert_eq!(got.commands.len(), 1);
+    assert_eq!(got.commands[0].payload.len(), 4096);
+    let got = input(4095);
+    assert!(got.commands.is_empty());
+    assert_eq!(got.invalid, vec!["command too large".to_string()]);
+}
+
+#[test]
+fn a_chunked_command_past_the_limit_is_dropped_whole_and_reported_once() {
+    let chunk = "A".repeat(400);
+    let mut input = format!("\x1b]7279;a=doc:s=x:m=1;{chunk}\x1b\\");
+    for _ in 0..5 {
+        input += &format!("\x1b]7279;m=1;{chunk}\x1b\\");
+    }
+    input += &format!("\x1b]7279;m=0;{chunk}\x1b\\");
+    input += "\x1b]7279;a=del:s=x\x1b\\";
+    let got = scan_max(input.as_bytes(), 1024);
+    assert_eq!(got.invalid, vec!["command too large".to_string()]);
+    assert_eq!(got.commands, vec![cmd(&[("a", "del"), ("s", "x")], b"")]);
+    assert!(got.bytes.is_empty());
+}
+
+#[test]
+fn the_chunks_after_one_too_large_are_dropped_too() {
+    let mut input = b"\x1b]7279;a=doc:s=x:m=1;".to_vec();
+    input.extend(std::iter::repeat_n(b'A', MAX_CHUNK_BYTES + 1));
+    input.extend_from_slice(b"\x1b\\\x1b]7279;m=1;AAAA\x1b\\\x1b]7279;m=0;AAAA\x1b\\");
+    input.extend_from_slice(&cmd(&[("a", "del"), ("s", "x")], b"").encode());
+    let got = scan_max(&input, MAX_COMMAND_BYTES);
+    assert_eq!(got.invalid, vec!["chunk too large".to_string()]);
+    assert_eq!(got.commands, vec![cmd(&[("a", "del"), ("s", "x")], b"")]);
+}
