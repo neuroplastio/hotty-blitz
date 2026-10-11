@@ -125,6 +125,19 @@ moves, whatever its CSS, and nothing shows a scrollbar.
   an element into view.
 - `hotty run` does the same with the wheel reports it reads: one report
   is a row.
+- `reveal` (SPEC §6.1) scrolls an element into view for the program: its
+  top to the top of each box that holds it (`start`), its bottom to the
+  bottom (`end`), or as little as it takes; across, as little as it
+  takes. It scrolls only the root and `overflow: auto` and `scroll` boxes,
+  never one that is `hidden`, and moves no focus.
+- `view` (SPEC §9.5) tells the program which elements with
+  `data-on~=view` and an id are in view, each with its area, and whether
+  the root shows its end, from the frame that draws them: shown in the
+  window and clipped by no box on the element's chain of containing
+  blocks, as CSS clips. A wheel's gesture or a dragged thumb holds it back
+  until the scroll comes to rest: a gesture rests at
+  `hotty_host_end_gesture` or 150 ms after its last wheel, which
+  `hotty_host_next_frame` counts as a deadline.
 
 ## Touch
 

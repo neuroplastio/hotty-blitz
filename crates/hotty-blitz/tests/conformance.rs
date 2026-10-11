@@ -231,7 +231,9 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
 /// A wheel where the mouse is, by `by` cells (positive: right and down),
 /// as one gesture that ends before the next step (conformance/README).
 /// Where the pointer passes through the surface, or there is none, the
-/// wheel is over the cells: the terminal's.
+/// wheel is over the cells: the terminal's. Its events are read once what
+/// it scrolled has come to rest: the frame drawn then, and what that frame
+/// tells the program (`view`, SPEC §9.5).
 fn wheel_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     host.render_dirty(&mut |_, _, _| {});
     let m = Config::default().metrics;
@@ -249,8 +251,9 @@ fn wheel_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
     };
     let out = host.wheel(&surface, mouse.x, mouse.y, dx, dy, mods(step));
     host.end_gesture();
+    host.render_dirty(&mut |_, _, _| {});
     let mut sent = Vec::new();
-    for e in out.effects {
+    for e in out.effects.into_iter().chain(host.take_events()) {
         if let Effect::Reply(b) = e {
             sent.extend(b);
         }
@@ -556,15 +559,44 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
     }
 }
 
+/// Whether the capabilities of a host, made as each vector's host is,
+/// list `name` in `events` (SPEC §4).
+fn sends(name: &str) -> bool {
+    let mut host = Host::new(Config::default());
+    let mut control = Control::default();
+    for (k, v) in [("a", "q"), ("n", "1"), ("v", "0.2")] {
+        control.set(k, v);
+    }
+    let (cmds, _) = decode(&hotty_wire::encode(&control, b""));
+    let mut sent = Vec::new();
+    for e in host.handle(&cmds[0]) {
+        if let Effect::Reply(b) = e {
+            sent.extend(b);
+        }
+    }
+    let msgs = from_host(&sent).expect("the capabilities");
+    let caps = read_body(&msgs[0].payload).expect("the capabilities' body");
+    caps["events"]
+        .as_array()
+        .is_some_and(|events| events.iter().any(|e| e == name))
+}
+
 #[test]
 fn protocol_vectors() {
     let v = vectors();
     let mut failures = Vec::new();
+    // `view` where the capabilities list it (conformance/README).
+    let views = sends("view");
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through as hottyterm does, and
         // hotty-blitz sends hover, scrolls, takes touch and drags in steps.
         let has = |r: &Value| {
-            r == "passthrough" || r == "hover" || r == "scroll" || r == "touch" || r == "steps"
+            r == "passthrough"
+                || r == "hover"
+                || r == "scroll"
+                || r == "touch"
+                || r == "steps"
+                || (r == "view" && views)
         };
         let runs = match vector.get("requires") {
             None => true,

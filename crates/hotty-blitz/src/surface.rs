@@ -1,7 +1,7 @@
 //! One surface: a Blitz document, its placement size, its last frame, and the
 //! glue that turns host input into DOM events and DOM events into HOTTY ones.
 
-use crate::body::{Detail, MAX_INT};
+use crate::body::{Detail, MAX_INT, View};
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
@@ -149,6 +149,19 @@ pub(crate) struct Surface {
     /// A `fit` the last render found, with the rows of its layout, for the
     /// host to send.
     pub fit_event: Option<u16>,
+    /// The elements that ask for `view` (SPEC §9.5), `view` in their
+    /// `data-on`, in tree order: found again after a delta changes the
+    /// document.
+    view_askers: Option<Vec<NodeId>>,
+    /// The `view` the program last heard in this placement; none when it
+    /// has heard none, so that the next frame tells it whatever it shows.
+    view_heard: Option<View>,
+    /// A `view` the last render found, with what its frame shows, for the
+    /// host to send.
+    pub view_event: Option<View>,
+    /// A `view` is owed once the scroll that held it back comes to rest
+    /// (SPEC §9.5): a frame was drawn while one moved.
+    pub view_due: bool,
     /// Its placement asked for `hover` (`v=1`, SPEC §9.4): where the
     /// program last heard the pointer is, out first.
     pub hover: Option<Hovered>,
@@ -560,6 +573,10 @@ impl Surface {
             presses: false,
             fit: None,
             fit_event: None,
+            view_askers: None,
+            view_heard: None,
+            view_event: None,
+            view_due: false,
             hover: None,
             created: 0,
             dirty: true,
@@ -872,8 +889,15 @@ impl Surface {
 
     /// Renders what changed since the last render: only the damaged
     /// rectangles are painted, each into a target of its own size. `None`:
-    /// nothing changed on screen.
-    pub fn render(&mut self, m: &Metrics, dark: bool, renderers: &mut Renderers) -> Option<Damage> {
+    /// nothing changed on screen. `scrolling`: a scroll of the document
+    /// moves (a wheel's gesture), which holds `view` back (SPEC §9.5).
+    pub fn render(
+        &mut self,
+        m: &Metrics,
+        dark: bool,
+        scrolling: bool,
+        renderers: &mut Renderers,
+    ) -> Option<Damage> {
         let (w, h) = (self.cols as u32 * m.cell_w, self.rows as u32 * m.cell_h);
         if w == 0 || h == 0 {
             return None;
@@ -883,7 +907,8 @@ impl Surface {
         self.resolve();
         if self.doc.has_pending_critical_resources() {
             // A stylesheet has not arrived yet; the `res` that brings it marks
-            // this surface dirty again.
+            // this surface dirty again. The frame drawn then finds `view`.
+            self.view_due = false;
             return None;
         }
         self.clamp_root();
@@ -899,6 +924,8 @@ impl Surface {
                 self.fit_event = Some(need);
             }
         }
+        // `view` (SPEC §9.5): what this frame shows.
+        self.find_view(scrolling);
         // Styling may have loaded images (a background), and the document
         // may have changed under the animated ones.
         self.adopt_animations(t0);
@@ -965,6 +992,102 @@ impl Surface {
         } else {
             Damage::Rects(rects)
         })
+    }
+
+    /// `view` (SPEC §9.5) for the frame being drawn: the elements that ask
+    /// and are in view, each with its area, and whether the root shows its
+    /// end, when that is not what the program last heard. Not while a
+    /// scroll moves, a wheel's gesture or a thumb dragged: it is then owed
+    /// (`view_due`) until the scroll comes to rest. A detached surface
+    /// sends none, and neither does a document with no element that asks.
+    fn find_view(&mut self, scrolling: bool) {
+        self.view_due = false;
+        if self.detached {
+            return;
+        }
+        let Some(window) = self.window else {
+            return;
+        };
+        let askers = self.view_askers();
+        if askers.is_empty() {
+            return;
+        }
+        if scrolling || self.scroll_held() {
+            self.view_due = true;
+            return;
+        }
+        let (cw, ch) = self.cell;
+        let window = kurbo::Rect::new(
+            window.x as f64 * cw,
+            window.y as f64 * ch,
+            (window.x + window.w) as f64 * cw,
+            (window.y + window.h) as f64 * ch,
+        );
+        let slack = self.slack();
+        let mut inside = BTreeMap::new();
+        for n in askers {
+            // One without an id is never reported; of two with one id, the
+            // first in tree order that is shown.
+            let Some(id) = self.id_of(n).filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if inside.contains_key(&id) || !scroll::shown(&self.doc, n, window, slack) {
+                continue;
+            }
+            // Its area as a click's: the whole of it (§9).
+            if let Some(area) = scroll::area(&self.doc, n, self.cell, slack) {
+                inside.insert(id, area);
+            }
+        }
+        let now = View {
+            inside,
+            end: scroll::at_end(&self.doc, self.scroll_axes),
+        };
+        if self.view_heard.as_ref() != Some(&now) {
+            self.view_heard = Some(now.clone());
+            self.view_event = Some(now);
+        }
+    }
+
+    /// The elements with `view` in their `data-on`, in tree order (SPEC
+    /// §9.5): found by a walk of the document after a delta changed it.
+    fn view_askers(&mut self) -> Vec<NodeId> {
+        if let Some(found) = &self.view_askers {
+            return found.clone();
+        }
+        let mut found = Vec::new();
+        let mut stack = vec![self.doc.root_node().id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.doc.get_node(id) else {
+                continue;
+            };
+            if node.is_element() && self.listens(id, "view") {
+                found.push(id);
+            }
+            stack.extend(node.children.iter().rev().copied());
+        }
+        self.view_askers = Some(found.clone());
+        found
+    }
+
+    /// The surface is placed anew (SPEC §5.2): its program hears `view`
+    /// first from the frame it draws, as if it had heard none (§9.5).
+    pub fn placed_anew(&mut self) {
+        self.view_heard = None;
+    }
+
+    /// The surface is hidden (SPEC §5.4): `view` stops, and placing it
+    /// again starts it from nothing heard (§9.5).
+    pub fn hidden(&mut self) {
+        self.view_heard = None;
+        self.view_event = None;
+        self.view_due = false;
+    }
+
+    /// Whether a scroll of the document is held by the pointer: a thumb is
+    /// dragged, the root's or an element's. Its release draws again.
+    pub fn scroll_held(&self) -> bool {
+        self.on_scrollbar()
     }
 
     /// The root's scroll stays within what there is to scroll as the layout
@@ -1077,8 +1200,13 @@ impl Surface {
         {
             self.damage.touch(&self.doc, select, scale);
         }
-        // Nodes that show an animated image may have come or gone.
+        // Nodes that show an animated image may have come or gone, and so
+        // may elements that ask for `view`: all but a `var`, which changes
+        // a style alone.
         self.anim_stale = true;
+        if op != "var" {
+            self.view_askers = None;
+        }
         if self.detached {
             // The controls a delta added, or took `disabled` from, are
             // disabled too. The delta already recorded where they paint.
@@ -1326,9 +1454,54 @@ impl Surface {
             return;
         }
         self.resolve();
-        for s in scroll::into_view(&mut self.doc, id, self.scroll_axes) {
+        let (align, boxes) = (scroll::Align::Nearest, scroll::Boxes::Clipping);
+        for s in scroll::into_view(&mut self.doc, id, self.scroll_axes, align, boxes) {
             self.scrolled(s);
         }
+    }
+
+    /// `reveal` (SPEC §6.1): scrolls each box that holds element `t`, the
+    /// innermost first and the root last, so that its border box is in
+    /// view as `payload` says: its top at the top (`start`), its bottom at
+    /// the bottom (`end`), or by as little as it takes (none). It scrolls
+    /// only what scrolls, along the axes the document asked for, and moves
+    /// neither focus nor the keyboard; the frame drawn then tells `view`
+    /// (§9.5). A surface that is not placed, or an element not rendered,
+    /// scrolls nothing. `m`: the terminal's cells, for laying the document
+    /// out at its placement's size first.
+    pub fn reveal(
+        &mut self,
+        t: Option<&str>,
+        payload: &str,
+        m: &Metrics,
+    ) -> Result<(), delta::DeltaError> {
+        let err = |code, detail: String| delta::DeltaError { code, detail };
+        let t = t.ok_or_else(|| err("EINVAL", "op=reveal needs t=<element id>".into()))?;
+        let id = self
+            .doc
+            .get_element_by_id(t)
+            .ok_or_else(|| err("ENOTARGET", t.to_string()))?;
+        let align = scroll::Align::parse(payload).ok_or_else(|| {
+            err(
+                "EINVAL",
+                format!("op=reveal takes start, end or nothing, not {payload:?}"),
+            )
+        })?;
+        if !self.placed || self.scroll_axes == 0 {
+            return Ok(());
+        }
+        let (w, h) = (self.cols as u32 * m.cell_w, self.rows as u32 * m.cell_h);
+        let dark = self.viewport.3;
+        self.ensure_viewport(m, w, h, dark);
+        self.resolve();
+        if !scroll::laid_out(&self.doc, id) {
+            return Ok(());
+        }
+        let boxes = scroll::Boxes::Scrolling;
+        for s in scroll::into_view(&mut self.doc, id, self.scroll_axes, align, boxes) {
+            self.scrolled(s);
+        }
+        Ok(())
     }
 
     pub fn blur(&mut self) -> Vec<Event> {

@@ -152,6 +152,20 @@ pub enum Detail {
     Hover { c: i32, r: i32 },
     /// `hover` when the pointer left the window: `out` is true.
     Out { out: bool },
+    /// `view` (§9.5): the elements in view, and whether the root shows
+    /// its end.
+    View(View),
+}
+
+/// What a `view` carries (SPEC §9.5): each element in view by its id, with
+/// its cells, the whole of it however little is shown; and `end`, whether
+/// the document's root is scrolled as far down as it goes. Its own name,
+/// `in`, is a keyword here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct View {
+    #[serde(rename = "in")]
+    pub inside: BTreeMap<String, Area>,
+    pub end: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -182,6 +196,25 @@ mod tests {
             b"\x83\xa1c\xff\xa1r\xcd\x01\x2c\xa4keys\x90"
         );
         assert_eq!(float(1.6), 1.6);
+        // {"in": {"a": {"c": 0, "r": -2, "w": 4, "h": 1}}, "end": false}:
+        // `in` by its name, and a row above the surface a negative int.
+        let view = View {
+            inside: [(
+                "a".to_string(),
+                Area {
+                    c: 0,
+                    r: -2,
+                    w: 4,
+                    h: 1,
+                },
+            )]
+            .into(),
+            end: false,
+        };
+        assert_eq!(
+            encode(&Detail::View(view)),
+            b"\x82\xa2in\x81\xa1a\x84\xa1c\x00\xa1r\xfe\xa1w\x04\xa1h\x01\xa3end\xc2"
+        );
     }
 
     #[test]

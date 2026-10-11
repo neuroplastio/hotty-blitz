@@ -193,6 +193,9 @@ pub struct Host {
     /// `fit` events renders found (SPEC §5.2), at most one per surface:
     /// the rows of the last frame drawn.
     fits: Vec<(String, u16)>,
+    /// `view` events renders found (SPEC §9.5), at most one per surface:
+    /// what the last frame drawn shows.
+    views: Vec<(String, body::View)>,
     /// Surfaces whose size in CSS pixels changed with the terminal's font,
     /// owed a `resize` (SPEC §5.3, §9).
     resizes: Vec<String>,
@@ -244,6 +247,37 @@ struct Gesture {
 /// A wheel this soon after the one before belongs to the same gesture, as
 /// xterm-addon-hotty has it.
 const GESTURE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Whether a wheel gesture still scrolls the document of `surface` at
+/// `now`: the gesture under way, a wheel's notches or a touchpad's scroll
+/// and its momentum, went to it and has not come to rest. A `view` waits
+/// for its rest (SPEC §9.5).
+fn scrolling(gesture: &Option<Gesture>, surface: &str, now: std::time::Instant) -> bool {
+    gesture.as_ref().is_some_and(|g| {
+        g.surface == surface && matches!(g.route, scroll::Route::Doc(_)) && now < g.at + GESTURE
+    })
+}
+
+/// When the `view` that `s`, named `surface`, owes (SPEC §9.5) can be found:
+/// once the gesture that scrolled it comes to rest, `now` if none moves.
+/// None while it owes none, or while a thumb is held: the release draws
+/// the surface again.
+fn view_rest(
+    gesture: &Option<Gesture>,
+    surface: &str,
+    s: &surface::Surface,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    if !(s.placed && s.view_due) || s.scroll_held() {
+        return None;
+    }
+    Some(match gesture {
+        Some(g) if g.surface == surface && matches!(g.route, scroll::Route::Doc(_)) => {
+            (g.at + GESTURE).max(now)
+        }
+        _ => now,
+    })
+}
 
 /// `HOTTY_FRAME_LOG=<file>`: one tab-separated line per rendered surface,
 /// timing the commands applied since the last frame and each render stage,
@@ -297,6 +331,7 @@ impl Host {
             program_press: false,
             passthrough: false,
             fits: Vec::new(),
+            views: Vec::new(),
             resizes: Vec::new(),
             gesture: None,
             finger: None,
@@ -436,32 +471,40 @@ impl Host {
 
     /// Whether [`Host::render_dirty`] has something to render: a placed
     /// surface changed, an animated image on one is due to show its next
-    /// frame, or something a document fetched arrived.
+    /// frame, something a document fetched arrived, or a scroll came to
+    /// rest that held a `view` back (SPEC §9.5).
     pub fn has_dirty(&self) -> bool {
         let now = std::time::Instant::now();
         // Lost surfaces' deletions go out with the next frame's events.
         !self.lost.is_empty()
             || self.store.has_delivered()
-            || self
-                .surfaces
-                .values()
-                .any(|s| s.placed && (s.dirty || s.next_frame().is_some_and(|t| t <= now)))
+            || self.surfaces.iter().any(|(name, s)| {
+                s.placed
+                    && (s.dirty
+                        || s.next_frame().is_some_and(|t| t <= now)
+                        || view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now))
+            })
     }
 
     /// When an animated image (GIF, APNG, WebP) on a placed surface is due
-    /// to show its next frame, or scrollbars that fade are drawn again:
-    /// render then. `None` while nothing plays, or nothing that plays is in
-    /// a placement's window, and no scrollbar fades. Each animated image
-    /// has one deadline at a time, so a host needs one timer. Now, when
-    /// something a document fetched has arrived.
+    /// to show its next frame, scrollbars that fade are drawn again, or a
+    /// scroll that held a `view` back comes to rest (SPEC §9.5): render
+    /// then. `None` while nothing plays, or nothing that plays is in a
+    /// placement's window, no scrollbar fades and no `view` waits. Each
+    /// animated image has one deadline at a time, so a host needs one
+    /// timer. Now, when something a document fetched has arrived.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
+        let now = std::time::Instant::now();
         if self.store.has_delivered() {
-            return Some(std::time::Instant::now());
+            return Some(now);
         }
         self.surfaces
-            .values()
-            .filter(|s| s.placed)
-            .filter_map(|s| s.next_frame())
+            .iter()
+            .filter(|(_, s)| s.placed)
+            .flat_map(|(name, s)| {
+                let rest = view_rest(&self.gesture, name, s, now);
+                s.next_frame().into_iter().chain(rest)
+            })
             .min()
     }
 
@@ -570,16 +613,28 @@ impl Host {
         self.animate(std::time::Instant::now());
         let metrics = self.config.metrics;
         let dark = self.config.theme.dark;
+        let now = std::time::Instant::now();
         for (name, s) in self.surfaces.iter_mut() {
+            // A scroll came to rest: the `view` it held back (SPEC §9.5).
+            if view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
+                s.dirty = true;
+            }
             if !(s.dirty && s.placed) {
                 continue;
             }
             enter(&mut self.working, name);
-            let damage = s.render(&metrics, dark, &mut self.renderers);
+            let moving = scrolling(&self.gesture, name, now);
+            let damage = s.render(&metrics, dark, moving, &mut self.renderers);
             if let Some(rows) = s.fit_event.take() {
                 match self.fits.iter_mut().find(|(n, _)| n == name) {
                     Some(f) => f.1 = rows,
                     None => self.fits.push((name.clone(), rows)),
+                }
+            }
+            if let Some(view) = s.view_event.take() {
+                match self.views.iter_mut().find(|(n, _)| n == name) {
+                    Some(v) => v.1 = view,
+                    None => self.views.push((name.clone(), view)),
                 }
             }
             if let Some(damage) = damage {
@@ -615,9 +670,9 @@ impl Host {
 
     /// The events rendering produced, for the program: `resize` (SPEC §9)
     /// after the terminal's font changed, with the surface's size in CSS
-    /// pixels now, and `fit` (SPEC §5.2), at most one each per surface,
-    /// with the rows of the last frame drawn. Take them after
-    /// [`Host::render_dirty`].
+    /// pixels now, `fit` (SPEC §5.2), with the rows of the last frame
+    /// drawn, and `view` (§9.5), with what it shows, at most one each per
+    /// surface. Take them after [`Host::render_dirty`].
     pub fn take_events(&mut self) -> Vec<Effect> {
         let lost = std::mem::take(&mut self.lost);
         let m = self.config.metrics;
@@ -657,7 +712,26 @@ impl Host {
                 };
                 Effect::Reply(e.encode(&name))
             });
-        lost.into_iter().chain(resizes).chain(fits).collect()
+        let views = std::mem::take(&mut self.views)
+            .into_iter()
+            .filter(|(name, _)| {
+                self.surfaces
+                    .get(name)
+                    .is_some_and(|s| s.placed && !s.is_detached())
+            })
+            .map(|(name, view)| {
+                let e = Event {
+                    kind: "view",
+                    target: String::new(),
+                    detail: Some(Detail::View(view)),
+                };
+                Effect::Reply(e.encode(&name))
+            });
+        lost.into_iter()
+            .chain(resizes)
+            .chain(fits)
+            .chain(views)
+            .collect()
     }
 
     pub fn frame(&self, name: &str) -> Option<&Frame> {
@@ -770,7 +844,7 @@ impl Host {
                     v: VERSION,
                     ops: &[
                         "morph", "inner", "replace", "append", "prepend", "before", "after",
-                        "remove", "attr", "unattr", "text", "var",
+                        "remove", "attr", "unattr", "text", "var", "reveal",
                     ],
                     events: input::EVENTS,
                     cell: body::Cell {
@@ -918,6 +992,8 @@ impl Host {
                 // starts from out (SPEC §9.4).
                 s.hover = (cmd.get("v") == Some("1"))
                     .then(|| s.hover.take().unwrap_or(surface::Hovered::Out));
+                // `view` starts again: the frame drawn sends one (§9.5).
+                s.placed_anew();
                 s.dirty = true;
                 effects.push(Effect::Place {
                     surface: name,
@@ -944,7 +1020,11 @@ impl Host {
                     .ok_or(("ENOENT", format!("no surface {name}")))?;
                 let payload = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
                 let op = cmd.get("op").unwrap_or("morph");
-                let res = s.delta(op, cmd.get("t"), cmd.get("k"), payload);
+                // `reveal` changes no node: it scrolls (SPEC §6.1).
+                let res = match op {
+                    "reveal" => s.reveal(cmd.get("t"), payload, &self.config.metrics),
+                    _ => s.delta(op, cmd.get("t"), cmd.get("k"), payload),
+                };
                 s.dirty = true;
                 res.map(|_| (Vec::new(), None))
                     .map_err(|e| (e.code, e.detail))
@@ -1005,6 +1085,7 @@ impl Host {
                     s.fit = None;
                     s.hover = None;
                     s.window = None;
+                    s.hidden();
                     effects.push(Effect::Hide { surface: name });
                 }
                 Ok((Vec::new(), None))
@@ -1420,7 +1501,8 @@ impl Host {
     /// gesture, and a press or the pointer leaving ends one; a host that
     /// knows when a gesture ends (a touchpad's phases) says so with
     /// [`Host::end_gesture`]. Shift turns a wheel's vertical delta
-    /// horizontal, as browsers do.
+    /// horizontal, as browsers do. The `view` a gesture changes (SPEC
+    /// §9.5) waits for it to come to rest: [`Host::next_frame`] says when.
     pub fn wheel(
         &mut self,
         surface: &str,

@@ -54,21 +54,23 @@ void hotty_host_configure(hotty_host *h, const hotty_config *cfg);
 void hotty_host_osc(hotty_host *h, const uint8_t *body, size_t len, const hotty_effects *fx);
 bool hotty_host_has_dirty(const hotty_host *h);
 /* Milliseconds until an animated image (GIF, APNG, WebP) on a placed surface
- * shows its next frame, or scrollbars that fade are drawn again: render then
- * (hotty_host_has_dirty is true by that time). 0 when one is due now, -1 when
- * nothing plays or nothing that plays is in a placement's window, and no
- * scrollbar fades. Ask again after every call that renders, handles commands
- * or hands the host input, and keep one timer. */
+ * shows its next frame, scrollbars that fade are drawn again, or a scroll that
+ * held a view back comes to rest (SPEC 9.5): render then (hotty_host_has_dirty
+ * is true by that time). 0 when one is due now, -1 when nothing plays or
+ * nothing that plays is in a placement's window, no scrollbar fades and no
+ * view waits. Ask again after every call that renders, handles commands or
+ * hands the host input, and keep one timer. */
 int64_t hotty_host_next_frame(hotty_host *h);
 /* The next render delivers the surface's whole frame, for an adapter that
  * must show it anew and no longer has its pixels. */
 void hotty_host_redeliver(hotty_host *h, const char *surface);
 void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
 /* What rendering found for the program, through fx->reply: fit events (SPEC
- * 5.2: a placement with f=1 hears the rows its document needs), at most one
- * per surface, with the rows of the last frame drawn; and, through
- * fx->remove, the surfaces a panic cost (above). Call after
- * hotty_host_render. */
+ * 5.2: a placement with f=1 hears the rows its document needs), with the rows
+ * of the last frame drawn, and view events (SPEC 9.5: which elements with
+ * data-on~=view are in view), with what it shows, at most one of each per
+ * surface; and, through fx->remove, the surfaces a panic cost (above). Call
+ * after hotty_host_render. */
 void hotty_host_events(hotty_host *h, const hotty_effects *fx);
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
 /* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's
@@ -94,7 +96,8 @@ void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float
  * there (SPEC 5.3). Otherwise handle it as over the cells beneath (SPEC 9):
  * scrollback, or the program's wheel input. A gesture goes where its first
  * wheel went; wheels within 150 ms of each other are one, and a press ends
- * one. Its events (hover) come through fx. */
+ * one. Its events (hover) come through fx; the view it changes (SPEC 9.5)
+ * waits for it to come to rest (hotty_host_next_frame). */
 bool hotty_host_wheel(hotty_host *h, const char *surface, float x, float y, float dx, float dy,
                       uint32_t mods, const hotty_effects *fx);
 /* The wheel gesture under way ended (a touchpad's fingers lifted, or its

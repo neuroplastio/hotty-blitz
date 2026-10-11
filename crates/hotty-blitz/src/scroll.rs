@@ -1,5 +1,6 @@
 //! Scrolling a document that asks to (SPEC §5.1, §5.3), as a page scrolls in
-//! a browser, and where an element is in cells (§9: `area`).
+//! a browser; bringing an element into view (§6.1, `reveal`); and where an
+//! element is in cells (§9: `area`), and whether it is shown (§9.5, `view`).
 //!
 //! A document scrolls along the axes it asked for and no other: Blitz locks
 //! the others (fork patch 0014), so that nothing, not even a fragment link,
@@ -12,6 +13,7 @@ use crate::body::{Area, MAX_INT};
 use blitz_dom::node::ScrollbarWidth;
 use blitz_dom::{BaseDocument, NodeId, ScrollBehavior};
 use std::time::{Duration, Instant};
+use style::computed_values::visibility::T as Visibility;
 use style::values::computed::{Overflow, OverscrollBehavior, TouchAction};
 
 /// The axes a document asked to scroll along (`scroll`, SPEC §5.1): 1
@@ -415,57 +417,265 @@ fn nearest(at: f64, len: f64, start: f64, end: f64) -> f64 {
     }
 }
 
+/// Where an element is brought into view along a box's block axis (SPEC
+/// §6.1, `reveal`): its top at the top of the box, its bottom at the bottom,
+/// or by as little as brings it into view, as CSSOM View's `block` does
+/// with `start`, `end` and `nearest`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    Start,
+    End,
+    Nearest,
+}
+
+impl Align {
+    /// A `reveal`'s payload (SPEC §6.1): `start`, `end`, or none, as
+    /// written; anything else is none of them.
+    pub fn parse(payload: &str) -> Option<Align> {
+        match payload {
+            "start" => Some(Align::Start),
+            "end" => Some(Align::End),
+            "" => Some(Align::Nearest),
+            _ => None,
+        }
+    }
+}
+
+/// Which boxes [`into_view`] scrolls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Boxes {
+    /// Every box that clips, `overflow: hidden` included, and the
+    /// viewport: focus, as a browser scrolls a focused element into view.
+    Clipping,
+    /// Only what scrolls (SPEC §5.3), along the axes the document asked
+    /// for: the root unless its overflow is `hidden` or `clip`, and the
+    /// elements whose overflow is `auto` or `scroll`. `reveal`'s (§6.1).
+    Scrolling,
+}
+
 /// Scrolls every box that holds `id`, from the innermost out to the
 /// viewport, so that it is in view where it can be, along the axes the
-/// document asked for (SPEC §5.3: focus scrolls an element into view).
-pub fn into_view(doc: &mut BaseDocument, id: NodeId, axes: u8) -> Vec<Scroller> {
+/// document asked for: along the block axis as `align` says, and across by
+/// as little as it can. Focus scrolls an element into view (SPEC §5.3) with
+/// [`Align::Nearest`] and [`Boxes::Clipping`]; `reveal` (§6.1) as its
+/// payload says, and only what scrolls. Returns the scrollers that moved.
+pub fn into_view(
+    doc: &mut BaseDocument,
+    id: NodeId,
+    axes: u8,
+    align: Align,
+    boxes: Boxes,
+) -> Vec<Scroller> {
     let mut moved = Vec::new();
     if axes == 0 {
         return moved;
     }
-    let Some(r) = doc.get_client_bounding_rect(id) else {
+    let Some(root) = root(doc) else {
         return moved;
     };
-    let (mut x0, mut y0) = (r.x, r.y);
-    let (w, h) = (r.width, r.height);
-    let root = root(doc);
+    let source = viewport_source(doc);
     let mut cur = doc.get_node(id).and_then(|n| n.parent);
     while let Some(n) = cur {
-        if Some(n) == root {
+        if n == root {
             break;
         }
         let Some(node) = doc.get_node(n) else { break };
-        let next = node.parent;
-        let clips = |a| !matches!(overflow(doc, n, a), Overflow::Visible | Overflow::Clip);
-        let (cx, cy) = (clips(Axis::X), clips(Axis::Y));
-        if (cx || cy)
-            && let Some(b) = doc.get_client_bounding_rect(n)
-        {
-            let l = node.final_layout();
-            let (px, py) = (b.x + l.border.left as f64, b.y + l.border.top as f64);
-            let (pw, ph) = port(doc, Scroller::Node(n));
-            let ((sx, sy), _) = state(doc, Scroller::Node(n), axes);
-            // The element's place in the box's scrolled content.
-            let (ex, ey) = (x0 - px + sx, y0 - py + sy);
-            let tx = if cx { nearest(sx, pw, ex, ex + w) } else { sx };
-            let ty = if cy { nearest(sy, ph, ey, ey + h) } else { sy };
-            if scroll_to(doc, Scroller::Node(n), tx, ty) {
-                moved.push(Scroller::Node(n));
-            }
-            let ((ax, ay), _) = state(doc, Scroller::Node(n), axes);
-            x0 -= ax - sx;
-            y0 -= ay - sy;
+        cur = node.parent;
+        // A body whose overflow is the viewport's scrolls nothing itself.
+        if boxes == Boxes::Scrolling && source.is_some_and(|(_, body)| body == Some(n)) {
+            continue;
         }
-        cur = next;
+        let along = |a: Axis| {
+            let o = overflow(doc, n, a);
+            match boxes {
+                Boxes::Clipping => !matches!(o, Overflow::Visible | Overflow::Clip),
+                Boxes::Scrolling => {
+                    axes & a.bit() != 0 && matches!(o, Overflow::Auto | Overflow::Scroll)
+                }
+            }
+        };
+        let along = (along(Axis::X), along(Axis::Y));
+        if (along.0 || along.1)
+            && let Some((x, y)) = target(doc, id, Scroller::Node(n), axes, align, along)
+            && scroll_to(doc, Scroller::Node(n), x, y)
+        {
+            moved.push(Scroller::Node(n));
+        }
     }
-    let (pw, ph) = port(doc, Scroller::Viewport);
-    let ((sx, sy), _) = state(doc, Scroller::Viewport, axes);
-    let tx = nearest(sx, pw, x0 + sx, x0 + sx + w);
-    let ty = nearest(sy, ph, y0 + sy, y0 + sy + h);
-    if scroll_to(doc, Scroller::Viewport, tx, ty) {
+    let along = match boxes {
+        Boxes::Clipping => (true, true),
+        Boxes::Scrolling => {
+            let (src, _) = source.unwrap_or((root, None));
+            let along = |a: Axis| {
+                axes & a.bit() != 0
+                    && !matches!(overflow(doc, src, a), Overflow::Hidden | Overflow::Clip)
+            };
+            (along(Axis::X), along(Axis::Y))
+        }
+    };
+    if (along.0 || along.1)
+        && let Some((x, y)) = target(doc, id, Scroller::Viewport, axes, align, along)
+        && scroll_to(doc, Scroller::Viewport, x, y)
+    {
         moved.push(Scroller::Viewport);
     }
     moved
+}
+
+/// The offset of scroller `s` that brings `id`'s border box into view as
+/// [`into_view`] does, along the axes `along` names (the others stay put).
+/// The element is measured where it is now, after the boxes inside `s`
+/// scrolled.
+fn target(
+    doc: &BaseDocument,
+    id: NodeId,
+    s: Scroller,
+    axes: u8,
+    align: Align,
+    along: (bool, bool),
+) -> Option<(f64, f64)> {
+    let r = doc.get_client_bounding_rect(id)?;
+    // The scrollport's top left, in the viewport.
+    let (px, py) = match s {
+        Scroller::Viewport => (0.0, 0.0),
+        Scroller::Node(n) => {
+            let b = doc.get_client_bounding_rect(n)?;
+            let l = doc.get_node(n)?.final_layout();
+            (b.x + l.border.left as f64, b.y + l.border.top as f64)
+        }
+    };
+    let (pw, ph) = port(doc, s);
+    let ((sx, sy), _) = state(doc, s, axes);
+    // The element's place in the scroller's content.
+    let (ex, ey) = (r.x - px + sx, r.y - py + sy);
+    let x = if along.0 {
+        nearest(sx, pw, ex, ex + r.width)
+    } else {
+        sx
+    };
+    let y = match align {
+        _ if !along.1 => sy,
+        Align::Start => ey,
+        Align::End => ey + r.height - ph,
+        Align::Nearest => nearest(sy, ph, ey, ey + r.height),
+    };
+    Some((x, y))
+}
+
+/// Whether `id` has a border box of its own, laid out where it can be
+/// found: neither it nor an element that holds it has `display: none` (an
+/// element under one has no style at all), it is no `display: contents`,
+/// and its chain of containing blocks is whole (`paint::intact`).
+pub fn laid_out(doc: &BaseDocument, id: NodeId) -> bool {
+    let contents = doc
+        .get_node(id)
+        .and_then(|n| n.primary_styles())
+        .is_none_or(|s| s.clone_display().is_contents());
+    if contents {
+        return false;
+    }
+    let mut cur = Some(id);
+    while let Some(n) = cur {
+        let Some(node) = doc.get_node(n) else {
+            return false;
+        };
+        if node.is_element() {
+            match node.primary_styles() {
+                Some(s) if !s.clone_display().is_none() => {}
+                _ => return false,
+            }
+        }
+        cur = node.parent;
+    }
+    crate::paint::intact(doc, id)
+}
+
+/// Whether `id` is rendered (SPEC §9.5): laid out, and its `visibility`
+/// is `visible`.
+fn rendered(doc: &BaseDocument, id: NodeId) -> bool {
+    let visible = doc
+        .get_node(id)
+        .and_then(|n| n.primary_styles())
+        .is_some_and(|s| s.clone_visibility() == Visibility::Visible);
+    visible && laid_out(doc, id)
+}
+
+/// Whether some of `id`'s border box is shown (SPEC §9.5, in view): it is
+/// rendered, and its border box meets `window`, the placement's window in
+/// CSS pixels of the surface, by more than `slack` each way once every box
+/// that holds it has clipped it. Those are the boxes up its chain of
+/// containing blocks, as CSS clips: each whose `overflow` is not `visible`
+/// clips along that axis, at its padding box. The root's overflow is the
+/// viewport's, the surface's, which holds the window; so is a body's that
+/// the viewport takes.
+pub fn shown(doc: &BaseDocument, id: NodeId, window: kurbo::Rect, slack: f64) -> bool {
+    if !rendered(doc, id) {
+        return false;
+    }
+    let Some(r) = doc.get_client_bounding_rect(id) else {
+        return false;
+    };
+    let root = root(doc);
+    let body = viewport_source(doc).and_then(|(_, body)| body);
+    let mut clip = window;
+    // Each box up the chain, and where there is none (a node not laid out
+    // as a box of its own), the parent.
+    let up = |n: &blitz_dom::Node| n.containing_block().or(n.parent);
+    let mut cur = doc.get_node(id).and_then(up);
+    for _ in 0..4096 {
+        let Some(c) = cur.filter(|&c| Some(c) != root) else {
+            break;
+        };
+        let Some(node) = doc.get_node(c) else { break };
+        cur = up(node);
+        if !node.is_element() || Some(c) == body {
+            continue;
+        }
+        let (cx, cy) = (
+            overflow(doc, c, Axis::X) != Overflow::Visible,
+            overflow(doc, c, Axis::Y) != Overflow::Visible,
+        );
+        if !(cx || cy) {
+            continue;
+        }
+        let Some(b) = doc.get_client_bounding_rect(c) else {
+            continue;
+        };
+        let l = node.final_layout();
+        if cx {
+            clip.x0 = clip.x0.max(b.x + l.border.left as f64);
+            clip.x1 = clip.x1.min(b.x + b.width - l.border.right as f64);
+        }
+        if cy {
+            clip.y0 = clip.y0.max(b.y + l.border.top as f64);
+            clip.y1 = clip.y1.min(b.y + b.height - l.border.bottom as f64);
+        }
+    }
+    let across = (r.x + r.width).min(clip.x1) - r.x.max(clip.x0);
+    let down = (r.y + r.height).min(clip.y1) - r.y.max(clip.y0);
+    across > slack && down > slack
+}
+
+/// Whether the document's root is scrolled as far down as it goes (SPEC
+/// §9.5, `end`), as a root that does not scroll down always is: in a
+/// document that did not ask to scroll down, or whose root's overflow
+/// there is `hidden` or `clip`.
+pub fn at_end(doc: &BaseDocument, axes: u8) -> bool {
+    if axes & Axis::Y.bit() == 0 {
+        return true;
+    }
+    let Some(root) = root(doc) else {
+        return true;
+    };
+    let (src, _) = viewport_source(doc).unwrap_or((root, None));
+    if matches!(
+        overflow(doc, src, Axis::Y),
+        Overflow::Hidden | Overflow::Clip
+    ) {
+        return true;
+    }
+    let ((_, at), (_, max)) = state(doc, Scroller::Viewport, axes);
+    at >= max - 0.5
 }
 
 /// The cells an element's border box covers as the user sees it, scrolled

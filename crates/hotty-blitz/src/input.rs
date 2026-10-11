@@ -13,7 +13,7 @@ use hotty_wire::{Control, keys};
 /// `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1).
 pub const EVENTS: &[&str] = &[
     "click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit",
-    "hover",
+    "hover", "view",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

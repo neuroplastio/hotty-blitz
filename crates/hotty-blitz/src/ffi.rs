@@ -285,12 +285,13 @@ pub unsafe extern "C" fn hotty_host_has_dirty(h: *const HottyHost) -> bool {
 }
 
 /// Milliseconds until an animated image (GIF, APNG, WebP) on a placed
-/// surface shows its next frame, or scrollbars that fade are drawn again:
-/// render then (`hotty_host_has_dirty` is true by that time). 0 when one is
-/// due now; -1 when nothing plays, or nothing that plays is in a
-/// placement's window, and no scrollbar fades. Ask again after every call
-/// that renders, handles commands or hands the host input, and keep one
-/// timer: each has one deadline at a time.
+/// surface shows its next frame, scrollbars that fade are drawn again, or a
+/// scroll that held a `view` back comes to rest (SPEC §9.5): render then
+/// (`hotty_host_has_dirty` is true by that time). 0 when one is due now;
+/// -1 when nothing plays, or nothing that plays is in a placement's
+/// window, no scrollbar fades and no `view` waits. Ask again after every
+/// call that renders, handles commands or hands the host input, and keep
+/// one timer: each has one deadline at a time.
 ///
 /// # Safety
 /// `h` must be valid.
@@ -349,8 +350,9 @@ pub unsafe extern "C" fn hotty_host_render(h: *mut HottyHost, ctx: *mut c_void, 
 }
 
 /// Sends what rendering found for the program through `fx`: `fit` events
-/// (SPEC §5.2), at most one per surface, with the rows of the last frame
-/// drawn. Call after `hotty_host_render`.
+/// (SPEC §5.2), with the rows of the last frame drawn, and `view` events
+/// (§9.5), with what it shows, at most one of each per surface. Call after
+/// `hotty_host_render`.
 ///
 /// # Safety
 /// `h` must be valid; `fx` may be null (the events are dropped).
@@ -442,7 +444,9 @@ pub unsafe extern "C" fn hotty_host_pointer(
 /// true if the surface took it: its document scrolled, or
 /// `overscroll-behavior` stopped it there (SPEC §5.3). Otherwise the host
 /// handles it as over the cells beneath (§9): scrollback, or the program's
-/// wheel input. Its events (`hover`) come through `fx`.
+/// wheel input. Its events (`hover`) come through `fx`; the `view` it
+/// changes (§9.5) waits for the gesture to come to rest
+/// (`hotty_host_next_frame`).
 ///
 /// # Safety
 /// `h` must be valid; `surface` may be null; `fx` may be null.

@@ -4,7 +4,10 @@
 //!
 //! The gate (`make fuzz`) runs a few hundred seeds in each of two modes:
 //! fresh ids, so a delta adds what it names, and ids drawn from a few, so
-//! deltas morph elements already there and repeat ids. It runs a release
+//! deltas morph elements already there and repeat ids. Each runs again with
+//! `view`: a document that scrolls, half its elements asking for `view`
+//! (SPEC §9.5), so that every frame finds what is in view, and a `reveal`
+//! (§6.1) after each delta, among the same seed's steps. It runs a release
 //! build, where a panic is one a terminal would see. A debug build also runs
 //! Blitz's own consistency check, `assert_layout_parents_consistent`, which
 //! upstream does not keep for boxes that leave the layout tree without being
@@ -16,7 +19,7 @@
 //!
 //! prints every panic site with its first seed, and
 //!
-//!   FUZZ_SHRINK=<seed> [FUZZ_REPEAT=1] cargo test --release ... --test fuzz -- --nocapture
+//!   FUZZ_SHRINK=<seed> [FUZZ_REPEAT=1] [FUZZ_VIEW=1] cargo test --release ... --test fuzz -- --nocapture
 //!
 //! shrinks that seed's steps and markup while it panics at the same place,
 //! and prints what is left.
@@ -70,10 +73,12 @@ const STYLES: &[&str] = &[
 ];
 const TEXTS: &[&str] = &["x", "hello world", " ", "a b c", ""];
 
-/// Element ids: fresh ones from a counter, or drawn from a few.
+/// Element ids: fresh ones from a counter, or drawn from a few. With
+/// `view`, an element with an even id asks for `view` (SPEC §9.5).
 struct Ids {
     repeat: bool,
     next: usize,
+    view: bool,
 }
 
 impl Ids {
@@ -104,7 +109,8 @@ fn markup(r: &mut Rng, depth: u32, ids: &mut Ids) -> String {
         let id = ids.new_id(r);
         let style = r.pick(STYLES);
         let inner = markup(r, depth - 1, ids);
-        s.push_str(&format!("<{tag} id=e{id} style=\"{style}\">{inner}</{tag}>"));
+        let view = if ids.view && id.is_multiple_of(2) { " data-on=view" } else { "" };
+        s.push_str(&format!("<{tag} id=e{id}{view} style=\"{style}\">{inner}</{tag}>"));
     }
     s
 }
@@ -115,9 +121,13 @@ enum Step {
     Render,
 }
 
-fn steps(seed: u64, repeat: bool) -> Vec<Step> {
+fn steps(seed: u64, repeat: bool, view: bool) -> Vec<Step> {
     let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-    let mut ids = Ids { repeat, next: 0 };
+    let mut ids = Ids {
+        repeat,
+        next: 0,
+        view,
+    };
     let command = |pairs: &[(&str, &str)], payload: String| {
         Step::Command(
             pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
@@ -125,12 +135,16 @@ fn steps(seed: u64, repeat: bool) -> Vec<Step> {
         )
     };
     let doc = markup(&mut r, 4, &mut ids);
+    let mut doc_pairs = vec![("a", "doc"), ("s", "f"), ("q", "2")];
+    if view {
+        doc_pairs.push(("scroll", "3"));
+    }
     let mut steps = vec![
-        command(&[("a", "doc"), ("s", "f"), ("q", "2")], doc),
+        command(&doc_pairs, doc),
         command(&[("a", "place"), ("s", "f"), ("c", "40"), ("r", "10"), ("q", "2")], String::new()),
         Step::Render,
     ];
-    for _ in 0..40 {
+    for i in 0..40 {
         let t = format!("e{}", ids.target(&mut r));
         let op = r.pick(&[
             "inner", "inner", "inner", "attr", "attr", "unattr", "text", "remove", "append",
@@ -154,6 +168,13 @@ fn steps(seed: u64, repeat: bool) -> Vec<Step> {
         let mut pairs = vec![("a", "delta"), ("s", "f"), ("op", op), ("t", &t), ("q", "2")];
         pairs.extend(k.map(|k| ("k", k)));
         steps.push(command(&pairs, payload));
+        if view {
+            // Without a draw of its own, so that the same seed draws the
+            // same steps.
+            let at = ["", "start", "end"][i % 3].to_string();
+            let reveal = [("a", "delta"), ("s", "f"), ("op", "reveal"), ("t", &t), ("q", "2")];
+            steps.push(command(&reveal, at));
+        }
         if r.below(3) == 0 {
             steps.push(Step::Render);
         }
@@ -210,11 +231,11 @@ fn random_deltas_never_panic() {
     }
     record_panics();
     let seeds = env("FUZZ_SEEDS").unwrap_or(GATE_SEEDS);
-    let mut found = std::collections::BTreeMap::<String, (u64, bool, u32)>::new();
-    for repeat in [false, true] {
+    let mut found = std::collections::BTreeMap::<String, (u64, bool, bool, u32)>::new();
+    for (repeat, view) in [(false, false), (true, false), (false, true), (true, true)] {
         for seed in 1..=seeds {
-            if let Some(at) = run(&steps(seed, repeat)) {
-                found.entry(at).or_insert((seed, repeat, 0)).2 += 1;
+            if let Some(at) = run(&steps(seed, repeat, view)) {
+                found.entry(at).or_insert((seed, repeat, view, 0)).3 += 1;
             }
         }
     }
@@ -222,9 +243,10 @@ fn random_deltas_never_panic() {
     drop(std::panic::take_hook());
     let report: Vec<String> = found
         .iter()
-        .map(|(at, (seed, repeat, n))| {
-            let mode = if *repeat { " FUZZ_REPEAT=1" } else { "" };
-            format!("{n} × {at}, first FUZZ_SHRINK={seed}{mode}")
+        .map(|(at, (seed, repeat, view, n))| {
+            let repeat = if *repeat { " FUZZ_REPEAT=1" } else { "" };
+            let view = if *view { " FUZZ_VIEW=1" } else { "" };
+            format!("{n} × {at}, first FUZZ_SHRINK={seed}{repeat}{view}")
         })
         .collect();
     assert!(report.is_empty(), "panics:\n{}", report.join("\n"));
@@ -280,7 +302,7 @@ fn shrink() {
         return;
     };
     record_panics();
-    let mut steps = steps(seed, env("FUZZ_REPEAT").is_some());
+    let mut steps = steps(seed, env("FUZZ_REPEAT").is_some(), env("FUZZ_VIEW").is_some());
     let want = run(&steps);
     drop(std::panic::take_hook());
     let want = want.expect("that seed does not panic");
