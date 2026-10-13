@@ -83,9 +83,13 @@ void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
  * touch over a surface goes to hotty_host_touch.
  * A placement with v=1 hears hover (SPEC 9.4) from moves, releases and
  * leaves: pass leave whenever the pointer goes off the surface (onto the
- * cells, another surface, a part it lets through, or out of the window). */
+ * cells, another surface, a part it lets through, or out of the window).
+ * count, for down and up: the platform's count of the press in a run of
+ * clicks (GTK's n_press, AppKit's clickCount), 1 for a single one, which the
+ * clicks the release makes carry (SPEC 9); 0 when it does not know. Call
+ * hotty_host_set_counts once it passes them. */
 void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float x, float y,
-                         uint32_t mods, const hotty_effects *fx);
+                         uint32_t mods, uint32_t count, const hotty_effects *fx);
 /* A wheel's turn, a touchpad's scroll or a touch drag at device pixel (x, y)
  * of the surface, by (dx, dy) device pixels: positive scrolls towards the
  * content's end, right and down, a wheel's notch as far as it scrolls the
@@ -159,6 +163,9 @@ bool hotty_host_takes_pointer(hotty_host *h, const char *surface, float x, float
 /* The terminal does hand the pointer through (above): the capabilities then
  * carry "passthrough": true (SPEC 4). */
 void hotty_host_set_passthrough(hotty_host *h, bool on);
+/* The terminal passes its platform's count of each press to
+ * hotty_host_pointer: the capabilities then carry "count": true (SPEC 9). */
+void hotty_host_set_counts(hotty_host *h, bool on);
 /* The host's half of the network policy (SPEC 7.2) in CSP's syntax, as its
  * user grants it: "img-src https://example.com; font-src https:". NULL or
  * empty: none, as a new host starts. The capabilities report it ("net"). */

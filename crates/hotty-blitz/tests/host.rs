@@ -3640,3 +3640,48 @@ fn a_program_sets_a_selects_option_except_while_it_is_focused() {
     ));
     assert_eq!(selected(&mut h), "staging");
 }
+
+/// A click (press and release) at `(x, y)`, the `n`th of its run as the
+/// platform counts them: each click event's `count`, absent as 0.
+fn counted_click(h: &mut Host, s: &str, x: f32, y: f32, n: u32) -> Vec<(String, u64)> {
+    let mut fx = h.pointer_counted(s, PointerKind::Down, x, y, Mods::default(), n);
+    fx.extend(h.pointer_counted(s, PointerKind::Up, x, y, Mods::default(), n));
+    replies(&fx)
+        .iter()
+        .filter(|c| c.get("e") == Some("click"))
+        .map(|c| {
+            let d = body(&c.payload);
+            (
+                c.get("t").unwrap_or("").to_string(),
+                d["count"].as_u64().unwrap_or(0),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_click_carries_the_platforms_count_kept_to_one_element() {
+    let mut h = host();
+    assert_eq!(body(&replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")))[0].payload)["count"], serde_json::Value::Null);
+    h.set_counts(true);
+    assert_eq!(body(&replies(&h.handle(&cmd(&[("a", "q"), ("n", "2"), ("v", "0.2")], "")))[0].payload)["count"], true);
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0}button{display:block;height:20px;width:100px;margin:0;padding:0;border:0}</style><button id=a>A</button><button id=b>B</button>",
+        "2",
+    );
+    let (a, b) = ((50.0, 10.0), (50.0, 30.0));
+    let want = |t: &str, n: u64| vec![(t.to_string(), n)];
+    assert_eq!(counted_click(&mut h, "x", a.0, a.1, 1), want("a", 0));
+    assert_eq!(counted_click(&mut h, "x", a.0, a.1, 2), want("a", 2));
+    assert_eq!(counted_click(&mut h, "x", a.0, a.1, 3), want("a", 3));
+    // The run moves to another element: it starts again there.
+    assert_eq!(counted_click(&mut h, "x", b.0, b.1, 4), want("b", 0));
+    assert_eq!(counted_click(&mut h, "x", b.0, b.1, 5), want("b", 2));
+    // A key ends the run; a count the embedder does not know reports none.
+    key(&mut h, "x", "z");
+    assert_eq!(counted_click(&mut h, "x", b.0, b.1, 6), want("b", 0));
+    assert_eq!(counted_click(&mut h, "x", b.0, b.1, 0), want("b", 0));
+}

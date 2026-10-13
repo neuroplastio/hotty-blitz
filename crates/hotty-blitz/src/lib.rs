@@ -190,6 +190,13 @@ pub struct Host {
     /// does not take it (`takes_pointer`, SPEC §9.3), and says so in the
     /// capabilities.
     passthrough: bool,
+    /// The embedding terminal hands over its platform's count of each press
+    /// (`pointer_counted`), and the capabilities say `count` (SPEC §9).
+    counts: bool,
+    /// The run of clicks the last click by the pointer was in: its surface,
+    /// the element that reported it (its id, and a link's href), and the
+    /// platform's count the run began at.
+    click_run: Option<(String, String, Option<String>, u32)>,
     /// `fit` events renders found (SPEC §5.2), at most one per surface:
     /// the rows of the last frame drawn.
     fits: Vec<(String, u16)>,
@@ -330,6 +337,8 @@ impl Host {
             created: 0,
             program_press: false,
             passthrough: false,
+            counts: false,
+            click_run: None,
             fits: Vec::new(),
             views: Vec::new(),
             resizes: Vec::new(),
@@ -870,6 +879,7 @@ impl Host {
                     // A drag says where in an element with `data-steps` the
                     // pointer is (SPEC §9.1).
                     steps: true,
+                    count: self.counts,
                     host: "hotty-blitz",
                     // Raised with a change a program may need to know of
                     // (SPEC §15): 0.0.2 paints a box resized through a var
@@ -1162,7 +1172,24 @@ impl Host {
         y: f32,
         mods: Mods,
     ) -> Vec<Effect> {
-        self.pointer_with(surface, kind, x, y, mods, true)
+        self.pointer_with(surface, kind, x, y, mods, true, 0)
+    }
+
+    /// [`Host::pointer`], with the platform's count of a press and its
+    /// release in a run of clicks (macOS's clickCount, GTK's n_press): the
+    /// clicks a release makes carry their place in their run (SPEC §9),
+    /// which starts again on another element or surface. 0 is a count the
+    /// embedder does not know, and reports none.
+    pub fn pointer_counted(
+        &mut self,
+        surface: &str,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        mods: Mods,
+        count: u32,
+    ) -> Vec<Effect> {
+        self.pointer_with(surface, kind, x, y, mods, true, count)
     }
 
     /// [`Host::pointer`], reporting `hover` only when `hover` is true: a
@@ -1175,6 +1202,7 @@ impl Host {
         y: f32,
         mods: Mods,
         hover: bool,
+        count: u32,
     ) -> Vec<Effect> {
         enter(&mut self.working, surface);
         // A press begins a gesture, and decides whose it is: a release the
@@ -1199,7 +1227,7 @@ impl Host {
             (x / m.cell_w.max(1) as f32).floor() as i32,
             (y / m.cell_h.max(1) as f32).floor() as i32,
         );
-        let (lead, events) = s.pointer_input(kind, x / m.scale, y / m.scale, cell, mods);
+        let (lead, mut events) = s.pointer_input(kind, x / m.scale, y / m.scale, cell, mods);
         // Where the pointer is now, for `hover` (SPEC §9.4): not while a
         // button is held, and at the release after everything it caused.
         let hovered = match kind {
@@ -1220,6 +1248,9 @@ impl Host {
         .into_iter()
         .chain(lead.into_iter().map(|e| Effect::Reply(e.encode(surface))))
         .collect();
+        if kind == PointerKind::Up {
+            count_clicks(&mut self.click_run, surface, &mut events, count);
+        }
         if kind == PointerKind::Down {
             // A press on this surface is outside every other one: any other
             // that has the keyboard gives it back (SPEC §10.1).
@@ -1317,6 +1348,8 @@ impl Host {
         mods: Mods,
     ) -> TouchOutcome {
         enter(&mut self.working, surface);
+        // A tap is a click of its own (SPEC §9).
+        self.click_run = None;
         let mut out = TouchOutcome::default();
         match phase {
             TouchPhase::Down => {
@@ -1355,7 +1388,7 @@ impl Host {
                     Touch::Surface => {
                         let s = f.surface.clone();
                         out.touch = Touch::Surface;
-                        out.effects = self.pointer_with(&s, PointerKind::Move, x, y, mods, false);
+                        out.effects = self.pointer_with(&s, PointerKind::Move, x, y, mods, false, 0);
                     }
                     Touch::Undecided if f.tap => out.touch = Touch::Undecided,
                     Touch::Undecided => {
@@ -1384,7 +1417,7 @@ impl Host {
                 };
                 if f.touch == Touch::Surface {
                     out.touch = Touch::Surface;
-                    out.effects = self.pointer_with(&f.surface, PointerKind::Up, x, y, mods, false);
+                    out.effects = self.pointer_with(&f.surface, PointerKind::Up, x, y, mods, false, 0);
                 } else if f.tap && self.surfaces.get(&f.surface).is_some_and(|s| s.placed) {
                     out.touch = Touch::Surface;
                     out.effects = self.tap(&f.surface, x, y, f.mods);
@@ -1421,7 +1454,7 @@ impl Host {
         }
         let mut effects = Vec::new();
         for kind in [PointerKind::Move, PointerKind::Down, PointerKind::Up] {
-            effects.extend(self.pointer_with(surface, kind, x, y, mods, false));
+            effects.extend(self.pointer_with(surface, kind, x, y, mods, false, 0));
         }
         if let Some(s) = self.surfaces.get_mut(surface) {
             s.tapping = false;
@@ -1460,8 +1493,8 @@ impl Host {
             s.pointer(PointerKind::Move, start.0 / scale, start.1 / scale, keys);
         }
         let mut effects =
-            self.pointer_with(surface, PointerKind::Down, start.0, start.1, keys, false);
-        effects.extend(self.pointer_with(surface, PointerKind::Move, now.0, now.1, mods, false));
+            self.pointer_with(surface, PointerKind::Down, start.0, start.1, keys, false, 0);
+        effects.extend(self.pointer_with(surface, PointerKind::Move, now.0, now.1, mods, false, 0));
         effects
     }
 
@@ -1579,6 +1612,8 @@ impl Host {
     /// the element has no use for it; the host then forwards it to the program.
     pub fn key(&mut self, surface: &str, key: &Key) -> KeyOutcome {
         enter(&mut self.working, surface);
+        // A key ends a run of clicks: a click it makes is a first (SPEC §9).
+        self.click_run = None;
         let Some(s) = self.surfaces.get_mut(surface) else {
             return KeyOutcome::default();
         };
@@ -1673,6 +1708,13 @@ impl Host {
         self.passthrough = on;
     }
 
+    /// The terminal embedding this host hands over its platform's count of
+    /// each press (`pointer_counted`): the capabilities say `count` (SPEC
+    /// §9).
+    pub fn set_counts(&mut self, on: bool) {
+        self.counts = on;
+    }
+
     /// Whether `surface` takes the pointer at device pixel (`x`, `y`) of the
     /// surface. False where only boxes with `pointer-events: none` are, and
     /// for a surface there is no such: the host then hands the pointer to
@@ -1762,4 +1804,52 @@ fn font_resizes(old: &Config, new: &Config) -> bool {
         || old.font_size != new.font_size
         || new.font_size.is_none();
     cell && font
+}
+
+/// Numbers the clicks a release made (SPEC §9): `count` is the platform's
+/// count of the press, and a run restarts where the element or the surface
+/// changes. A click from 2 on carries its place; 0, a count the embedder
+/// does not know, numbers none and ends the run.
+fn count_clicks(
+    run: &mut Option<(String, String, Option<String>, u32)>,
+    surface: &str,
+    events: &mut [input::Event],
+    count: u32,
+) {
+    for e in events.iter_mut().filter(|e| e.kind == "click") {
+        if count == 0 {
+            *run = None;
+            continue;
+        }
+        let href = match &e.detail {
+            Some(body::Detail::Click { href, .. }) => href.clone(),
+            _ => None,
+        };
+        let base = match run {
+            Some((s, t, h, base))
+                if count > *base && s == surface && *t == e.target && *h == href =>
+            {
+                *base
+            }
+            _ => count,
+        };
+        *run = Some((surface.to_string(), e.target.clone(), href, base));
+        let n = count - base + 1;
+        if n < 2 {
+            continue;
+        }
+        match &mut e.detail {
+            Some(body::Detail::Click { count, .. }) => *count = Some(n),
+            d @ None => {
+                *d = Some(body::Detail::Click {
+                    area: None,
+                    href: None,
+                    url: None,
+                    value: None,
+                    count: Some(n),
+                })
+            }
+            _ => {}
+        }
+    }
 }

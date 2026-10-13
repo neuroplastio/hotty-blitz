@@ -408,6 +408,10 @@ fn mods(bits: u32) -> Mods {
 /// A placement with `v=1` hears `hover` (SPEC §9.4) from moves, releases and
 /// leaves: pass `leave` whenever the pointer goes off the surface (onto the
 /// cells, another surface, a part it lets through, or out of the window).
+/// `count`, for down and up: the platform's count of the press in a run of
+/// clicks (GTK's n_press, AppKit's clickCount), 1 for a single one, which
+/// the clicks the release makes carry (SPEC §9); 0 when it does not know.
+/// Call `hotty_host_set_counts` once it passes them.
 ///
 /// # Safety
 /// `h` and `surface` must be valid; `fx` may be null.
@@ -419,6 +423,7 @@ pub unsafe extern "C" fn hotty_host_pointer(
     x: f32,
     y: f32,
     mod_bits: u32,
+    count: u32,
     fx: *const HottyEffects,
 ) {
     let Some(surface) = (unsafe { name(surface) }) else {
@@ -432,7 +437,7 @@ pub unsafe extern "C" fn hotty_host_pointer(
         _ => PointerKind::Move,
     };
     guard(h, (), |h| {
-        run_effects(h.host.pointer(surface, kind, x, y, mods(mod_bits)), fx)
+        run_effects(h.host.pointer_counted(surface, kind, x, y, mods(mod_bits), count), fx)
     })
 }
 
@@ -726,6 +731,16 @@ pub unsafe extern "C" fn hotty_host_set_waker(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_set_passthrough(h: *mut HottyHost, on: bool) {
     guard(h, (), |h| h.host.set_passthrough(on))
+}
+
+/// The terminal passes its platform's count of each press to
+/// `hotty_host_pointer`: the capabilities say `count` (SPEC §9).
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_counts(h: *mut HottyHost, on: bool) {
+    guard(h, (), |h| h.host.set_counts(on))
 }
 
 /// Whether the surface takes the pointer at device pixel (`x`, `y`) of the

@@ -155,8 +155,10 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
     // The layout a terminal would have painted by now.
     host.render_dirty(&mut |_, _, _| {});
     let mut sent = Vec::new();
+    // The platform's count of a press and its release (SPEC §9).
+    let count = step["count"].as_u64().unwrap_or(1) as u32;
     let send = |host: &mut Host, s: &str, kind, x, y, sent: &mut Vec<u8>| {
-        for e in host.pointer(s, kind, x, y, mods(step)) {
+        for e in host.pointer_counted(s, kind, x, y, mods(step), count) {
             if let Effect::Reply(b) = e {
                 sent.extend(b);
             }
@@ -596,6 +598,7 @@ fn protocol_vectors() {
                 || r == "scroll"
                 || r == "touch"
                 || r == "steps"
+                || r == "count"
                 || (r == "view" && views)
         };
         let runs = match vector.get("requires") {
@@ -608,6 +611,7 @@ fn protocol_vectors() {
         }
         let mut host = Host::new(Config::default());
         host.set_passthrough(true);
+        host.set_counts(true);
         let mut mouse = Mouse::default();
         for (i, step) in vector["steps"].as_array().unwrap().iter().enumerate() {
             if let Err(e) = run_step(&mut host, &mut mouse, step) {

@@ -60,6 +60,9 @@ pub struct Caps {
     pub scroll: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub steps: bool,
+    /// A repeated click carries its count (SPEC §9).
+    #[serde(skip_serializing_if = "is_false")]
+    pub count: bool,
     pub host: &'static str,
     pub version: &'static str,
 }
@@ -121,6 +124,9 @@ pub enum Detail {
         url: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<String>,
+        /// Its place in its run of clicks, from 2 (SPEC §9).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        count: Option<u32>,
     },
     /// `press`: where the element `t` names is.
     Press { area: Area },

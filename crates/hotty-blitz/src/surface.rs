@@ -3064,6 +3064,7 @@ impl EventHandler for &mut Recorder {
                                 href,
                                 url,
                                 value,
+                                count: None,
                             }),
                         });
                     }
