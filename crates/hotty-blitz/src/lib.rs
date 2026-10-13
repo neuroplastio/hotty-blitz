@@ -1194,6 +1194,7 @@ impl Host {
 
     /// [`Host::pointer`], reporting `hover` only when `hover` is true: a
     /// touch's drag hovers nothing (SPEC §9.4).
+    #[allow(clippy::too_many_arguments)]
     fn pointer_with(
         &mut self,
         surface: &str,
