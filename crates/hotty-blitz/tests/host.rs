@@ -62,7 +62,7 @@ fn query_answers_with_capabilities() {
         "cell": {"w": 10, "h": 20},
         "scale": 1.0,
         "scheme": "dark",
-        "limits": {"resources": 64 << 20},
+        "limits": {"resources": 64 << 20, "message": 64 << 20},
         "net": {},
         "scroll": true,
         "steps": true,

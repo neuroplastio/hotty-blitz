@@ -25,9 +25,16 @@ pub const OSC_NUMBER: &str = "7279";
 pub const CHUNK: usize = 4096;
 /// A single chunk larger than this is refused; it cannot be a well-formed one.
 const MAX_CHUNK_BYTES: usize = 1 << 20;
-/// A command whose base64, or whose payload once decoded, is larger than
-/// this is refused.
-const MAX_COMMAND_BYTES: usize = 64 << 20;
+/// The most bytes a command's payload decodes to: what base64 and zlib
+/// leave. A larger one is refused; a host reports this as `limits.message`
+/// (SPEC §13).
+pub const MAX_COMMAND_BYTES: usize = 64 << 20;
+
+/// The most base64 a command of `max` decoded bytes takes, zlib's overhead
+/// included: longer is refused before it is decoded.
+fn encoded_max(max: usize) -> usize {
+    (max + max / 256 + 64).div_ceil(3) * 4
+}
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
@@ -269,7 +276,7 @@ pub struct Scanner {
     /// A chunked command was dropped as too large: its further chunks are
     /// dropped too, as they come, until its last.
     dropping: bool,
-    /// The most bytes a command takes, as base64 and once decoded.
+    /// The most bytes a command's payload decodes to ([`MAX_COMMAND_BYTES`]).
     max: usize,
 }
 
@@ -514,7 +521,7 @@ impl Scanner {
         match self.partial.take() {
             Some(mut p) if control.only_chunk_keys() => {
                 p.b64.extend_from_slice(payload);
-                if p.b64.len() > self.max {
+                if p.b64.len() > encoded_max(self.max) {
                     sink(Event::Invalid("command too large".into()));
                     self.dropping = more;
                 } else if more {
@@ -569,8 +576,7 @@ fn emit(sink: &mut dyn FnMut(Event<'_>), mut control: Control, b64: &[u8], max: 
 }
 
 /// The payload a command's base64 holds, after zlib when it is `o=z`; one
-/// that inflates to more than max bytes is refused, and inflating stops
-/// past it.
+/// of more than max bytes is refused, and inflating stops past it.
 fn decode_payload(control: &Control, b64: &[u8], max: usize) -> Result<Vec<u8>, String> {
     let cleaned: Vec<u8> = b64
         .iter()
@@ -582,6 +588,7 @@ fn decode_payload(control: &Control, b64: &[u8], max: usize) -> Result<Vec<u8>, 
         .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&cleaned))
         .map_err(|e| format!("bad base64: {e}"))?;
     match control.get("o") {
+        None if raw.len() > max => Err("command too large".into()),
         None => Ok(raw),
         Some("z") => {
             let mut out = Vec::new();

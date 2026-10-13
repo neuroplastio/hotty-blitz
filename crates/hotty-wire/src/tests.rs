@@ -290,6 +290,25 @@ fn zlib_past_the_limit_is_refused_not_cut_short() {
 }
 
 #[test]
+fn the_limit_is_on_decoded_bytes() {
+    for (n, ok) in [(4096, true), (4097, false)] {
+        let b64 = B64.encode(vec![0u8; n]);
+        let pieces: Vec<&[u8]> = b64.as_bytes().chunks(CHUNK).collect();
+        let mut input = Vec::new();
+        for (i, p) in pieces.iter().enumerate() {
+            let m = u8::from(i + 1 < pieces.len());
+            let ctl = if i == 0 { format!("a=res:id=x:m={m}") } else { format!("m={m}") };
+            input.extend_from_slice(format!("\x1b]7279;{ctl};").as_bytes());
+            input.extend_from_slice(p);
+            input.extend_from_slice(b"\x1b\\");
+        }
+        let got = scan_max(&input, 4096);
+        assert_eq!(got.commands.len(), usize::from(ok), "{n} bytes");
+        assert_eq!(got.invalid.len(), usize::from(!ok), "{n} bytes");
+    }
+}
+
+#[test]
 fn a_chunked_command_past_the_limit_is_dropped_whole_and_reported_once() {
     let chunk = "A".repeat(400);
     let mut input = format!("\x1b]7279;a=doc:s=x:m=1;{chunk}\x1b\\");

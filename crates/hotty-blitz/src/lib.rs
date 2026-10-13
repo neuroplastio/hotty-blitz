@@ -859,6 +859,7 @@ impl Host {
                     },
                     limits: body::Limits {
                         resources: self.store.quota as u64,
+                        message: hotty_wire::MAX_COMMAND_BYTES as u64,
                     },
                     // The host's half of the network policy (SPEC §7.2):
                     // empty unless its user granted something.

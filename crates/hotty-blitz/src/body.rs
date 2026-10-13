@@ -78,6 +78,9 @@ pub struct Limits {
     /// sent, however large the store.
     #[serde(serialize_with = "capped")]
     pub resources: u64,
+    /// The most bytes one message decodes to (SPEC §3.4, §13):
+    /// [`hotty_wire::MAX_COMMAND_BYTES`].
+    pub message: u64,
 }
 
 /// An int as a body carries it: at most [`MAX_INT`].
@@ -219,16 +222,17 @@ mod tests {
 
     #[test]
     fn a_limit_past_the_ints_a_body_carries_is_the_most_it_carries() {
-        // {"resources": 2^53 - 1}, as uint 64.
-        let most = b"\x81\xa9resources\xcf\x00\x1f\xff\xff\xff\xff\xff\xff";
+        // {"resources": 2^53 - 1, "message": 1 MiB}, resources as uint 64.
+        let most = b"\x82\xa9resources\xcf\x00\x1f\xff\xff\xff\xff\xff\xff\xa7message\xce\x00\x10\0\0";
         for resources in [MAX_INT as u64, MAX_INT as u64 + 1, u64::MAX] {
-            assert_eq!(encode(&Limits { resources }), most, "{resources}");
+            assert_eq!(encode(&Limits { resources, message: 1 << 20 }), most, "{resources}");
         }
         assert_eq!(
             encode(&Limits {
-                resources: 64 << 20
+                resources: 64 << 20,
+                message: 1 << 20
             }),
-            b"\x81\xa9resources\xce\x04\0\0\0"
+            b"\x82\xa9resources\xce\x04\0\0\0\xa7message\xce\x00\x10\0\0"
         );
     }
 }
