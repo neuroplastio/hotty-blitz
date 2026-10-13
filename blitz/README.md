@@ -39,6 +39,7 @@ changes upstream is an open question.
 | `0028-blitz-dom-*` | an inline svg is built again when its source changes: `currentColor` follows the colour (below) |
 | `0029-blitz-dom-*` | an inline svg's `currentColor` is written as `rgb()`, so a `color-mix()` colour draws (below) |
 | `0030-blitz-dom-*` | a row move can extend the selection, as Shift+ArrowDown does in a textarea |
+| `0031-blitz-dom-*` | a double click selects a word and a triple click its block, as in a page's text in a browser |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches

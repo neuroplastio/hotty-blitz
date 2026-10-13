@@ -1213,6 +1213,10 @@ impl Host {
         // host lost does not leave the next one the program's.
         if kind == PointerKind::Down {
             self.program_press = mods.alt;
+            // One selection across the host (SPEC §11): a press anywhere
+            // else drops it, and a press with Alt is on the cells.
+            let keep = (!mods.alt).then_some(surface);
+            self.clear_selection(keep);
         }
         // A press, or the pointer leaving, ends a wheel gesture.
         if matches!(kind, PointerKind::Down | PointerKind::Leave) {
@@ -1739,6 +1743,26 @@ impl Host {
     /// for a host to treat as an OSC 8 hyperlink: its url.
     pub fn hyperlink(&self, surface: &str) -> Option<String> {
         self.surfaces.get(surface)?.hyperlink()
+    }
+
+    /// The text selected in the host, for its copy key (SPEC §11): in the
+    /// surface holding the keyboard first, else in any surface. A press
+    /// leaves at most one surface with a selection.
+    pub fn selected_text(&self) -> Option<String> {
+        let focused = self.focused_surface().and_then(|n| self.surfaces.get(n));
+        focused
+            .and_then(surface::Surface::selected_text)
+            .or_else(|| self.surfaces.values().find_map(surface::Surface::selected_text))
+    }
+
+    /// Drops the selection of every surface but `keep`: the user pressed
+    /// elsewhere, or selected on the cells (SPEC §11).
+    pub fn clear_selection(&mut self, keep: Option<&str>) {
+        for (name, s) in self.surfaces.iter_mut() {
+            if Some(name.as_str()) != keep {
+                s.clear_selection();
+            }
+        }
     }
 
     pub fn focused_surface(&self) -> Option<&str> {

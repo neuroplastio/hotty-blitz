@@ -1,0 +1,87 @@
+From 2e403a357a6ee813791275af5299ff3cc20d2317 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Wed, 14 Oct 2026 00:24:08 +0200
+Subject: [PATCH] blitz-dom: a double click selects a word and a triple click
+ its block
+
+As a browser does in a page's text: Selection::word_from_point for a
+word, the inline root's whole text for a block. A text input already
+did both.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs       | 36 ++++++++++++++++++++++++
+ packages/blitz-dom/src/events/pointer.rs | 10 +++++--
+ 2 files changed, 44 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 16166d67..d7d05a80 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -2739,6 +2739,42 @@ impl BaseDocument {
+         Some((inline_root.id, byte_offset))
+     }
+ 
++    /// Selects the word at a point, or with `block` all the text of its
++    /// inline root, as a double and a triple click do in a browser. Returns
++    /// false, and changes nothing, where there is no text.
++    pub fn select_text_unit_at_point(&mut self, x: f32, y: f32, block: bool) -> bool {
++        let Some(hit) = self.hit(x, y) else {
++            return false;
++        };
++        let Some(root) = self
++            .get_node(hit.node_id)
++            .and_then(|n| n.inline_root_ancestor())
++        else {
++            return false;
++        };
++        let Some(inline) = root
++            .element_data()
++            .and_then(|e| e.inline_layout_data.as_ref())
++        else {
++            return false;
++        };
++        let range = if block {
++            0..inline.text.len()
++        } else {
++            let scale = inline.layout.scale();
++            parley::editing::Selection::word_from_point(
++                &inline.layout,
++                hit.x * scale,
++                hit.y * scale,
++            )
++            .text_range()
++        };
++        let id = root.id;
++        self.set_text_selection(id, range.start, id, range.end);
++        self.shell_provider.request_redraw();
++        true
++    }
++
+     /// Set the text selection range (creates a new selection from anchor to focus)
+     pub fn set_text_selection(
+         &mut self,
+diff --git a/packages/blitz-dom/src/events/pointer.rs b/packages/blitz-dom/src/events/pointer.rs
+index 3a51c7a9..303bd589 100644
+--- a/packages/blitz-dom/src/events/pointer.rs
++++ b/packages/blitz-dom/src/events/pointer.rs
+@@ -497,8 +497,14 @@ pub(crate) fn handle_pointerdown(
+     match click_target {
+         ClickTarget::Disabled => (),
+         ClickTarget::SelectableText => {
+-            // Handle text selection for non-input elements
+-            if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
++            // Handle text selection for non-input elements: a double click
++            // selects a word and a triple click its block, as in a browser.
++            let click_count = doc.click_count;
++            let by_unit =
++                click_count >= 2 && doc.select_text_unit_at_point(x, y, click_count > 2);
++            if by_unit {
++                // Selected.
++            } else if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
+                 doc.set_text_selection(inline_root_id, byte_offset, inline_root_id, byte_offset);
+                 doc.shell_provider.request_redraw();
+             } else {
+-- 
+2.56.0
+

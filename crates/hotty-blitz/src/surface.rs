@@ -1369,6 +1369,57 @@ impl Surface {
         self.keyboard
     }
 
+    /// The text selected in the surface, for the host's copy (SPEC §11):
+    /// the focused text field's selection, none from a password field, or
+    /// else the document's, a line for each block, without the blocks
+    /// `user-select: none` leaves out.
+    pub fn selected_text(&self) -> Option<String> {
+        if let Some(id) = self.focused()
+            && let Some((value, anchor, focus)) = self.doc.text_input_selection(id)
+        {
+            let password = self
+                .doc
+                .get_node(id)
+                .and_then(|n| n.element_data())
+                .and_then(|e| e.text_input_data())
+                .is_some_and(|t| t.password().is_some());
+            let text = value.get(anchor.min(focus)..anchor.max(focus))?;
+            return (!password && !text.is_empty()).then(|| text.to_owned());
+        }
+        let mut text = String::new();
+        for (node, start, end) in self.doc.get_text_selection_ranges() {
+            if self.unselectable(Some(node)) {
+                continue;
+            }
+            let Some(part) = self
+                .doc
+                .get_node(node)
+                .and_then(|n| n.element_data())
+                .and_then(|e| e.inline_layout_data.as_ref())
+                .and_then(|l| l.text.get(start..end))
+            else {
+                continue;
+            };
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(part);
+        }
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Drops the document's selection: the user pressed somewhere else
+    /// (SPEC §11). True if there was one.
+    pub fn clear_selection(&mut self) -> bool {
+        if !self.doc.has_text_selection() {
+            return false;
+        }
+        self.doc.clear_text_selection();
+        self.damage.full = true;
+        self.dirty = true;
+        true
+    }
+
     /// The pointer's shape over what the pointer last moved onto, as a CSS
     /// `cursor` name: the element's `cursor`, or `pointer` in a link, `text`
     /// over text. None over nothing in particular. A detached surface

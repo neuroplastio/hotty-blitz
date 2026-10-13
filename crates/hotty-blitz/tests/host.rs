@@ -3685,3 +3685,70 @@ fn a_click_carries_the_platforms_count_kept_to_one_element() {
     assert_eq!(counted_click(&mut h, "x", b.0, b.1, 6), want("b", 0));
     assert_eq!(counted_click(&mut h, "x", b.0, b.1, 0), want("b", 0));
 }
+
+/// What the host's copy takes (SPEC §11): a drag's selection, a line for
+/// each block; a double click's word and a triple click's block; a focused
+/// field's selection, never a password field's. A press on another surface
+/// drops the selection, as does the terminal's own.
+#[test]
+fn the_selection_is_the_hosts_to_copy_and_there_is_one() {
+    let mut h = host();
+    for s in ["x", "y"] {
+        h.handle(&cmd(&[("a", "doc"), ("s", s)], PROSE));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", s), ("c", "30"), ("r", "8")],
+            "",
+        ));
+    }
+    render(&mut h);
+    let m = Mods::default();
+    assert_eq!(h.selected_text(), None);
+    h.pointer("x", PointerKind::Down, 5.0, 32.0, m);
+    h.pointer("x", PointerKind::Move, 60.0, 32.0, m);
+    h.pointer("x", PointerKind::Move, 40.0, 70.0, m);
+    h.pointer("x", PointerKind::Up, 40.0, 70.0, m);
+    let text = h.selected_text().expect("a drag selects");
+    assert!(text.starts_with("The first paragraph"), "{text:?}");
+    assert!(text.ends_with("here.\nA sec"), "{text:?}");
+
+    // A press on the other surface drops it.
+    click(&mut h, "y", 5.0, 32.0);
+    assert_eq!(h.selected_text(), None);
+
+    // A double click selects a word, a triple click its paragraph.
+    for n in 1..=2 {
+        h.pointer_counted("y", PointerKind::Down, 40.0, 32.0, m, n);
+        h.pointer_counted("y", PointerKind::Up, 40.0, 32.0, m, n);
+    }
+    assert_eq!(h.selected_text().as_deref(), Some("first"));
+    h.pointer_counted("y", PointerKind::Down, 40.0, 32.0, m, 3);
+    h.pointer_counted("y", PointerKind::Up, 40.0, 32.0, m, 3);
+    assert_eq!(
+        h.selected_text().as_deref(),
+        Some("The first paragraph, long enough to wrap onto a second line here.")
+    );
+
+    // The terminal selected on its cells.
+    h.clear_selection(None);
+    assert_eq!(h.selected_text(), None);
+
+    // A focused field's selection, and none from a password field.
+    for (kind, want) in [("text", Some("two words")), ("password", None)] {
+        let html = format!("<input id=f type={kind} value='two words'>");
+        h.handle(&cmd(&[("a", "doc"), ("s", "x")], &html));
+        render(&mut h);
+        h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
+        let ctrl = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        h.key(
+            "x",
+            &Key {
+                name: KeyName::Char("a".into()),
+                mods: ctrl,
+            },
+        );
+        assert_eq!(h.selected_text().as_deref(), want, "{kind}");
+    }
+}

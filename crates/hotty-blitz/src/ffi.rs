@@ -97,6 +97,8 @@ pub struct HottyHost {
     cursor: Option<CString>,
     /// The url returned by `hotty_host_hyperlink`.
     hyperlink: Option<CString>,
+    /// The text returned by `hotty_host_selected_text`.
+    selected: Option<CString>,
 }
 
 /// Runs `f` on a live host, catching panics at the C boundary. A panic
@@ -211,6 +213,7 @@ pub unsafe extern "C" fn hotty_host_new(cfg: *const HottyConfig) -> *mut HottyHo
         focused: None,
         cursor: None,
         hyperlink: None,
+        selected: None,
     }))
 }
 
@@ -666,6 +669,36 @@ pub unsafe extern "C" fn hotty_host_hyperlink(h: *mut HottyHost, surface: *const
         h.hyperlink = h.host.hyperlink(surface).and_then(|u| CString::new(u).ok());
         h.hyperlink.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
     })
+}
+
+/// The text selected in the host, UTF-8, or NULL when nothing is (SPEC
+/// §11): the selection of a surface's document, or of the focused text
+/// field, never a password field's. The terminal's copy takes it when the
+/// terminal has no selection of its own, and its copy on select after a
+/// press's release. Valid until the next call.
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_selected_text(h: *mut HottyHost) -> *const c_char {
+    guard(h, std::ptr::null(), |h| {
+        h.selected = h
+            .host
+            .selected_text()
+            .and_then(|t| CString::new(t.replace('\0', "")).ok());
+        h.selected.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
+    })
+}
+
+/// Drops every surface's selection: there is one selection across the
+/// terminal (SPEC §11), and the user pressed on the cells or selected
+/// there. A press on a surface drops the others' itself.
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_clear_selection(h: *mut HottyHost) {
+    guard(h, (), |h| h.host.clear_selection(None))
 }
 
 /// The host's half of the network policy (SPEC §7.2), in CSP's syntax:

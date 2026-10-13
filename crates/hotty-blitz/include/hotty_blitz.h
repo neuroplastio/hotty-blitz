@@ -154,6 +154,16 @@ const char *hotty_host_cursor(hotty_host *h, const char *surface);
  * as an OSC 8 hyperlink: its gesture, its feedback, its policies. A click on
  * it reports nothing to the program. Valid until the next call. */
 const char *hotty_host_hyperlink(hotty_host *h, const char *surface);
+/* The text selected in the host, UTF-8, or NULL when nothing is (SPEC 11):
+ * a surface document's selection, or the focused text field's, never a
+ * password field's. Copy it when the terminal has no selection of its own,
+ * and copy it on select after a press's release. Valid until the next
+ * call. */
+const char *hotty_host_selected_text(hotty_host *h);
+/* Drops every surface's selection: there is one selection across the
+ * terminal (SPEC 11), and the user pressed on the cells or selected there.
+ * A press on a surface drops the others' itself. */
+void hotty_host_clear_selection(hotty_host *h);
 /* Whether the surface takes the pointer at device pixel (x, y) of the
  * surface: false where only boxes with pointer-events: none are (SPEC 9.3).
  * There the pointer passes through it, to the placement below or the cells:
