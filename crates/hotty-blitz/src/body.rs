@@ -60,6 +60,10 @@ pub struct Caps {
     pub scroll: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub steps: bool,
+    /// An element with `drop` in its `data-on` can be a drag's target, and
+    /// one with `data-steps` hears where in it the pointer is (SPEC §9.1).
+    #[serde(skip_serializing_if = "is_false")]
+    pub drop: bool,
     /// A repeated click carries its count (SPEC §9).
     #[serde(skip_serializing_if = "is_false")]
     pub count: bool,
@@ -142,8 +146,8 @@ pub enum Detail {
     /// `submit`: the form's fields, names to values.
     Fields(BTreeMap<String, String>),
     /// `dragstart`, `drag` and `dragend` (§9.1): the pointer's cell and
-    /// the modifier keys held, and its step in an element with
-    /// `data-steps`.
+    /// the modifier keys held, its step in an element with `data-steps`,
+    /// and its step in a drop target with them (`tx`, `ty`).
     Drag {
         c: i32,
         r: i32,
@@ -152,6 +156,10 @@ pub enum Detail {
         x: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         y: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tx: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ty: Option<u64>,
     },
     /// `resize`: the surface's size in CSS pixels.
     Resize { w: f64, h: f64 },
@@ -200,7 +208,9 @@ mod tests {
                 r: 300,
                 keys: vec![],
                 x: None,
-                y: None
+                y: None,
+                tx: None,
+                ty: None
             }),
             b"\x83\xa1c\xff\xa1r\xcd\x01\x2c\xa4keys\x90"
         );

@@ -591,7 +591,8 @@ fn protocol_vectors() {
     let views = sends("view");
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through as hottyterm does, and
-        // hotty-blitz sends hover, scrolls, takes touch and drags in steps.
+        // hotty-blitz sends hover, scrolls, takes touch, drags in steps, counts
+        // clicks and takes drop targets.
         let has = |r: &Value| {
             r == "passthrough"
                 || r == "hover"
@@ -599,6 +600,7 @@ fn protocol_vectors() {
                 || r == "touch"
                 || r == "steps"
                 || r == "count"
+                || r == "drop"
                 || (r == "view" && views)
         };
         let runs = match vector.get("requires") {

@@ -251,7 +251,8 @@ pub enum Hovered {
 
 /// A drag under way (SPEC §9.1): the element that started it, the
 /// counts of its `data-steps` when it started, and the target, the cell,
-/// the keys and the steps the program heard of last.
+/// the keys, the steps and the steps in the target the program heard of
+/// last.
 struct Drag {
     start: String,
     counts: (u64, u64),
@@ -259,6 +260,7 @@ struct Drag {
     cell: (i32, i32),
     keys: Mods,
     steps: Steps,
+    in_target: Steps,
 }
 
 /// Where in a dragged element with `data-steps` the pointer is, across and
@@ -305,13 +307,14 @@ fn step(d: f64, size: f64, count: u64) -> Option<u64> {
 
 /// A drag's event: its detail is the pointer's cell of the surface and the
 /// modifier keys held, in the spec's order, with its steps in an element
-/// with `data-steps` (SPEC §9.1).
+/// with `data-steps`, and in a target with them, `in_target` (SPEC §9.1).
 fn drag_event(
     kind: &'static str,
     target: String,
     cell: (i32, i32),
     keys: Mods,
     steps: Steps,
+    in_target: Steps,
 ) -> Event {
     let held: Vec<&str> = [
         (keys.shift, "shift"),
@@ -331,6 +334,8 @@ fn drag_event(
             keys: held,
             x: steps.x,
             y: steps.y,
+            tx: in_target.x,
+            ty: in_target.y,
         }),
     }
 }
@@ -1708,7 +1713,8 @@ impl Surface {
                         self.doc.clear_text_selection();
                         let counts = self.counts_of(&start);
                         let steps = self.steps_at(&start, counts, x, y).unwrap_or_default();
-                        lead.push(drag_event("dragstart", start.clone(), cell, mods, steps));
+                        let none = Steps::default();
+                        lead.push(drag_event("dragstart", start.clone(), cell, mods, steps, none));
                         self.drag = Some(Drag {
                             start: start.clone(),
                             counts,
@@ -1716,6 +1722,7 @@ impl Surface {
                             cell,
                             keys: mods,
                             steps,
+                            in_target: none,
                         });
                     }
                     // `user-select: none` (SPEC §11): Blitz anchored a
@@ -1726,29 +1733,36 @@ impl Surface {
                 }
             }
             PointerKind::Move => {
-                let target = self.drag_target_at(cell);
+                let target = self.drag_target_at(cell, true);
                 let steps = self.drag.as_ref().map(|d| self.drag_steps(d, x, y));
+                let in_target = self.target_steps(&target, x, y);
                 if let (Some(d), Some(steps)) = (&mut self.drag, steps) {
                     // An event for each element crossed, and while there is
                     // none, for each cell; and for each step (§9.1).
                     if target != d.target
                         || (target.is_empty() && cell != d.cell)
                         || steps != d.steps
+                        || in_target != d.in_target
                     {
-                        lead.push(drag_event("drag", target.clone(), cell, mods, steps));
+                        let t = target.clone();
+                        lead.push(drag_event("drag", t, cell, mods, steps, in_target));
                     }
-                    (d.target, d.cell, d.keys, d.steps) = (target, cell, mods, steps);
+                    (d.target, d.cell, d.keys) = (target, cell, mods);
+                    (d.steps, d.in_target) = (steps, in_target);
                 }
             }
             PointerKind::Up => {
                 if let Some(d) = self.drag.take() {
-                    let target = self.drag_target_at(cell);
+                    let target = self.drag_target_at(cell, true);
                     let steps = self.drag_steps(&d, x, y);
-                    // A drag is a click only where it began (§9.1).
-                    if target != d.start {
+                    let in_target = self.target_steps(&target, x, y);
+                    // A drag is a click only where it began (§9.1): where
+                    // the nearest element that opts in to drags is the one
+                    // it started on, whatever its target.
+                    if self.drag_target_at(cell, false) != d.start {
                         events.retain(|e| e.kind != "click");
                     }
-                    lead.push(drag_event("dragend", target, cell, mods, steps));
+                    lead.push(drag_event("dragend", target, cell, mods, steps, in_target));
                 }
             }
             PointerKind::Leave => {}
@@ -1766,7 +1780,8 @@ impl Surface {
         } else {
             keys
         };
-        Some(drag_event("dragend", String::new(), d.cell, keys, d.steps))
+        let none = Steps::default();
+        Some(drag_event("dragend", String::new(), d.cell, keys, d.steps, none))
     }
 
     /// The counts of the `data-steps` of the element with id `id`, (0, 0)
@@ -1800,6 +1815,19 @@ impl Surface {
     /// last were once its element has left the document (SPEC §9.1).
     fn drag_steps(&self, d: &Drag, x: f32, y: f32) -> Steps {
         self.steps_at(&d.start, d.counts, x, y).unwrap_or(d.steps)
+    }
+
+    /// Where in `target`, a drag's target with id `target`, the pointer at
+    /// CSS pixel (`x`, `y`) is (SPEC §9.1): its steps, `tx` and `ty`, for a
+    /// target with `drop` in its `data-on` and `data-steps`, by the counts
+    /// it has now. None for any other.
+    fn target_steps(&self, target: &str, x: f32, y: f32) -> Steps {
+        let drops = !target.is_empty()
+            && self.doc.get_element_by_id(target).is_some_and(|n| self.listens(n, "drop"));
+        if !drops {
+            return Steps::default();
+        }
+        self.steps_at(target, self.counts_of(target), x, y).unwrap_or_default()
     }
 
     /// The pans a touch at CSS pixel (`x`, `y`) of the surface, in its cell
@@ -1918,16 +1946,16 @@ impl Surface {
     }
 
     /// A drag's target under the pointer, in `cell` (SPEC §9.1): the
-    /// nearest element with an id and `drag` in its `data-on`, from the
-    /// one under the pointer outward; empty where there is none, outside
-    /// the window included.
-    fn drag_target_at(&self, cell: (i32, i32)) -> String {
+    /// nearest element with an id and `drag` in its `data-on`, or `drop`
+    /// with `drops`, from the one under the pointer outward; empty where
+    /// there is none, outside the window included.
+    fn drag_target_at(&self, cell: (i32, i32), drops: bool) -> String {
         if !self.in_window(cell) {
             return String::new();
         }
         let mut node = self.doc.get_hover_node_id();
         while let Some(n) = node {
-            if self.listens(n, "drag")
+            if (self.listens(n, "drag") || drops && self.listens(n, "drop"))
                 && let Some(id) = self.id_of(n).filter(|id| !id.is_empty())
             {
                 return id;

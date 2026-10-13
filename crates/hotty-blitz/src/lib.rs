@@ -879,6 +879,9 @@ impl Host {
                     // A drag says where in an element with `data-steps` the
                     // pointer is (SPEC §9.1).
                     steps: true,
+                    // An element can be only a drop target, and one with
+                    // `data-steps` hears where in it a drag is (SPEC §9.1).
+                    drop: true,
                     count: self.counts,
                     host: "hotty-blitz",
                     // Raised with a change a program may need to know of
