@@ -40,6 +40,7 @@ changes upstream is an open question.
 | `0029-blitz-dom-*` | an inline svg's `currentColor` is written as `rgb()`, so a `color-mix()` colour draws (below) |
 | `0030-blitz-dom-*` | a row move can extend the selection, as Shift+ArrowDown does in a textarea |
 | `0031-blitz-dom-*` | a double click selects a word and a triple click its block, as in a page's text in a browser |
+| `0032-blitz-dom-*` | a double click in a password input selects all of it, as a browser's does: its mask has no words |
 
 ```
 scripts/blitz-fork.sh        # clones Blitz to ../blitz, branch hotty, applies the patches
@@ -135,6 +136,11 @@ shows it again, which is how a program makes a reveal toggle. hotty-blitz
 has no clipboard, and its Ctrl and Cmd keys are the program's anyway.
 blitz-dom's `text::tests` and hotty-blitz's
 `a_password_field_shows_bullets_and_reports_its_value` check it.
+
+The mask has no words: to UAX #29 each bullet is a word of its own, so a
+double click selected one. As in a browser, a double click in a password
+field selects all of it, as a triple click does (0032;
+`a_double_click_in_a_password_field_selects_all_of_it`).
 
 ## Text field keys
 

@@ -3762,6 +3762,35 @@ fn the_selection_is_the_hosts_to_copy_and_there_is_one() {
     }
 }
 
+/// A double click in a text field selects the word under it; in a password
+/// field, all of it, as a browser does: its mask has no words. A triple
+/// click selects all of either.
+#[test]
+fn a_double_click_in_a_password_field_selects_all_of_it() {
+    let m = Mods::default();
+    for (kind, word) in [("text", (4, 9)), ("password", (0, 9))] {
+        let mut h = host();
+        let html = format!("<style>body{{margin:0}}</style><input id=f type={kind} value='two words'>");
+        h.handle(&cmd(&[("a", "doc"), ("s", "x")], &html));
+        h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+        render(&mut h);
+        let selected = |h: &Host| {
+            let caret = h.text_field("x", "f").unwrap().1;
+            let anchor = h.text_anchor("x", "f").unwrap();
+            (anchor.min(caret), anchor.max(caret))
+        };
+        let at = |h: &mut Host, n: u32| {
+            h.pointer_counted("x", PointerKind::Down, 60.0, 10.0, m, n);
+            h.pointer_counted("x", PointerKind::Up, 60.0, 10.0, m, n);
+        };
+        at(&mut h, 1);
+        at(&mut h, 2);
+        assert_eq!(selected(&h), word, "a double click in a {kind} field");
+        at(&mut h, 3);
+        assert_eq!(selected(&h), (0, 9), "a triple click in a {kind} field");
+    }
+}
+
 /// A text field cuts and pastes on the terminal's clipboard (SPEC §10.2,
 /// §11): a cut hands the terminal the text, a paste asks it for the
 /// clipboard, which it gives back, as it gives the field its own paste.
