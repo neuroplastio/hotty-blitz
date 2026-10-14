@@ -210,12 +210,18 @@ fn esc_inside_a_command_aborts_it_and_starts_a_new_sequence() {
     assert_eq!(got.bytes, b"\x1b[31mred");
 }
 
+/// The default platform: `Mod` is Control.
+const P: crate::keys::Platform = crate::keys::Platform {
+    meta: false,
+    edit: None,
+};
+
 /// An element's keymap outside a text field: only `program` counts, there
 /// is no default, a nearer binding of the key cancels a farther `program`,
 /// and an unbound key with Shift is looked up without it (SPEC §10.2).
 #[test]
 fn an_elements_keymap_gives_keys_to_the_program() {
-    let m = crate::keys::element_keymap(["ArrowDown=program End=program PageUp=program", "End=line-end"]);
+    let m = crate::keys::element_keymap(&P, ["ArrowDown=program End=program PageUp=program", "End=line-end"]);
     assert!(m.program("ArrowDown"));
     assert!(m.program("Shift+ArrowDown"));
     assert!(!m.program("End"));
@@ -223,7 +229,7 @@ fn an_elements_keymap_gives_keys_to_the_program() {
     assert!(!m.program("ArrowUp"));
     assert!(!m.program("Control+ArrowDown"));
     // No default keymap, and Escape and Tab cannot be bound.
-    let m = crate::keys::element_keymap(["Escape=program Tab=program"]);
+    let m = crate::keys::element_keymap(&P, ["Escape=program Tab=program"]);
     assert!(!m.program("Escape"));
     assert!(!m.program("Tab"));
     assert!(!m.program("Enter"));
@@ -232,7 +238,7 @@ fn an_elements_keymap_gives_keys_to_the_program() {
 #[test]
 fn an_elements_keymap_scrolls_and_a_fields_leaves_scroll_actions_out() {
     use crate::keys::{element_keymap, resolve, INSERT};
-    let m = element_keymap(["k=program j=program", "j=scroll-down G=scroll-end Space=scroll-page-down"]);
+    let m = element_keymap(&P, ["k=program j=program", "j=scroll-down G=scroll-end Space=scroll-page-down"]);
     assert_eq!(m.scroll("j"), Some("scroll-down"));
     assert!(!m.program("j"));
     assert!(m.program("k"));
@@ -243,6 +249,7 @@ fn an_elements_keymap_scrolls_and_a_fields_leaves_scroll_actions_out() {
     // A field: j is typed, a farther program keeps k, PageDown keeps
     // page-down, and a scroll binding overrides nothing in its own value.
     let f = resolve(
+        &P,
         true,
         ["k=program", "j=scroll-down k=scroll-up PageDown=scroll-page-down"],
     );
@@ -250,7 +257,7 @@ fn an_elements_keymap_scrolls_and_a_fields_leaves_scroll_actions_out() {
     assert_eq!(f.lookup("k"), None);
     assert!(f.program("k"));
     assert_eq!(f.lookup("PageDown"), Some("page-down"));
-    let f = resolve(false, ["Control+d=delete-char-forward Control+d=scroll-half-page-down"]);
+    let f = resolve(&P, false, ["Control+d=delete-char-forward Control+d=scroll-half-page-down"]);
     assert_eq!(f.lookup("Control+d"), Some("delete-char-forward"));
 }
 
@@ -332,4 +339,47 @@ fn the_chunks_after_one_too_large_are_dropped_too() {
     let got = scan_max(&input, MAX_COMMAND_BYTES);
     assert_eq!(got.invalid, vec!["chunk too large".to_string()]);
     assert_eq!(got.commands, vec![cmd(&[("a", "del"), ("s", "x")], b"")]);
+}
+
+/// `Mod` reads as the platform's, and the default keymap follows it: where
+/// it is Control, Control+ArrowLeft moves by a word and Control+a selects
+/// all; where it is Meta, Meta+ArrowLeft goes to the line's start and
+/// Control+a too (SPEC §10.2, §10.4).
+#[test]
+fn mod_reads_as_the_platforms() {
+    use crate::keys::{parse_key, parse_keymap, resolve, Platform};
+    assert_eq!(parse_key("Shift+Mod+z").as_deref(), Some("Mod+Z"));
+    assert_eq!(parse_key("Control+Mod+a").as_deref(), Some("Mod+Control+a"));
+    let mac = Platform {
+        meta: true,
+        edit: None,
+    };
+    let f = resolve(&P, false, []);
+    assert_eq!(f.lookup("Control+ArrowLeft"), Some("word-backward"));
+    assert_eq!(f.lookup("Control+a"), Some("select-all"));
+    assert_eq!(f.lookup("Meta+c"), None);
+    assert_eq!(f.lookup("Control+y"), Some("redo"));
+    let f = resolve(&mac, false, []);
+    assert_eq!(f.lookup("Meta+ArrowLeft"), Some("line-start"));
+    assert_eq!(f.lookup("Control+a"), Some("line-start"));
+    assert_eq!(f.lookup("Meta+a"), Some("select-all"));
+    assert_eq!(f.lookup("Control+c"), None);
+    assert_eq!(f.lookup("Control+y"), None);
+    assert_eq!(f.lookup("Control+ArrowLeft"), None);
+    // On Control, Mod+a and Control+a are one key, written as last bound.
+    let m = parse_keymap(&P, "Mod+a=program Control+a=copy Mod+x=cut");
+    assert_eq!(m.format(), "Control+a=copy Mod+x=cut");
+    let m = parse_keymap(&mac, "Mod+a=program Control+a=copy");
+    assert_eq!(m.format(), "Mod+a=program Control+a=copy");
+    // The edit shortcuts are the host's.
+    let mine = Platform {
+        meta: false,
+        edit: Some(vec![("copy".into(), vec!["Control+Shift+c".into()])]),
+    };
+    let f = resolve(&mine, false, []);
+    assert_eq!(f.lookup("Control+C"), Some("copy"));
+    assert_eq!(f.lookup("Control+c"), None);
+    assert_eq!(mine.edit_action("Control+C").as_deref(), Some("copy"));
+    assert_eq!(P.edit_action("Control+Z").as_deref(), Some("redo"));
+    assert_eq!(mac.edit_action("Control+v"), None);
 }

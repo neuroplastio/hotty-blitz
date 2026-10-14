@@ -1,7 +1,8 @@
 //! One surface: a Blitz document, its placement size, its last frame, and the
 //! glue that turns host input into DOM events and DOM events into HOTTY ones.
 
-use crate::body::{Detail, MAX_INT, View};
+use crate::body::{Area, Detail, MAX_INT, Menu, View};
+use crate::seq::{self, Nearness, Step};
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
@@ -244,6 +245,55 @@ pub(crate) struct Surface {
     /// A `paste` asked for the clipboard, which the host reads and gives
     /// to Surface::paste.
     pub paste_wanted: bool,
+    /// How the host reads keys (Host::set_keys).
+    pub settings: crate::KeySettings,
+    /// A key sequence waiting for its next key (SPEC §10.5).
+    pub waiting: Option<Waiting>,
+}
+
+/// A key as it came to the host: the key, its name (SPEC §10.4; empty for
+/// none), and the bytes it came as, empty for a key offered by name.
+#[derive(Clone, Debug)]
+pub(crate) struct Typed {
+    pub key: Key,
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// A key sequence waiting for its next key (SPEC §10.5): the keys typed,
+/// when the wait began (the menu shows a moment later), and when it times
+/// out.
+pub(crate) struct Waiting {
+    pub typed: Vec<Typed>,
+    pub since: Instant,
+    pub deadline: Instant,
+}
+
+/// What a key did (Surface::key), in order: the events it sent, and the
+/// keys that go on to the program.
+pub(crate) enum KeyOut {
+    Event(Event),
+    Key(Typed),
+}
+
+/// How a key is offered to a surface (Surface::key).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Offer {
+    /// As the user pressed it, before the terminal's shortcuts: a key that
+    /// a sequence would take is left to come again as the program reads
+    /// it.
+    Pressed,
+    /// As the program would read it.
+    Typed,
+}
+
+/// Whether a key the focused element does not use may start a key
+/// sequence (Surface::plain_key): not while keys a wait typed go on, and
+/// only as the program reads it.
+enum Start<'a> {
+    No,
+    Defer,
+    Yes(&'a Typed),
 }
 
 /// A text field's history of edits (SPEC §10.2, undo), as a browser keeps
@@ -666,6 +716,8 @@ impl Surface {
             can_paste: false,
             clipboard: None,
             paste_wanted: false,
+            settings: crate::KeySettings::default(),
+            waiting: None,
         }
     }
 
@@ -843,6 +895,15 @@ impl Surface {
         self.doc.remove_user_stylesheet(old);
         self.doc.add_user_stylesheet(new);
         self.damage.full = true;
+    }
+
+    /// The size of the element with id `id`, in CSS pixels, as laid out
+    /// now.
+    pub(crate) fn element_size(&mut self, id: &str) -> Option<(f64, f64)> {
+        self.resolve();
+        let doc: &BaseDocument = &self.doc;
+        let r = doc.get_client_bounding_rect(doc.get_element_by_id(id)?)?;
+        Some((r.width, r.height))
     }
 
     pub fn set_size(&mut self, cols: u16, rows: u16) {
@@ -1277,6 +1338,7 @@ impl Surface {
         }
         self.detached = true;
         self.keyboard = false;
+        self.waiting = None;
         self.focus_value = None;
         self.told = None;
         self.press = None;
@@ -1474,7 +1536,7 @@ impl Surface {
             .find(|&(n, _, _)| !self.unselectable(Some(n)))?;
         let text = self.selected_text()?;
         let values = self.keymap_values(first);
-        let keymap = keys::resolve(false, values.iter().map(String::as_str));
+        let keymap = keys::resolve(&self.settings.platform, false, values.iter().map(String::as_str));
         Some((keymap.lookup(name) == Some("copy")).then_some(text))
     }
 
@@ -1635,6 +1697,9 @@ impl Surface {
         self.finish_change(&mut events);
         self.move_focus(None);
         let had = std::mem::replace(&mut self.keyboard, false);
+        // A wait ends with the keyboard, and its keys do nothing (SPEC
+        // §10.5).
+        self.waiting = None;
         self.told = None;
         if had {
             events.push(keyboard_event("blur"));
@@ -2214,7 +2279,227 @@ impl Surface {
         events
     }
 
-    pub fn key(&mut self, key: &Key) -> (bool, Vec<Event>) {
+    /// A key for the focused element (SPEC §10.2), in the order §10.2 and
+    /// §10.5 give: a sequence waiting takes it first, and a key no element
+    /// uses may start one. `bytes` are what it came as, empty for a key
+    /// offered by name. Whether the surface used it, and what it did: the
+    /// events, and the keys that go on to the program after a wait.
+    pub fn key(&mut self, key: &Key, bytes: &[u8], offer: Offer) -> (bool, Vec<KeyOut>) {
+        if !self.keyboard {
+            return (false, Vec::new());
+        }
+        let typed = Typed {
+            key: key.clone(),
+            name: key.spec_name().unwrap_or_default(),
+            bytes: bytes.to_vec(),
+        };
+        if let Some(w) = self.waiting.take() {
+            if offer == Offer::Pressed {
+                self.waiting = Some(w);
+                return (false, Vec::new());
+            }
+            return self.go_on(w, typed);
+        }
+        let start = match offer {
+            Offer::Pressed => Start::Defer,
+            Offer::Typed => Start::Yes(&typed),
+        };
+        let (used, events) = self.plain_key(key, start);
+        (used, events.into_iter().map(KeyOut::Event).collect())
+    }
+
+    /// The next key while a sequence waits (SPEC §10.5): Escape ends the
+    /// wait; a key that finishes a sequence runs it, unless a longer one at
+    /// least as near the focus goes on from it, and then it waits again;
+    /// any other key ends the wait, and the keys typed go on in order.
+    fn go_on(&mut self, mut w: Waiting, t: Typed) -> (bool, Vec<KeyOut>) {
+        if t.name == "Escape" {
+            return (true, Vec::new());
+        }
+        w.typed.push(t);
+        let names: Vec<String> = w.typed.iter().map(|t| t.name.clone()).collect();
+        let (seqs, near) = self.sequences();
+        match seq::step(&self.doc, &seqs, &near, &names) {
+            Step::Run(id) => {
+                let events = self.run_sequence(id);
+                (true, events.into_iter().map(KeyOut::Event).collect())
+            }
+            Step::Wait => {
+                w.deadline = Instant::now() + self.settings.timeout;
+                self.waiting = Some(w);
+                (true, Vec::new())
+            }
+            Step::Dead => (true, self.replay(w.typed)),
+        }
+    }
+
+    /// The keys a wait typed, going on in order as if no element had a
+    /// `data-key` (SPEC §10.5): to the element, the scroll actions and the
+    /// program.
+    fn replay(&mut self, typed: Vec<Typed>) -> Vec<KeyOut> {
+        let mut out = Vec::new();
+        for t in typed {
+            let (used, events) = self.plain_key(&t.key, Start::No);
+            out.extend(events.into_iter().map(KeyOut::Event));
+            if !used {
+                out.push(KeyOut::Key(t));
+            }
+        }
+        out
+    }
+
+    /// A wait that timed out by `now` ends (SPEC §10.5): the sequence typed
+    /// runs if it finishes one, and its keys go on otherwise.
+    pub fn expire(&mut self, now: Instant) -> Vec<KeyOut> {
+        let Some(w) = self.waiting.take_if(|w| w.deadline <= now) else {
+            return Vec::new();
+        };
+        let names: Vec<String> = w.typed.iter().map(|t| t.name.clone()).collect();
+        let (seqs, near) = self.sequences();
+        match seq::finished(&self.doc, &seqs, &near, &names) {
+            Some(id) => self.run_sequence(id).into_iter().map(KeyOut::Event).collect(),
+            None => self.replay(w.typed),
+        }
+    }
+
+    /// The which-key menu of the sequence waiting, once it has waited
+    /// `delay` (SPEC §10.5).
+    pub fn menu(&self, now: Instant, delay: std::time::Duration) -> Option<Menu> {
+        let w = self.waiting.as_ref().filter(|w| now >= w.since + delay)?;
+        let names: Vec<String> = w.typed.iter().map(|t| t.name.clone()).collect();
+        let (seqs, near) = self.sequences();
+        Some(seq::menu(&self.doc, &seqs, &near, &names))
+    }
+
+    /// The document's sequences, and how near the focus each element is.
+    fn sequences(&self) -> (Vec<seq::Seq>, Nearness) {
+        let k = &self.settings;
+        (
+            seq::sequences(&self.doc, &k.platform, &k.leader),
+            Nearness::new(&self.doc, self.focused()),
+        )
+    }
+
+    /// A key the focused element does not use may start a sequence (SPEC
+    /// §10.5). `Some` when it does: used, and run at once where it
+    /// finishes one that no longer one goes on from; or, offered as
+    /// pressed, left to come again as bytes.
+    fn start_sequence(&mut self, key: &Key, start: &Start) -> Option<(bool, Vec<Event>)> {
+        if matches!(start, Start::No) {
+            return None;
+        }
+        let name = key.spec_name()?;
+        let (seqs, near) = self.sequences();
+        let step = seq::step(&self.doc, &seqs, &near, std::slice::from_ref(&name));
+        match (step, start) {
+            (Step::Dead, _) => None,
+            (_, Start::Defer | Start::No) => Some((false, Vec::new())),
+            (Step::Run(id), Start::Yes(_)) => Some((true, self.run_sequence(id))),
+            (Step::Wait, Start::Yes(t)) => {
+                let now = Instant::now();
+                self.waiting = Some(Waiting {
+                    typed: vec![(*t).clone()],
+                    since: now,
+                    deadline: now + self.settings.timeout,
+                });
+                Some((true, Vec::new()))
+            }
+        }
+    }
+
+    /// Runs an element's sequence (SPEC §10.5), as a browser does an access
+    /// key: it clicks an element a click activates, as a click from the
+    /// keyboard does, and focuses any other that takes focus. A disabled
+    /// element's does nothing.
+    fn run_sequence(&mut self, id: NodeId) -> Vec<Event> {
+        if seq::disabled(&self.doc, id) {
+            return Vec::new();
+        }
+        self.dirty = true;
+        if self.click_activated(id) {
+            return self.key_click(id);
+        }
+        let mut events = Vec::new();
+        if !self.focus_order().contains(&id) {
+            return events;
+        }
+        self.finish_change(&mut events);
+        self.move_focus(Some(id));
+        self.snapshot_focus();
+        self.tell_focus(&mut events);
+        self.bring_into_view(id);
+        events
+    }
+
+    /// Whether a click activates an element (SPEC §10.5): a `button`, a
+    /// link, a `summary`, a checkbox or radio button, an `input` of type
+    /// `button`, `submit` or `reset`, or one with `data-on~=click`.
+    fn click_activated(&self, id: NodeId) -> bool {
+        let Some(el) = self.doc.get_node(id).and_then(|n| n.element_data()) else {
+            return false;
+        };
+        let attr = |name: &str| {
+            el.attrs()
+                .iter()
+                .find(|a| &*a.name.local == name)
+                .map(|a| a.value.to_string())
+        };
+        let on = attr("data-on").is_some_and(|v| v.split_whitespace().any(|w| w == "click"));
+        on || match el.name.local.as_ref() {
+            "button" | "summary" => true,
+            "a" => attr("href").is_some(),
+            "input" => matches!(
+                attr("type").map(|t| t.to_ascii_lowercase()).as_deref(),
+                Some("button" | "submit" | "reset" | "checkbox" | "radio")
+            ),
+            _ => false,
+        }
+    }
+
+    /// Clicks `id` as the keyboard does, without moving the focus. A hidden
+    /// element has no cells: its click's `area` is all zeros.
+    fn key_click(&mut self, id: NodeId) -> Vec<Event> {
+        self.resolve();
+        let before = self.focused();
+        let rect = self
+            .doc
+            .get_client_bounding_rect(id)
+            .filter(|r| r.width > 0.0 || r.height > 0.0);
+        let (x, y) = rect.map_or((0.0, 0.0), |r| {
+            ((r.x + r.width / 2.0) as f32, (r.y + r.height / 2.0) as f32)
+        });
+        let click = self.pointer_event(x, y, MouseEventButtons::None, Mods::default());
+        let mut events =
+            self.drive_input(Input::Dom(DomEvent::new(id, DomEventData::Click(click))));
+        events.retain(|e| e.kind != "focus" && e.kind != "blur");
+        if self.focused() != before {
+            self.move_focus(before);
+        }
+        if rect.is_none()
+            && let Some(target) = self.id_of(id)
+        {
+            let none = Area { c: 0, r: 0, w: 0, h: 0 };
+            for e in events.iter_mut().filter(|e| e.kind == "click" && e.target == target) {
+                match &mut e.detail {
+                    Some(Detail::Click { area, .. }) => *area = Some(none),
+                    d => {
+                        *d = Some(Detail::Click {
+                            area: Some(none),
+                            href: None,
+                            url: None,
+                            value: None,
+                            count: None,
+                        })
+                    }
+                }
+            }
+        }
+        events
+    }
+
+    /// A key for the focused element as if no element had a `data-key`
+    /// but where `start` lets one start (SPEC §10.2).
+    fn plain_key(&mut self, key: &Key, start: Start) -> (bool, Vec<Event>) {
         if !self.keyboard {
             return (false, Vec::new());
         }
@@ -2247,6 +2532,7 @@ impl Surface {
                     self.finish_change(&mut events);
                     self.move_focus(None);
                     self.keyboard = false;
+                    self.waiting = None;
                     self.told = None;
                     events.push(keyboard_event("blur"));
                 } else {
@@ -2269,7 +2555,10 @@ impl Surface {
                         self.dirty = true;
                         (true, events)
                     }
-                    None => self.scroll_key(key, focused),
+                    None => match self.start_sequence(key, &start) {
+                        Some(used) => used,
+                        None => self.scroll_key(key, focused),
+                    },
                 }
             }
             (KeyName::Space | KeyName::Enter, Control::Activatable) if plain => {
@@ -2281,18 +2570,21 @@ impl Surface {
                 let id = focused.expect("a select is focused");
                 match self.select_key(id, key) {
                     Some(events) => (true, events),
-                    None => self.unused_key(key, focused),
+                    None => self.unused_key(key, focused, &start),
                 }
             }
-            _ => self.unused_key(key, focused),
+            _ => self.unused_key(key, focused, &start),
         }
     }
 
-    /// A key the focused element (a text field aside) does not use: a key
-    /// its keymap binds to a scroll action scrolls (SPEC §10.2, scrolling
-    /// keys), and any other goes on as the surface takes keys it does not
-    /// use (§5.3).
-    fn unused_key(&mut self, key: &Key, focused: Option<NodeId>) -> (bool, Vec<Event>) {
+    /// A key the focused element (a text field aside) does not use: it may
+    /// start a key sequence (SPEC §10.5); a key its keymap binds to a
+    /// scroll action scrolls (§10.2, scrolling keys), and any other goes on
+    /// as the surface takes keys it does not use (§5.3).
+    fn unused_key(&mut self, key: &Key, focused: Option<NodeId>, start: &Start) -> (bool, Vec<Event>) {
+        if let Some(used) = self.start_sequence(key, start) {
+            return used;
+        }
         if let Some(used) = focused.and_then(|id| self.scroll_action_key(id, key)) {
             return used;
         }
@@ -2310,7 +2602,7 @@ impl Surface {
     fn scroll_action_key(&mut self, id: NodeId, key: &Key) -> Option<(bool, Vec<Event>)> {
         let name = key.spec_name()?;
         let values = self.keymap_values(id);
-        let action = keys::element_keymap(values.iter().map(String::as_str))
+        let action = keys::element_keymap(&self.settings.platform, values.iter().map(String::as_str))
             .scroll(&name)?
             .to_string();
         let k = scroll::action_scroll(&action)?;
@@ -2357,9 +2649,9 @@ impl Surface {
         let values = self.keymap_values(id);
         let values = values.iter().map(String::as_str);
         match kind {
-            Control::Text => keys::resolve(false, values).program(&name),
-            Control::TextArea => keys::resolve(true, values).program(&name),
-            _ => keys::element_keymap(values).program(&name),
+            Control::Text => keys::resolve(&self.settings.platform, false, values).program(&name),
+            Control::TextArea => keys::resolve(&self.settings.platform, true, values).program(&name),
+            _ => keys::element_keymap(&self.settings.platform, values).program(&name),
         }
     }
 
@@ -2442,7 +2734,7 @@ impl Surface {
     fn field_key(&mut self, id: NodeId, key: &Key, multiline: bool) -> Option<Vec<Event>> {
         let name = key.spec_name()?;
         let values = self.keymap_values(id);
-        let keymap = keys::resolve(multiline, values.iter().map(String::as_str));
+        let keymap = keys::resolve(&self.settings.platform, multiline, values.iter().map(String::as_str));
         let action = keymap.lookup(&name)?.to_string();
         let extend = keymap.selects(&name);
         // A field has no copy or cut with nothing selected nor in a

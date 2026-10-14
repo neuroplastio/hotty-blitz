@@ -4,7 +4,9 @@
 mod common;
 
 use common::read_body;
-use hotty_blitz::{Config, Effect, Host, Key, KeyName, Mods, PointerKind, Touch, TouchPhase};
+use hotty_blitz::{
+    Config, Effect, Host, Key, KeyName, KeySettings, Mods, PointerKind, Touch, TouchPhase,
+};
 use hotty_wire::{Command, Control, Event, Scanner};
 use serde_json::Value;
 
@@ -25,6 +27,9 @@ struct Mouse {
     down: Option<bool>,
     /// The finger of touch steps.
     finger: Finger,
+    /// The edit commands the program took (`a=edit`, SPEC §10.6), which
+    /// the runner keeps as a terminal does.
+    taken: Vec<String>,
 }
 
 /// Where the vectors' finger is (touch steps): the surface its touch began
@@ -373,26 +378,39 @@ fn key_name(name: &str) -> KeyName {
 }
 
 /// A key pressed where the keyboard is: the surface that has it, or else
-/// the terminal (conformance/README).
-fn key_step(host: &mut Host, step: &Value) -> Result<(), String> {
+/// the terminal (conformance/README). A key a sequence's wait typed that
+/// goes on to the program now is the terminal's, and a key that reaches
+/// the program as a command it took is not (SPEC §10.5, §10.6).
+fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> {
     host.render_dirty(&mut |_, _, _| {});
     let key = Key {
         name: key_name(step["key"].as_str().unwrap()),
         mods: mods(step),
     };
+    let name = key.spec_name().unwrap_or_default();
     let mut sent = Vec::new();
-    let terminal = match host.focused_surface().map(str::to_string) {
+    let mut terminal = match host.focused_surface().map(str::to_string) {
         Some(s) => {
             let out = host.key(&s, &key);
+            let mut went_on = false;
             for e in out.effects {
-                if let Effect::Reply(b) = e {
-                    sent.extend(b);
+                match e {
+                    Effect::Reply(b) => sent.extend(b),
+                    Effect::Key { name: k } => went_on |= k == name,
+                    _ => {}
                 }
             }
-            !out.consumed
+            !out.consumed || went_on
         }
         None => true,
     };
+    if terminal
+        && let Some(c) = host.edit_command(&name)
+        && mouse.taken.contains(&c)
+    {
+        sent.extend(Host::command_event(&c, Some(&name), None));
+        terminal = false;
+    }
     check_terminal(step, terminal)?;
     check_events(step, &events(&from_host(&sent)?))
 }
@@ -448,7 +466,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
     } else if step.get("touch").is_some() {
         touch_step(host, mouse, step)
     } else if step.get("key").is_some() {
-        key_step(host, step)
+        key_step(host, mouse, step)
     } else if let Some(ctl) = step.get("send") {
         let mut control = Control::default();
         for (k, v) in ctl.as_object().unwrap() {
@@ -460,8 +478,10 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         let mut sent = Vec::new();
         for cmd in &cmds {
             for e in host.handle(cmd) {
-                if let Effect::Reply(b) = e {
-                    sent.extend(b);
+                match e {
+                    Effect::Reply(b) => sent.extend(b),
+                    Effect::Edit(names) => mouse.taken = names,
+                    _ => {}
                 }
             }
         }
@@ -602,6 +622,8 @@ fn protocol_vectors() {
                 || r == "count"
                 || r == "drop"
                 || r == "undo"
+                || r == "keys"
+                || r == "commands"
                 || (r == "view" && views)
         };
         let runs = match vector.get("requires") {
@@ -615,6 +637,13 @@ fn protocol_vectors() {
         let mut host = Host::new(Config::default());
         host.set_passthrough(true);
         host.set_counts(true);
+        // Its leader is Space, its timeout one no step outlasts, and its
+        // terminal takes edit commands (conformance/README).
+        host.set_keys(KeySettings {
+            timeout: std::time::Duration::from_secs(3600),
+            commands: true,
+            ..KeySettings::default()
+        });
         let mut mouse = Mouse::default();
         for (i, step) in vector["steps"].as_array().unwrap().iter().enumerate() {
             if let Err(e) = run_step(&mut host, &mut mouse, step) {
@@ -796,10 +825,25 @@ fn keymap_vectors() {
     for k in v["keymap"].as_array().unwrap() {
         let name = k["name"].as_str().unwrap();
         let terminal = k.get("terminal_keys").and_then(Value::as_bool) == Some(true);
+        // The platform (conformance/README): Control, with the default
+        // edit shortcuts, where absent.
+        let p = k.get("platform");
+        let platform = keys::Platform {
+            meta: p.and_then(|p| p.get("mod")).and_then(Value::as_str) == Some("Meta"),
+            edit: p.and_then(|p| p.get("edit")).and_then(Value::as_object).map(|e| {
+                keys::EDIT_ACTIONS
+                    .iter()
+                    .map(|a| {
+                        let ks = e.get(*a).and_then(Value::as_array).into_iter().flatten();
+                        (a.to_string(), ks.map(|k| k.as_str().unwrap().to_string()).collect())
+                    })
+                    .collect()
+            }),
+        };
         if k.get("program").is_some() || k.get("scroll").is_some() {
             // An element's keymap outside a text field: no default (§10.2).
             let values = k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap());
-            let m = keys::element_keymap(values);
+            let m = keys::element_keymap(&platform, values);
             for (key, want) in k.get("program").and_then(Value::as_object).into_iter().flatten() {
                 let got = m.program(key);
                 if Some(got) != want.as_bool() {
@@ -816,7 +860,7 @@ fn keymap_vectors() {
         }
         let Some(lookup) = k.get("lookup") else {
             let value = k.get("parse").and_then(Value::as_str).unwrap_or(keys::TERMINAL_KEYS);
-            let got = keys::parse_keymap(value).format();
+            let got = keys::parse_keymap(&platform, value).format();
             if got != k["format"].as_str().unwrap() {
                 failures.push(format!("{name}: {got:?}"));
             }
@@ -824,7 +868,7 @@ fn keymap_vectors() {
         };
         let mut values: Vec<&str> = if terminal { vec![keys::TERMINAL_KEYS] } else { vec![] };
         values.extend(k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()));
-        let m = keys::resolve(k["multiline"].as_bool().unwrap(), values);
+        let m = keys::resolve(&platform, k["multiline"].as_bool().unwrap(), values);
         for (key, want) in lookup.as_object().unwrap() {
             let got = m.lookup(key);
             if got != want.as_str() {

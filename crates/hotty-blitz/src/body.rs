@@ -16,7 +16,7 @@
 //! `limits` here.
 
 use crate::policy::Policy;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The largest int a body carries, either way from zero (SPEC §3.3), so
@@ -46,7 +46,7 @@ pub struct Caps {
     /// The version the host answers in, which the query listed (§4).
     pub v: &'static str,
     pub ops: &'static [&'static str],
-    pub events: &'static [&'static str],
+    pub events: Vec<&'static str>,
     pub cell: Cell,
     pub scale: f64,
     pub scheme: &'static str,
@@ -67,8 +67,85 @@ pub struct Caps {
     /// A repeated click carries its count (SPEC §9).
     #[serde(skip_serializing_if = "is_false")]
     pub count: bool,
+    /// The modifier `Mod` stands for in bindings (SPEC §10.4).
+    #[serde(rename = "mod")]
+    pub modifier: &'static str,
+    /// The edit shortcuts (SPEC §10.2), where the terminal takes edit
+    /// commands from a program in the cells (§10.6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<Edit>,
+    /// The leader and the timeout of key sequences (SPEC §10.5).
+    pub keys: Keys,
+    /// The terminal shows a program's which-key menus (SPEC §10.6).
+    #[serde(skip_serializing_if = "is_false")]
+    pub menu: bool,
     pub host: &'static str,
     pub version: &'static str,
+}
+
+/// The edit shortcuts (SPEC §4, §10.2): each edit action, with its keys.
+pub type Edit = BTreeMap<String, Vec<String>>;
+
+/// How key sequences read (SPEC §4, §10.5): the leader, a key sequence,
+/// and how long a sequence waits for its next key, in milliseconds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Keys {
+    pub leader: String,
+    pub timeout: u64,
+}
+
+/// What a `caps` event carries (SPEC §9): the fields of the capabilities
+/// that changed, as the capabilities have them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Changed {
+    #[serde(rename = "mod", skip_serializing_if = "Option::is_none")]
+    pub modifier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<Edit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Keys>,
+}
+
+/// A which-key menu (SPEC §10.5, §10.6), myelin's level: the keys typed so
+/// far, their group's label, and the keys that can follow them. A program
+/// sends one with `a=menu`; the host makes one for a key sequence.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Menu {
+    pub seq: Vec<String>,
+    pub label: String,
+    pub items: Vec<MenuItem>,
+}
+
+/// A key a menu lists: the key, what it does, whether more keys follow it,
+/// and whether it does anything now.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct MenuItem {
+    pub key: String,
+    pub label: String,
+    pub group: bool,
+    pub enabled: bool,
+}
+
+impl Default for MenuItem {
+    fn default() -> MenuItem {
+        MenuItem {
+            key: String::new(),
+            label: String::new(),
+            group: false,
+            enabled: true,
+        }
+    }
+}
+
+/// Reads a menu's body: one msgpack map (SPEC §3.3), `None` when it is
+/// not one.
+pub fn decode_menu(body: &[u8]) -> Option<Menu> {
+    let mut d = rmp_serde::Deserializer::new(body);
+    let m = Menu::deserialize(&mut d).ok()?;
+    // Nothing after the map.
+    (d.get_ref().is_empty()).then_some(m)
 }
 
 /// The cell size in device pixels.
@@ -172,6 +249,16 @@ pub enum Detail {
     /// `view` (§9.5): the elements in view, and whether the root shows
     /// its end.
     View(View),
+    /// `command` (§10.6): the edit command, its key, and a paste's text.
+    Command {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    /// `caps` (§9): the capabilities that changed.
+    Caps(Changed),
 }
 
 /// What a `view` carries (SPEC §9.5): each element in view by its id, with

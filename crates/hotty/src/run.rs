@@ -230,6 +230,10 @@ impl Shim {
                     out.extend_from_slice(b"\x1b\\");
                 }
                 Effect::Paste => {}
+                // Keys go to the host with their bytes, which a sequence's
+                // keys go on as; the polyfill takes no edit commands and
+                // shows no menu (Host::set_keys).
+                Effect::Key { .. } | Effect::Edit(_) | Effect::Menu { .. } => {}
             }
         }
     }

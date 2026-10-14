@@ -6,7 +6,8 @@
 //! `data-keys` of each element from the root to the field ([`resolve`]);
 //! [`Keymap::lookup`] says what the field does with a key. Any other
 //! focused element's keymap ([`element_keymap`]) gives keys to the program
-//! ([`Keymap::program`]) or scrolls with them ([`Keymap::scroll`]).
+//! ([`Keymap::program`]) or scrolls with them ([`Keymap::scroll`]). A
+//! keymap reads a binding's `Mod` as its [`Platform`]'s (SPEC §10.4).
 
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -90,7 +91,7 @@ pub fn move_action(action: &str) -> bool {
 }
 
 /// The SDK's keymap (SDK.md §3.10), bubbles' text input and text area, but
-/// Control+a selects all, as a `data-keys` value.
+/// Mod+a selects all, as a `data-keys` value.
 pub const TERMINAL_KEYS: &str = concat!(
     "ArrowLeft=char-backward Control+b=char-backward ArrowRight=char-forward Control+f=char-forward ",
     "Alt+ArrowLeft=word-backward Control+ArrowLeft=word-backward Alt+b=word-backward ",
@@ -104,14 +105,18 @@ pub const TERMINAL_KEYS: &str = concat!(
     "ArrowUp=line-previous Control+p=line-previous ArrowDown=line-next Control+n=line-next ",
     "PageUp=page-up PageDown=page-down ",
     "Alt+<=input-start Control+Home=input-start Alt+>=input-end Control+End=input-end ",
-    "Control+a=select-all Control+m=newline",
+    "Mod+a=select-all Control+m=newline",
 );
 
-const MODIFIERS: [&str; 4] = ["Control", "Alt", "Meta", "Shift"];
-const CONTROL: u8 = 1;
-const ALT: u8 = 2;
-const META: u8 = 4;
-const SHIFT: u8 = 8;
+/// The modifiers, in the order a key's name writes them. `Mod` is a
+/// binding's platform modifier (SPEC §10.4), which a keymap reads as its
+/// [`Platform`]'s; a pressed key is never named with it.
+const MODIFIERS: [&str; 5] = ["Mod", "Control", "Alt", "Meta", "Shift"];
+const MOD: u8 = 1;
+const CONTROL: u8 = 2;
+const ALT: u8 = 4;
+const META: u8 = 8;
+const SHIFT: u8 = 16;
 
 /// A key's name, split: its modifiers (a bit for each of [`MODIFIERS`]) and
 /// its value, `" "` for the space bar.
@@ -147,6 +152,14 @@ impl KeyParts {
             mods,
             value: value.to_string(),
         }
+    }
+
+    /// The key with its `Mod` read as `meta` says: Meta, or Control.
+    fn read_mod(mut self, meta: bool) -> KeyParts {
+        if self.mods & MOD != 0 {
+            self.mods = self.mods & !MOD | if meta { META } else { CONTROL };
+        }
+        self
     }
 
     /// Shift shown in a letter where it can be: Shift with a small letter is
@@ -244,8 +257,8 @@ pub fn split_key(name: &str) -> Option<KeyParts> {
 }
 
 /// A key's name in its canonical form (SPEC §10.4): `Shift+Control+a` is
-/// `Control+A`, `Control+ ` is `Control+Space`. `None` when it does not
-/// parse.
+/// `Control+A`, `Control+ ` is `Control+Space`, and a binding's `Mod` is
+/// kept, written first. `None` when it does not parse.
 pub fn parse_key(name: &str) -> Option<String> {
     split_key(name).map(|k| k.canonical().name())
 }
@@ -508,19 +521,119 @@ fn csi_key(params: &str, fin: u8) -> Option<String> {
     }
 }
 
-/// Bindings of keys to actions (SPEC §10.2).
+/// How a host reads bindings (SPEC §10.2, §10.4): the modifier `Mod`
+/// stands for, and its edit shortcuts. The default is Control with the
+/// default edit shortcuts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Platform {
+    /// Whether `Mod` is Meta (Command, on macOS); Control where false.
+    pub meta: bool,
+    /// The host's edit shortcuts, each edit action with its keys (SPEC
+    /// §10.2); `None` is [`default_edit`].
+    pub edit: Option<Vec<(String, Vec<String>)>>,
+}
+
+/// The edit actions, in SPEC §10.2's order.
+pub const EDIT_ACTIONS: [&str; 6] = ["select-all", "copy", "cut", "paste", "undo", "redo"];
+
+/// The default edit shortcuts for a `Mod` (SPEC §10.2), Meta where `meta`
+/// and Control otherwise, the keys canonical with `Mod` read.
+pub fn default_edit(meta: bool) -> Vec<(String, Vec<String>)> {
+    let m = if meta { "Meta" } else { "Control" };
+    EDIT_ACTIONS
+        .iter()
+        .zip(["a", "c", "x", "v", "z", "Z"])
+        .map(|(a, k)| {
+            let mut keys = vec![format!("{m}+{k}")];
+            if *a == "redo" && !meta {
+                keys.push("Control+y".into());
+            }
+            (a.to_string(), keys)
+        })
+        .collect()
+}
+
+impl Platform {
+    /// `Mod`'s name, as capabilities report it: `"Meta"` or `"Control"`.
+    pub fn mod_name(&self) -> &'static str {
+        if self.meta { "Meta" } else { "Control" }
+    }
+
+    /// The edit shortcuts: the host's, or [`default_edit`].
+    pub fn edit(&self) -> Vec<(String, Vec<String>)> {
+        self.edit.clone().unwrap_or_else(|| default_edit(self.meta))
+    }
+
+    /// The edit action whose shortcut a pressed key is, if it is one: the
+    /// key's own name, or, for a key with Shift that no shortcut names, the
+    /// key without Shift, as a keymap reads it.
+    pub fn edit_action(&self, key: &str) -> Option<String> {
+        let mut m = Keymap {
+            meta: self.meta,
+            ..Keymap::default()
+        };
+        for (a, keys) in self.edit() {
+            for k in keys {
+                m.bind(&k, &a);
+            }
+        }
+        m.bound(key).map(str::to_string)
+    }
+}
+
+/// A key's name as the platform reads it: canonical, with `Mod` read.
+/// `None` when it does not parse.
+pub fn read_key(platform: &Platform, name: &str) -> Option<String> {
+    split_key(name).map(|k| k.read_mod(platform.meta).canonical().name())
+}
+
+/// Reads a `data-key` value (SPEC §10.5): its keys separated by ASCII white
+/// space, each as [`read_key`] reads it, and `<leader>` as the keys of
+/// `leader`, a sequence written the same way. `None` for a value a host
+/// ignores: no keys, a key that does not parse, Tab, Shift+Tab or Escape,
+/// or any other name in angle brackets.
+pub fn parse_sequence(platform: &Platform, leader: &str, value: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for w in value.split([' ', '\t', '\n', '\x0c', '\r']).filter(|w| !w.is_empty()) {
+        if w == "<leader>" {
+            out.extend(parse_sequence(platform, "", leader)?);
+            continue;
+        }
+        if w.len() > 2 && w.starts_with('<') && w.ends_with('>') {
+            return None;
+        }
+        let k = read_key(platform, w)?;
+        if matches!(k.as_str(), "Tab" | "Shift+Tab" | "Escape") {
+            return None;
+        }
+        out.push(k);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Bindings of keys to actions (SPEC §10.2), read on a [`Platform`].
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
+    /// Each key, canonical with `Mod` read, in the order first bound, and
+    /// its action.
     bindings: Vec<(String, String)>,
+    /// Each key's last binding as written, `Mod` kept, by index.
+    written: Vec<String>,
     multiline: bool,
+    /// Whether `Mod` reads as Meta.
+    meta: bool,
 }
 
 /// Reads a `data-keys` value as SPEC §10.2 has hosts read it: bindings
 /// separated by ASCII white space, each `key=action`, split at its last
 /// `=`; dropping a key that does not parse, an action it does not know,
-/// and Tab, Shift+Tab and Escape.
-pub fn parse_keymap(value: &str) -> Keymap {
-    let mut m = Keymap::default();
+/// and Tab, Shift+Tab and Escape. `Mod` reads as the platform's: where it
+/// is Control, `Mod+a` and `Control+a` are one key.
+pub fn parse_keymap(platform: &Platform, value: &str) -> Keymap {
+    let mut m = Keymap {
+        meta: platform.meta,
+        ..Keymap::default()
+    };
     for (k, a) in bindings(value) {
         m.bind(k, a);
     }
@@ -535,57 +648,80 @@ fn bindings(value: &str) -> impl Iterator<Item = (&str, &str)> {
         .filter_map(|b| b.rfind('=').map(|i| (&b[..i], &b[i + 1..])))
 }
 
-/// A field's keymap: the default keymap, for an input or a multi-line
-/// field, then each `data-keys` value, the root's first. A binding to a
-/// scroll action is left out where it stands, in its own value too: it
-/// neither acts nor overrides an earlier binding of its key (SPEC §10.2).
-pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -> Keymap {
+/// The default keymap's keys on every host (SPEC §10.2); Enter, those of
+/// the platform's `Mod` and the edit shortcuts follow.
+const DEFAULT_KEYS: &[(&str, &str)] = &[
+    ("ArrowLeft", "char-backward"),
+    ("ArrowRight", "char-forward"),
+    ("Alt+ArrowLeft", "word-backward"),
+    ("Alt+ArrowRight", "word-forward"),
+    ("Home", "line-start"),
+    ("End", "line-end"),
+    ("Backspace", "delete-char-backward"),
+    ("Delete", "delete-char-forward"),
+    ("Alt+Backspace", "delete-word-backward"),
+    ("Alt+Delete", "delete-word-forward"),
+    ("ArrowUp", "line-previous"),
+    ("ArrowDown", "line-next"),
+    ("PageUp", "page-up"),
+    ("PageDown", "page-down"),
+];
+
+/// The default keymap's keys where `Mod` is Control.
+const CONTROL_KEYS: &[(&str, &str)] = &[
+    ("Control+ArrowLeft", "word-backward"),
+    ("Control+ArrowRight", "word-forward"),
+    ("Control+Home", "input-start"),
+    ("Control+End", "input-end"),
+    ("Control+Backspace", "delete-word-backward"),
+    ("Control+Delete", "delete-word-forward"),
+];
+
+/// The default keymap's keys where `Mod` is Meta: macOS's, with Emacs's
+/// Control keys.
+const META_KEYS: &[(&str, &str)] = &[
+    ("Meta+ArrowLeft", "line-start"),
+    ("Meta+ArrowRight", "line-end"),
+    ("Meta+ArrowUp", "input-start"),
+    ("Meta+ArrowDown", "input-end"),
+    ("Meta+Backspace", "delete-to-line-start"),
+    ("Control+a", "line-start"),
+    ("Control+e", "line-end"),
+    ("Control+b", "char-backward"),
+    ("Control+f", "char-forward"),
+    ("Control+p", "line-previous"),
+    ("Control+n", "line-next"),
+    ("Control+h", "delete-char-backward"),
+    ("Control+d", "delete-char-forward"),
+    ("Control+k", "delete-to-line-end"),
+];
+
+/// A field's keymap: the default keymap for the platform's `Mod`, with its
+/// edit shortcuts, for an input or a multi-line field, then each
+/// `data-keys` value, the root's first. A binding to a scroll action is
+/// left out where it stands, in its own value too: it neither acts nor
+/// overrides an earlier binding of its key (SPEC §10.2).
+pub fn resolve<'a>(
+    platform: &Platform,
+    multiline: bool,
+    values: impl IntoIterator<Item = &'a str>,
+) -> Keymap {
     let mut m = Keymap {
         multiline,
+        meta: platform.meta,
         ..Keymap::default()
     };
-    for (k, a) in [
-        ("ArrowLeft", "char-backward"),
-        ("ArrowRight", "char-forward"),
-        ("Control+ArrowLeft", "word-backward"),
-        ("Control+ArrowRight", "word-forward"),
-        ("Alt+ArrowLeft", "word-backward"),
-        ("Alt+ArrowRight", "word-forward"),
-        ("Home", "line-start"),
-        ("End", "line-end"),
-        ("Control+Home", "input-start"),
-        ("Control+End", "input-end"),
-        ("Backspace", "delete-char-backward"),
-        ("Delete", "delete-char-forward"),
-        ("Control+Backspace", "delete-word-backward"),
-        ("Control+Delete", "delete-word-forward"),
-        ("Alt+Backspace", "delete-word-backward"),
-        ("Alt+Delete", "delete-word-forward"),
-        ("ArrowUp", "line-previous"),
-        ("ArrowDown", "line-next"),
-        ("PageUp", "page-up"),
-        ("PageDown", "page-down"),
-        ("Control+a", "select-all"),
-        ("Meta+ArrowLeft", "line-start"),
-        ("Meta+ArrowRight", "line-end"),
-        ("Meta+ArrowUp", "input-start"),
-        ("Meta+ArrowDown", "input-end"),
-        ("Meta+Backspace", "delete-to-line-start"),
-        ("Meta+a", "select-all"),
-        ("Control+c", "copy"),
-        ("Meta+c", "copy"),
-        ("Control+x", "cut"),
-        ("Meta+x", "cut"),
-        ("Control+v", "paste"),
-        ("Meta+v", "paste"),
-        ("Control+z", "undo"),
-        ("Meta+z", "undo"),
-        ("Control+Z", "redo"),
-        ("Control+y", "redo"),
-        ("Meta+Z", "redo"),
-        ("Enter", if multiline { "newline" } else { "submit" }),
-    ] {
+    for (k, a) in DEFAULT_KEYS {
         m.bind(k, a);
+    }
+    m.bind("Enter", if multiline { "newline" } else { "submit" });
+    for (k, a) in if platform.meta { META_KEYS } else { CONTROL_KEYS } {
+        m.bind(k, a);
+    }
+    for (a, keys) in platform.edit() {
+        for k in keys {
+            m.bind(&k, &a);
+        }
     }
     for v in values {
         for (k, a) in bindings(v).filter(|(_, a)| !scroll_action(a)) {
@@ -599,11 +735,17 @@ pub fn resolve<'a>(multiline: bool, values: impl IntoIterator<Item = &'a str>) -
 /// root's first, with no default keymap. Only its `program` bindings and its
 /// scroll actions count there ([`Keymap::program`], [`Keymap::scroll`];
 /// SPEC §10.2, keys for the program, scrolling keys).
-pub fn element_keymap<'a>(values: impl IntoIterator<Item = &'a str>) -> Keymap {
-    let mut m = Keymap::default();
+pub fn element_keymap<'a>(
+    platform: &Platform,
+    values: impl IntoIterator<Item = &'a str>,
+) -> Keymap {
+    let mut m = Keymap {
+        meta: platform.meta,
+        ..Keymap::default()
+    };
     for v in values {
-        for (k, a) in parse_keymap(v).bindings {
-            m.bind(&k, &a);
+        for (k, a) in bindings(v) {
+            m.bind(k, a);
         }
     }
     m
@@ -613,25 +755,34 @@ impl Keymap {
     /// Binds a key to an action; false, binding nothing, where a host ignores
     /// the binding.
     pub fn bind(&mut self, key: &str, action: &str) -> bool {
-        let Some(k) = parse_key(key) else {
+        let Some(w) = split_key(key).map(KeyParts::canonical) else {
             return false;
         };
+        let k = w.clone().read_mod(self.meta).canonical().name();
         if !ACTIONS.contains(&action) || matches!(k.as_str(), "Tab" | "Shift+Tab" | "Escape") {
             return false;
         }
-        match self.bindings.iter_mut().find(|(b, _)| *b == k) {
-            Some(b) => b.1 = action.to_string(),
-            None => self.bindings.push((k, action.to_string())),
+        match self.bindings.iter().position(|(b, _)| *b == k) {
+            Some(i) => {
+                self.bindings[i].1 = action.to_string();
+                self.written[i] = w.name();
+            }
+            None => {
+                self.bindings.push((k, action.to_string()));
+                self.written.push(w.name());
+            }
         }
         true
     }
 
     /// The keymap as a `data-keys` value: each key once, where it was first
-    /// bound, with its last action.
+    /// bound, as its last binding wrote it (`Mod` kept), with its last
+    /// action.
     pub fn format(&self) -> String {
         self.bindings
             .iter()
-            .map(|(k, a)| format!("{k}={a}"))
+            .zip(&self.written)
+            .map(|((_, a), w)| format!("{w}={a}"))
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -646,7 +797,7 @@ impl Keymap {
     /// The action bound to a key, or, for a key with Shift it does not
     /// bind, to the key without Shift.
     fn bound(&self, key: &str) -> Option<&str> {
-        let k = split_key(key)?.canonical();
+        let k = split_key(key)?.read_mod(self.meta).canonical();
         let unshifted = KeyParts {
             mods: k.mods & !SHIFT,
             value: k.value.clone(),
@@ -673,7 +824,7 @@ impl Keymap {
     /// What a field with this keymap does with a key: an action, [`INSERT`]
     /// for a character it types, or `None` when the key is not the field's.
     pub fn lookup(&self, key: &str) -> Option<&str> {
-        let k = split_key(key)?.canonical();
+        let k = split_key(key)?.read_mod(self.meta).canonical();
         let name = k.name();
         if matches!(name.as_str(), "Tab" | "Shift+Tab" | "Escape") {
             return None;

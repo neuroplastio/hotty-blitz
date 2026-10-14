@@ -3414,6 +3414,15 @@ fn key_pressed_is_offered_before_the_terminal_translates_it() {
 
     assert!(h.key_pressed("f", "Control+Backspace").consumed);
     assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 4)));
+    // Where Mod is Meta, as on macOS (SPEC §10.2, §10.4).
+    assert!(!h.key_pressed("f", "Meta+ArrowLeft").consumed);
+    h.set_keys(hotty_blitz::KeySettings {
+        platform: hotty_wire::keys::Platform {
+            meta: true,
+            edit: None,
+        },
+        ..Default::default()
+    });
     assert!(h.key_pressed("f", "Meta+ArrowLeft").consumed);
     assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 0)));
     assert!(h.key_pressed("f", "Meta+Shift+ArrowRight").consumed);
@@ -3826,7 +3835,8 @@ fn copying_follows_the_keymap() {
         h.pointer_counted("x", PointerKind::Up, 10.0, 25.0, m, n);
     }
     assert_eq!(h.copy_key("Control+c"), CopyKey::Copy("copy".into()));
-    assert_eq!(h.copy_key("Meta+c"), CopyKey::Copy("copy".into()));
+    // Meta+c copies where Mod is Meta (SPEC §10.2), and not here.
+    assert_eq!(h.copy_key("Meta+c"), CopyKey::Other);
     assert_eq!(h.copy_key("Control+x"), CopyKey::Other);
     // In #b, Control+c is the program's, and Control+k copies.
     for n in 1..=2 {

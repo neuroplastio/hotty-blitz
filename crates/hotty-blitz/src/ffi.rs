@@ -63,6 +63,20 @@ pub struct HottyEffects {
     /// text to `hotty_host_paste`. Null: the terminal does not read it, and
     /// the key reaches the program.
     pub paste: Option<extern "C" fn(ctx: *mut c_void)>,
+    /// A key typed while a key sequence waited (SPEC §10.5), offered by
+    /// name (`hotty_host_key_pressed`), goes on to the program: send what
+    /// the terminal sends for the key `name`, UTF-8, as SPEC §10.4 names
+    /// it.
+    pub key: Option<extern "C" fn(ctx: *mut c_void, name: *const u8, len: usize)>,
+    /// `a=edit` (SPEC §10.6): the edit commands the program takes on the
+    /// screen it is on, in place of the last ones, comma-separated (empty:
+    /// none). Keep them per screen; a key of one goes to the program as
+    /// `hotty_host_command`.
+    pub edit: Option<extern "C" fn(ctx: *mut c_void, names: *const u8, len: usize)>,
+    /// Show the which-key menu, the surface `surface`, `cols`×`rows` cells,
+    /// at the bottom right of the viewport, above everything (SPEC §10.5,
+    /// §10.6). Its pixels come from `hotty_host_render`; `remove` hides it.
+    pub menu: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char, cols: u16, rows: u16)>,
 }
 
 #[repr(C)]
@@ -209,6 +223,22 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
             Effect::Paste => {
                 if let Some(f) = fx.paste {
                     f(fx.ctx);
+                }
+            }
+            Effect::Key { name } => {
+                if let Some(f) = fx.key {
+                    f(fx.ctx, name.as_ptr(), name.len());
+                }
+            }
+            Effect::Edit(names) => {
+                if let Some(f) = fx.edit {
+                    let names = names.join(",");
+                    f(fx.ctx, names.as_ptr(), names.len());
+                }
+            }
+            Effect::Menu { surface, cols, rows } => {
+                if let (Some(f), Ok(name)) = (fx.menu, CString::new(surface)) {
+                    f(fx.ctx, name.as_ptr(), cols, rows);
                 }
             }
         }
@@ -876,6 +906,156 @@ pub unsafe extern "C" fn hotty_host_takes_pointer(h: *mut HottyHost, surface: *c
         return false;
     };
     guard(h, true, |h| h.host.takes_pointer(surface, x, y))
+}
+
+/// How the host reads keys (SPEC §10.2, §10.4–§10.6), from the terminal's
+/// settings: `meta`, `Mod` is Meta (macOS's Command) rather than Control;
+/// `edit`, the edit shortcuts as a `data-keys` value of edit actions
+/// (`Control+c=copy Control+Insert=copy …`), null for the defaults;
+/// `leader`, a key sequence, null for Space; `timeout_ms`, how long a
+/// sequence waits for its next key, 0 for the default; `commands`, the
+/// terminal takes `a=edit` (`fx.edit`, `hotty_host_command`); `menus`, it
+/// shows the which-key menu (`fx.menu`). A program that asked for the
+/// capabilities hears what changed (`caps`) through `fx`.
+///
+/// # Safety
+/// `h` must be valid; `edit` and `leader` null or NUL-terminated; `fx` may
+/// be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_keys(
+    h: *mut HottyHost,
+    meta: bool,
+    edit: *const c_char,
+    leader: *const c_char,
+    timeout_ms: u32,
+    commands: bool,
+    menus: bool,
+    fx: *const HottyEffects,
+) {
+    let fx = unsafe { fx.as_ref() };
+    let edit = (!edit.is_null()).then(|| unsafe { CStr::from_ptr(edit) }.to_string_lossy().into_owned());
+    let leader = (!leader.is_null())
+        .then(|| unsafe { CStr::from_ptr(leader) }.to_string_lossy().into_owned())
+        .filter(|l| !l.trim().is_empty());
+    let mut k = crate::KeySettings {
+        platform: hotty_wire::keys::Platform {
+            meta,
+            edit: edit.map(|e| edit_shortcuts(&e)),
+        },
+        commands,
+        menus,
+        ..crate::KeySettings::default()
+    };
+    if let Some(l) = leader {
+        k.leader = l;
+    }
+    if timeout_ms > 0 {
+        k.timeout = std::time::Duration::from_millis(timeout_ms.into());
+    }
+    guard(h, (), |h| {
+        let effects = h.host.set_keys(k);
+        run_effects(effects, fx);
+    })
+}
+
+/// Edit shortcuts from a `data-keys` value: each edit action with the keys
+/// bound to it, canonical, in SPEC §10.2's order. Other bindings, and keys
+/// that do not parse, are left out.
+fn edit_shortcuts(value: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = hotty_wire::keys::EDIT_ACTIONS
+        .iter()
+        .map(|a| (a.to_string(), Vec::new()))
+        .collect();
+    for b in value.split_ascii_whitespace() {
+        let Some((k, a)) = b.rsplit_once('=') else {
+            continue;
+        };
+        let (Some(k), Some(slot)) = (hotty_wire::keys::parse_key(k), out.iter_mut().find(|(x, _)| x == a)) else {
+            continue;
+        };
+        if !slot.1.contains(&k) {
+            slot.1.push(k);
+        }
+    }
+    out
+}
+
+/// The edit command a key is (SPEC §10.6): the edit action whose shortcut
+/// the key `name` is, UTF-8 as SPEC §10.4 names it, NUL-terminated and
+/// static; null for none.
+///
+/// # Safety
+/// `h` must be valid; `name` must hold `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_edit_command(h: *mut HottyHost, name: *const u8, len: usize) -> *const c_char {
+    const NAMES: [&CStr; 6] = [c"select-all", c"copy", c"cut", c"paste", c"undo", c"redo"];
+    if name.is_null() || len == 0 {
+        return std::ptr::null();
+    }
+    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+        return std::ptr::null();
+    };
+    guard(h, std::ptr::null(), |h| {
+        h.host
+            .edit_command(name)
+            .and_then(|a| NAMES.iter().find(|n| n.to_bytes() == a.as_bytes()))
+            .map_or(std::ptr::null(), |n| n.as_ptr())
+    })
+}
+
+/// Sends the program in the cells the edit command `name` (SPEC §10.6),
+/// through `fx`'s reply: from the key `key` (null from a menu), and, for a
+/// paste, the clipboard's UTF-8 `text` (null when it holds no text or the
+/// terminal cannot read it).
+///
+/// # Safety
+/// `name` must be NUL-terminated; `key` null or `key_len` bytes; `text`
+/// null or `text_len` bytes; `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_command(
+    name: *const c_char,
+    key: *const u8,
+    key_len: usize,
+    text: *const u8,
+    text_len: usize,
+    fx: *const HottyEffects,
+) {
+    let fx = unsafe { fx.as_ref() };
+    let Some(name) = (unsafe { self::name(name) }) else {
+        return;
+    };
+    let bytes = |p: *const u8, n: usize| {
+        (!p.is_null()).then(|| String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, n) }).into_owned())
+    };
+    let (key, text) = (bytes(key, key_len), bytes(text, text_len));
+    let event = Host::command_event(name, key.as_deref(), text.as_deref());
+    run_effects(vec![Effect::Reply(event)], fx);
+}
+
+/// A key that reaches the program in the cells, UTF-8 as SPEC §10.4 names
+/// it, while the program's menu may show (SPEC §10.6): Escape, and a key it
+/// does not list, hide the menu. The key still reaches the program.
+///
+/// # Safety
+/// `h` must be valid; `name` must hold `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_cells_key(h: *mut HottyHost, name: *const u8, len: usize) {
+    if name.is_null() || len == 0 {
+        return;
+    }
+    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+        return;
+    };
+    guard(h, (), |h| h.host.cells_key(name))
+}
+
+/// The terminal's screen changed: the program's menu hides (SPEC §10.6).
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_hide_menu(h: *mut HottyHost) {
+    guard(h, (), |h| h.host.hide_program_menu())
 }
 
 #[cfg(test)]
