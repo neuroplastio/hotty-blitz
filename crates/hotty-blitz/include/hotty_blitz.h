@@ -171,6 +171,15 @@ const char *hotty_host_selected_text(hotty_host *h);
  * A press on a surface drops the others' itself. */
 void hotty_host_clear_selection(hotty_host *h);
 
+/* A key, named as SPEC 10.4 writes it, for the selection in a surface's
+ * document outside a text field (SPEC 11), offered before the surface that
+ * has the keyboard and the terminal's own shortcuts, keyboard or not.
+ * 0: no surface has such a selection; the key goes on. 1: its keymap binds
+ * the key to copy: *text is the text for the clipboard, valid until the
+ * next call, and the key goes no further. 2: it does not: the key goes on
+ * as if nothing were selected, and the terminal copies nothing with it. */
+int hotty_host_copy_key(hotty_host *h, const uint8_t *name, size_t len, const char **text);
+
 /* Types the UTF-8 text into the focused text field of the surface that has
  * the keyboard, as a field's paste does (SPEC 10.2, 11): the clipboard read
  * for fx->paste, or the terminal's own paste, which then does not reach the

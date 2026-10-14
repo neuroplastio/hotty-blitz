@@ -238,8 +238,9 @@ pub(crate) struct Surface {
     /// The host reads the clipboard for `paste` (Host::set_paste): without
     /// it, a field has no `paste`, and the key reaches the program.
     pub can_paste: bool,
-    /// Text a `cut` put on the clipboard, for the host to write.
-    pub cut: Option<String>,
+    /// Text a `copy` or a `cut` puts on the clipboard, for the host to
+    /// write.
+    pub clipboard: Option<String>,
     /// A `paste` asked for the clipboard, which the host reads and gives
     /// to Surface::paste.
     pub paste_wanted: bool,
@@ -663,7 +664,7 @@ impl Surface {
             caret_phase: 0,
             histories: BTreeMap::new(),
             can_paste: false,
-            cut: None,
+            clipboard: None,
             paste_wanted: false,
         }
     }
@@ -1452,6 +1453,29 @@ impl Surface {
             text.push_str(part);
         }
         (!text.is_empty()).then_some(text)
+    }
+
+    /// A key, named as SPEC §10.4 writes it, for the selection in the
+    /// document outside a text field (SPEC §11): `None` when there is none,
+    /// or a focused text field holds the selection; else its text when the
+    /// keymap of the element whose text it starts in, read as a text
+    /// field's, binds the key to `copy`, and `Some(None)` when it does not.
+    pub fn copy_key(&self, name: &str) -> Option<Option<String>> {
+        if self
+            .focused()
+            .is_some_and(|id| self.doc.text_input_selection(id).is_some())
+        {
+            return None;
+        }
+        let (first, _, _) = self
+            .doc
+            .get_text_selection_ranges()
+            .into_iter()
+            .find(|&(n, _, _)| !self.unselectable(Some(n)))?;
+        let text = self.selected_text()?;
+        let values = self.keymap_values(first);
+        let keymap = keys::resolve(false, values.iter().map(String::as_str));
+        Some((keymap.lookup(name) == Some("copy")).then_some(text))
     }
 
     /// Drops the document's selection: the user pressed somewhere else
@@ -2421,11 +2445,11 @@ impl Surface {
         let keymap = keys::resolve(multiline, values.iter().map(String::as_str));
         let action = keymap.lookup(&name)?.to_string();
         let extend = keymap.selects(&name);
-        // A field has no cut with nothing selected nor in a password
-        // field, and no paste where the host cannot read the clipboard:
-        // the key reaches the program.
+        // A field has no copy or cut with nothing selected nor in a
+        // password field, and no paste where the host cannot read the
+        // clipboard: the key reaches the program.
         let has = match action.as_str() {
-            "cut" => self.field_state(id).is_some_and(|f| f.anchor != f.focus) && !self.password(id),
+            "copy" | "cut" => self.field_state(id).is_some_and(|f| f.anchor != f.focus) && !self.password(id),
             "paste" => self.can_paste,
             _ => true,
         };
@@ -2604,12 +2628,15 @@ impl Surface {
             mods: Mods::default(),
         };
         match action {
-            "cut" => {
+            "copy" | "cut" => {
                 let Some(f) = self.field_state(id) else {
                     return Vec::new();
                 };
                 let (lo, hi) = (f.anchor.min(f.focus), f.anchor.max(f.focus));
-                self.cut = Some(f.value[lo..hi].to_string());
+                self.clipboard = Some(f.value[lo..hi].to_string());
+                if action == "copy" {
+                    return Vec::new();
+                }
                 self.replace_selection(id, "")
             }
             "paste" => {

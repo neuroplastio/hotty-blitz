@@ -3801,3 +3801,55 @@ fn a_field_cuts_and_pastes_on_the_terminals_clipboard() {
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "b")], ""));
     assert!(h.paste("c").is_none());
 }
+
+/// Copying follows the keymap (SPEC §10.2, §11): a field copies its
+/// selection with a key bound to copy, and a selection in the document is
+/// copied by the keymap of the element it starts in, which may give the
+/// key to the program; with nothing selected the key goes on.
+#[test]
+fn copying_follows_the_keymap() {
+    use hotty_blitz::CopyKey;
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0;font:16px monospace}</style>\
+         <p id=a>copy me</p><p id=b data-keys='Control+c=program Control+k=copy'>not me</p>\
+         <input id=f value='one two'>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")], ""));
+    render(&mut h);
+    let m = Mods::default();
+    assert_eq!(h.copy_key("Control+c"), CopyKey::None);
+    // A double click selects a word in #a, whose keymap is the default.
+    for n in 1..=2 {
+        h.pointer_counted("x", PointerKind::Down, 10.0, 25.0, m, n);
+        h.pointer_counted("x", PointerKind::Up, 10.0, 25.0, m, n);
+    }
+    assert_eq!(h.copy_key("Control+c"), CopyKey::Copy("copy".into()));
+    assert_eq!(h.copy_key("Meta+c"), CopyKey::Copy("copy".into()));
+    assert_eq!(h.copy_key("Control+x"), CopyKey::Other);
+    // In #b, Control+c is the program's, and Control+k copies.
+    for n in 1..=2 {
+        h.pointer_counted("x", PointerKind::Down, 10.0, 60.0, m, n);
+        h.pointer_counted("x", PointerKind::Up, 10.0, 60.0, m, n);
+    }
+    assert_eq!(h.copy_key("Control+c"), CopyKey::Other);
+    assert_eq!(h.copy_key("Control+k"), CopyKey::Copy("not".into()));
+
+    // A focused field copies its selection by its own keymap.
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
+    let ctrl = |c: &str| Key {
+        name: KeyName::Char(c.into()),
+        mods: Mods {
+            ctrl: true,
+            ..Mods::default()
+        },
+    };
+    assert!(!h.key("x", &ctrl("c")).consumed, "nothing selected");
+    h.key("x", &ctrl("a"));
+    assert_eq!(h.copy_key("Control+c"), CopyKey::None);
+    let o = h.key("x", &ctrl("c"));
+    assert!(o.consumed);
+    assert!(o.effects.contains(&Effect::Clipboard("one two".into())), "{:?}", o.effects);
+    assert_eq!(h.text_field("x", "f").unwrap().0, "one two");
+}

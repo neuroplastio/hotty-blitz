@@ -153,12 +153,26 @@ pub enum Effect {
     Hide { surface: String },
     /// The surface is gone; remove its placement.
     Delete { surface: String },
-    /// Put the text on the clipboard: a text field's `cut` (SPEC §10.2).
+    /// Put the text on the clipboard: a text field's `copy` or `cut` (SPEC
+    /// §10.2).
     Clipboard(String),
     /// A text field's `paste` (SPEC §10.2): read the clipboard, and give
     /// its text to [`Host::paste`]. Only where `set_paste` said the
     /// terminal reads it.
     Paste,
+}
+
+/// What [`Host::copy_key`] makes of a key.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CopyKey {
+    /// No surface has a selection outside a text field: the key goes on.
+    None,
+    /// The selection's keymap binds the key to `copy`: put the text on the
+    /// clipboard, and the key goes no further.
+    Copy(String),
+    /// It does not: the key goes on as if nothing were selected, and the
+    /// terminal copies nothing with it.
+    Other,
 }
 
 /// The part of a surface a placement shows, in cells from its top-left
@@ -1641,7 +1655,7 @@ impl Host {
             .into_iter()
             .map(|e| Effect::Reply(e.encode(surface)))
             .collect();
-        effects.extend(s.cut.take().map(Effect::Clipboard));
+        effects.extend(s.clipboard.take().map(Effect::Clipboard));
         if std::mem::take(&mut s.paste_wanted) {
             effects.push(Effect::Paste);
         }
@@ -1790,6 +1804,27 @@ impl Host {
         focused
             .and_then(surface::Surface::selected_text)
             .or_else(|| self.surfaces.values().find_map(surface::Surface::selected_text))
+    }
+
+    /// A key, named as SPEC §10.4 writes it, for the selection in a
+    /// surface's document outside a text field (SPEC §11), which the
+    /// terminal offers every key first, before the surface that has the
+    /// keyboard and its own shortcuts, whether or not a surface has the
+    /// keyboard. A focused text field's selection is its keymap's, through
+    /// [`Host::key`].
+    pub fn copy_key(&self, name: &str) -> CopyKey {
+        let Some(name) = hotty_wire::keys::parse_key(name) else {
+            return CopyKey::None;
+        };
+        let focused = self.focused_surface().and_then(|n| self.surfaces.get(n));
+        let found = focused
+            .and_then(|s| s.copy_key(&name))
+            .or_else(|| self.surfaces.values().find_map(|s| s.copy_key(&name)));
+        match found {
+            None => CopyKey::None,
+            Some(Some(text)) => CopyKey::Copy(text),
+            Some(None) => CopyKey::Other,
+        }
     }
 
     /// Drops the selection of every surface but `keep`: the user pressed

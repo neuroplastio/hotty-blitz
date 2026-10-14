@@ -4,10 +4,10 @@
 //! finishes them. Everything the host must do comes back through callbacks.
 
 use crate::{
-    Config, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme, Touch, TouchPhase,
+    Config, CopyKey, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme, Touch, TouchPhase,
 };
 use hotty_wire::{Event, Scanner};
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
 #[repr(C)]
 pub struct HottyConfig {
@@ -706,6 +706,44 @@ pub unsafe extern "C" fn hotty_host_selected_text(h: *mut HottyHost) -> *const c
             .selected_text()
             .and_then(|t| CString::new(t.replace('\0', "")).ok());
         h.selected.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
+    })
+}
+
+/// A key, named as SPEC §10.4 writes it, for the selection in a surface's
+/// document outside a text field (SPEC §11), offered before the surface
+/// that has the keyboard and the terminal's own shortcuts, whether or not a
+/// surface has the keyboard. 0: no surface has such a selection, and the
+/// key goes on. 1: the selection's keymap binds the key to `copy`; `*text`
+/// is the text to put on the clipboard, valid until the next call, and the
+/// key goes no further. 2: it does not, and the key goes on as if nothing
+/// were selected, the terminal copying nothing with it.
+///
+/// # Safety
+/// `h` must be valid, `name` must point to `len` bytes, and `text` must be
+/// null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_copy_key(
+    h: *mut HottyHost,
+    name: *const u8,
+    len: usize,
+    text: *mut *const c_char,
+) -> c_int {
+    if name.is_null() || len == 0 {
+        return 0;
+    }
+    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+        return 0;
+    };
+    guard(h, 0, |h| match h.host.copy_key(name) {
+        CopyKey::None => 0,
+        CopyKey::Other => 2,
+        CopyKey::Copy(t) => {
+            h.selected = CString::new(t.replace('\0', "")).ok();
+            if let (Some(out), Some(c)) = (unsafe { text.as_mut() }, h.selected.as_ref()) {
+                *out = c.as_ptr();
+            }
+            1
+        }
     })
 }
 
