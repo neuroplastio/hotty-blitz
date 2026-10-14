@@ -44,6 +44,19 @@ typedef struct {
    * to hotty_host_paste. NULL: the terminal does not read it, and the key
    * reaches the program. */
   void (*paste)(void *ctx);
+  /* A key typed while a key sequence waited (SPEC 10.5), offered by name
+   * (hotty_host_key_pressed), goes on to the program: send what the
+   * terminal sends for the key `name`, UTF-8 as SPEC 10.4 names it. */
+  void (*key)(void *ctx, const uint8_t *name, size_t len);
+  /* a=edit (SPEC 10.6): the edit commands the program takes on the screen
+   * it is on, in place of the last ones, comma-separated (empty: none).
+   * Keep them per screen; a key of one goes to the program as
+   * hotty_host_command. */
+  void (*edit)(void *ctx, const uint8_t *names, size_t len);
+  /* Show the which-key menu, the surface `surface`, cols x rows cells, at
+   * the bottom right of the screen, above everything (SPEC 10.5, 10.6).
+   * Its pixels come from hotty_host_render; remove hides it. */
+  void (*menu)(void *ctx, const char *surface, uint16_t cols, uint16_t rows);
 } hotty_effects;
 
 typedef struct { uint32_t x, y, w, h; } hotty_rect;
@@ -208,5 +221,28 @@ void hotty_host_set_network(hotty_host *h, const char *policy);
  * hotty-blitz. NULL wake removes it; once this returns, or the host is freed,
  * the old one is not called again. */
 void hotty_host_set_waker(hotty_host *h, void (*wake)(void *ctx), void *ctx);
+/* How the host reads keys (SPEC 10.2, 10.4-10.6): meta, Mod is Meta
+ * (Command) rather than Control; edit, the edit shortcuts as a data-keys
+ * value of edit actions ("Control+c=copy ..."), NULL for the defaults;
+ * leader, a key sequence, NULL for Space; timeout_ms, how long a sequence
+ * waits for its next key, 0 for the default; commands, the terminal takes
+ * a=edit (fx->edit, hotty_host_command); menus, it shows the which-key
+ * menu (fx->menu). A program that asked for the capabilities hears what
+ * changed ("caps") through fx. */
+void hotty_host_set_keys(hotty_host *h, bool meta, const char *edit, const char *leader,
+                         uint32_t timeout_ms, bool commands, bool menus, const hotty_effects *fx);
+/* The edit command a key is (SPEC 10.6): the edit action whose shortcut
+ * the key is, static and NUL-terminated; NULL for none. */
+const char *hotty_host_edit_command(hotty_host *h, const uint8_t *name, size_t len);
+/* Sends the program in the cells the edit command `name` (SPEC 10.6)
+ * through fx's reply: from the key `key` (NULL from a menu), and, for a
+ * paste, the clipboard's UTF-8 `text` (NULL when it holds no text). */
+void hotty_host_command(const char *name, const uint8_t *key, size_t key_len,
+                        const uint8_t *text, size_t text_len, const hotty_effects *fx);
+/* A key that reaches the program in the cells while its menu may show
+ * (SPEC 10.6): Escape, and a key the menu does not list, hide it. */
+void hotty_host_cells_key(hotty_host *h, const uint8_t *name, size_t len);
+/* The terminal's screen changed: the program's menu hides (SPEC 10.6). */
+void hotty_host_hide_menu(hotty_host *h);
 
 #endif
