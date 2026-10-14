@@ -601,6 +601,7 @@ fn protocol_vectors() {
                 || r == "steps"
                 || r == "count"
                 || r == "drop"
+                || r == "undo"
                 || (r == "view" && views)
         };
         let runs = match vector.get("requires") {

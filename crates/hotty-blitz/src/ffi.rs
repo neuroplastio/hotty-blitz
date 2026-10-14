@@ -56,6 +56,13 @@ pub struct HottyEffects {
     /// Remove `surface`'s placement and keep what shows it again cheaply: the
     /// surface is hidden (SPEC §5.4) and its document stays.
     pub hide: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char)>,
+    /// Put the UTF-8 text on the clipboard: a text field's `cut` (SPEC
+    /// §10.2).
+    pub clipboard: Option<extern "C" fn(ctx: *mut c_void, text: *const u8, len: usize)>,
+    /// A text field's `paste` (SPEC §10.2): read the clipboard and give its
+    /// text to `hotty_host_paste`. Null: the terminal does not read it, and
+    /// the key reaches the program.
+    pub paste: Option<extern "C" fn(ctx: *mut c_void)>,
 }
 
 #[repr(C)]
@@ -192,6 +199,16 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
             Effect::Hide { surface } => {
                 if let (Some(f), Ok(name)) = (fx.hide, CString::new(surface)) {
                     f(fx.ctx, name.as_ptr());
+                }
+            }
+            Effect::Clipboard(text) => {
+                if let Some(f) = fx.clipboard {
+                    f(fx.ctx, text.as_ptr(), text.len());
+                }
+            }
+            Effect::Paste => {
+                if let Some(f) = fx.paste {
+                    f(fx.ctx);
                 }
             }
         }
@@ -569,6 +586,7 @@ pub unsafe extern "C" fn hotty_host_key_pressed(
         let Some(surface) = h.host.focused_surface().map(str::to_string) else {
             return false;
         };
+        h.host.set_paste(fx.is_some_and(|f| f.paste.is_some()));
         let outcome = h.host.key_pressed(&surface, name);
         run_effects(outcome.effects, fx);
         outcome.consumed
@@ -601,6 +619,7 @@ pub unsafe extern "C" fn hotty_host_key_bytes(
         let Some(surface) = h.host.focused_surface().map(str::to_string) else {
             return false;
         };
+        h.host.set_paste(fx.is_some_and(|f| f.paste.is_some()));
         let outcome = h.host.key_bytes(&surface, bytes);
         run_effects(outcome.effects, fx);
         outcome.consumed
@@ -687,6 +706,37 @@ pub unsafe extern "C" fn hotty_host_selected_text(h: *mut HottyHost) -> *const c
             .selected_text()
             .and_then(|t| CString::new(t.replace('\0', "")).ok());
         h.selected.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
+    })
+}
+
+/// Types the UTF-8 `text` into the focused text field of the surface that
+/// has the keyboard, as a field's `paste` does (SPEC §10.2, §11): the
+/// clipboard read for `fx.paste`, or the terminal's own paste, which then
+/// does not reach the program. False when no text field has the keyboard:
+/// the terminal pastes to the program as usual. Its events go through `fx`.
+///
+/// # Safety
+/// `h` must be valid, `text` must point to `len` bytes, and `fx` must be
+/// null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_paste(
+    h: *mut HottyHost,
+    text: *const u8,
+    len: usize,
+    fx: *const HottyEffects,
+) -> bool {
+    let fx = unsafe { fx.as_ref() };
+    let text = if text.is_null() || len == 0 {
+        String::new()
+    } else {
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(text, len) }).into_owned()
+    };
+    guard(h, false, |h| match h.host.paste(&text) {
+        Some(effects) => {
+            run_effects(effects, fx);
+            true
+        }
+        None => false,
     })
 }
 

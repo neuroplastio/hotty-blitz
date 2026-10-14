@@ -38,6 +38,12 @@ typedef struct {
   /* The surface is hidden (SPEC 5.4): remove its placement, and keep what
    * shows it again cheaply. Its document stays. */
   void (*hide)(void *ctx, const char *surface);
+  /* Put the UTF-8 text on the clipboard: a text field's cut (SPEC 10.2). */
+  void (*clipboard)(void *ctx, const uint8_t *text, size_t len);
+  /* A text field's paste (SPEC 10.2): read the clipboard and give its text
+   * to hotty_host_paste. NULL: the terminal does not read it, and the key
+   * reaches the program. */
+  void (*paste)(void *ctx);
 } hotty_effects;
 
 typedef struct { uint32_t x, y, w, h; } hotty_rect;
@@ -164,6 +170,13 @@ const char *hotty_host_selected_text(hotty_host *h);
  * terminal (SPEC 11), and the user pressed on the cells or selected there.
  * A press on a surface drops the others' itself. */
 void hotty_host_clear_selection(hotty_host *h);
+
+/* Types the UTF-8 text into the focused text field of the surface that has
+ * the keyboard, as a field's paste does (SPEC 10.2, 11): the clipboard read
+ * for fx->paste, or the terminal's own paste, which then does not reach the
+ * program. False when no text field has the keyboard: the terminal pastes
+ * to the program as usual. */
+bool hotty_host_paste(hotty_host *h, const uint8_t *text, size_t len, const hotty_effects *fx);
 /* Whether the surface takes the pointer at device pixel (x, y) of the
  * surface: false where only boxes with pointer-events: none are (SPEC 9.3).
  * There the pointer passes through it, to the placement below or the cells:

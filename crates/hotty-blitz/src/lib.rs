@@ -153,6 +153,12 @@ pub enum Effect {
     Hide { surface: String },
     /// The surface is gone; remove its placement.
     Delete { surface: String },
+    /// Put the text on the clipboard: a text field's `cut` (SPEC §10.2).
+    Clipboard(String),
+    /// A text field's `paste` (SPEC §10.2): read the clipboard, and give
+    /// its text to [`Host::paste`]. Only where `set_paste` said the
+    /// terminal reads it.
+    Paste,
 }
 
 /// The part of a surface a placement shows, in cells from its top-left
@@ -193,6 +199,9 @@ pub struct Host {
     /// The embedding terminal hands over its platform's count of each press
     /// (`pointer_counted`), and the capabilities say `count` (SPEC §9).
     counts: bool,
+    /// The embedding terminal reads the clipboard for a field's `paste`
+    /// ([`Effect::Paste`], `set_paste`).
+    paste: bool,
     /// The run of clicks the last click by the pointer was in: its surface,
     /// the element that reported it (its id, and a link's href), and the
     /// platform's count the run began at.
@@ -338,6 +347,7 @@ impl Host {
             program_press: false,
             passthrough: false,
             counts: false,
+            paste: false,
             click_run: None,
             fits: Vec::new(),
             views: Vec::new(),
@@ -1625,14 +1635,41 @@ impl Host {
         let Some(s) = self.surfaces.get_mut(surface) else {
             return KeyOutcome::default();
         };
+        s.can_paste = self.paste;
         let (consumed, events) = s.key(key);
-        KeyOutcome {
-            consumed,
-            effects: events
-                .into_iter()
-                .map(|e| Effect::Reply(e.encode(surface)))
-                .collect(),
+        let mut effects: Vec<Effect> = events
+            .into_iter()
+            .map(|e| Effect::Reply(e.encode(surface)))
+            .collect();
+        effects.extend(s.cut.take().map(Effect::Clipboard));
+        if std::mem::take(&mut s.paste_wanted) {
+            effects.push(Effect::Paste);
         }
+        KeyOutcome { consumed, effects }
+    }
+
+    /// Whether the embedding terminal reads the clipboard for a text
+    /// field's `paste` ([`Effect::Paste`]). Without it, the key bound to
+    /// `paste` reaches the program (SPEC §10.2).
+    pub fn set_paste(&mut self, reads: bool) {
+        self.paste = reads;
+    }
+
+    /// Types `text` into the focused text field of the surface that has the
+    /// keyboard, as a field's `paste` does (SPEC §10.2, §11): the clipboard
+    /// read for an [`Effect::Paste`], or the terminal's own paste. `None`
+    /// when no text field has the keyboard: the paste is the program's, as
+    /// usual.
+    pub fn paste(&mut self, text: &str) -> Option<Vec<Effect>> {
+        let surface = self.focused_surface()?.to_string();
+        enter(&mut self.working, &surface);
+        let events = self.surfaces.get_mut(&surface)?.paste(text)?;
+        Some(
+            events
+                .into_iter()
+                .map(|e| Effect::Reply(e.encode(&surface)))
+                .collect(),
+        )
     }
 
     /// A key for `surface` as the user pressed it, named as SPEC §10.4

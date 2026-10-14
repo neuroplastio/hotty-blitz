@@ -216,6 +216,20 @@ impl Shim {
                     self.delete(&surface, out);
                     self.input.removed(&surface);
                 }
+                // A field's cut goes to the terminal's clipboard, by OSC 52.
+                // It cannot be read back here, so a field has no paste
+                // (Host::set_paste) and its key reaches the program.
+                Effect::Clipboard(text) => {
+                    use base64::Engine as _;
+                    out.extend_from_slice(b"\x1b]52;c;");
+                    out.extend_from_slice(
+                        base64::engine::general_purpose::STANDARD
+                            .encode(text)
+                            .as_bytes(),
+                    );
+                    out.extend_from_slice(b"\x1b\\");
+                }
+                Effect::Paste => {}
             }
         }
     }

@@ -3752,3 +3752,52 @@ fn the_selection_is_the_hosts_to_copy_and_there_is_one() {
         assert_eq!(h.selected_text().as_deref(), want, "{kind}");
     }
 }
+
+/// A text field cuts and pastes on the terminal's clipboard (SPEC §10.2,
+/// §11): a cut hands the terminal the text, a paste asks it for the
+/// clipboard, which it gives back, as it gives the field its own paste.
+#[test]
+fn a_field_cuts_and_pastes_on_the_terminals_clipboard() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<input id=f data-on=input value='one two'><button id=b>b</button>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "4")], ""));
+    render(&mut h);
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
+    let ctrl = |c: &str| Key {
+        name: KeyName::Char(c.into()),
+        mods: Mods {
+            ctrl: true,
+            ..Mods::default()
+        },
+    };
+    let value = |h: &Host| h.text_field("x", "f").unwrap().0;
+
+    h.key("x", &ctrl("a"));
+    let o = h.key("x", &ctrl("x"));
+    assert!(o.consumed);
+    assert!(o.effects.contains(&Effect::Clipboard("one two".into())), "{:?}", o.effects);
+    assert_eq!(value(&h), "");
+    // Nothing selected: the key is the program's.
+    assert!(!h.key("x", &ctrl("x")).consumed);
+
+    // A terminal that does not read the clipboard leaves paste to the program.
+    assert!(!h.key("x", &ctrl("v")).consumed);
+    h.set_paste(true);
+    let o = h.key("x", &ctrl("v"));
+    assert!(o.consumed && o.effects.contains(&Effect::Paste), "{:?}", o.effects);
+    assert!(h.paste("a\r\nb").is_some());
+    assert_eq!(value(&h), "ab", "an input drops line breaks");
+
+    // Each is an edit of its own.
+    h.key("x", &ctrl("z"));
+    assert_eq!(value(&h), "");
+    h.key("x", &ctrl("z"));
+    assert_eq!(value(&h), "one two");
+
+    // With no text field focused, a paste is the program's.
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "b")], ""));
+    assert!(h.paste("c").is_none());
+}

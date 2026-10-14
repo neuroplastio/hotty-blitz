@@ -233,7 +233,49 @@ pub(crate) struct Surface {
     caret_at: Instant,
     /// The caret's blink phase as last painted: even shows it.
     caret_phase: u32,
+    /// Each text field's history of edits (SPEC §10.2, undo).
+    histories: BTreeMap<NodeId, History>,
+    /// The host reads the clipboard for `paste` (Host::set_paste): without
+    /// it, a field has no `paste`, and the key reaches the program.
+    pub can_paste: bool,
+    /// Text a `cut` put on the clipboard, for the host to write.
+    pub cut: Option<String>,
+    /// A `paste` asked for the clipboard, which the host reads and gives
+    /// to Surface::paste.
+    pub paste_wanted: bool,
 }
+
+/// A text field's history of edits (SPEC §10.2, undo), as a browser keeps
+/// one: the states to go back to, the latest last, and those undone.
+#[derive(Default)]
+struct History {
+    undo: Vec<FieldState>,
+    redo: Vec<FieldState>,
+    /// The run the last edit made, which an edit of the same kind goes on
+    /// with while the field is as that edit left it.
+    run: Option<Run>,
+    /// The field as the last edit, undo or redo left it. A value that
+    /// differs was set by the program, which clears the history.
+    after: FieldState,
+}
+
+/// A text field's value and its selection, as byte offsets into it.
+#[derive(Clone, Default, PartialEq)]
+struct FieldState {
+    value: String,
+    anchor: usize,
+    focus: usize,
+}
+
+/// Edits that run together into one (SPEC §10.2, undo).
+#[derive(Clone, Copy, PartialEq)]
+enum Run {
+    Typing,
+    Deleting,
+}
+
+/// The edits a field's history keeps, the oldest dropped first.
+const HISTORY: usize = 100;
 
 /// A text field's caret blinks as a GTK one does by default, on and off
 /// every 600 ms, and for about ten seconds after it last moved
@@ -619,6 +661,10 @@ impl Surface {
             faded_at: None,
             caret_at: Instant::now(),
             caret_phase: 0,
+            histories: BTreeMap::new(),
+            can_paste: false,
+            cut: None,
+            paste_wanted: false,
         }
     }
 
@@ -2375,7 +2421,148 @@ impl Surface {
         let keymap = keys::resolve(multiline, values.iter().map(String::as_str));
         let action = keymap.lookup(&name)?.to_string();
         let extend = keymap.selects(&name);
+        // A field has no cut with nothing selected nor in a password
+        // field, and no paste where the host cannot read the clipboard:
+        // the key reaches the program.
+        let has = match action.as_str() {
+            "cut" => self.field_state(id).is_some_and(|f| f.anchor != f.focus) && !self.password(id),
+            "paste" => self.can_paste,
+            _ => true,
+        };
+        if !has {
+            return None;
+        }
         Some(self.field_action(id, key, &action, multiline, extend))
+    }
+
+    /// Whether text field `id` is a password field.
+    fn password(&self, id: NodeId) -> bool {
+        self.doc
+            .get_node(id)
+            .and_then(|n| n.element_data())
+            .and_then(|e| e.text_input_data())
+            .is_some_and(|t| t.password().is_some())
+    }
+
+    /// Text field `id`'s value and selection.
+    fn field_state(&self, id: NodeId) -> Option<FieldState> {
+        let (value, anchor, focus) = self.doc.text_input_selection(id)?;
+        Some(FieldState { value, anchor, focus })
+    }
+
+    /// After an action in text field `id`, which found it `before`: an
+    /// edit goes into its history, as one with the last when both are of
+    /// the `run` and nothing moved in between; any other action ends the
+    /// run (SPEC §10.2, undo).
+    fn edited(&mut self, id: NodeId, before: FieldState, run: Option<Run>) {
+        let Some(after) = self.field_state(id) else {
+            return;
+        };
+        if after.value == before.value {
+            if run.is_none()
+                && let Some(h) = self.histories.get_mut(&id)
+            {
+                h.run = None;
+            }
+            return;
+        }
+        let h = self.histories.entry(id).or_default();
+        if h.after.value != before.value {
+            *h = History::default();
+        }
+        // Typing over a selection, or deleting one, starts an edit.
+        let run = run.filter(|_| before.anchor == before.focus || run == Some(Run::Typing));
+        if run.is_none() || h.run != run || h.after != before {
+            h.undo.push(before);
+            if h.undo.len() > HISTORY {
+                h.undo.remove(0);
+            }
+        }
+        h.redo.clear();
+        h.run = run;
+        h.after = after;
+    }
+
+    /// Undoes text field `id`'s last edit, or with `redo` redoes the one
+    /// last undone: its value and selection are put back (SPEC §10.2).
+    fn undo(&mut self, id: NodeId, redo: bool) -> Vec<Event> {
+        let Some(now) = self.field_state(id) else {
+            return Vec::new();
+        };
+        let Some(h) = self.histories.get_mut(&id) else {
+            return Vec::new();
+        };
+        if h.after.value != now.value {
+            *h = History::default();
+            return Vec::new();
+        }
+        let (from, to) = if redo {
+            (&mut h.redo, &mut h.undo)
+        } else {
+            (&mut h.undo, &mut h.redo)
+        };
+        let Some(to_state) = from.pop() else {
+            return Vec::new();
+        };
+        to.push(std::mem::replace(&mut h.after, to_state.clone()));
+        h.run = None;
+        self.doc
+            .set_text_input(id, &to_state.value, to_state.anchor, to_state.focus);
+        self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+        self.drive_input(Input::Dom(DomEvent::new(
+            id,
+            DomEventData::Input(BlitzInputEvent {
+                value: to_state.value,
+            }),
+        )))
+    }
+
+    /// Types `text` in place of text field `id`'s selection.
+    fn replace_selection(&mut self, id: NodeId, text: &str) -> Vec<Event> {
+        let Some(f) = self.field_state(id) else {
+            return Vec::new();
+        };
+        let (lo, hi) = (f.anchor.min(f.focus), f.anchor.max(f.focus));
+        let new = format!("{}{text}{}", &f.value[..lo], &f.value[hi..]);
+        let caret = lo + text.len();
+        self.doc.set_text_input(id, &new, caret, caret);
+        self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+        if new == f.value {
+            return Vec::new();
+        }
+        self.drive_input(Input::Dom(DomEvent::new(
+            id,
+            DomEventData::Input(BlitzInputEvent { value: new }),
+        )))
+    }
+
+    /// Pastes `text` into the focused text field, as `paste` does (SPEC
+    /// §10.2, §11): the clipboard the host read for a `paste`, or the
+    /// terminal's own paste. An `input` drops its line breaks. `None` when
+    /// the surface has no text field with the keyboard: the paste is the
+    /// program's.
+    pub fn paste(&mut self, text: &str) -> Option<Vec<Event>> {
+        if !self.keyboard {
+            return None;
+        }
+        let id = self.focused()?;
+        let multiline = match self.control_kind(id) {
+            Control::Text => false,
+            Control::TextArea => true,
+            _ => return None,
+        };
+        let text = if multiline {
+            text.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            text.replace(['\r', '\n'], "")
+        };
+        self.wake_caret(Instant::now());
+        let before = self.field_state(id)?;
+        let events = self.replace_selection(id, &text);
+        self.edited(id, before, None);
+        self.bring_into_view(id);
+        self.dirty = true;
+        Some(events)
     }
 
     /// Does an action of SPEC §10.2 in the text field `id`, for `key`; with
@@ -2388,11 +2575,47 @@ impl Surface {
         multiline: bool,
         extend: bool,
     ) -> Vec<Event> {
+        let run = match action {
+            keys::INSERT | "newline" => Some(Run::Typing),
+            "delete-char-backward" | "delete-char-forward" => Some(Run::Deleting),
+            "undo" | "redo" => return self.undo(id, action == "redo"),
+            _ => None,
+        };
+        let before = self.field_state(id);
+        let events = self.field_edit(id, key, action, multiline, extend);
+        if let Some(before) = before {
+            self.edited(id, before, run);
+        }
+        events
+    }
+
+    /// Does an action of SPEC §10.2 but `undo` and `redo` in the text
+    /// field `id`, for `key`.
+    fn field_edit(
+        &mut self,
+        id: NodeId,
+        key: &Key,
+        action: &str,
+        multiline: bool,
+        extend: bool,
+    ) -> Vec<Event> {
         let typed = |name| Key {
             name,
             mods: Mods::default(),
         };
         match action {
+            "cut" => {
+                let Some(f) = self.field_state(id) else {
+                    return Vec::new();
+                };
+                let (lo, hi) = (f.anchor.min(f.focus), f.anchor.max(f.focus));
+                self.cut = Some(f.value[lo..hi].to_string());
+                self.replace_selection(id, "")
+            }
+            "paste" => {
+                self.paste_wanted = true;
+                Vec::new()
+            }
             // Typing is Blitz's: a selection is replaced, a password masked.
             keys::INSERT => self.drive_key(key),
             "newline" => self.drive_key(&typed(KeyName::Enter)),
@@ -2425,12 +2648,7 @@ impl Surface {
                 let Some((value, anchor, focus)) = self.doc.text_input_selection(id) else {
                     return Vec::new();
                 };
-                let password = self
-                    .doc
-                    .get_node(id)
-                    .and_then(|n| n.element_data())
-                    .and_then(|e| e.text_input_data())
-                    .is_some_and(|t| t.password().is_some());
+                let password = self.password(id);
                 let field = edit::Field {
                     value: &value,
                     anchor,
