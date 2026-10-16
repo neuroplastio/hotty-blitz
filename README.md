@@ -10,6 +10,7 @@ text, and renders on the CPU. This repository holds:
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | `blitz/` | the patches on Blitz: among them, a delta costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
+| `parley/` | the patch on parley, the text layout: a cluster with emoji presentation takes a colour font before a text font ([parley/README.md](parley/README.md)) |
 | `vello/` | the patches on vello_cpu, the renderer: flushing waits for its workers without spinning, and at most 4 of them ([vello/README.md](vello/README.md)) |
 
 The host speaks HOTTY 0.2 and no other version. It answers a query that
@@ -23,7 +24,7 @@ Needs [mise](https://mise.jdx.dev) and a checkout of `neuroplastio/hotty`
 next to this repository (or `HOTTY_DIR`).
 
 ```
-mise install && make release       # also patches Blitz at ../blitz and vello_cpu at ../vello_cpu
+mise install && make release       # also patches Blitz at ../blitz, parley at ../parley and vello_cpu at ../vello_cpu
 ./target/release/hotty run -- python3 ../hotty/examples/dash.py
 ./target/release/hotty render ../hotty/corpus/01-card.html -o card.png
 ./target/release/hotty dump capture.bin     # the HOTTY messages in a captured stream
@@ -238,5 +239,6 @@ Chromium. The known gaps:
 
 Apache-2.0 ([LICENSE](LICENSE)).
 - Blitz is MIT OR Apache-2.0, and the patch in `blitz/` is Apache-2.0.
+- parley is Apache-2.0 OR MIT, and the patch in `parley/` is Apache-2.0 OR MIT.
 - vello_cpu is Apache-2.0 OR MIT, and the patch in `vello/` is Apache-2.0.
 - Stylo is MPL-2.0 and stays a dependency.

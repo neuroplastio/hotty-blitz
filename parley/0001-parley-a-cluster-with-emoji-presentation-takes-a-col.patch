@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Fri, 16 Oct 2026 12:35:30 +0200
+Subject: [PATCH] parley: a cluster with emoji presentation takes a colour font
+ before a text font
+
+An emoji-presentation cluster (Emoji_Presentation, VS16, a keycap, a
+flag, a ZWJ sequence) queried the style's font stack first and the
+emoji generic family last, and the first font with complete coverage
+won. A text font with outlines for it (DejaVu Sans has the faces, a
+monospace generic catches them) then drew it in monochrome. Browsers
+and Ghostty's own resolver prefer a colour face.
+
+Select the first font in the query that has colour glyphs (COLR, CBDT,
+sbix or SVG, fontique's QueryFont::has_color_glyphs) and covers the
+cluster, from the stack or the emoji family; only when none does, fall
+back to the best coverage as before. Text-presentation clusters (VS15,
+text-default bases such as U+263A) are untouched.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ fontique/src/collection/query.rs | 12 ++++++++++
+ parley/src/shape/mod.rs          | 40 ++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+)
+
+diff --git a/fontique/src/collection/query.rs b/fontique/src/collection/query.rs
+index 5f72752..c54405c 100644
+--- a/fontique/src/collection/query.rs
++++ b/fontique/src/collection/query.rs
+@@ -257,6 +257,18 @@ impl QueryFont {
+     pub fn charmap(&self) -> Option<Charmap<'_>> {
+         self.charmap_index.charmap(self.blob.as_ref())
+     }
++
++    /// Returns `true` if the font draws colour glyphs: it has a `COLR`,
++    /// `CBDT`, `sbix` or `SVG ` table, as colour emoji fonts do.
++    pub fn has_color_glyphs(&self) -> bool {
++        use read_fonts::{FontRef, types::Tag};
++        let Ok(font) = FontRef::from_index(self.blob.as_ref(), self.index) else {
++            return false;
++        };
++        [b"COLR", b"CBDT", b"sbix", b"SVG "]
++            .into_iter()
++            .any(|tag| font.table_data(Tag::new(tag)).is_some())
++    }
+ }
+ 
+ /// Loads every font in `family` matching `attributes` (all coverage variants of the best match).
+diff --git a/parley/src/shape/mod.rs b/parley/src/shape/mod.rs
+index 1c6e945..ff8e873 100644
+--- a/parley/src/shape/mod.rs
++++ b/parley/src/shape/mod.rs
+@@ -273,6 +273,10 @@ struct FontSelector<'a, 'b, B: Brush> {
+     /// The font to use if [`Self::query`] doesn't return any font.
+     last_resort_font: LastResortFont,
+ 
++    /// The colour font chosen for the last emoji cluster, held here so that
++    /// the selection can return a reference to it.
++    emoji_font: Option<QueryFont>,
++
+     analysis_data_sources: &'a AnalysisDataSources,
+ }
+ 
+@@ -300,6 +304,7 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
+             features: &[],
+             query_yields_font: None,
+             last_resort_font: LastResortFont::Unresolved,
++            emoji_font: None,
+ 
+             analysis_data_sources,
+         }
+@@ -406,6 +411,41 @@ impl<'a, 'b, B: Brush> parley_engine::FontSelector for FontSelector<'a, 'b, B> {
+         let mut selected_font = None;
+         let mut best_coverage = Coverage::NONE;
+ 
++        // A cluster with emoji presentation takes the first colour font that
++        // covers it, from the stack or the emoji fallback, before any text
++        // font that has outlines for it (as browsers do). Only when none
++        // covers it does it fall back to the best text font below.
++        if is_emoji {
++            let mut colour = None;
++            self.query.matches_with(|font| {
++                if !font.has_color_glyphs() {
++                    return fontique::QueryStatus::Continue;
++                }
++                let Some(charmap) = font.charmap() else {
++                    return fontique::QueryStatus::Continue;
++                };
++                let coverage = cluster.calculate_coverage(
++                    |ch| charmap.map(ch).is_some_and(|g| g != 0),
++                    self.analysis_data_sources,
++                );
++                if coverage.is_complete() {
++                    colour = Some(font.clone());
++                    fontique::QueryStatus::Stop
++                } else {
++                    fontique::QueryStatus::Continue
++                }
++            });
++            if let Some(font) = colour {
++                self.emoji_font = Some(font);
++                let font = self.emoji_font.as_ref().unwrap();
++                return Some(FontInstanceRef {
++                    data: &font.blob,
++                    index: font.index,
++                    synthesis: &font.synthesis,
++                });
++            }
++        }
++
+         self.query.matches_with(|font| {
+             let Some(charmap) = font.charmap() else {
+                 return fontique::QueryStatus::Continue;

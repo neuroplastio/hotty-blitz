@@ -39,6 +39,16 @@ blitz-traits = { path = "../blitz/packages/blitz-traits" }
 debug_timer = { path = "../blitz/packages/debug_timer" }
 stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 
+# The parley fork (../parley, branch `hotty`, made by scripts/parley-fork.sh
+# from the revision Blitz pins and the patches in parley/): a cluster with
+# emoji presentation takes a colour font before a text font.
+[patch."https://github.com/linebender/parley"]
+parley = { path = "../parley/parley" }
+fontique = { path = "../parley/fontique" }
+parley_engine = { path = "../parley/parley_engine" }
+parley_data = { path = "../parley/parley_data" }
+parley_emoji = { path = "../parley/parley_emoji" }
+
 # The vello_cpu fork (../vello_cpu, branch `hotty`, made by
 # scripts/vello-fork.sh from the published package and the patches in
 # vello/): flushing waits for the workers without spinning, and a context

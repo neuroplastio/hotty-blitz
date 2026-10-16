@@ -13,8 +13,9 @@ check: build test clippy test-pty fuzz   ## the gate
 hotty:
 	@test -n "$(HOTTY_DIR)" || { echo "no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
 
-blitz:   ## the forks Cargo.toml patches in: Blitz at ../blitz, vello_cpu at ../vello_cpu (blitz/, vello/)
+blitz:   ## the forks Cargo.toml patches in: Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu (blitz/, parley/, vello/)
 	@test -f ../blitz/packages/blitz-dom/src/layout/speculate.rs || scripts/blitz-fork.sh
+	@test "$$(git -C ../parley rev-list --count 332c1c7d9758839577e7979d211d1e3bbf4818af..hotty 2>/dev/null)" = "$$(ls parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
 	@test "$$(git -C ../vello_cpu rev-list --count published..hotty 2>/dev/null)" = "$$(ls vello/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
 
 build: blitz
