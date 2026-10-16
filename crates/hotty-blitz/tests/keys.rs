@@ -1,4 +1,4 @@
-//! Prefixes, menus and edit commands (SPEC §10.5, §10.6), and the settings
+//! Prefixes, menus and edit commands (SPEC §10.5–§10.7), and the settings
 //! a host reports (§4): what the terminal embedding the host sees.
 
 mod common;
@@ -103,27 +103,36 @@ fn a_prefix_ends_with_the_keyboard() {
     assert!(h.key_bytes("x", b" ").consumed);
 }
 
-/// `a=menu` shows the program's menu, whatever has the keyboard; a key the
-/// menu does not list, typed to a surface or to the cells, hides it, and so
-/// does Escape or no body (SPEC §10.5).
+/// A level of the program's menu shows whatever has the keyboard; a key it
+/// does not list, typed to a surface or to the cells, hides it, and so does
+/// Escape, or `show=0`, or the screen changing (SPEC §10.7).
 #[test]
-fn a_programs_menu() {
+fn a_level_of_the_programs_menu() {
     let mut h = host(KeySettings {
         menus: true,
         ..KeySettings::default()
     });
     surface(&mut h, DOC);
-    // {"seq": ["Space"], "label": "File", "items": [{"key": "n", "label": "New", "group": false, "enabled": true}]}
-    let menu = b"\x83\xa3seq\x91\xa5Space\xa5label\xa4File\xa5items\x91\x84\xa3key\xa1n\xa5label\xa3New\xa5group\xc2\xa7enabled\xc3";
+    // {"label": "File", "items": [{"key": "Space", "label": "Leader", "enabled": true,
+    //   "items": [{"key": "n", "label": "New", "name": "new", "enabled": true}]}]}
+    let menu = b"\x82\xa5label\xa4File\xa5items\x91\x84\xa3key\xa5Space\xa5label\xa6Leader\xa7enabled\xc3\xa5items\x91\x84\xa3key\xa1n\xa5label\xa3New\xa4name\xa3new\xa7enabled\xc3";
+    let show = b"\x81\xa3seq\x91\xa5Space";
     let shown = |h: &mut Host| {
         h.render_dirty(&mut |_, _, _| {});
         h.take_events()
     };
     let hidden = vec![Effect::Delete { surface: MENU.into() }];
+    let level = |h: &mut Host| {
+        h.handle(&cmd(&[("a", "menu"), ("q", "2"), ("show", "1")], show));
+    };
+    // The menu alone shows nothing.
     h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    assert!(shown(&mut h).is_empty());
+    level(&mut h);
     assert!(h.has_dirty());
-    assert!(matches!(shown(&mut h).as_slice(), [Effect::Menu { rows: 2, .. }]));
     // A title row, then the key that can follow.
+    let fx = shown(&mut h);
+    assert!(matches!(fx.as_slice(), [Effect::Menu { rows: 2, .. }]), "{fx:?}");
     assert!(h.text_rows(MENU).is_empty(), "the menu is no program's surface");
     // Listed keys leave it, to the cells and to a surface.
     h.cells_key("n");
@@ -136,45 +145,49 @@ fn a_programs_menu() {
     assert!(o.consumed);
     assert_eq!(shown(&mut h), hidden);
     // Escape, to the cells.
-    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    level(&mut h);
     assert_eq!(shown(&mut h).len(), 1);
     h.cells_key("Escape");
     assert_eq!(shown(&mut h), hidden);
     // A key to the cells that it does not list.
-    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    level(&mut h);
     shown(&mut h);
     h.cells_key("q");
     assert_eq!(shown(&mut h), hidden);
-    // `a=menu` with no body hides it, and the screen changing does.
-    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    // `show=0` hides it, and so does the screen changing.
+    level(&mut h);
     shown(&mut h);
-    h.handle(&cmd(&[("a", "menu"), ("q", "2")], b""));
+    h.handle(&cmd(&[("a", "menu"), ("q", "2"), ("show", "0")], b""));
     assert_eq!(shown(&mut h), hidden);
-    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    level(&mut h);
     shown(&mut h);
-    h.hide_program_menu();
+    h.set_screen(true);
     assert_eq!(shown(&mut h), hidden);
-    // Not a msgpack map: EINVAL, and so is a field of another type.
+    // Not a msgpack map: EINVAL, and so is a field of another type, and a
+    // seq that is not strs.
     for bad in [&b"\x91\x01"[..], b"\x81\xa5items\x91\x01", b"\x81\xa5label\x01"] {
         let r = replies(&h.handle(&cmd(&[("a", "menu")], bad)));
         assert_eq!(r[0].get("a"), Some("err"), "{bad:02x?}");
     }
+    let r = replies(&h.handle(&cmd(&[("a", "menu"), ("show", "1")], b"\x81\xa3seq\x91\x01")));
+    assert_eq!(r[0].get("a"), Some("err"));
     // A host whose terminal shows none knows no `a=menu`.
     let mut h = host(KeySettings::default());
     let r = replies(&h.handle(&cmd(&[("a", "menu")], menu)));
     assert_eq!(r[0].get("a"), Some("err"));
 }
 
-/// Escape is a key like any other for the menu.
+/// Escape is a key like any other for the level.
 #[test]
-fn a_key_of_a_surface_without_a_name_hides_the_menu_too() {
+fn a_key_of_a_surface_without_a_name_hides_the_level_too() {
     let mut h = host(KeySettings {
         menus: true,
         ..KeySettings::default()
     });
     surface(&mut h, DOC);
-    let menu = b"\x81\xa5items\x91\x81\xa3key\xa1n";
+    let menu = b"\x81\xa5items\x91\x82\xa3key\xa1n\xa5label\xa1N";
     h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    h.handle(&cmd(&[("a", "menu"), ("q", "2"), ("show", "1")], b""));
     h.render_dirty(&mut |_, _, _| {});
     h.take_events();
     let other = Key {

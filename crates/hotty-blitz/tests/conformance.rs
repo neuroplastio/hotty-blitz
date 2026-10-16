@@ -349,6 +349,42 @@ fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
     check_events(step, &events(&from_host(&sent)?))
 }
 
+/// The program's menu (SPEC §10.7): the level the host shows, or a pick of
+/// an item by its name, as a palette would.
+fn menu_step(host: &mut Host, step: &Value) -> Result<(), String> {
+    host.render_dirty(&mut |_, _, _| {});
+    match step["menu"].as_str().unwrap() {
+        "shown" => {
+            let got = host.menu_shown().map(|items| {
+                Value::Array(
+                    items
+                        .iter()
+                        .map(|i| {
+                            serde_json::json!({
+                                "key": i.key,
+                                "label": i.label,
+                                "group": i.group,
+                                "enabled": i.enabled,
+                            })
+                        })
+                        .collect(),
+                )
+            });
+            let got = got.unwrap_or(Value::Null);
+            if got == step["expect"] {
+                Ok(())
+            } else {
+                Err(format!("menu shown: want {}, got {got}", step["expect"]))
+            }
+        }
+        "pick" => {
+            let sent = host.menu_pick(step["name"].as_str().unwrap()).unwrap_or_default();
+            check_events(step, &events(&from_host(&sent)?))
+        }
+        other => Err(format!("unknown menu step {other}")),
+    }
+}
+
 fn check_terminal(step: &Value, terminal: bool) -> Result<(), String> {
     match step.get("terminal").and_then(Value::as_bool) {
         Some(want) if want != terminal => Err(format!("terminal: want {want}, got {terminal}")),
@@ -408,6 +444,10 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
         sent.extend(Host::command_event(&c, Some(&name), None));
         terminal = false;
     }
+    // A key that reaches the cells may hide the level shown (SPEC §10.7).
+    if terminal {
+        host.cells_key(&name);
+    }
     check_terminal(step, terminal)?;
     check_events(step, &events(&from_host(&sent)?))
 }
@@ -464,6 +504,8 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         touch_step(host, mouse, step)
     } else if step.get("key").is_some() {
         key_step(host, mouse, step)
+    } else if step.get("menu").is_some() {
+        menu_step(host, step)
     } else if let Some(ctl) = step.get("send") {
         let mut control = Control::default();
         for (k, v) in ctl.as_object().unwrap() {

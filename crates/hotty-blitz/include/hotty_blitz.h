@@ -49,10 +49,15 @@ typedef struct {
    * Keep them per screen; a key of one goes to the program as
    * hotty_host_command. */
   void (*edit)(void *ctx, const uint8_t *names, size_t len);
-  /* Show the program's menu, the surface `surface`, cols x rows cells, at
-   * the bottom right of the screen, above everything (SPEC 10.5). Its
-   * pixels come from hotty_host_render; remove hides it. */
+  /* Show the level of the program's menu that its keys reach, the surface
+   * `surface`, cols x rows cells, at the bottom right of the screen, above
+   * everything (SPEC 10.7). Its pixels come from hotty_host_render; remove
+   * hides it. */
   void (*menu)(void *ctx, const char *surface, uint16_t cols, uint16_t rows);
+  /* Show the palette, the surface `surface`, cols x rows cells, at the top
+   * centre of the screen, above everything, the menu included (SPEC 10.7).
+   * Its pixels come from hotty_host_render; remove hides it. */
+  void (*palette)(void *ctx, const char *surface, uint16_t cols, uint16_t rows);
 } hotty_effects;
 
 typedef struct { uint32_t x, y, w, h; } hotty_rect;
@@ -231,8 +236,8 @@ void hotty_host_set_waker(hotty_host *h, void (*wake)(void *ctx), void *ctx);
  * (Command) rather than Control; edit, the edit shortcuts as a data-keys
  * value of edit actions ("Control+c=copy ..."), NULL for the defaults;
  * commands, the terminal takes a=edit (fx->edit, hotty_host_command);
- * menus, it shows the program's menu (fx->menu), which the capabilities
- * then list as the feature "menu". A program that asked for the
+ * menus, it shows the program's menu (fx->menu, fx->palette), which the
+ * capabilities then list as the feature "menu". A program that asked for the
  * capabilities hears what changed ("caps") through fx. */
 void hotty_host_set_keys(hotty_host *h, bool meta, const char *edit, bool commands, bool menus,
                          const hotty_effects *fx);
@@ -244,12 +249,37 @@ const char *hotty_host_edit_command(hotty_host *h, const uint8_t *name, size_t l
  * paste, the clipboard's UTF-8 `text` (NULL when it holds no text). */
 void hotty_host_command(const char *name, const uint8_t *key, size_t key_len,
                         const uint8_t *text, size_t text_len, const hotty_effects *fx);
-/* A key that reaches the program in the cells while its menu may show
- * (SPEC 10.5): Escape, and a key the menu does not list, hide it. Keys for a
- * surface hide it as well, through hotty_host_key_pressed and
+/* A key that reaches the program in the cells while a level of its menu may
+ * show (SPEC 10.7): Escape, and a key the level does not list, hide it.
+ * Keys for a surface hide it as well, through hotty_host_key_pressed and
  * hotty_host_key_bytes. */
 void hotty_host_cells_key(hotty_host *h, const uint8_t *name, size_t len);
-/* The terminal's screen changed: the program's menu hides (SPEC 10.5). */
-void hotty_host_hide_menu(hotty_host *h);
+/* The terminal's screen changed, or is told for the first time (SPEC 10.7):
+ * leaving the alternate screen drops its menu, and any change hides the
+ * level shown and closes the palette. */
+void hotty_host_set_screen(hotty_host *h, bool alt);
+/* Picks the first item of the program's menu that has the UTF-8 name,
+ * depth-first (SPEC 10.7). If it is enabled, sends the program `command`
+ * with exactly {"name": name} through fx's reply, as hotty_host_command
+ * does with no key, and returns true; else sends nothing and returns false.
+ * A terminal routes a pick of copy or paste through its own Edit menu
+ * (SPEC 10.6): the selection first, and the clipboard's text. */
+bool hotty_host_pick(hotty_host *h, const uint8_t *name, size_t len, const hotty_effects *fx);
+/* Opens the palette over the current screen's menu, or closes it (SPEC
+ * 10.7); returns whether it is open now. False when the host takes no menus.
+ * A menu the program sends while it is open refreshes it, keeping the
+ * filter; a screen change closes it. */
+bool hotty_host_palette(hotty_host *h, bool open);
+bool hotty_host_palette_open(hotty_host *h);
+/* A key while the palette is open (SPEC 10.7): name as SPEC 10.4 names it
+ * (empty for a key that only types text), text what it types (empty for
+ * none); either may be NULL with length 0. Nothing typed reaches the program.
+ * Returns the name of the item Enter picked, which closes the palette,
+ * NUL-terminated and owned by the host until the next call into it; NULL
+ * otherwise. The terminal then sends the pick as its Edit menu sends a
+ * command (hotty_host_command, no key), so copy and paste are as SPEC 10.6
+ * says. */
+const char *hotty_host_palette_key(hotty_host *h, const uint8_t *name, size_t name_len,
+                                   const uint8_t *text, size_t text_len);
 
 #endif

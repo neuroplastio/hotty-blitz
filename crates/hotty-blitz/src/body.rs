@@ -1,6 +1,6 @@
 //! The bodies of HOTTY (SPEC §3.3): the capabilities (§4), an error (§3.6)
 //! and an event's detail (§9) that a host sends, and the delta (§6.1) and
-//! the menu (§10.5) that a program does. Each is one msgpack map, and each
+//! the menu (§10.7) that a program does. Each is one msgpack map, and each
 //! of its fields has a type, as the spec's tables give it: an int goes out
 //! as an int, a float as a float even when it is whole (`scale: 2.0`), and
 //! a field the host has nothing for is left out, never sent as nil.
@@ -92,25 +92,37 @@ pub struct Changed {
     pub edit: Option<Edit>,
 }
 
-/// A which-key menu (SPEC §10.5), myelin's level: the keys typed so far,
-/// their group's label, and the keys that can follow them. A program sends
-/// one with `a=menu`.
+/// A program's menu (SPEC §10.7), myelin's `Tree` with a name for each
+/// binding: what it is for, and its items in the order to show them. A
+/// program sends one with `a=menu`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Menu {
-    pub seq: Vec<String>,
     pub label: String,
     pub items: Vec<MenuItem>,
 }
 
-/// A key a menu lists: the key, what it does, whether more keys follow it,
-/// and whether it does anything now.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// An item of a menu: the key that reaches it after its group's (none for
+/// one no key reaches), what it does, the command a pick sends (none for
+/// one only keys reach), whether it does anything now, and the items after
+/// it, which make it a group.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MenuItem {
     pub key: String,
     pub label: String,
-    pub group: bool,
+    pub name: String,
     pub enabled: bool,
+    pub items: Vec<MenuItem>,
 }
+
+impl MenuItem {
+    /// Whether keys follow it: it has items.
+    pub fn group(&self) -> bool {
+        !self.items.is_empty()
+    }
+}
+
+/// How deep a menu's items nest, the top level's being one (SPEC §10.7).
+pub const MENU_DEPTH: usize = 8;
 
 /// One cell's size in CSS pixels (SPEC §4: `cellcss`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -533,55 +545,71 @@ pub fn decode_delta(body: &[u8]) -> Result<Vec<Op>, Fault> {
     Ok(out)
 }
 
-/// Reads a menu's body (SPEC §10.5): one msgpack map ([`read`]),
-/// `{"seq": [str], "label": str, "items": [item]}` with each item
-/// `{"key": str, "label": str, "group": bool, "enabled": bool}`. A field
-/// left out is empty, false for `group` and true for `enabled`; one that
-/// holds another type fails the menu.
-pub fn decode_menu(body: &[u8]) -> Result<Menu, String> {
-    let root = read(body)?;
-    fn text(m: &Value, name: &str) -> Result<String, String> {
-        match m.field(name) {
-            None => Ok(String::new()),
-            Some(Value::Str(s)) => Ok(s.clone()),
-            Some(_) => Err(format!("{name} is not a str")),
-        }
+/// A str field of a body's map: empty when it is not there.
+fn text(m: &Value, name: &str) -> Result<String, String> {
+    match m.field(name) {
+        None => Ok(String::new()),
+        Some(Value::Str(s)) => Ok(s.clone()),
+        Some(_) => Err(format!("{name} is not a str")),
     }
-    fn flag(m: &Value, name: &str, default: bool) -> Result<bool, String> {
-        match m.field(name) {
-            None => Ok(default),
-            Some(Value::Bool(b)) => Ok(*b),
-            Some(_) => Err(format!("{name} is not a bool")),
-        }
-    }
-    let list = |name: &str| match root.field(name) {
-        None => Ok(&[][..]),
+}
+
+/// An array field of a body's map: empty when it is not there.
+fn list<'a>(m: &'a Value, name: &str) -> Result<&'a [Value], String> {
+    match m.field(name) {
+        None => Ok(&[]),
         Some(Value::Array(a)) => Ok(a.as_slice()),
         Some(_) => Err(format!("{name} is not an array")),
-    };
-    let seq = list("seq")?
+    }
+}
+
+/// Reads a menu's body (SPEC §10.7): one msgpack map ([`read`]),
+/// `{"label": str, "items": [item]}` with each item `{"key": str,
+/// "label": str, "name": str, "enabled": bool, "items": [item]}`. A field
+/// left out is empty, and false for `enabled`; one that holds another type
+/// fails the menu, and so do items nested past [`MENU_DEPTH`].
+pub fn decode_menu(body: &[u8]) -> Result<Menu, String> {
+    let root = read(body)?;
+    fn items(of: &Value, depth: usize) -> Result<Vec<MenuItem>, String> {
+        let list = list(of, "items")?;
+        if depth > MENU_DEPTH && !list.is_empty() {
+            return Err(format!("items nest more than {MENU_DEPTH} deep"));
+        }
+        list.iter()
+            .map(|i| {
+                if !matches!(i, Value::Map(_)) {
+                    return Err("an item is not a map".to_string());
+                }
+                Ok(MenuItem {
+                    key: text(i, "key")?,
+                    label: text(i, "label")?,
+                    name: text(i, "name")?,
+                    enabled: match i.field("enabled") {
+                        None => false,
+                        Some(Value::Bool(b)) => *b,
+                        Some(_) => return Err("enabled is not a bool".to_string()),
+                    },
+                    items: items(i, depth + 1)?,
+                })
+            })
+            .collect()
+    }
+    Ok(Menu {
+        label: text(&root, "label")?,
+        items: items(&root, 1)?,
+    })
+}
+
+/// Reads the body of `a=menu:show=1` (SPEC §10.7): `{"seq": [str]}`, the
+/// keys typed so far. No body is none.
+pub fn decode_seq(body: &[u8]) -> Result<Vec<String>, String> {
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+    list(&read(body)?, "seq")?
         .iter()
         .map(|k| k.str().map(str::to_string).ok_or_else(|| "seq holds a non-str".to_string()))
-        .collect::<Result<_, _>>()?;
-    let items = list("items")?
-        .iter()
-        .map(|i| {
-            if !matches!(i, Value::Map(_)) {
-                return Err("an item is not a map".to_string());
-            }
-            Ok(MenuItem {
-                key: text(i, "key")?,
-                label: text(i, "label")?,
-                group: flag(i, "group", false)?,
-                enabled: flag(i, "enabled", true)?,
-            })
-        })
-        .collect::<Result<_, String>>()?;
-    Ok(Menu {
-        seq,
-        label: text(&root, "label")?,
-        items,
-    })
+        .collect()
 }
 
 #[cfg(test)]

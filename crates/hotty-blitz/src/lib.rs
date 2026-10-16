@@ -31,7 +31,7 @@ pub use input::{
     Event, Key, KeyName, KeyOutcome, Mods, PointerKind, Touch, TouchOutcome, TouchPhase,
     WheelOutcome,
 };
-pub use menu::MENU;
+pub use menu::{MENU, PALETTE, PaletteRow, Shown};
 pub use surface::{Damage, Frame, Timings};
 
 /// The HOTTY version this host speaks, its only one (SPEC §4): a query
@@ -141,9 +141,9 @@ pub struct KeySettings {
     /// §10.6): the capabilities report `edit`, and the host reads `a=edit`
     /// ([`Effect::Edit`]).
     pub commands: bool,
-    /// The terminal shows a program's menu ([`Effect::Menu`], `a=menu`,
-    /// SPEC §10.5), which the capabilities then report as the feature
-    /// `menu`.
+    /// The terminal shows a program's menu ([`Effect::Menu`],
+    /// [`Effect::Palette`], `a=menu`, SPEC §10.7), which the capabilities
+    /// then report as the feature `menu`.
     pub menus: bool,
 }
 
@@ -186,11 +186,16 @@ pub enum Effect {
     /// as [`Host::command_event`], and drops them on leaving the alternate
     /// screen and on a full reset.
     Edit(Vec<String>),
-    /// Show the program's menu, the surface [`MENU`], `cols`×`rows` cells,
-    /// at the bottom right of the terminal's viewport, above everything
-    /// (SPEC §10.5). Its pixels come from [`Host::render_dirty`];
-    /// [`Effect::Delete`] hides it.
+    /// Show the level of the program's menu that the keys typed reach, the
+    /// surface [`MENU`], `cols`×`rows` cells, at the bottom right of the
+    /// terminal's viewport, above everything (SPEC §10.7). Its pixels come
+    /// from [`Host::render_dirty`]; [`Effect::Delete`] hides it.
     Menu { surface: String, cols: u16, rows: u16 },
+    /// Show the palette, the surface [`PALETTE`], `cols`×`rows` cells, at
+    /// the top centre of the terminal's viewport, above everything, the
+    /// menu included (SPEC §10.7). Its pixels come from
+    /// [`Host::render_dirty`]; [`Effect::Delete`] hides it.
+    Palette { surface: String, cols: u16, rows: u16 },
 }
 
 /// What [`Host::copy_key`] makes of a key.
@@ -276,7 +281,7 @@ pub struct Host {
     heard: Option<Heard>,
     /// `caps` events that settings changed, for [`Host::take_events`].
     owed: Vec<Effect>,
-    /// The program's menu (SPEC §10.5).
+    /// The program's menu (SPEC §10.7).
     menu: MenuState,
 }
 
@@ -294,17 +299,36 @@ struct Heard {
     edit: Option<body::Edit>,
 }
 
-/// The program's menu: what `a=menu` sent, the one shown with its surface,
-/// and what showing or hiding it leaves the embedder to do.
+/// The program's menu: what `a=menu` sent on each screen, the level shown
+/// and the palette with their surfaces, and what showing or hiding them
+/// leaves the embedder to do.
 #[derive(Default)]
 struct MenuState {
-    /// The program's (`a=menu`, SPEC §10.5), shown while the terminal
-    /// shows menus.
-    program: Option<body::Menu>,
-    shown: Option<(body::Menu, surface::Surface)>,
-    /// Something happened that may change it: Host::render_dirty looks.
+    /// The menus of the main screen and the alternate screen (`a=menu`,
+    /// SPEC §10.7), kept while the terminal shows menus.
+    main: Option<body::Menu>,
+    alt: Option<body::Menu>,
+    /// The terminal is on the alternate screen.
+    on_alt: bool,
+    /// The keys of the level shown (`a=menu:show=1`).
+    seq: Option<Vec<String>>,
+    shown: Option<(menu::Level, surface::Surface)>,
+    palette: Option<menu::Palette>,
+    palette_shown: Option<(menu::PaletteView, surface::Surface)>,
+    /// Something happened that may change them: Host::render_dirty looks.
     stale: bool,
     effects: Vec<Effect>,
+}
+
+impl MenuState {
+    /// The menu of the screen the terminal is on.
+    fn current(&self) -> Option<&body::Menu> {
+        if self.on_alt { &self.alt } else { &self.main }.as_ref()
+    }
+
+    fn current_mut(&mut self) -> &mut Option<body::Menu> {
+        if self.on_alt { &mut self.alt } else { &mut self.main }
+    }
 }
 
 /// Notes that the host now works in `surface`'s document ([`Host::recover`]).
@@ -454,7 +478,10 @@ impl Host {
         }
         self.menu.stale = true;
         if !self.keys.menus {
-            self.menu.program = None;
+            self.menu.main = None;
+            self.menu.alt = None;
+            self.menu.seq = None;
+            self.menu.palette = None;
         }
         self.caps_changed(false)
     }
@@ -538,46 +565,183 @@ impl Host {
     }
 
     /// A key that reaches the program in the cells, named as SPEC §10.4
-    /// names it, while its menu shows (SPEC §10.5): Escape, and a key the
-    /// menu does not list, hide it. The key still reaches the program.
+    /// names it, while it shows a level of its menu (SPEC §10.7): Escape,
+    /// and a key the level does not list, hide it. Keys that reach no group
+    /// list none. The key still reaches the program.
     pub fn cells_key(&mut self, name: &str) {
-        let Some(m) = &self.menu.program else {
+        if self.menu.seq.is_none() {
             return;
-        };
+        }
         let p = &self.keys.platform;
         let key = keys::read_key(p, name);
-        let listed = m
-            .items
-            .iter()
-            .any(|i| key.is_some() && keys::read_key(p, &i.key) == key);
+        let listed = self.level().is_some_and(|level| {
+            level
+                .items
+                .iter()
+                .any(|i| key.is_some() && keys::read_key(p, &i.key) == key)
+        });
         if name == "Escape" || !listed {
-            self.menu.program = None;
+            self.hide_level();
+        }
+    }
+
+    /// The level shown hides (SPEC §10.7).
+    pub fn hide_level(&mut self) {
+        if self.menu.seq.take().is_some() {
             self.menu.stale = true;
         }
     }
 
-    /// The terminal's screen changed: the program's menu hides (SPEC
-    /// §10.5).
-    pub fn hide_program_menu(&mut self) {
-        if self.menu.program.take().is_some() {
+    /// The level of the current screen's menu that the keys shown reach.
+    fn level(&self) -> Option<menu::Level> {
+        let seq = self.menu.seq.as_ref()?;
+        menu::level(self.menu.current()?, seq, &self.keys.platform)
+    }
+
+    /// The items of the level shown (SPEC §10.7), keys and labels as the
+    /// program sent them; none when no level shows. The test interface's
+    /// (SPEC §16).
+    #[doc(hidden)]
+    pub fn menu_shown(&self) -> Option<Vec<Shown>> {
+        self.level().map(|l| l.items)
+    }
+
+    /// The terminal's screen changed, or is told for the first time (SPEC
+    /// §10.7): leaving the alternate screen drops its menu, as the edit
+    /// commands taken there are; any change hides the level shown and
+    /// closes the palette.
+    pub fn set_screen(&mut self, alt: bool) {
+        if alt == self.menu.on_alt {
+            return;
+        }
+        if self.menu.on_alt {
+            self.menu.alt = None;
+        }
+        self.menu.on_alt = alt;
+        self.menu.seq = None;
+        self.menu.palette = None;
+        self.menu.stale = true;
+    }
+
+    /// The event `command` (SPEC §10.6, §10.7) of a pick of the item named
+    /// `name`: the first with that name, depth-first. None for an item that
+    /// is not enabled, a name no item has, or no menu.
+    pub fn menu_pick(&self, name: &str) -> Option<Vec<u8>> {
+        if name.is_empty() {
+            return None;
+        }
+        let item = menu::find(&self.menu.current()?.items, name)?;
+        item.enabled.then(|| Host::command_event(name, None, None))
+    }
+
+    /// Opens the palette over the current screen's menu, or closes it
+    /// (SPEC §10.7); whether it is open now. A host whose terminal shows no
+    /// menus has none.
+    pub fn palette(&mut self, open: bool) -> bool {
+        let open = open && self.keys.menus;
+        if open != self.menu.palette.is_some() {
+            self.menu.palette = open.then(|| menu::Palette::open(&self.palette_rows()));
             self.menu.stale = true;
+        }
+        open
+    }
+
+    /// Whether the palette is open.
+    pub fn palette_open(&self) -> bool {
+        self.menu.palette.is_some()
+    }
+
+    /// The rows the palette matches to its filter, as it draws them (all of
+    /// them, not only those in view); none when it is closed. The test
+    /// interface's (SPEC §16).
+    #[doc(hidden)]
+    pub fn palette_matches(&self) -> Vec<PaletteRow> {
+        self.menu
+            .palette
+            .as_ref()
+            .map(|p| p.rows(&self.palette_rows()))
+            .unwrap_or_default()
+    }
+
+    /// The items of the current screen's menu that have a name.
+    fn palette_rows(&self) -> Vec<menu::Row> {
+        self.menu
+            .current()
+            .map(|m| menu::rows(m, &self.keys.platform))
+            .unwrap_or_default()
+    }
+
+    /// A key typed while the palette is open (SPEC §10.7): `name` as §10.4
+    /// names it, empty for a key that only types text, and `text`, what it
+    /// types. Nothing typed reaches the program. The name of the item
+    /// picked, which closes the palette; the terminal then sends it as a
+    /// command ([`Host::command_event`], with no key).
+    pub fn palette_key(&mut self, name: &str, text: &str) -> Option<String> {
+        let rows = self.palette_rows();
+        let p = self.menu.palette.as_mut()?;
+        self.menu.stale = true;
+        match p.key(&rows, name, text) {
+            menu::PaletteKey::Used => None,
+            menu::PaletteKey::Close => {
+                self.menu.palette = None;
+                None
+            }
+            menu::PaletteKey::Pick(name) => {
+                self.menu.palette = None;
+                Some(name)
+            }
         }
     }
 
-    /// Shows the program's menu, or hides it when there is none (SPEC
-    /// §10.5).
+    /// Sets the current screen's menu; an open palette refreshes with the
+    /// filter it has, and the level shown with the keys it has (SPEC
+    /// §10.7).
+    fn set_menu(&mut self, menu: Option<body::Menu>) {
+        let old = self.palette_rows();
+        *self.menu.current_mut() = menu;
+        if self.menu.palette.is_some() {
+            let new = self.palette_rows();
+            if let Some(p) = &mut self.menu.palette {
+                p.refresh(&old, &new);
+            }
+        }
+        self.menu.stale = true;
+    }
+
+    /// Shows the level the keys typed reach and the palette, or hides them
+    /// (SPEC §10.7).
     fn sync_menu(&mut self) {
         if !std::mem::take(&mut self.menu.stale) {
             return;
         }
-        let want = if self.keys.menus {
-            self.menu.program.clone()
-        } else {
-            None
-        };
-        if want.as_ref() == self.menu.shown.as_ref().map(|(m, _)| m) {
-            return;
+        let want = if self.keys.menus { self.level() } else { None };
+        if want.as_ref() != self.menu.shown.as_ref().map(|(l, _)| l) {
+            self.sync_level(want);
         }
+        let want = self.menu.palette.as_ref().map(|p| {
+            let rows = self.palette_rows();
+            p.view(self.menu.current(), &rows)
+        });
+        if want.as_ref() != self.menu.palette_shown.as_ref().map(|(v, _)| v) {
+            self.sync_palette(want);
+        }
+    }
+
+    /// A document of the host's own, placed at once for a terminal that
+    /// draws it as soon as it has its size.
+    fn menu_surface(&self, html: &str) -> surface::Surface {
+        surface::Surface::new(
+            html,
+            &self.config,
+            &self.css,
+            self.store.clone(),
+            self.font_ctx.clone(),
+            (500, 100),
+            0,
+        )
+    }
+
+    fn sync_level(&mut self, want: Option<menu::Level>) {
         if let Some((_, old)) = self.menu.shown.take() {
             self.store.forget_document(old.doc_id());
             if want.is_none() {
@@ -586,19 +750,11 @@ impl Host {
                 });
             }
         }
-        let Some(m) = want else {
+        let Some(l) = want else {
             return;
         };
         // Laid out wide, then cut to the cells what it shows covers.
-        let mut s = surface::Surface::new(
-            &menu::menu_html(&m),
-            &self.config,
-            &self.css,
-            self.store.clone(),
-            self.font_ctx.clone(),
-            (500, 100),
-            0,
-        );
+        let mut s = self.menu_surface(&menu::menu_html(&l, &self.keys.platform));
         let (w, h) = css_cell(&self.config.metrics);
         let (mw, mh) = s.element_size("m").unwrap_or_default();
         let cells = |px: f64, cell: f32| ((px - 0.5) / f64::from(cell.max(1.0))).ceil().clamp(1.0, 500.0) as u16;
@@ -612,7 +768,38 @@ impl Host {
             cols,
             rows,
         });
-        self.menu.shown = Some((m, s));
+        self.menu.shown = Some((l, s));
+    }
+
+    fn sync_palette(&mut self, want: Option<menu::PaletteView>) {
+        let mut was = None;
+        if let Some((v, old)) = self.menu.palette_shown.take() {
+            self.store.forget_document(old.doc_id());
+            was = Some(menu::palette_rows(&v));
+            if want.is_none() {
+                self.menu.effects.push(Effect::Delete {
+                    surface: PALETTE.to_string(),
+                });
+            }
+        }
+        let Some(v) = want else {
+            return;
+        };
+        let mut s = self.menu_surface(&menu::palette_html(&v));
+        let (cols, rows) = (menu::PALETTE_COLS, menu::palette_rows(&v));
+        s.set_size(cols, rows);
+        s.placed = true;
+        s.dirty = true;
+        s.redeliver = true;
+        // The terminal places it again only when its size changes.
+        if was != Some(rows) {
+            self.menu.effects.push(Effect::Palette {
+                surface: PALETTE.to_string(),
+                cols,
+                rows,
+            });
+        }
+        self.menu.palette_shown = Some((v, s));
     }
 
     pub fn config(&self) -> &Config {
@@ -634,7 +821,11 @@ impl Host {
         }
         let font = font_changed(&self.config, &config);
         let css = style::host_css(&config);
-        for s in self.surfaces.values_mut() {
+        let own = [
+            self.menu.shown.as_mut().map(|(_, s)| s),
+            self.menu.palette_shown.as_mut().map(|(_, s)| s),
+        ];
+        for s in self.surfaces.values_mut().chain(own.into_iter().flatten()) {
             s.replace_host_css(&self.css, &css);
             s.dirty = true;
         }
@@ -736,9 +927,12 @@ impl Host {
     /// The next render delivers `surface`'s whole frame, changed or not: for
     /// an adapter that must show it anew and no longer has its pixels.
     pub fn redeliver(&mut self, surface: &str) {
-        if surface == MENU
-            && let Some((_, s)) = &mut self.menu.shown
-        {
+        let shown = match surface {
+            MENU => self.menu.shown.as_mut().map(|(_, s)| s),
+            PALETTE => self.menu.palette_shown.as_mut().map(|(_, s)| s),
+            _ => None,
+        };
+        if let Some(s) = shown {
             s.redeliver = true;
             s.dirty = true;
             return;
@@ -762,6 +956,7 @@ impl Host {
             || !self.owed.is_empty()
             || self.menu.stale
             || self.menu.shown.as_ref().is_some_and(|(_, s)| s.dirty)
+            || self.menu.palette_shown.as_ref().is_some_and(|(_, s)| s.dirty)
             || self.store.has_delivered()
             || self.surfaces.iter().any(|(name, s)| {
                 s.placed
@@ -860,9 +1055,12 @@ impl Host {
             .into_iter()
             .filter_map(|n| self.remove_surface(&n))
             .collect();
-        // The program's menu goes, and the capabilities it asked for: the
-        // next program asks again (SPEC §10.5).
-        self.menu.program = None;
+        // The program's menus go, and the capabilities it asked for: the
+        // next program asks again (SPEC §10.7).
+        self.menu.main = None;
+        self.menu.alt = None;
+        self.menu.seq = None;
+        self.menu.palette = None;
         self.menu.stale = false;
         self.menu.effects.clear();
         self.owed.clear();
@@ -871,6 +1069,12 @@ impl Host {
             self.store.forget_document(s.doc_id());
             effects.push(Effect::Delete {
                 surface: MENU.to_string(),
+            });
+        }
+        if let Some((_, s)) = self.menu.palette_shown.take() {
+            self.store.forget_document(s.doc_id());
+            effects.push(Effect::Delete {
+                surface: PALETTE.to_string(),
             });
         }
         effects
@@ -971,12 +1175,17 @@ impl Host {
                 }
             }
         }
-        if let Some((_, s)) = &mut self.menu.shown
-            && s.dirty
-        {
-            self.working.clear();
-            if let Some(damage) = s.render(&metrics, dark, false, &mut self.renderers) {
-                out(MENU, &s.frame, &damage);
+        for (name, shown) in [
+            (MENU, self.menu.shown.as_mut().map(|(_, s)| s)),
+            (PALETTE, self.menu.palette_shown.as_mut().map(|(_, s)| s)),
+        ] {
+            if let Some(s) = shown
+                && s.dirty
+            {
+                self.working.clear();
+                if let Some(damage) = s.render(&metrics, dark, false, &mut self.renderers) {
+                    out(name, &s.frame, &damage);
+                }
             }
         }
     }
@@ -1453,13 +1662,26 @@ impl Host {
                 effects.push(Effect::Edit(names));
                 Ok((Vec::new(), None))
             }
-            // A program's menu (SPEC §10.5): no body hides it.
+            // A program's menu (SPEC §10.7): no body leaves it none. With
+            // `show`, the level its keys reach shows, or hides.
             "menu" if self.keys.menus => {
-                self.menu.program = if cmd.payload.is_empty() {
-                    None
-                } else {
-                    Some(body::decode_menu(&cmd.payload).map_err(|e| ("EINVAL", format!("bad menu: {e}")))?)
-                };
+                match cmd.get("show") {
+                    None => {
+                        let m = if cmd.payload.is_empty() {
+                            None
+                        } else {
+                            Some(body::decode_menu(&cmd.payload).map_err(|e| ("EINVAL", format!("bad menu: {e}")))?)
+                        };
+                        self.set_menu(m);
+                    }
+                    Some("1") => {
+                        self.menu.seq = Some(
+                            body::decode_seq(&cmd.payload).map_err(|e| ("EINVAL", format!("bad seq: {e}")))?,
+                        );
+                    }
+                    Some("0") => self.menu.seq = None,
+                    Some(other) => return Err(("EINVAL", format!("show={other} is not 0 or 1"))),
+                }
                 self.menu.stale = true;
                 Ok((Vec::new(), None))
             }
@@ -1946,10 +2168,10 @@ impl Host {
         // A key ends a run of clicks: a click it makes is a first (SPEC §9).
         self.click_run = None;
         self.menu.stale = true;
-        // A key the program's menu does not list hides it (SPEC §10.5).
+        // A key the level shown does not list hides it (SPEC §10.7).
         match key.spec_name() {
             Some(name) => self.cells_key(&name),
-            None => self.hide_program_menu(),
+            None => self.hide_level(),
         }
         let Some(s) = self.surfaces.get_mut(surface) else {
             return KeyOutcome::default();
