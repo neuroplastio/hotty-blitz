@@ -29,7 +29,7 @@ rmp-serde = "1.3"
 png = "0.17"
 
 # The Blitz fork (../blitz, branch `hotty`, made by scripts/blitz-fork.sh
-# from the patches in blitz/): construction, layout and rounding stop where a
+# from the patches in mods/blitz/): construction, layout and rounding stop where a
 # change stops, so a delta costs O(depth) instead of O(N).
 [patch."https://github.com/DioxusLabs/blitz"]
 blitz-dom = { path = "../blitz/packages/blitz-dom" }
@@ -40,7 +40,7 @@ debug_timer = { path = "../blitz/packages/debug_timer" }
 stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 
 # The parley fork (../parley, branch `hotty`, made by scripts/parley-fork.sh
-# from the revision Blitz pins and the patches in parley/): a cluster with
+# from the revision Blitz pins and the patches in mods/parley/): a cluster with
 # emoji presentation takes a colour font before a text font.
 [patch."https://github.com/linebender/parley"]
 parley = { path = "../parley/parley" }
@@ -51,7 +51,7 @@ parley_emoji = { path = "../parley/parley_emoji" }
 
 # The vello_cpu fork (../vello_cpu, branch `hotty`, made by
 # scripts/vello-fork.sh from the published package and the patches in
-# vello/): flushing waits for the workers without spinning, and a context
+# mods/vello_cpu/): flushing waits for the workers without spinning, and a context
 # takes at most 4 of them.
 [patch.crates-io]
 vello_cpu = { path = "../vello_cpu" }

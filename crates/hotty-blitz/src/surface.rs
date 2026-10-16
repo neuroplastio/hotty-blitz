@@ -1356,7 +1356,7 @@ impl Surface {
     }
 
     /// Puts every form control that is not in the disabled state in it: it
-    /// then matches `:disabled`, and Blitz (the fork, blitz/README.md)
+    /// then matches `:disabled`, and Blitz (mods/blitz/disabled-state.md)
     /// neither focuses, edits, toggles nor activates it, and paints it
     /// disabled.
     fn disable_controls(&mut self) {

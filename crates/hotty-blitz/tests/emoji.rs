@@ -1,7 +1,8 @@
 //! An emoji draws in colour whatever font the document asks for, as a
 //! browser draws it: a cluster with emoji presentation takes a colour font
-//! before a text font that has outlines for it (the parley fork,
-//! parley/README.md). A text-presentation cluster stays text.
+//! before a text font that has outlines for it (the parley patch,
+//! mods/parley/colour-emoji-first.md). A text-presentation cluster stays
+//! text.
 
 use hotty_blitz::{Config, Host, Metrics};
 use hotty_wire::Command;

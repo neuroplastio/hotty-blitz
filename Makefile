@@ -6,17 +6,29 @@ CARGO ?= mise x -- cargo
 HOTTY_DIR ?= $(abspath $(patsubst %/SPEC.md,%,$(firstword $(wildcard ../hotty/SPEC.md ../../hotty/main/SPEC.md))))
 export HOTTY_DIR
 
-.PHONY: check build release test fuzz clippy fmt corpus bench oracle blitz hotty
+.PHONY: check mods canary build release test fuzz clippy fmt corpus bench oracle blitz hotty
 
-check: build test clippy test-pty fuzz   ## the gate
+check: mods build test clippy test-pty fuzz   ## the gate
 
 hotty:
 	@test -n "$(HOTTY_DIR)" || { echo "no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
 
-blitz:   ## the forks Cargo.toml patches in: Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu (blitz/, parley/, vello/)
+# A set's base, from its mod.md.
+base = $(shell sed -n 's/^base:[[:space:]]*\([^[:space:]\#]*\).*/\1/p' mods/$(1)/mod.md)
+
+blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu
 	@test -f ../blitz/packages/blitz-dom/src/layout/speculate.rs || scripts/blitz-fork.sh
-	@test "$$(git -C ../parley rev-list --count 332c1c7d9758839577e7979d211d1e3bbf4818af..hotty 2>/dev/null)" = "$$(ls parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
-	@test "$$(git -C ../vello_cpu rev-list --count published..hotty 2>/dev/null)" = "$$(ls vello/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
+	@test "$$(git -C ../parley rev-list --count $(call base,parley)..hotty 2>/dev/null)" = "$$(ls mods/parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
+	@test "$$(git -C ../vello_cpu rev-list --count published..hotty 2>/dev/null)" = "$$(ls mods/vello_cpu/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
+
+mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the one we build with, and each set applies on it
+	@python3 scripts/mods.py check
+	@test "$$(sed -n 's/.*github.com\/DioxusLabs\/blitz", rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | sort -u)" = "$(call base,blitz)" || { echo "mods/blitz/mod.md: base is not the rev Cargo.toml pins" >&2; exit 1; }
+	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.toml | sed -n 's/^parley = .*rev = "\([0-9a-f]*\)".*/\1/p')" = "$(call base,parley)" || { echo "mods/parley/mod.md: base is not the rev Blitz pins" >&2; exit 1; }
+	@scripts/canary.sh base
+
+canary: blitz   ## do the sets in mods/ still apply to upstream's latest?
+	@scripts/canary.sh
 
 build: blitz
 	$(CARGO) build --workspace

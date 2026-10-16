@@ -2345,7 +2345,7 @@ fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
 /// document paints it, here at a fractional scale (15x33 px cells, 1.604).
 /// The child's size changes with no style damage of its own; Blitz kept its
 /// old overflow, paint culled it by that, and nothing of it was painted
-/// (blitz/README.md, "Overflow after a relayout").
+/// (mods/blitz/overflow-after-relayout.md).
 #[test]
 fn a_var_delta_lays_out_like_a_fresh_document() {
     let html = |h: u32| {

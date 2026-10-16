@@ -9,9 +9,7 @@ text, and renders on the CPU. This repository holds:
 | `crates/hotty-blitz` | the host of HOTTY 0.2: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
-| `blitz/` | the patches on Blitz: among them, a delta costs the depth of the tree rather than its size ([blitz/README.md](blitz/README.md)) |
-| `parley/` | the patch on parley, the text layout: a cluster with emoji presentation takes a colour font before a text font ([parley/README.md](parley/README.md)) |
-| `vello/` | the patches on vello_cpu, the renderer: flushing waits for its workers without spinning, and at most 4 of them ([vello/README.md](vello/README.md)) |
+| [`mods/`](mods/) | our patches on Blitz, parley (its text layout) and vello_cpu (its renderer), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
 The host speaks HOTTY 0.2 and no other version. It answers a query that
 lists 0.2 among the versions its program speaks (`a=q:n=1:v=0.2`, SPEC §4)
@@ -238,7 +236,7 @@ Chromium. The known gaps:
 ## Licence
 
 Apache-2.0 ([LICENSE](LICENSE)).
-- Blitz is MIT OR Apache-2.0, and the patch in `blitz/` is Apache-2.0.
-- parley is Apache-2.0 OR MIT, and the patch in `parley/` is Apache-2.0 OR MIT.
-- vello_cpu is Apache-2.0 OR MIT, and the patch in `vello/` is Apache-2.0.
+- Blitz is MIT OR Apache-2.0, parley Apache-2.0 OR MIT, and vello_cpu
+  Apache-2.0 OR MIT. Our patches on each, in `mods/`, are offered under that
+  upstream's licence, the one its `mod.md` names (gov P-7).
 - Stylo is MPL-2.0 and stays a dependency.

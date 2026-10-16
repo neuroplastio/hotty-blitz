@@ -1,19 +1,20 @@
 #!/bin/sh
-# Sets up the parley fork that Cargo.toml patches in (parley/README.md).
+# Sets up the parley fork that Cargo.toml patches in (mods/parley/, gov P-7).
 #
 #   scripts/parley-fork.sh
 #
 # The fork lives next to the repo's worktrees, at ../parley: upstream parley
-# at the revision Blitz pins (Cargo.lock), branch `hotty`, with
-# parley/*.patch applied. It stays local like the Blitz fork.
+# at `base` in mods/parley/mod.md, the revision Blitz pins (Cargo.lock),
+# branch `hotty`, with mods/parley/*.patch applied. It stays local like the
+# Blitz fork.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FORK="${HOTTY_PARLEY:-$(dirname "$HERE")/parley}"
-REV=332c1c7d9758839577e7979d211d1e3bbf4818af
+REV="$(sed -n 's/^base:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$HERE/mods/parley/mod.md")"
 
 if [ -d "$FORK/.git" ]; then
   have=$(git -C "$FORK" rev-list --count "$REV..hotty" 2>/dev/null || echo 0)
-  set -- "$HERE"/parley/*.patch
+  set -- "$HERE"/mods/parley/*.patch
   want=$#
   # Behind, clean, and its commits are the first patches: apply the rest.
   # Anything else is someone's work in progress: say where it stands, change
@@ -26,11 +27,11 @@ if [ -d "$FORK/.git" ]; then
     echo "parley fork at $FORK: $# patch(es) applied"
     exit 0
   fi
-  echo "parley fork at $FORK: $have commit(s) on $REV, $want patch(es) in parley/"
+  echo "parley fork at $FORK: $have commit(s) on $REV, $want patch(es) in mods/parley/"
   exit 0
 fi
 
 git clone -q https://github.com/linebender/parley "$FORK"
 git -C "$FORK" checkout -q -b hotty "$REV"
-git -C "$FORK" am -q "$HERE"/parley/*.patch
+git -C "$FORK" am -q "$HERE"/mods/parley/*.patch
 echo "parley fork ready at $FORK"

@@ -1,23 +1,25 @@
 #!/bin/sh
-# Sets up the vello_cpu fork that Cargo.toml patches in (vello/README.md).
+# Sets up the vello_cpu fork that Cargo.toml patches in (mods/vello_cpu/,
+# gov P-7).
 #
 #   scripts/vello-fork.sh
 #
 # The fork lives next to the repo's worktrees, at ../vello_cpu: the vello_cpu
-# package as published on crates.io, checked against the checksum Cargo.lock
-# had for it, as the commit tagged `published` on branch `hotty`, with
-# vello/*.patch applied. The published package rather than the vello
+# package as published on crates.io (`base` in mods/vello_cpu/mod.md),
+# checked against the checksum Cargo.lock had for it, as the commit tagged
+# `published` on branch `hotty`, with mods/vello_cpu/*.patch applied. The published package rather than the vello
 # repository: its dependencies are the crates.io ones anyrender_vello_cpu
 # builds against, where the repository's would be its own path crates.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FORK="${HOTTY_VELLO_CPU:-$(dirname "$HERE")/vello_cpu}"
-VERSION=0.1.0
+VERSION="$(sed -n 's/^base:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$HERE/mods/vello_cpu/mod.md")"
+# The checksum of base's .crate: a new base needs its own.
 SHA256=ac7349e1f55f6b801c7c277958df4ea53e7f20f21e8014910ad888b2ecda93ea
 
 if [ -d "$FORK/.git" ]; then
   have=$(git -C "$FORK" rev-list --count published..hotty 2>/dev/null || echo 0)
-  set -- "$HERE"/vello/*.patch
+  set -- "$HERE"/mods/vello_cpu/*.patch
   want=$#
   # Behind, clean, and its commits are the first patches: apply the rest.
   # Anything else is someone's work in progress: say where it stands, change
@@ -30,7 +32,7 @@ if [ -d "$FORK/.git" ]; then
     echo "vello_cpu fork at $FORK: $# patch(es) applied"
     exit 0
   fi
-  echo "vello_cpu fork at $FORK: $have commit(s) on $VERSION, $want patch(es) in vello/"
+  echo "vello_cpu fork at $FORK: $have commit(s) on $VERSION, $want patch(es) in mods/vello_cpu/"
   exit 0
 fi
 
@@ -47,5 +49,5 @@ git -C "$FORK" init -q -b hotty
 git -C "$FORK" add -A
 git -C "$FORK" commit -q -m "vello_cpu $VERSION as published on crates.io"
 git -C "$FORK" tag published
-git -C "$FORK" am -q "$HERE"/vello/*.patch
+git -C "$FORK" am -q "$HERE"/mods/vello_cpu/*.patch
 echo "vello_cpu fork ready at $FORK"
