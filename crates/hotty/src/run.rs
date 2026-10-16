@@ -232,7 +232,7 @@ impl Shim {
                 Effect::Paste => {}
                 // The polyfill takes no edit commands and shows no menu
                 // (Host::set_keys).
-                Effect::Edit(_) | Effect::Menu { .. } | Effect::Palette { .. } => {}
+                Effect::Edit(_) | Effect::Menu { .. } => {}
             }
         }
     }

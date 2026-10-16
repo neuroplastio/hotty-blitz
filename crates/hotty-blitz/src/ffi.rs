@@ -73,11 +73,6 @@ pub struct HottyEffects {
     /// viewport, above everything (SPEC §10.7). Its pixels come from
     /// `hotty_host_render`; `remove` hides it.
     pub menu: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char, cols: u16, rows: u16)>,
-    /// Show the palette, the surface `surface`, `cols`×`rows` cells, at the
-    /// top centre of the viewport, above everything, the menu included
-    /// (SPEC §10.7). Its pixels come from `hotty_host_render`; `remove`
-    /// hides it.
-    pub palette: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char, cols: u16, rows: u16)>,
 }
 
 #[repr(C)]
@@ -121,8 +116,6 @@ pub struct HottyHost {
     hyperlink: Option<CString>,
     /// The text returned by `hotty_host_selected_text`.
     selected: Option<CString>,
-    /// The name returned by `hotty_host_palette_key`.
-    picked: Option<CString>,
 }
 
 /// Runs `f` on a live host, catching panics at the C boundary. A panic
@@ -239,11 +232,6 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                     f(fx.ctx, name.as_ptr(), cols, rows);
                 }
             }
-            Effect::Palette { surface, cols, rows } => {
-                if let (Some(f), Ok(name)) = (fx.palette, CString::new(surface)) {
-                    f(fx.ctx, name.as_ptr(), cols, rows);
-                }
-            }
         }
     }
 }
@@ -264,7 +252,6 @@ pub unsafe extern "C" fn hotty_host_new(cfg: *const HottyConfig) -> *mut HottyHo
         cursor: None,
         hyperlink: None,
         selected: None,
-        picked: None,
     }))
 }
 
@@ -925,8 +912,8 @@ pub unsafe extern "C" fn hotty_host_takes_pointer(h: *mut HottyHost, surface: *c
 /// `edit`, the edit shortcuts as a `data-keys` value of edit actions
 /// (`Control+c=copy Control+Insert=copy …`), null for the defaults;
 /// `commands`, the terminal takes `a=edit` (`fx.edit`, `hotty_host_command`);
-/// `menus`, it shows the program's menu (`fx.menu`, `fx.palette`), which
-/// the capabilities then list as the feature `menu`. A program that asked for
+/// `menus`, it shows the program's menu (`fx.menu`), which the
+/// capabilities then list as the feature `menu`. A program that asked for
 /// the capabilities hears what changed (`caps`) through `fx`.
 ///
 /// # Safety
@@ -1050,7 +1037,7 @@ pub unsafe extern "C" fn hotty_host_cells_key(h: *mut HottyHost, name: *const u8
 
 /// The terminal's screen changed, or is told for the first time (SPEC
 /// §10.7): leaving the alternate screen drops its menu, and any change
-/// hides the level shown and closes the palette.
+/// hides the level shown.
 ///
 /// # Safety
 /// `h` must be valid.
@@ -1063,9 +1050,10 @@ pub unsafe extern "C" fn hotty_host_set_screen(h: *mut HottyHost, alt: bool) {
 /// `name`, depth-first (SPEC §10.7). If it is enabled, sends the program
 /// `command` with exactly `{"name": name}` through `fx`'s reply, as
 /// `hotty_host_command` does with no key, and returns true; else sends
-/// nothing and returns false. A terminal routes a pick of `copy` or `paste`
-/// through its own Edit menu (SPEC §10.6): the selection first, and the
-/// clipboard's text.
+/// nothing and returns false. For a list of commands the terminal already
+/// has, where it may offer the menu's items; it draws none of its own for
+/// them. A terminal routes a pick of `copy` or `paste` through its own Edit
+/// menu (SPEC §10.6): the selection first, and the clipboard's text.
 ///
 /// # Safety
 /// `h` must be valid; `name` must hold `len` bytes; `fx` may be null.
@@ -1087,56 +1075,6 @@ pub unsafe extern "C" fn hotty_host_pick(h: *mut HottyHost, name: *const u8, len
     })
 }
 
-/// Opens the palette over the current screen's menu, or closes it (SPEC
-/// §10.7); whether it is open now. False when the host takes no menus.
-///
-/// # Safety
-/// `h` must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_palette(h: *mut HottyHost, open: bool) -> bool {
-    guard(h, false, |h| h.host.palette(open))
-}
-
-/// Whether the palette is open.
-///
-/// # Safety
-/// `h` must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_palette_open(h: *mut HottyHost) -> bool {
-    guard(h, false, |h| h.host.palette_open())
-}
-
-/// A key while the palette is open (SPEC §10.7): `name` as SPEC §10.4
-/// names it (empty for a key that only types text), `text` what it types
-/// (empty for none). Nothing typed reaches the program. The picked item's
-/// name, NUL-terminated and owned by the host until the next call into it,
-/// when Enter picks one, which closes the palette; null otherwise.
-///
-/// # Safety
-/// `h` must be valid; `name` must hold `name_len` bytes and `text`
-/// `text_len`, either may be null with a length of 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_palette_key(
-    h: *mut HottyHost,
-    name: *const u8,
-    name_len: usize,
-    text: *const u8,
-    text_len: usize,
-) -> *const c_char {
-    let bytes = |p: *const u8, n: usize| {
-        if p.is_null() || n == 0 {
-            return Some("");
-        }
-        std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, n) }).ok()
-    };
-    let (Some(name), Some(text)) = (bytes(name, name_len), bytes(text, text_len)) else {
-        return std::ptr::null();
-    };
-    guard(h, std::ptr::null(), |h| {
-        h.picked = h.host.palette_key(name, text).and_then(|n| CString::new(n).ok());
-        h.picked.as_ref().map_or(std::ptr::null(), |n| n.as_ptr())
-    })
-}
 
 #[cfg(test)]
 mod tests {

@@ -1,10 +1,10 @@
 //! A program's menu (SPEC §10.7): its levels, the menu each screen keeps,
-//! picks, and the palette.
+//! and picks.
 
 mod common;
 
 use common::body;
-use hotty_blitz::{Config, Effect, Host, KeySettings, Metrics, MENU, PALETTE};
+use hotty_blitz::{Config, Effect, Host, KeySettings, Metrics, MENU};
 use hotty_wire::{Command, Event, Scanner};
 use serde_json::{Value, json};
 
@@ -89,18 +89,6 @@ fn nested(depth: usize) -> Value {
         item = json!({"key": "a", "label": "Group", "enabled": true, "items": [item]});
     }
     json!({"items": [item]})
-}
-
-fn texts(h: &Host) -> Vec<String> {
-    h.palette_matches().into_iter().map(|r| r.text).collect()
-}
-
-fn selected(h: &Host) -> Option<String> {
-    h.palette_matches().into_iter().find(|r| r.selected).map(|r| r.text)
-}
-
-fn typed(h: &mut Host, text: &str) {
-    assert_eq!(h.palette_key("", text), None);
 }
 
 #[test]
@@ -251,212 +239,20 @@ fn each_screen_keeps_its_menu() {
 }
 
 #[test]
-fn a_screen_change_hides_the_level_and_closes_the_palette() {
+fn a_screen_change_hides_the_level() {
     let mut h = host();
     set(&mut h, &files());
     show(&mut h, &["Space"]);
-    assert!(h.palette(true));
-    assert_eq!(flush(&mut h).len(), 2);
+    assert_eq!(flush(&mut h).len(), 1);
     h.set_screen(false);
     assert_eq!(keys(&h), Some(vec!["f".into(), "q".into()]), "the same screen changes nothing");
     h.set_screen(true);
     assert_eq!(keys(&h), None);
-    assert!(!h.palette_open());
-    let fx = flush(&mut h);
-    assert!(fx.contains(&Effect::Delete { surface: MENU.into() }));
-    assert!(fx.contains(&Effect::Delete { surface: PALETTE.into() }));
-    // A reset hides both too.
+    assert_eq!(flush(&mut h), vec![Effect::Delete { surface: MENU.into() }]);
+    // A reset hides it too.
     h.set_screen(false);
     set(&mut h, &files());
     show(&mut h, &[]);
-    h.palette(true);
     flush(&mut h);
-    let fx = h.reset();
-    assert!(fx.contains(&Effect::Delete { surface: MENU.into() }));
-    assert!(fx.contains(&Effect::Delete { surface: PALETTE.into() }));
-}
-
-#[test]
-fn the_palette_lists_what_a_pick_can_send() {
-    let mut h = host();
-    set(&mut h, &files());
-    assert!(h.palette(true));
-    assert!(h.palette_open());
-    let rows = h.palette_matches();
-    let texts: Vec<_> = rows.iter().map(|r| r.text.as_str()).collect();
-    assert_eq!(
-        texts,
-        [
-            "Leader › File › New file",
-            "Leader › File › Rename",
-            "Leader › Quit",
-            "Leader › Sort by name",
-            "Reload"
-        ]
-    );
-    let keys: Vec<_> = rows.iter().map(|r| r.keys.as_deref()).collect();
-    // Only where every item on the path has a key.
-    assert_eq!(keys, [Some("Space f n"), Some("Space f r"), Some("Space q"), None, None]);
-    assert_eq!(rows.iter().map(|r| r.enabled).collect::<Vec<_>>(), [true, false, true, true, true]);
-    assert_eq!(selected(&h).as_deref(), Some("Leader › File › New file"));
-    // The effect, at the size it needs: a title, a filter, five rows.
-    let fx = flush(&mut h);
-    assert_eq!(
-        fx,
-        vec![Effect::Palette { surface: PALETTE.into(), cols: 60, rows: 7 }]
-    );
-    // Mod is read as the host's mod.
-    set(&mut h, &json!({"items": [{"key": "Mod+s", "label": "Save", "name": "save", "enabled": true}]}));
-    assert_eq!(h.palette_matches()[0].keys.as_deref(), Some("Control+s"));
-}
-
-#[test]
-fn the_filter_takes_words_in_any_case_of_the_path_or_the_name() {
-    let mut h = host();
-    set(&mut h, &files());
-    h.palette(true);
-    typed(&mut h, "FILE");
-    assert_eq!(texts(&h), ["Leader › File › New file", "Leader › File › Rename"]);
-    typed(&mut h, " nEw");
-    assert_eq!(texts(&h), ["Leader › File › New file"]);
-    // The name matches too: "file-rename" is not in "Rename"'s text.
-    for _ in 0..8 {
-        h.palette_key("Backspace", "");
-    }
-    typed(&mut h, "-ren");
-    assert_eq!(texts(&h), ["Leader › File › Rename"]);
-    assert_eq!(selected(&h), None, "a disabled row is not selected");
-    // Backspace deletes a grapheme: a letter and its combining mark go
-    // together.
-    for _ in 0..4 {
-        h.palette_key("Backspace", "");
-    }
-    typed(&mut h, "e\u{301}");
-    assert!(texts(&h).is_empty());
-    h.palette_key("Backspace", "");
-    assert_eq!(texts(&h).len(), 5);
-    typed(&mut h, "zz");
-    assert!(texts(&h).is_empty());
-    // Empty: nothing to pick, in a document one row tall.
-    assert_eq!(
-        flush(&mut h).last(),
-        Some(&Effect::Palette { surface: PALETTE.into(), cols: 60, rows: 3 })
-    );
-    h.palette_key("Backspace", "");
-    h.palette_key("Backspace", "");
-    assert_eq!(texts(&h).len(), 5);
-    // A control sequence types nothing.
-    assert_eq!(h.palette_key("Control+a", ""), None);
-    assert_eq!(h.palette_key("", "\u{1}"), None);
-    assert_eq!(texts(&h).len(), 5);
-}
-
-#[test]
-fn the_selection_skips_disabled_rows_and_enter_picks_it() {
-    let mut h = host();
-    set(&mut h, &files());
-    h.palette(true);
-    assert_eq!(selected(&h).as_deref(), Some("Leader › File › New file"));
-    assert_eq!(h.palette_key("ArrowDown", ""), None);
-    assert_eq!(selected(&h).as_deref(), Some("Leader › Quit"), "Rename is disabled");
-    h.palette_key("Control+n", "");
-    assert_eq!(selected(&h).as_deref(), Some("Leader › Sort by name"));
-    h.palette_key("ArrowDown", "");
-    assert_eq!(selected(&h).as_deref(), Some("Reload"));
-    h.palette_key("ArrowDown", "");
-    assert_eq!(selected(&h).as_deref(), Some("Reload"), "it stops at the end");
-    h.palette_key("ArrowUp", "");
-    h.palette_key("Control+p", "");
-    h.palette_key("ArrowUp", "");
-    assert_eq!(selected(&h).as_deref(), Some("Leader › File › New file"));
-    h.palette_key("ArrowDown", "");
-    assert_eq!(h.palette_key("Enter", ""), Some("quit".to_string()));
-    assert!(!h.palette_open(), "a pick closes it");
-    // Enter with nothing to pick does nothing.
-    h.palette(true);
-    typed(&mut h, "-ren");
-    assert_eq!(h.palette_key("Enter", ""), None);
-    assert!(h.palette_open());
-}
-
-#[test]
-fn escape_closes_the_palette_and_so_does_asking_again() {
-    let mut h = host();
-    set(&mut h, &files());
-    h.palette(true);
-    flush(&mut h);
-    assert_eq!(h.palette_key("Escape", ""), None);
-    assert!(!h.palette_open());
-    assert_eq!(flush(&mut h), vec![Effect::Delete { surface: PALETTE.into() }]);
-    assert_eq!(h.palette_key("Enter", ""), None, "closed: nothing");
-    assert!(h.palette(true));
-    assert!(!h.palette(false));
-    assert!(!h.palette_open());
-    // It opens afresh: the filter is gone.
-    h.palette(true);
-    typed(&mut h, "reload");
-    h.palette(false);
-    h.palette(true);
-    assert_eq!(texts(&h).len(), 5);
-    // A menu with nothing to pick still opens.
-    send(&mut h, None, &Value::Null);
-    assert!(texts(&h).is_empty());
-    assert!(h.palette_open());
-    // A host whose terminal takes no menus has no palette.
-    let mut none = Host::new(Config::default());
-    assert!(!none.palette(true));
-}
-
-#[test]
-fn a_menu_sent_while_the_palette_is_open_refreshes_it() {
-    let mut h = host();
-    set(&mut h, &files());
-    h.palette(true);
-    typed(&mut h, "re");
-    h.palette_key("ArrowDown", "");
-    assert_eq!(texts(&h), ["Leader › File › Rename", "Reload"]);
-    assert_eq!(selected(&h).as_deref(), Some("Reload"));
-    flush(&mut h);
-    // The filter stays, and so does the selection of what is still there.
-    set(
-        &mut h,
-        &json!({"label": "Other", "items": [
-            {"label": "Reset", "name": "reset", "enabled": true},
-            {"label": "Reload", "name": "reload", "enabled": true},
-            {"label": "Quit", "name": "quit", "enabled": true}]}),
-    );
-    assert_eq!(texts(&h), ["Reset", "Reload"]);
-    assert_eq!(selected(&h).as_deref(), Some("Reload"));
-    assert!(flush(&mut h).is_empty(), "the same size: no new placement");
-    // Where it is gone, the first row enabled takes it.
-    set(&mut h, &json!({"items": [{"label": "Reset", "name": "reset", "enabled": true}]}));
-    assert_eq!(selected(&h).as_deref(), Some("Reset"));
-    // The next menu of nothing: the filter stays, and the rows are none.
-    send(&mut h, None, &Value::Null);
-    assert!(texts(&h).is_empty());
-    assert!(h.palette_open());
-    set(&mut h, &files());
-    assert_eq!(texts(&h).len(), 2);
-}
-
-#[test]
-fn a_long_list_scrolls_the_selection_into_view() {
-    let mut h = host();
-    let items: Vec<Value> = (0..30)
-        .map(|i| json!({"label": format!("Item {i:02}"), "name": format!("i{i}"), "enabled": true}))
-        .collect();
-    set(&mut h, &json!({"items": items}));
-    h.palette(true);
-    // At most twelve rows and the title and filter.
-    assert_eq!(
-        flush(&mut h),
-        vec![Effect::Palette { surface: PALETTE.into(), cols: 60, rows: 14 }]
-    );
-    for _ in 0..20 {
-        h.palette_key("ArrowDown", "");
-    }
-    assert_eq!(selected(&h).as_deref(), Some("Item 20"));
-    // The document was redrawn, at the same size: no new placement.
-    assert!(flush(&mut h).is_empty());
-    assert_eq!(h.palette_key("Enter", ""), Some("i20".to_string()));
+    assert_eq!(h.reset(), vec![Effect::Delete { surface: MENU.into() }]);
 }

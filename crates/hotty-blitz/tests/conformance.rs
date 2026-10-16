@@ -350,7 +350,7 @@ fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
 }
 
 /// The program's menu (SPEC §10.7): the level the host shows, or a pick of
-/// an item by its name, as a palette would.
+/// an item by its name, as a list of commands the terminal has would.
 fn menu_step(host: &mut Host, step: &Value) -> Result<(), String> {
     host.render_dirty(&mut |_, _, _| {});
     match step["menu"].as_str().unwrap() {
