@@ -586,17 +586,13 @@ fn cmd_bench(args: &[String]) -> i32 {
      -> (f64, u64, hotty_blitz::Timings) {
         let t = Instant::now();
         for &c in cells {
+            let body = rmp_serde::to_vec_named(&serde_json::json!({
+                "ops": [{"op": "text", "t": format!("c{c}"), "v": format!("{}", (c * 7 + tick) % 1000)}]
+            }))
+            .unwrap();
             let cmd = Command::new(
-                [
-                    ("a", "delta"),
-                    ("s", "b"),
-                    ("op", "text"),
-                    ("t", &format!("c{c}")),
-                    ("q", "2"),
-                ]
-                .into_iter()
-                .collect(),
-                format!("{}", (c * 7 + tick) % 1000).into_bytes(),
+                [("a", "delta"), ("s", "b"), ("q", "2")].into_iter().collect(),
+                body,
             );
             host.handle(&cmd);
         }

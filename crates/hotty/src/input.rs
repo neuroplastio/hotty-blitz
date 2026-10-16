@@ -180,9 +180,7 @@ impl InputRouter {
             return;
         }
         if let Some(surface) = host.focused_surface().map(str::to_string) {
-            // With its bytes: keys a key sequence's wait typed go on to the
-            // program as they came (SPEC §10.5).
-            let outcome = host.key_typed(&surface, &key, raw);
+            let outcome = host.key(&surface, &key);
             push_effects(outcome.effects, to_program);
             if outcome.consumed {
                 if held.is_none() {

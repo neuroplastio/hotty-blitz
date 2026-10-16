@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::body;
+use common::{body, delta_cmd};
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty_wire::{Command, Event, Scanner};
 
@@ -48,24 +48,20 @@ fn render(h: &mut Host) -> Vec<(String, u32, u32, hotty_blitz::Damage)> {
 #[test]
 fn query_answers_with_capabilities() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "7"), ("v", "0.2")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "7"), ("v", "0.3")], "")));
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(r[0].get("n"), Some("7"));
     let caps = body(&r[0].payload);
-    assert_eq!(caps["cell"]["h"], 20);
-    assert!(caps["ops"].as_array().unwrap().iter().any(|o| o == "morph"));
-    // Each field as its type (SPEC §3.3, §4): the scale a float though
-    // whole, and nothing this host does not do, not even as false.
+    // Each field as its type (SPEC §3.3, §4): the sizes and scale floats
+    // though whole, and nothing this host does not do, not even as false.
     let want = serde_json::json!({
-        "v": "0.2",
-        "cell": {"w": 10, "h": 20},
+        "v": "0.3",
+        "cellcss": {"w": 10.0, "h": 20.0},
         "scale": 1.0,
         "scheme": "dark",
         "limits": {"resources": 64 << 20, "message": 64 << 20},
         "net": {},
-        "scroll": true,
-        "steps": true,
         "host": "hotty-blitz",
         "version": env!("CARGO_PKG_VERSION"),
     });
@@ -73,14 +69,19 @@ fn query_answers_with_capabilities() {
         assert_eq!(&caps[k], v, "{k}");
     }
     assert!(caps["scale"].is_f64());
+    assert!(caps["cellcss"]["w"].is_f64());
+    assert!(caps.get("mod").is_some());
     assert!(
-        caps["events"]
+        caps["features"]
             .as_array()
             .unwrap()
             .iter()
             .all(|e| e.is_string())
     );
     assert_eq!(caps.get("passthrough"), None);
+    for gone in ["cell", "ops", "events", "scroll", "steps"] {
+        assert_eq!(caps.get(gone), None, "{gone}");
+    }
 }
 
 #[test]
@@ -254,16 +255,7 @@ fn hide_removes_the_placement_and_keeps_the_document() {
     assert!(replies(&fx).iter().any(|r| r.get("e") == Some("blur")));
     assert_eq!(h.placement("x"), None);
     // Hidden: deltas apply, nothing renders.
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "text"),
-            ("t", "p"),
-            ("q", "2"),
-        ],
-        "two",
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "text", Some("p"), None, "two"));
     assert!(render(&mut h).is_empty());
     assert_eq!(h.inspect("x", "p").unwrap()["text"], "two");
     // Hiding again does nothing; placing again shows it as it is now.
@@ -301,10 +293,7 @@ fn a_delta_to_an_element_whose_layout_box_is_gone_repaints_instead_of_panicking(
     render(&mut h);
     h.pointer("x", PointerKind::Leave, 0.0, 0.0, Mods::default());
     render(&mut h);
-    let r = replies(&h.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "t")],
-        "12:01",
-    )));
+    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "text", Some("t"), None, "12:01")));
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(render(&mut h).len(), 1);
 }
@@ -321,10 +310,7 @@ fn a_text_delta_damages_only_part_of_the_frame() {
         "",
     ));
     render(&mut h);
-    let r = replies(&h.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "a")],
-        "ONE",
-    )));
+    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "text", Some("a"), None, "ONE")));
     assert_eq!(r[0].get("a"), Some("ok"));
     let frames = render(&mut h);
     let hotty_blitz::Damage::Rects(rects) = &frames[0].3 else {
@@ -340,22 +326,10 @@ fn a_text_delta_damages_only_part_of_the_frame() {
 fn a_missing_target_is_an_error_and_quiet_suppresses_ok() {
     let mut h = host();
     h.handle(&cmd(&[("a", "doc"), ("s", "x")], "<p id=a>1</p>"));
-    let r = replies(&h.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", "text"), ("t", "nope")],
-        "2",
-    )));
+    let r = replies(&h.handle(&delta_cmd(&[("s", "x")], "text", Some("nope"), None, "2")));
     assert_eq!(r[0].get("a"), Some("err"));
     assert_eq!(body(&r[0].payload)["code"], "ENOTARGET");
-    let r = replies(&h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "text"),
-            ("t", "a"),
-            ("q", "1"),
-        ],
-        "2",
-    )));
+    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("q", "1")], "text", Some("a"), None, "2")));
     assert!(r.is_empty());
 }
 
@@ -393,11 +367,8 @@ fn morph_keeps_what_the_user_typed_and_change_comes_on_blur() {
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "name")], ""));
     type_text(&mut h, "yz");
     // An immediate-mode program re-sends the whole tree with a new count.
-    let r = replies(&h.handle(&cmd(
-        &[("a", "delta"), ("s", "f"), ("op", "morph"), ("t", "list")],
-        "<div id=list><input id=name value=x><p id=count>2</p>
-         <button id=go style='position:absolute;left:0;top:60px;width:100px;height:20px'>Go</button></div>",
-    )));
+    let r = replies(&h.handle(&delta_cmd(&[("s", "f"), ("n", "1")], "morph", Some("list"), None, "<div id=list><input id=name value=x><p id=count>2</p>
+         <button id=go style='position:absolute;left:0;top:60px;width:100px;height:20px'>Go</button></div>")));
     assert_eq!(r[0].get("a"), Some("ok"));
     // Typing costs no round trip: nothing has been reported yet.
     let fx = h.blur("f");
@@ -453,7 +424,7 @@ fn links_report_href_and_url_with_or_without_an_id() {
             .expect("a click event")
     };
     let first = click(&mut h, 10.0);
-    assert_eq!(first.get("t"), Some(""));
+    assert_eq!(first.get("t"), None);
     let detail = body(&first.payload);
     assert_eq!(
         detail,
@@ -478,7 +449,7 @@ fn links_report_href_and_url_with_or_without_an_id() {
     );
 
     // This host fetches nothing from the network (SPEC §7.2), and says so.
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], "")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["net"], serde_json::json!({}));
 }
@@ -565,7 +536,7 @@ fn a_stylesheet_resource_arrives_after_the_document() {
         "painting waits for the stylesheet"
     );
     let r = replies(&h.handle(&cmd(
-        &[("a", "res"), ("id", "theme"), ("type", "text/css")],
+        &[("a", "res"), ("id", "theme"), ("type", "text/css"), ("n", "1")],
         "p.t{color:red}",
     )));
     assert_eq!(r[0].get("a"), Some("ok"));
@@ -848,8 +819,31 @@ fn submitting_a_form_reports_its_fields() {
         .expect("submit");
     assert_eq!(submit.get("t"), Some("settings"));
     let fields = body(&submit.payload);
-    assert_eq!(fields["ok"], "yes");
-    assert!(fields["name"].as_str().unwrap().contains("yz"), "{fields}");
+    assert_eq!(sent(&fields, "ok"), "yes");
+    assert!(sent(&fields, "name").as_str().unwrap().contains("yz"), "{fields}");
+}
+
+/// What a `submit` event reports for the field `name` (SPEC §9: pairs in
+/// tree order).
+fn sent(fields: &serde_json::Value, name: &str) -> serde_json::Value {
+    fields["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p[0] == name)
+        .map_or(serde_json::Value::Null, |p| p[1].clone())
+}
+
+/// A single-op delta to surface `x` from `(op, t, k)` pairs and a value.
+fn op_cmd(ctl: &[(&str, &str)], payload: &str) -> Command {
+    let get = |name: &str| ctl.iter().find(|(n, _)| *n == name).map(|(_, v)| *v);
+    delta_cmd(
+        &[("s", "x"), ("n", "1")],
+        get("op").unwrap(),
+        get("t"),
+        get("k"),
+        payload,
+    )
 }
 
 /// Damage-only painting must produce exactly what a full paint of the same
@@ -899,9 +893,7 @@ fn partial_repaint_matches_a_full_paint() {
     render(&mut inc);
     let mut partial = 0;
     for (ctl, payload) in &deltas {
-        let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
-        c.extend(ctl.iter().copied());
-        let r = replies(&inc.handle(&cmd(&c, payload)));
+        let r = replies(&inc.handle(&op_cmd(ctl, payload)));
         assert_eq!(r[0].get("a"), Some("ok"), "{}", body(&r[0].payload));
         for (_, _, _, d) in render(&mut inc) {
             if matches!(d, hotty_blitz::Damage::Rects(_)) {
@@ -918,9 +910,7 @@ fn partial_repaint_matches_a_full_paint() {
     full.handle(&cmd(&[("a", "doc"), ("s", "x")], doc));
     place(&mut full);
     for (ctl, payload) in &deltas {
-        let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
-        c.extend(ctl.iter().copied());
-        full.handle(&cmd(&c, payload));
+        full.handle(&op_cmd(ctl, payload));
     }
     render(&mut full);
     let (a, b) = (inc.frame("x").unwrap(), full.frame("x").unwrap());
@@ -1111,10 +1101,7 @@ fn incremental_layout_matches_a_fresh_document() {
     place(&mut inc);
     render(&mut inc);
     for step in 1..23 {
-        let r = replies(&inc.handle(&cmd(
-            &[("a", "delta"), ("s", "x"), ("op", "morph"), ("t", "m")],
-            &busy_page(step),
-        )));
+        let r = replies(&inc.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "morph", Some("m"), None, &busy_page(step))));
         assert_eq!(r[0].get("a"), Some("ok"));
         render(&mut inc);
         let partial = inc.frame("x").unwrap().rgba.clone();
@@ -1303,7 +1290,7 @@ fn a_detached_surface_sends_no_events() {
         assert!(heard.iter().any(|(k, _)| k == e), "no {e} in {heard:?}");
     }
 
-    let r = replies(&h.handle(&cmd(&[("a", "detach"), ("s", "x")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "detach"), ("s", "x"), ("n", "1")], "")));
     assert_eq!(r.len(), 1);
     assert_eq!(
         (r[0].get("a"), r[0].get("re")),
@@ -1337,7 +1324,7 @@ fn detaching_gives_the_keyboard_back_without_change_or_blur() {
         "",
     ));
     type_text(&mut h, "yz");
-    let r = replies(&h.handle(&cmd(&[("a", "detach"), ("s", "f")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "detach"), ("s", "f"), ("n", "1")], "")));
     assert_eq!(r.len(), 1, "{r:?}");
     assert_eq!(
         (r[0].get("a"), r[0].get("re")),
@@ -1399,22 +1386,9 @@ fn a_detached_surfaces_controls_are_disabled() {
 
     // A control a delta adds is disabled too, and so is one a delta takes
     // `disabled` from.
-    let r = replies(&h.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", "append"), ("t", "box")],
-        "<input type=checkbox id=cb2 disabled><div class=m id=m3></div>",
-    )));
+    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "append", Some("box"), None, "<input type=checkbox id=cb2 disabled><div class=m id=m3></div>")));
     assert_eq!(r[0].get("a"), Some("ok"));
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "unattr"),
-            ("t", "cb2"),
-            ("k", "disabled"),
-            ("q", "2"),
-        ],
-        "",
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "unattr", Some("cb2"), Some("disabled"), ""));
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 110), BLUE);
     click(&mut h, "x", 10.0, 90.0);
@@ -1524,16 +1498,7 @@ fn form_controls_follow_the_used_color_scheme() {
 fn a_new_color_scheme_repaints_controls_like_a_fresh_document() {
     let mut inc = host();
     doc_at(&mut inc, "x", &[], &controls(""), "2");
-    let r = replies(&inc.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "attr"),
-            ("t", "box"),
-            ("k", "style"),
-        ],
-        "color-scheme: light",
-    )));
+    let r = replies(&inc.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "attr", Some("box"), Some("style"), "color-scheme: light")));
     assert_eq!(r[0].get("a"), Some("ok"));
     let frames = render(&mut inc);
     assert!(
@@ -1671,7 +1636,7 @@ fn a_document_without_d_gives_the_surface_back() {
         kinds(&click(&mut h, "x", 10.0, 25.0)),
         vec![ev("focus", "b"), ev("click", "b")]
     );
-    let r = replies(&h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "i")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "i"), ("n", "1")], "")));
     assert_eq!(r[0].get("a"), Some("ok"));
     assert!(key(&mut h, "x", "q").consumed);
 }
@@ -1707,9 +1672,7 @@ fn a_detached_surface_paints_partially_as_it_would_in_full() {
     let apply = |h: &mut Host, render_each: bool| {
         let mut partial = 0;
         for (ctl, payload) in &deltas {
-            let mut c: Vec<(&str, &str)> = vec![("a", "delta"), ("s", "x")];
-            c.extend(ctl.iter().copied());
-            let r = replies(&h.handle(&cmd(&c, payload)));
+            let r = replies(&h.handle(&op_cmd(ctl, payload)));
             assert_eq!(r[0].get("a"), Some("ok"), "{}", body(&r[0].payload));
             if render_each {
                 for (_, _, _, d) in render(h) {
@@ -1725,7 +1688,7 @@ fn a_detached_surface_paints_partially_as_it_would_in_full() {
     place(&mut inc);
     render(&mut inc);
     let attached = inc.frame("x").unwrap().rgba.clone();
-    inc.handle(&cmd(&[("a", "detach"), ("s", "x")], ""));
+    inc.handle(&cmd(&[("a", "detach"), ("s", "x"), ("n", "1")], ""));
     render(&mut inc);
     assert_ne!(
         inc.frame("x").unwrap().rgba,
@@ -1850,7 +1813,7 @@ fn on_a_detached_surface_focus_is_edetached_and_blur_does_nothing() {
             r[0].control.encode()
         );
     }
-    let r = replies(&h.handle(&cmd(&[("a", "blur"), ("s", "x")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "blur"), ("s", "x"), ("n", "1")], "")));
     assert_eq!(r.len(), 1);
     assert_eq!((r[0].get("a"), r[0].get("re")), (Some("ok"), Some("blur")));
 }
@@ -1927,9 +1890,7 @@ fn place_form_presses(h: &mut Host, presses: bool) {
         ("r", "5"),
         ("q", "2"),
     ];
-    if presses {
-        pairs.push(("p", "1"));
-    }
+    pairs.push(("p", if presses { "1" } else { "0" }));
     h.handle(&cmd(&pairs, ""));
     render(h);
 }
@@ -1938,15 +1899,6 @@ fn place_form_presses(h: &mut Host, presses: bool) {
 fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
     let mut h = host();
     place_form(&mut h);
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")));
-    let caps = body(&r[0].payload);
-    assert!(
-        caps["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e == "press")
-    );
     // Not asked for: a press on text says nothing (SPEC §10.1).
     assert_eq!(kinds(&click(&mut h, "f", 10.0, 30.0)), vec![]);
 
@@ -1989,12 +1941,22 @@ fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
         vec![ev("press", "new")]
     );
 
-    // Placing again without it stops them; so does hiding.
+    // Placing again with p=0 stops them.
     place_form_presses(&mut h, false);
     assert_eq!(kinds(&click(&mut h, "f", 10.0, 10.0)), vec![]);
+    // Hiding leaves the flag with the surface, and a placement without p
+    // leaves it as it was (SPEC §5.2).
     place_form_presses(&mut h, true);
     h.handle(&cmd(&[("a", "hide"), ("s", "f"), ("q", "2")], ""));
-    assert_eq!(kinds(&click(&mut h, "f", 10.0, 10.0)), vec![]);
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "5"), ("q", "2")],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(
+        kinds(&click(&mut h, "f", 10.0, 10.0)),
+        vec![ev("press", "new")]
+    );
     // A detached surface reports nothing, whatever its placement asked.
     place_form_presses(&mut h, true);
     h.handle(&cmd(&[("a", "detach"), ("s", "f"), ("q", "2")], ""));
@@ -2105,12 +2067,13 @@ fn drags(ev: &[Command]) -> Vec<(String, String, serde_json::Value)> {
         .collect()
 }
 
-fn drag(e: &str, t: &str, c: i32, r: i32, keys: &[&str]) -> (String, String, serde_json::Value) {
-    (
-        e.to_string(),
-        t.to_string(),
-        serde_json::json!({ "c": c, "r": r, "keys": keys }),
-    )
+/// A drag event; `mods` is the modifier bit set (SPEC §9), 0 for none.
+fn drag(e: &str, t: &str, c: i32, r: i32, mods: u8) -> (String, String, serde_json::Value) {
+    let mut d = serde_json::json!({ "c": c, "r": r });
+    if mods != 0 {
+        d["mods"] = mods.into();
+    }
+    (e.to_string(), t.to_string(), d)
 }
 
 /// Two cells three columns wide in row 1 of a 2-row surface, and one in
@@ -2123,15 +2086,6 @@ const CELLS: &str = "<style>body{margin:0}i{position:absolute;width:30px;height:
 #[test]
 fn a_drag_comes_after_its_press_and_before_the_blur_it_causes() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")));
-    let caps = body(&r[0].payload);
-    assert!(
-        caps["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e == "drag")
-    );
     place_form(&mut h);
     h.handle(&cmd(
         &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
@@ -2181,7 +2135,7 @@ fn a_drag_comes_after_its_press_and_before_the_blur_it_causes() {
     );
     assert_eq!(
         drags(&got[1..2]),
-        vec![drag("dragstart", "a", 1, 1, &["shift"])]
+        vec![drag("dragstart", "a", 1, 1, 1)]
     );
 }
 
@@ -2215,12 +2169,12 @@ fn a_drag_has_no_target_outside_the_window_and_ends_when_the_pointer_is_lost() {
     assert_eq!(
         drags(&replies(&got)),
         vec![
-            drag("dragstart", "b", 4, 1, &[]),
-            drag("drag", "", 1, 0, &[]),
-            drag("drag", "a", 1, 1, &[]),
-            drag("drag", "", 51, 3, &[]),
-            drag("drag", "", -1, -2, &[]),
-            drag("dragend", "", -1, -2, &[]),
+            drag("dragstart", "b", 4, 1, 0),
+            drag("drag", "", 1, 0, 0),
+            drag("drag", "a", 1, 1, 0),
+            drag("drag", "", 51, 3, 0),
+            drag("drag", "", -1, -2, 0),
+            drag("dragend", "", -1, -2, 0),
         ]
     );
 }
@@ -2288,7 +2242,7 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
 #[test]
 fn the_capabilities_name_the_host_and_its_version() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], "")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["host"], "hotty-blitz");
     assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
@@ -2299,18 +2253,26 @@ fn the_capabilities_name_the_host_and_its_version() {
     assert!(v >= vec![0, 0, 3], "a=patch became a=delta in 0.0.3");
 }
 
-/// The capabilities say `passthrough` only when the terminal hands the
+/// The capabilities list `passthrough` only when the terminal hands the
 /// pointer through (SPEC §4, §9.3), and the surface says where it takes it.
 #[test]
 fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
     let mut h = host();
     let caps = |h: &mut Host| {
-        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
+        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], "")));
         body(&r[0].payload)
     };
-    assert!(caps(&mut h).get("passthrough").is_none());
+    let listed = |h: &mut Host| {
+        let c = caps(h);
+        c["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "passthrough")
+    };
+    assert!(!listed(&mut h));
     h.set_passthrough(true);
-    assert_eq!(caps(&mut h)["passthrough"], true);
+    assert!(listed(&mut h));
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x"), ("q", "2")],
         "<style>html{pointer-events:none}body{margin:0}b{position:absolute;left:0;top:0;width:10px;height:20px;pointer-events:auto}</style><b></b>",
@@ -2387,17 +2349,7 @@ fn a_var_delta_lays_out_like_a_fresh_document() {
         "",
     ));
     render(&mut inc);
-    inc.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "var"),
-            ("t", "root"),
-            ("k", "h"),
-            ("q", "2"),
-        ],
-        "6",
-    ));
+    inc.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "var", Some("root"), Some("h"), "6"));
     render(&mut inc);
     let mut fresh = host();
     fresh.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html(6)));
@@ -2446,7 +2398,7 @@ const S: u32 = 5000;
 fn res(h: &mut Host, id: &str, mime: &str, bytes: Vec<u8>) {
     let r = replies(
         &h.handle(&Command::new(
-            [("a", "res"), ("id", id), ("type", mime)]
+            [("a", "res"), ("id", id), ("type", mime), ("n", "1")]
                 .into_iter()
                 .collect(),
             bytes,
@@ -2672,31 +2624,13 @@ fn a_delta_that_adds_an_animated_image_plays_it() {
     place_image(&mut h, "<div id=box></div>");
     render(&mut h);
     assert_eq!(h.next_frame(), None);
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "inner"),
-            ("t", "box"),
-            ("q", "2"),
-        ],
-        IMG,
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "inner", Some("box"), None, IMG));
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), RED);
     next_frame(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), GREEN);
     // Removed, it stops asking for time.
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "inner"),
-            ("t", "box"),
-            ("q", "2"),
-        ],
-        "",
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "inner", Some("box"), None, ""));
     render(&mut h);
     assert_eq!(h.next_frame(), None);
 }
@@ -2707,12 +2641,10 @@ fn fits(h: &mut Host) -> Vec<(String, u64)> {
     render(h);
     replies(&h.take_events())
         .iter()
-        // A cell changed with the font also owes `resize` (resize_*).
-        .filter(|c| c.get("e") != Some("resize"))
         .map(|c| {
             assert_eq!(
                 (c.get("a"), c.get("e"), c.get("t")),
-                (Some("ev"), Some("fit"), Some(""))
+                (Some("ev"), Some("fit"), None)
             );
             (
                 c.get("s").unwrap().to_string(),
@@ -2740,17 +2672,7 @@ fn fit_doc(h: &mut Host, n: u32, extra: &[(&str, &str)]) {
 }
 
 fn set_n(h: &mut Host, n: &str) {
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "var"),
-            ("t", "d"),
-            ("k", "n"),
-            ("q", "2"),
-        ],
-        n,
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "var", Some("d"), Some("n"), n));
 }
 
 /// The rows `r=auto` chooses for a document 30 columns wide.
@@ -2873,86 +2795,84 @@ fn cells(w: u32, h: u32, scale: f32) -> Metrics {
     }
 }
 
-/// The `resize` events the host owes after rendering: surface, w, h.
-fn resizes(h: &mut Host) -> Vec<(String, f64, f64)> {
+/// Ask for the capabilities, so the host tells what changes from then on.
+fn ask(h: &mut Host) {
+    h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], ""));
+}
+
+/// The `caps` events the host owes after rendering, as their bodies.
+fn changes(h: &mut Host) -> Vec<serde_json::Value> {
     render(h);
     replies(&h.take_events())
         .iter()
-        .filter(|c| c.get("e") == Some("resize"))
+        .filter(|c| c.get("e") == Some("caps"))
         .map(|c| {
-            assert_eq!(c.get("t"), Some(""));
-            let b = body(&c.payload);
-            // Floats, whole or not (SPEC §9: `{"w": float, "h": float}`).
-            let n = |k: &str| {
-                assert!(b[k].is_f64(), "{k} is not a float: {b}");
-                b[k].as_f64().unwrap()
-            };
-            (c.get("s").unwrap().to_string(), n("w"), n("h"))
+            assert_eq!((c.get("a"), c.get("t")), (Some("ev"), None));
+            body(&c.payload)
         })
         .collect()
 }
 
 #[test]
-fn resize_follows_a_font_change_and_not_a_zoom() {
-    // SPEC §5.3: a new font changes a cell's size in CSS pixels, and each
-    // placed surface hears its size now; a zoom changes the scale with the
+fn caps_follow_a_font_change_and_not_a_zoom() {
+    // SPEC §4.2: a new font changes a cell's size in CSS pixels, and the
+    // program hears the new `cellcss`; a zoom changes the scale with the
     // cells, and nothing.
     let mut h = host();
     let mut c = h.config().clone();
     c.font_size = Some(16.0);
     h.set_config(c);
     doc_at(&mut h, "x", &[], "<p>x</p>", "2");
-    let hidden = [("a", "doc"), ("s", "hidden"), ("q", "2")];
-    h.handle(&cmd(&hidden, "<p>h</p>"));
-    assert_eq!(resizes(&mut h), vec![]);
+    ask(&mut h);
+    assert!(changes(&mut h).is_empty());
 
-    // Zoom ×1.2: 12×24 device px at scale 1.2 is the same 10×20 CSS cell.
+    // Zoom x1.2: 12x24 device px at scale 1.2 is the same 10x20 CSS cell.
     let mut c = h.config().clone();
     c.metrics = cells(12, 24, 1.2);
     h.set_config(c);
-    assert_eq!(resizes(&mut h), vec![], "a zoom");
-    // Rounding: 11×23 at 1.1 is not quite 10×20, and still a zoom.
+    assert!(changes(&mut h).is_empty(), "a zoom");
+    // Rounding: 11x23 at 1.1 is not quite 10x20, and still a zoom.
     let mut c = h.config().clone();
     c.metrics = cells(11, 23, 1.1);
     h.set_config(c);
-    assert_eq!(resizes(&mut h), vec![], "a zoom, rounded");
+    assert!(changes(&mut h).is_empty(), "a zoom, rounded");
 
-    // A bigger font: 13×26 CSS px a cell, 30×2 cells. The unplaced
-    // surface hears nothing; one resize however many changes before.
+    // A bigger font: 13x26 CSS px a cell. The zoom before is still not
+    // sent, so the scale is not along.
     let mut c = h.config().clone();
-    c.metrics = cells(12, 24, 1.0);
-    c.font_size = Some(18.0);
-    h.set_config(c.clone());
     c.metrics = cells(13, 26, 1.0);
+    c.font_size = Some(18.0);
     h.set_config(c);
-    assert_eq!(resizes(&mut h), vec![("x".to_string(), 390.0, 52.0)]);
-    assert_eq!(resizes(&mut h), vec![], "heard once");
-
-    // A detached surface hears nothing (§5.5).
-    h.handle(&cmd(&[("a", "detach"), ("s", "x"), ("q", "2")], ""));
-    let mut c = h.config().clone();
-    c.font_size = Some(20.0);
-    c.metrics = cells(14, 28, 1.0);
-    h.set_config(c);
-    assert_eq!(resizes(&mut h), vec![]);
+    assert_eq!(
+        changes(&mut h),
+        vec![serde_json::json!({"cellcss": {"w": 13.0, "h": 26.0}})]
+    );
+    assert!(changes(&mut h).is_empty(), "heard once");
 }
 
 #[test]
-fn resize_follows_a_cell_when_the_font_comes_from_it() {
+fn caps_follow_a_cell_when_the_font_comes_from_it() {
     // With no font size, the font is the cell's: a new cell is a new font.
     let mut h = host();
     assert_eq!(h.config().font_size, None);
     doc_at(&mut h, "x", &[], "<p>x</p>", "2");
+    ask(&mut h);
     let mut c = h.config().clone();
     c.metrics.cell_h = 24;
     h.set_config(c);
-    assert_eq!(resizes(&mut h), vec![("x".to_string(), 300.0, 48.0)]);
-    // At a fractional scale, to a hundredth of a CSS pixel: 45 / 1.4 × 2
-    // is 64.2857…, and f32 adds its own digits.
+    assert_eq!(
+        changes(&mut h),
+        vec![serde_json::json!({"cellcss": {"w": 10.0, "h": 24.0}})]
+    );
+    // At a fractional scale, to a thousandth of a CSS pixel: 45 / 1.4 is
+    // 32.142857..., and f32 adds its own digits.
     let mut c = h.config().clone();
     c.metrics = cells(21, 45, 1.4);
     h.set_config(c);
-    assert_eq!(resizes(&mut h), vec![("x".to_string(), 450.0, 64.29)]);
+    assert_eq!(
+        changes(&mut h),
+        vec![serde_json::json!({"cellcss": {"w": 15.0, "h": 32.143}, "scale": 1.4})]
+    );
 }
 
 #[test]
@@ -2962,20 +2882,20 @@ fn fit_starts_from_the_placement_rows_and_needs_f_1() {
     let mut h = host();
     fit_doc(&mut h, 2, &[("r", "1")]);
     assert_eq!(fits(&mut h), vec![("x".to_string(), 2)]);
-    // f other than 1 is as if absent.
+    // f=0 turns it off, and f=1 is not needed again to keep it on.
+    let place = |h: &mut Host, f: Option<&str>| {
+        let mut pairs = vec![("a", "place"), ("s", "x"), ("c", "20"), ("r", "1"), ("q", "2")];
+        pairs.extend(f.map(|f| ("f", f)));
+        h.handle(&cmd(&pairs, ""));
+    };
     let mut h = host();
     fit_doc(&mut h, 2, &[("r", "1")]);
-    h.handle(&cmd(
-        &[
-            ("a", "place"),
-            ("s", "x"),
-            ("c", "20"),
-            ("r", "1"),
-            ("f", "2"),
-            ("q", "2"),
-        ],
-        "",
-    ));
+    place(&mut h, None);
+    assert_eq!(fits(&mut h), vec![("x".to_string(), 2)], "absent leaves it on");
+    place(&mut h, Some("0"));
+    assert_eq!(fits(&mut h), vec![]);
+    // Another value leaves it as it is: here still off.
+    place(&mut h, Some("2"));
     assert_eq!(fits(&mut h), vec![]);
 }
 
@@ -3013,17 +2933,7 @@ fn fit_takes_a_root_the_viewport_sizes_at_a_fractional_scale_as_placed() {
             "",
         ));
         assert_eq!(fits(&mut h), vec![], "{at}");
-        h.handle(&cmd(
-            &[
-                ("a", "delta"),
-                ("s", "x"),
-                ("op", "attr"),
-                ("t", "d"),
-                ("k", "style"),
-                ("q", "2"),
-            ],
-            &format!("height: calc({rows} * var(--hotty-cell-h) + 1px)"),
-        ));
+        h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "attr", Some("d"), Some("style"), &format!("height: calc({rows} * var(--hotty-cell-h) + 1px)")));
         assert_eq!(fits(&mut h), vec![("x".to_string(), rows as u64 + 1)], "{at}");
     }
 }
@@ -3144,7 +3054,7 @@ fn a_detached_surface_sends_no_hover_and_hears_the_difference_once_it_is_the_pro
     place_hover(&mut h);
     let m = Mods::default();
     h.pointer("x", PointerKind::Move, 15.0, 30.0, m);
-    h.handle(&cmd(&[("a", "detach"), ("s", "x")], ""));
+    h.handle(&cmd(&[("a", "detach"), ("s", "x"), ("n", "1")], ""));
     assert!(hovers(&h.pointer("x", PointerKind::Move, 15.0, 50.0, m)).is_empty());
     assert!(hovers(&h.pointer("x", PointerKind::Leave, 0.0, 0.0, m)).is_empty());
     // A document without d=1 makes it the program's again: it last heard b.
@@ -3196,10 +3106,10 @@ fn losing_the_pointer_during_a_drag_ends_it_and_then_leaves() {
 #[test]
 fn hover_is_listed_in_the_capabilities() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], "")));
     let caps = body(&r[0].payload);
     assert!(
-        caps["events"]
+        caps["features"]
             .as_array()
             .unwrap()
             .iter()
@@ -3351,22 +3261,13 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
         body(&c.payload)
     };
     assert_eq!(payload("change")["value"], "abZ");
-    assert_eq!(payload("submit")["pw"], "abZ");
+    assert_eq!(sent(&payload("submit"), "pw"), "abZ");
     h.blur("f");
     render(&mut h);
 
     // A reveal toggle: the program makes it a text field, and back.
     let set_type = |h: &mut Host, ty: &str| {
-        let r = replies(&h.handle(&cmd(
-            &[
-                ("a", "delta"),
-                ("s", "f"),
-                ("op", "attr"),
-                ("t", "pw"),
-                ("k", "type"),
-            ],
-            ty,
-        )));
+        let r = replies(&h.handle(&delta_cmd(&[("s", "f"), ("n", "1")], "attr", Some("pw"), Some("type"), ty)));
         assert_eq!(r[0].get("a"), Some("ok"));
         render(h);
     };
@@ -3589,7 +3490,7 @@ fn a_select_picks_with_keys_repaints_as_a_full_paint_and_submits_its_pick() {
         .find(|c| c.get("e") == Some("submit"))
         .expect("submit");
     let fields = body(&submit.payload);
-    assert_eq!(fields["env"], "dev", "{fields}");
+    assert_eq!(sent(&fields, "env"), "dev", "{fields}");
 }
 
 #[test]
@@ -3631,22 +3532,16 @@ fn a_program_sets_a_selects_option_except_while_it_is_focused() {
             .find(|c| c.get("e") == Some("submit"))
             .expect("submit");
         let fields = body(&submit.payload);
-        fields["env"].as_str().unwrap().to_string()
+        sent(&fields, "env").as_str().unwrap().to_string()
     };
     assert_eq!(selected(&mut h), "production");
     // Not focused: the program's `selected` picks.
-    h.handle(&cmd(
-        &[("a", "delta"), ("s", "f"), ("op", "morph"), ("t", "env")],
-        "<select id=env name=env><option>staging<option>production<option disabled>retired<option value=dev selected>development</select>",
-    ));
+    h.handle(&delta_cmd(&[("s", "f")], "morph", Some("env"), None, "<select id=env name=env><option>staging<option>production<option disabled>retired<option value=dev selected>development</select>"));
     assert_eq!(selected(&mut h), "dev");
     // Focused: the user's pick stays, whatever the program's `selected` says.
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "env")], ""));
     named(&mut h, "f", KeyName::Home);
-    h.handle(&cmd(
-        &[("a", "delta"), ("s", "f"), ("op", "morph"), ("t", "env")],
-        "<select id=env name=env><option>staging<option selected>production<option disabled>retired<option value=dev>development</select>",
-    ));
+    h.handle(&delta_cmd(&[("s", "f")], "morph", Some("env"), None, "<select id=env name=env><option>staging<option selected>production<option disabled>retired<option value=dev>development</select>"));
     assert_eq!(selected(&mut h), "staging");
 }
 
@@ -3671,9 +3566,17 @@ fn counted_click(h: &mut Host, s: &str, x: f32, y: f32, n: u32) -> Vec<(String, 
 #[test]
 fn a_click_carries_the_platforms_count_kept_to_one_element() {
     let mut h = host();
-    assert_eq!(body(&replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")))[0].payload)["count"], serde_json::Value::Null);
+    let counts = |h: &mut Host| {
+        let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], "")));
+        body(&r[0].payload)["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "count")
+    };
+    assert!(!counts(&mut h));
     h.set_counts(true);
-    assert_eq!(body(&replies(&h.handle(&cmd(&[("a", "q"), ("n", "2"), ("v", "0.2")], "")))[0].payload)["count"], true);
+    assert!(counts(&mut h));
     doc_at(
         &mut h,
         "x",

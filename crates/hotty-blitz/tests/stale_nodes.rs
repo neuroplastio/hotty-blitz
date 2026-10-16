@@ -4,6 +4,9 @@
 //! turned HOTTY off. Found by fuzzing random deltas against layout, and
 //! shrunk.
 
+mod common;
+
+use common::delta_cmd;
 use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
 use hotty_wire::Command;
 
@@ -33,9 +36,7 @@ fn run(doc: &str, steps: &[Step]) {
     for step in steps {
         match step {
             Delta(op, t, k, payload) => {
-                let mut pairs = vec![("a", "delta"), ("s", "f"), ("op", *op), ("t", *t), ("q", "2")];
-                pairs.extend(k.map(|k| ("k", k)));
-                host.handle(&cmd(&pairs, payload));
+                host.handle(&delta_cmd(&[("s", "f"), ("q", "2")], op, Some(t), *k, payload));
             }
             Render => host.render_dirty(&mut |_, _, _| {}),
             Move(x, y) => {

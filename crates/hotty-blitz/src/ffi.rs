@@ -63,19 +63,14 @@ pub struct HottyEffects {
     /// text to `hotty_host_paste`. Null: the terminal does not read it, and
     /// the key reaches the program.
     pub paste: Option<extern "C" fn(ctx: *mut c_void)>,
-    /// A key typed while a key sequence waited (SPEC §10.5), offered by
-    /// name (`hotty_host_key_pressed`), goes on to the program: send what
-    /// the terminal sends for the key `name`, UTF-8, as SPEC §10.4 names
-    /// it.
-    pub key: Option<extern "C" fn(ctx: *mut c_void, name: *const u8, len: usize)>,
     /// `a=edit` (SPEC §10.6): the edit commands the program takes on the
     /// screen it is on, in place of the last ones, comma-separated (empty:
     /// none). Keep them per screen; a key of one goes to the program as
     /// `hotty_host_command`.
     pub edit: Option<extern "C" fn(ctx: *mut c_void, names: *const u8, len: usize)>,
-    /// Show the which-key menu, the surface `surface`, `cols`×`rows` cells,
-    /// at the bottom right of the viewport, above everything (SPEC §10.5,
-    /// §10.6). Its pixels come from `hotty_host_render`; `remove` hides it.
+    /// Show the program's menu, the surface `surface`, `cols`×`rows` cells,
+    /// at the bottom right of the viewport, above everything (SPEC §10.5).
+    /// Its pixels come from `hotty_host_render`; `remove` hides it.
     pub menu: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char, cols: u16, rows: u16)>,
 }
 
@@ -225,11 +220,6 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                     f(fx.ctx);
                 }
             }
-            Effect::Key { name } => {
-                if let Some(f) = fx.key {
-                    f(fx.ctx, name.as_ptr(), name.len());
-                }
-            }
             Effect::Edit(names) => {
                 if let Some(f) = fx.edit {
                     let names = names.join(",");
@@ -274,6 +264,10 @@ pub unsafe extern "C" fn hotty_host_free(h: *mut HottyHost) {
 }
 
 /// New cell size, theme or font: every surface re-renders at the new size.
+/// A new font changes a cell in CSS pixels (SPEC §5.3), and a program that
+/// asked for the capabilities hears it, as it hears a new theme, as `caps`
+/// (SPEC §4, §9): with `hotty_host_events`, after the render. A zoom tells
+/// it nothing.
 ///
 /// # Safety
 /// `h` and `cfg` must be valid.
@@ -399,7 +393,10 @@ pub unsafe extern "C" fn hotty_host_render(h: *mut HottyHost, ctx: *mut c_void, 
     })
 }
 
-/// Sends what rendering found for the program through `fx`: `fit` events
+/// Sends what rendering and the terminal's settings found for the program
+/// through `fx`: `caps` events (SPEC §4, §9) after `hotty_host_configure`,
+/// `hotty_host_set_network`, `hotty_host_set_passthrough` or
+/// `hotty_host_set_counts` changed what the capabilities say, `fit` events
 /// (SPEC §5.2), with the rows of the last frame drawn, and `view` events
 /// (§9.5), with what it shows, at most one of each per surface. Call after
 /// `hotty_host_render`.
@@ -455,7 +452,7 @@ fn mods(bits: u32) -> Mods {
 /// `fx` too. From a press to its release the pointer is the surface's, for
 /// drags (SPEC §9.1): every move comes here, with `(x, y)` counted from its
 /// top left even outside it; `leave` before the release ends a drag.
-/// A placement with `v=1` hears `hover` (SPEC §9.4) from moves, releases and
+/// A surface with `v=1` hears `hover` (SPEC §9.4) from moves, releases and
 /// leaves: pass `leave` whenever the pointer goes off the surface (onto the
 /// cells, another surface, a part it lets through, or out of the window).
 /// `count`, for down and up: the platform's count of the press in a run of
@@ -874,8 +871,8 @@ pub unsafe extern "C" fn hotty_host_set_waker(
 }
 
 /// The terminal lets the pointer pass through where a surface does not take
-/// it (`hotty_host_takes_pointer`): the capabilities then say
-/// `"passthrough": true` (SPEC §4, §9.3).
+/// it (`hotty_host_takes_pointer`): the capabilities then list the feature
+/// `passthrough` (SPEC §4, §9.3).
 ///
 /// # Safety
 /// `h` must be valid.
@@ -885,7 +882,8 @@ pub unsafe extern "C" fn hotty_host_set_passthrough(h: *mut HottyHost, on: bool)
 }
 
 /// The terminal passes its platform's count of each press to
-/// `hotty_host_pointer`: the capabilities say `count` (SPEC §9).
+/// `hotty_host_pointer`: the capabilities list the feature `count` (SPEC
+/// §4, §9).
 ///
 /// # Safety
 /// `h` must be valid.
@@ -912,46 +910,32 @@ pub unsafe extern "C" fn hotty_host_takes_pointer(h: *mut HottyHost, surface: *c
 /// settings: `meta`, `Mod` is Meta (macOS's Command) rather than Control;
 /// `edit`, the edit shortcuts as a `data-keys` value of edit actions
 /// (`Control+c=copy Control+Insert=copy …`), null for the defaults;
-/// `leader`, a key sequence, null for Space; `timeout_ms`, how long a
-/// sequence waits for its next key, 0 for the default; `commands`, the
-/// terminal takes `a=edit` (`fx.edit`, `hotty_host_command`); `menus`, it
-/// shows the which-key menu (`fx.menu`). A program that asked for the
-/// capabilities hears what changed (`caps`) through `fx`.
+/// `commands`, the terminal takes `a=edit` (`fx.edit`, `hotty_host_command`);
+/// `menus`, it shows the program's menu (`fx.menu`), which the
+/// capabilities then list as the feature `menu`. A program that asked for
+/// the capabilities hears what changed (`caps`) through `fx`.
 ///
 /// # Safety
-/// `h` must be valid; `edit` and `leader` null or NUL-terminated; `fx` may
-/// be null.
+/// `h` must be valid; `edit` null or NUL-terminated; `fx` may be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_set_keys(
     h: *mut HottyHost,
     meta: bool,
     edit: *const c_char,
-    leader: *const c_char,
-    timeout_ms: u32,
     commands: bool,
     menus: bool,
     fx: *const HottyEffects,
 ) {
     let fx = unsafe { fx.as_ref() };
     let edit = (!edit.is_null()).then(|| unsafe { CStr::from_ptr(edit) }.to_string_lossy().into_owned());
-    let leader = (!leader.is_null())
-        .then(|| unsafe { CStr::from_ptr(leader) }.to_string_lossy().into_owned())
-        .filter(|l| !l.trim().is_empty());
-    let mut k = crate::KeySettings {
+    let k = crate::KeySettings {
         platform: hotty_wire::keys::Platform {
             meta,
             edit: edit.map(|e| edit_shortcuts(&e)),
         },
         commands,
         menus,
-        ..crate::KeySettings::default()
     };
-    if let Some(l) = leader {
-        k.leader = l;
-    }
-    if timeout_ms > 0 {
-        k.timeout = std::time::Duration::from_millis(timeout_ms.into());
-    }
     guard(h, (), |h| {
         let effects = h.host.set_keys(k);
         run_effects(effects, fx);
@@ -1033,7 +1017,7 @@ pub unsafe extern "C" fn hotty_host_command(
 }
 
 /// A key that reaches the program in the cells, UTF-8 as SPEC §10.4 names
-/// it, while the program's menu may show (SPEC §10.6): Escape, and a key it
+/// it, while the program's menu may show (SPEC §10.5): Escape, and a key it
 /// does not list, hide the menu. The key still reaches the program.
 ///
 /// # Safety
@@ -1049,7 +1033,7 @@ pub unsafe extern "C" fn hotty_host_cells_key(h: *mut HottyHost, name: *const u8
     guard(h, (), |h| h.host.cells_key(name))
 }
 
-/// The terminal's screen changed: the program's menu hides (SPEC §10.6).
+/// The terminal's screen changed: the program's menu hides (SPEC §10.5).
 ///
 /// # Safety
 /// `h` must be valid.
@@ -1126,10 +1110,9 @@ mod tests {
         // The other surface still takes commands.
         let ok = guard(h, false, |h| {
             h.host.handle(&hotty_wire::Command::new(
-                [("a", "delta"), ("s", "b"), ("op", "text"), ("t", "p"), ("q", "2")]
-                    .into_iter()
-                    .collect(),
-                b"y".to_vec(),
+                [("a", "delta"), ("s", "b"), ("q", "2")].into_iter().collect(),
+                // {"ops": [{"op": "text", "t": "p", "v": "y"}]}
+                b"\x81\xa3ops\x91\x83\xa2op\xa4text\xa1t\xa1p\xa1v\xa1y".to_vec(),
             ));
             true
         });

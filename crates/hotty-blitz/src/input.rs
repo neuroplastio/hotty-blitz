@@ -9,13 +9,6 @@ use crate::Effect;
 use crate::body::{self, Detail};
 use hotty_wire::{Control, keys};
 
-/// Event types a host can report, for the capability reply.
-/// `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1).
-pub const EVENTS: &[&str] = &[
-    "click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit",
-    "hover", "view",
-];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerKind {
     Move,
@@ -31,6 +24,19 @@ pub struct Mods {
     pub ctrl: bool,
     pub alt: bool,
     pub meta: bool,
+}
+
+impl Mods {
+    /// The modifier keys held as an event's `mods` carries them (SPEC §9):
+    /// 1 Shift, 2 Alt, 4 Control, 8 Meta; `None` when none is held, as the
+    /// field is then left out.
+    pub fn bits(&self) -> Option<u8> {
+        let bits = u8::from(self.shift)
+            | u8::from(self.alt) << 1
+            | u8::from(self.ctrl) << 2
+            | u8::from(self.meta) << 3;
+        (bits != 0).then_some(bits)
+    }
 }
 
 /// A key, decoded by the host from whatever the terminal sent.
@@ -181,6 +187,7 @@ pub struct TouchOutcome {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {
     pub kind: &'static str,
+    /// The id of the element it names; empty where none is meant.
     pub target: String,
     /// Its body, a msgpack map (SPEC §9); none for a kind that has none.
     pub detail: Option<Detail>,
@@ -192,7 +199,10 @@ impl Event {
         c.set("a", "ev");
         c.set("s", surface);
         c.set("e", self.kind);
-        c.set("t", self.target.as_str());
+        // `t` names an element, and is absent where none is meant (SPEC §9).
+        if !self.target.is_empty() {
+            c.set("t", self.target.as_str());
+        }
         let body = self.detail.as_ref().map(body::encode).unwrap_or_default();
         hotty_wire::encode_plain(&c, &body)
     }

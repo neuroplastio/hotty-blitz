@@ -1,13 +1,12 @@
-//! Key sequences, edit commands and menus (SPEC §10.5, §10.6), and the
-//! keys a host reports (§4): what the terminal embedding the host sees.
+//! Prefixes, menus and edit commands (SPEC §10.5, §10.6), and the settings
+//! a host reports (§4): what the terminal embedding the host sees.
 
 mod common;
 
 use common::body;
-use hotty_blitz::{Config, Effect, Host, KeySettings, MENU, Metrics};
+use hotty_blitz::{Config, Effect, Host, Key, KeyName, KeySettings, MENU, Metrics, Mods};
 use hotty_wire::keys::Platform;
 use hotty_wire::{Command, Event, Scanner};
-use std::time::Duration;
 
 fn host(keys: KeySettings) -> Host {
     let mut h = Host::new(Config {
@@ -53,124 +52,138 @@ fn surface(h: &mut Host, html: &str) {
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k")], b""));
 }
 
-const DOC: &str = "<button id=k>k</button><button id=top data-key='g g'>top</button>";
+const DOC: &str = "<button id=k data-keys='g=prefix'>k</button><button id=c>c</button>";
 
-/// Keys typed while a sequence waits go on to the program as they came,
-/// in order, once a key ends the wait: bytes as bytes, and a key offered
-/// by name as its name, for the terminal to send (SPEC §10.5).
+/// A key bound to `prefix` reaches the program, and so does every key after
+/// it, until the program sends `a=focus`: as bytes, which a key offered as
+/// pressed leaves to come again (SPEC §10.5).
 #[test]
-fn keys_a_wait_typed_go_on_as_they_came() {
+fn a_prefix_gives_the_program_every_key_after_it() {
     let mut h = host(KeySettings::default());
     surface(&mut h, DOC);
-    let o = h.key_bytes("x", b"g");
-    assert!(o.consumed);
-    assert!(o.effects.is_empty());
-    // As pressed, a key the wait would take comes again as bytes.
-    let o = h.key_pressed("x", "ArrowDown");
+    // As pressed, the key is left to come as bytes, and starts nothing: Tab
+    // moves focus.
+    let o = h.key_pressed("x", "g");
     assert!(!o.consumed && o.effects.is_empty());
-    let o = h.key_bytes("x", b"x");
+    let o = h.key_pressed("x", "Tab");
     assert!(o.consumed);
-    assert_eq!(
-        o.effects,
-        vec![Effect::Reply(b"g".to_vec()), Effect::Reply(b"x".to_vec())]
-    );
-    // A key that starts a sequence, as pressed, is left to the bytes too.
-    let o = h.key_pressed("x", "Control+g");
-    assert!(!o.consumed);
-    // `g g` in one read clicks.
-    let o = h.key_bytes("x", b"gg");
+    assert_eq!(replies(&o.effects)[0].get("t"), Some("c"));
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")], b""));
+    // As bytes, it starts it: Tab, Escape and Space reach the program.
+    for keys in [&b"g"[..], b"\t", b"\x1b", b" ", b"\x1b[Z"] {
+        let o = h.key_bytes("x", keys);
+        assert!(!o.consumed && o.effects.is_empty(), "{keys:?}");
+    }
+    let o = h.key_pressed("x", "Tab");
+    assert!(!o.consumed && o.effects.is_empty());
+    // Several in one read are the program's too.
+    let o = h.key_bytes("x", b"\t x");
+    assert!(!o.consumed && o.effects.is_empty());
+    // `a=focus` gives them back, with `t` or without it.
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("q", "2")], b""));
+    let o = h.key_bytes("x", b" ");
     assert!(o.consumed);
-    let r = replies(&o.effects);
-    assert_eq!(r.len(), 1);
-    assert_eq!((r[0].get("e"), r[0].get("t")), (Some("click"), Some("top")));
+    assert_eq!(replies(&o.effects)[0].get("e"), Some("click"));
+    // A prefix ends with a=blur, and when the user focuses with a press.
+    assert!(!h.key_bytes("x", b"g").consumed);
+    h.handle(&cmd(&[("a", "blur"), ("s", "x"), ("q", "2")], b""));
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")], b""));
+    assert!(h.key_bytes("x", b" ").consumed);
 }
 
-/// A wait that times out goes on with its keys, which the terminal hears
-/// with the next frame's events; one that finishes a sequence runs it.
+/// Keys of a surface that has lost the keyboard are not its own, and a
+/// prefix is not carried to the next time it has it.
 #[test]
-fn a_wait_times_out() {
-    let mut h = host(KeySettings {
-        timeout: Duration::from_millis(30),
-        ..KeySettings::default()
-    });
-    surface(
-        &mut h,
-        &format!(
-            "{DOC}<button id=one data-key=o>o</button><button id=two data-key='o o'>oo</button>"
-        ),
-    );
-    assert!(h.key_bytes("x", b"g").consumed);
-    assert!(h.next_frame().is_some());
-    std::thread::sleep(Duration::from_millis(40));
-    assert!(h.has_dirty());
-    h.render_dirty(&mut |_, _, _| {});
-    assert_eq!(h.take_events(), vec![Effect::Reply(b"g".to_vec())]);
-    // `o` finishes one and waits for `o o`; on its own it runs.
-    assert!(h.key_bytes("x", b"o").consumed);
-    std::thread::sleep(Duration::from_millis(40));
-    h.render_dirty(&mut |_, _, _| {});
-    let r = replies(&h.take_events());
-    assert_eq!(r.len(), 1);
-    assert_eq!(r[0].get("t"), Some("one"));
+fn a_prefix_ends_with_the_keyboard() {
+    let mut h = host(KeySettings::default());
+    surface(&mut h, DOC);
+    assert!(!h.key_bytes("x", b"g").consumed);
+    h.blur("x");
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")], b""));
+    assert!(h.key_bytes("x", b" ").consumed);
 }
 
-/// While a sequence waits the host shows its menu a moment later, and
-/// hides it when the wait ends (SPEC §10.5).
+/// `a=menu` shows the program's menu, whatever has the keyboard; a key the
+/// menu does not list, typed to a surface or to the cells, hides it, and so
+/// does Escape or no body (SPEC §10.5).
 #[test]
-fn a_waiting_sequence_shows_its_menu() {
+fn a_programs_menu() {
     let mut h = host(KeySettings {
         menus: true,
         ..KeySettings::default()
     });
-    surface(
-        &mut h,
-        "<div id=k tabindex=0>k</div><menu data-key='<leader> f' aria-label=File>\
-         <button id=new data-key=n>New file</button>\
-         <button id=open data-key=o aria-label='Open…'>o</button>\
-         <button disabled data-key=d>Delete</button></menu>",
-    );
-    // A sequence typed quickly shows none.
-    assert!(h.key_bytes("x", b" ").consumed);
-    h.render_dirty(&mut |_, _, _| {});
-    assert!(h.take_events().is_empty());
-    std::thread::sleep(Duration::from_millis(350));
-    assert!(h.has_dirty());
-    let mut frames = Vec::new();
-    h.render_dirty(&mut |name, f, _| frames.push((name.to_string(), f.width, f.height)));
-    let events = h.take_events();
-    let Some(Effect::Menu {
-        surface,
-        cols,
-        rows,
-    }) = events.first()
-    else {
-        panic!("no menu: {events:?}");
+    surface(&mut h, DOC);
+    // {"seq": ["Space"], "label": "File", "items": [{"key": "n", "label": "New", "group": false, "enabled": true}]}
+    let menu = b"\x83\xa3seq\x91\xa5Space\xa5label\xa4File\xa5items\x91\x84\xa3key\xa1n\xa5label\xa3New\xa5group\xc2\xa7enabled\xc3";
+    let shown = |h: &mut Host| {
+        h.render_dirty(&mut |_, _, _| {});
+        h.take_events()
     };
-    assert_eq!(surface, MENU);
-    // A title row, then the one key that can follow: f, the File group.
-    assert_eq!(*rows, 2);
-    assert!(*cols >= 8, "{cols}");
-    assert_eq!(frames, vec![(MENU.to_string(), u32::from(*cols) * 10, 40)]);
-    assert!(
-        h.text_rows(MENU).is_empty(),
-        "the menu is no program's surface"
-    );
-    // The next level replaces it, and Escape hides it.
-    assert!(h.key_bytes("x", b"f").consumed);
+    let hidden = vec![Effect::Delete { surface: MENU.into() }];
+    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    assert!(h.has_dirty());
+    assert!(matches!(shown(&mut h).as_slice(), [Effect::Menu { rows: 2, .. }]));
+    // A title row, then the key that can follow.
+    assert!(h.text_rows(MENU).is_empty(), "the menu is no program's surface");
+    // Listed keys leave it, to the cells and to a surface.
+    h.cells_key("n");
+    assert!(shown(&mut h).is_empty(), "n is listed");
+    assert!(!h.key_bytes("x", b"n").consumed);
+    assert!(shown(&mut h).is_empty(), "n is listed");
+    // An unlisted key to a surface hides it, and the key still goes where
+    // it would.
+    let o = h.key_bytes("x", b" ");
+    assert!(o.consumed);
+    assert_eq!(shown(&mut h), hidden);
+    // Escape, to the cells.
+    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    assert_eq!(shown(&mut h).len(), 1);
+    h.cells_key("Escape");
+    assert_eq!(shown(&mut h), hidden);
+    // A key to the cells that it does not list.
+    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    shown(&mut h);
+    h.cells_key("q");
+    assert_eq!(shown(&mut h), hidden);
+    // `a=menu` with no body hides it, and the screen changing does.
+    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    shown(&mut h);
+    h.handle(&cmd(&[("a", "menu"), ("q", "2")], b""));
+    assert_eq!(shown(&mut h), hidden);
+    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
+    shown(&mut h);
+    h.hide_program_menu();
+    assert_eq!(shown(&mut h), hidden);
+    // Not a msgpack map: EINVAL, and so is a field of another type.
+    for bad in [&b"\x91\x01"[..], b"\x81\xa5items\x91\x01", b"\x81\xa5label\x01"] {
+        let r = replies(&h.handle(&cmd(&[("a", "menu")], bad)));
+        assert_eq!(r[0].get("a"), Some("err"), "{bad:02x?}");
+    }
+    // A host whose terminal shows none knows no `a=menu`.
+    let mut h = host(KeySettings::default());
+    let r = replies(&h.handle(&cmd(&[("a", "menu")], menu)));
+    assert_eq!(r[0].get("a"), Some("err"));
+}
+
+/// Escape is a key like any other for the menu.
+#[test]
+fn a_key_of_a_surface_without_a_name_hides_the_menu_too() {
+    let mut h = host(KeySettings {
+        menus: true,
+        ..KeySettings::default()
+    });
+    surface(&mut h, DOC);
+    let menu = b"\x81\xa5items\x91\x81\xa3key\xa1n";
+    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
     h.render_dirty(&mut |_, _, _| {});
-    let events = h.take_events();
-    assert!(
-        matches!(events.as_slice(), [Effect::Menu { rows: 4, .. }]),
-        "{events:?}"
-    );
-    assert!(h.key_bytes("x", b"\x1b").consumed);
+    h.take_events();
+    let other = Key {
+        name: KeyName::Other,
+        mods: Mods::default(),
+    };
+    h.key("x", &other);
     h.render_dirty(&mut |_, _, _| {});
-    assert_eq!(
-        h.take_events(),
-        vec![Effect::Delete {
-            surface: MENU.into()
-        }]
-    );
+    assert_eq!(h.take_events(), vec![Effect::Delete { surface: MENU.into() }]);
 }
 
 /// `a=edit` names the commands the program takes, for the terminal to keep
@@ -208,48 +221,16 @@ fn a_program_takes_edit_commands() {
     assert_eq!(r[0].get("a"), Some("err"));
 }
 
-/// A program's menu shows until it sends another or none, or a key it does
-/// not list reaches the program (SPEC §10.6).
-#[test]
-fn a_programs_menu() {
-    let mut h = host(KeySettings {
-        menus: true,
-        ..KeySettings::default()
-    });
-    // {"seq": ["Space"], "label": "File", "items": [{"key": "n", "label": "New", "group": false, "enabled": true}]}
-    let menu = b"\x83\xa3seq\x91\xa5Space\xa5label\xa4File\xa5items\x91\x84\xa3key\xa1n\xa5label\xa3New\xa5group\xc2\xa7enabled\xc3";
-    h.handle(&cmd(&[("a", "menu"), ("q", "2")], menu));
-    assert!(h.has_dirty());
-    h.render_dirty(&mut |_, _, _| {});
-    assert!(matches!(
-        h.take_events().as_slice(),
-        [Effect::Menu { rows: 2, .. }]
-    ));
-    h.cells_key("n");
-    h.render_dirty(&mut |_, _, _| {});
-    assert!(h.take_events().is_empty(), "n is listed");
-    h.cells_key("q");
-    h.render_dirty(&mut |_, _, _| {});
-    assert_eq!(
-        h.take_events(),
-        vec![Effect::Delete {
-            surface: MENU.into()
-        }]
-    );
-    // Not a msgpack map: EINVAL.
-    let r = replies(&h.handle(&cmd(&[("a", "menu")], b"\x91\x01")));
-    assert_eq!(r[0].get("a"), Some("err"));
-}
-
-/// The capabilities report the keys (SPEC §4), and a program that asked
+/// The capabilities report the settings (SPEC §4), and a program that asked
 /// for them hears what changes as `caps`, of no surface (§9).
 #[test]
-fn caps_report_the_keys_and_their_changes() {
+fn caps_report_the_settings_and_their_changes() {
     let mut h = host(KeySettings {
         commands: true,
         menus: true,
         ..KeySettings::default()
     });
+    h.set_passthrough(true);
     // Not asked yet: nothing to tell.
     let mac = Platform {
         meta: true,
@@ -263,25 +244,21 @@ fn caps_report_the_keys_and_their_changes() {
         })
         .is_empty()
     );
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], b"")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["mod"], "Control");
     assert_eq!(
         caps["edit"]["redo"],
         serde_json::json!(["Control+Z", "Control+y"])
     );
-    assert_eq!(
-        caps["keys"],
-        serde_json::json!({"leader": "Space", "timeout": 2000})
-    );
-    assert_eq!(caps["menu"], true);
-    let events = caps["events"].as_array().unwrap();
-    assert!(events.iter().any(|e| e == "command") && events.iter().any(|e| e == "caps"));
+    assert_eq!(caps["features"], serde_json::json!(["passthrough", "hover", "menu"]));
+    for gone in ["keys", "menu", "events", "ops", "cell", "scroll", "steps", "drop"] {
+        assert!(caps.get(gone).is_none(), "{gone}");
+    }
     let fx = h.set_keys(KeySettings {
         platform: mac,
         commands: true,
         menus: true,
-        ..KeySettings::default()
     });
     let r = replies(&fx);
     assert_eq!(
@@ -291,5 +268,53 @@ fn caps_report_the_keys_and_their_changes() {
     let changed = body(&r[0].payload);
     assert_eq!(changed["mod"], "Meta");
     assert_eq!(changed["edit"]["copy"], serde_json::json!(["Meta+c"]));
-    assert!(changed.get("keys").is_none());
+    assert_eq!(changed.as_object().unwrap().len(), 2);
+    // A field that became absent comes as its type's empty value.
+    let fx = h.set_keys(KeySettings::default());
+    let changed = body(&replies(&fx)[0].payload);
+    assert_eq!(
+        changed,
+        serde_json::json!({"mod": "Control", "edit": {}, "features": ["passthrough", "hover"]})
+    );
+}
+
+/// A new font tells `caps` with the new `cellcss`; a zoom, which changes
+/// the cell in device pixels and `scale` together, and a program that did
+/// not ask, hear nothing (SPEC §4, §5.3).
+#[test]
+fn a_new_font_tells_caps_and_a_zoom_does_not() {
+    let config = |cell_w, cell_h, scale, font_size| Config {
+        metrics: Metrics { cell_w, cell_h, scale },
+        font_size: Some(font_size),
+        ..Config::default()
+    };
+    let mut h = Host::new(config(10, 20, 1.0, 16.0));
+    // Before a query: nothing is owed.
+    h.set_config(config(12, 24, 1.0, 19.0));
+    assert!(h.take_events().is_empty());
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], b"")));
+    let caps = body(&r[0].payload);
+    assert_eq!(caps["cellcss"], serde_json::json!({"w": 12.0, "h": 24.0}));
+    assert_eq!(caps["scale"], serde_json::json!(1.0));
+    // A zoom to 1.6: the cell in device pixels and `scale` move together.
+    h.render_dirty(&mut |_, _, _| {});
+    h.set_config(config(19, 38, 1.6, 19.0));
+    assert!(!h.has_dirty());
+    assert!(h.take_events().is_empty());
+    // A font of another size, at that zoom: `cellcss` and, with it, `scale`.
+    h.set_config(config(24, 50, 1.6, 24.0));
+    assert!(h.has_dirty());
+    let r = replies(&h.take_events());
+    assert_eq!(r.len(), 1);
+    assert_eq!((r[0].get("e"), r[0].get("s")), (Some("caps"), None));
+    assert_eq!(
+        body(&r[0].payload),
+        serde_json::json!({"cellcss": {"w": 15.0, "h": 31.25}, "scale": 1.6})
+    );
+    // A theme: `scheme` alone.
+    let mut light = h.config().clone();
+    light.theme.dark = false;
+    h.set_config(light);
+    let r = replies(&h.take_events());
+    assert_eq!(body(&r[0].payload), serde_json::json!({"scheme": "light"}));
 }

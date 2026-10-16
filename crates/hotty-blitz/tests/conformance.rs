@@ -135,6 +135,7 @@ fn check_events(step: &Value, got: &[&Command]) -> Result<(), String> {
                     return Err(format!("event {}: detail want {v}, got {}", i + 1, show(g)));
                 }
             } else if g.get(k) != v.as_str() {
+                // `null` is a key the event must not have (README).
                 return Err(format!("event {}: {k} want {v}, got {}", i + 1, show(g)));
             }
         }
@@ -378,9 +379,8 @@ fn key_name(name: &str) -> KeyName {
 }
 
 /// A key pressed where the keyboard is: the surface that has it, or else
-/// the terminal (conformance/README). A key a sequence's wait typed that
-/// goes on to the program now is the terminal's, and a key that reaches
-/// the program as a command it took is not (SPEC §10.5, §10.6).
+/// the terminal (conformance/README). A key that reaches the program as a
+/// command it took is not the terminal's (SPEC §10.6).
 fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> {
     host.render_dirty(&mut |_, _, _| {});
     let key = Key {
@@ -392,15 +392,12 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
     let mut terminal = match host.focused_surface().map(str::to_string) {
         Some(s) => {
             let out = host.key(&s, &key);
-            let mut went_on = false;
             for e in out.effects {
-                match e {
-                    Effect::Reply(b) => sent.extend(b),
-                    Effect::Key { name: k } => went_on |= k == name,
-                    _ => {}
+                if let Effect::Reply(b) = e {
+                    sent.extend(b);
                 }
             }
-            !out.consumed || went_on
+            !out.consumed
         }
         None => true,
     };
@@ -472,9 +469,18 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         for (k, v) in ctl.as_object().unwrap() {
             control.set(k, v.as_str().unwrap());
         }
-        let payload = step.get("payload").and_then(Value::as_str).unwrap_or("");
+        // Text, or a msgpack body written from its JSON, its floats floats.
+        let payload = match step.get("body") {
+            Some(body) => rmp_serde::to_vec_named(body).unwrap(),
+            None => step
+                .get("payload")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes()
+                .to_vec(),
+        };
         // Through the wire, as a program sends it.
-        let (cmds, _) = decode(&hotty_wire::encode(&control, payload.as_bytes()));
+        let (cmds, _) = decode(&hotty_wire::encode(&control, &payload));
         let mut sent = Vec::new();
         for cmd in &cmds {
             for e in host.handle(cmd) {
@@ -540,6 +546,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                         }
                         continue;
                     }
+                    // `null`: the key must be absent (README), as `have` is None.
                     let have = match k.as_str() {
                         "code" | "detail" => {
                             body.get(k).and_then(Value::as_str).map(str::to_string)
@@ -581,50 +588,33 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
     }
 }
 
-/// Whether the capabilities of a host, made as each vector's host is,
-/// list `name` in `events` (SPEC §4).
-fn sends(name: &str) -> bool {
-    let mut host = Host::new(Config::default());
-    let mut control = Control::default();
-    for (k, v) in [("a", "q"), ("n", "1"), ("v", "0.2")] {
-        control.set(k, v);
-    }
-    let (cmds, _) = decode(&hotty_wire::encode(&control, b""));
-    let mut sent = Vec::new();
-    for e in host.handle(&cmds[0]) {
-        if let Effect::Reply(b) = e {
-            sent.extend(b);
-        }
-    }
-    let msgs = from_host(&sent).expect("the capabilities");
-    let caps = read_body(&msgs[0].payload).expect("the capabilities' body");
-    caps["events"]
-        .as_array()
-        .is_some_and(|events| events.iter().any(|e| e == name))
-}
-
 #[test]
 fn protocol_vectors() {
     let v = vectors();
     let mut failures = Vec::new();
-    // `view` where the capabilities list it (conformance/README).
-    let views = sends("view");
+    let mut skipped = 0;
     for vector in v["vectors"].as_array().unwrap() {
-        // This runner passes the pointer through as hottyterm does, and
-        // hotty-blitz sends hover, scrolls, takes touch, drags in steps, counts
-        // clicks and takes drop targets.
+        // This runner passes the pointer through, counts clicks, takes edit
+        // commands and shows menus as hottyterm does, and hotty-blitz sends
+        // hover, scrolls, takes touch, drags in steps, takes drop targets,
+        // tells `view` and keeps a history for its text fields.
         let has = |r: &Value| {
-            r == "passthrough"
-                || r == "hover"
-                || r == "scroll"
-                || r == "touch"
-                || r == "steps"
-                || r == "count"
-                || r == "drop"
-                || r == "undo"
-                || r == "keys"
-                || r == "commands"
-                || (r == "view" && views)
+            matches!(
+                r.as_str(),
+                Some(
+                    "passthrough"
+                        | "hover"
+                        | "count"
+                        | "menu"
+                        | "touch"
+                        | "commands"
+                        | "undo"
+                        | "scroll"
+                        | "steps"
+                        | "drop"
+                        | "view"
+                )
+            )
         };
         let runs = match vector.get("requires") {
             None => true,
@@ -632,16 +622,16 @@ fn protocol_vectors() {
             Some(r) => has(r),
         };
         if !runs {
+            skipped += 1;
             continue;
         }
         let mut host = Host::new(Config::default());
         host.set_passthrough(true);
         host.set_counts(true);
-        // Its leader is Space, its timeout one no step outlasts, and its
-        // terminal takes edit commands (conformance/README).
+        // Its terminal takes edit commands and shows menus.
         host.set_keys(KeySettings {
-            timeout: std::time::Duration::from_secs(3600),
             commands: true,
+            menus: true,
             ..KeySettings::default()
         });
         let mut mouse = Mouse::default();
@@ -656,6 +646,8 @@ fn protocol_vectors() {
             }
         }
     }
+    // It has every feature and platform capability a vector may require.
+    assert_eq!(skipped, 0, "vectors this runner skips");
     assert!(
         failures.is_empty(),
         "{} vector(s) failed:\n{}",
@@ -840,7 +832,7 @@ fn keymap_vectors() {
                     .collect()
             }),
         };
-        if k.get("program").is_some() || k.get("scroll").is_some() {
+        if k.get("program").is_some() || k.get("prefix").is_some() || k.get("scroll").is_some() {
             // An element's keymap outside a text field: no default (§10.2).
             let values = k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap());
             let m = keys::element_keymap(&platform, values);
@@ -848,6 +840,12 @@ fn keymap_vectors() {
                 let got = m.program(key);
                 if Some(got) != want.as_bool() {
                     failures.push(format!("{name}: {key}: program {got}, want {want}"));
+                }
+            }
+            for (key, want) in k.get("prefix").and_then(Value::as_object).into_iter().flatten() {
+                let got = m.prefix(key);
+                if Some(got) != want.as_bool() {
+                    failures.push(format!("{name}: {key}: prefix {got}, want {want}"));
                 }
             }
             for (key, want) in k.get("scroll").and_then(Value::as_object).into_iter().flatten() {

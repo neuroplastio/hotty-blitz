@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::body;
+use common::{body, delta_cmd};
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty_wire::{Command, Event, Scanner};
 
@@ -139,16 +139,7 @@ fn a_change_after_the_root_scrolled_repaints_in_part_as_a_full_paint_draws_it() 
     place(&mut h, Some("1"), ROWS, "20", "4");
     assert!(wheel(&mut h, 15.0, 10.0, 0.0, 50.0));
     render(&mut h);
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "text"),
-            ("t", "d"),
-            ("q", "2"),
-        ],
-        "d, longer now",
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "text", Some("d"), None, "d, longer now"));
     let damage = render(&mut h);
     assert!(
         matches!(damage.as_slice(), [hotty_blitz::Damage::Rects(_)]),

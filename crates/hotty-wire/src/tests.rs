@@ -149,6 +149,26 @@ fn large_payloads_are_chunked_at_4096() {
 }
 
 #[test]
+fn continuation_chunks_carry_only_m() {
+    // SPEC §3.4: the first chunk holds the control; the rest, `m` alone.
+    let payload = vec![b'x'; 20000];
+    let control: Control = [("a", "res"), ("id", "x"), ("q", "2")].into_iter().collect();
+    let encoded = encode_plain(&control, &payload);
+    let pieces: Vec<&[u8]> = encoded
+        .split(|&b| b == ESC)
+        .filter(|c| c.starts_with(b"]7279;"))
+        .collect();
+    assert!(pieces.len() > 2);
+    for (i, piece) in pieces.iter().enumerate().skip(1) {
+        let head = piece.splitn(3, |&b| b == b';').nth(1).unwrap();
+        let want: &[u8] = if i + 1 == pieces.len() { b"m=0" } else { b"m=1" };
+        assert_eq!(head, want, "chunk {i}");
+    }
+    let got = scan_split(&encoded, &mut Lcg(3));
+    assert_eq!(got.commands, vec![Command::new(control, payload)]);
+}
+
+#[test]
 fn values_are_sent_as_printable_ascii() {
     // SPEC §3.2: one `_` for each character a value may not hold.
     assert_eq!(clean_value("a b:c;d=e\x07é😀~"), "a b_c_d_e___~");

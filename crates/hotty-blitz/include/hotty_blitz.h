@@ -44,18 +44,14 @@ typedef struct {
    * to hotty_host_paste. NULL: the terminal does not read it, and the key
    * reaches the program. */
   void (*paste)(void *ctx);
-  /* A key typed while a key sequence waited (SPEC 10.5), offered by name
-   * (hotty_host_key_pressed), goes on to the program: send what the
-   * terminal sends for the key `name`, UTF-8 as SPEC 10.4 names it. */
-  void (*key)(void *ctx, const uint8_t *name, size_t len);
   /* a=edit (SPEC 10.6): the edit commands the program takes on the screen
    * it is on, in place of the last ones, comma-separated (empty: none).
    * Keep them per screen; a key of one goes to the program as
    * hotty_host_command. */
   void (*edit)(void *ctx, const uint8_t *names, size_t len);
-  /* Show the which-key menu, the surface `surface`, cols x rows cells, at
-   * the bottom right of the screen, above everything (SPEC 10.5, 10.6).
-   * Its pixels come from hotty_host_render; remove hides it. */
+  /* Show the program's menu, the surface `surface`, cols x rows cells, at
+   * the bottom right of the screen, above everything (SPEC 10.5). Its
+   * pixels come from hotty_host_render; remove hides it. */
   void (*menu)(void *ctx, const char *surface, uint16_t cols, uint16_t rows);
 } hotty_effects;
 
@@ -69,6 +65,10 @@ typedef void (*hotty_frame_fn)(void *ctx, const char *surface, uint32_t w, uint3
 
 hotty_host *hotty_host_new(const hotty_config *cfg);
 void hotty_host_free(hotty_host *h);
+/* New cell size, theme or font. A new font changes a cell in CSS pixels
+ * (SPEC 5.3), and a program that asked for the capabilities hears it, as it
+ * hears a new theme, as a caps event (SPEC 4, 9) through the next
+ * hotty_host_events; a zoom (the cell and scale together) tells it nothing. */
 void hotty_host_configure(hotty_host *h, const hotty_config *cfg);
 void hotty_host_osc(hotty_host *h, const uint8_t *body, size_t len, const hotty_effects *fx);
 bool hotty_host_has_dirty(const hotty_host *h);
@@ -84,12 +84,15 @@ int64_t hotty_host_next_frame(hotty_host *h);
  * must show it anew and no longer has its pixels. */
 void hotty_host_redeliver(hotty_host *h, const char *surface);
 void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
-/* What rendering found for the program, through fx->reply: fit events (SPEC
- * 5.2: a placement with f=1 hears the rows its document needs), with the rows
- * of the last frame drawn, and view events (SPEC 9.5: which elements with
- * data-on~=view are in view), with what it shows, at most one of each per
- * surface; and, through fx->remove, the surfaces a panic cost (above). Call
- * after hotty_host_render. */
+/* What rendering and the terminal's settings found for the program, through
+ * fx->reply: caps events (SPEC 4, 9) after hotty_host_configure,
+ * hotty_host_set_network, hotty_host_set_passthrough or hotty_host_set_counts
+ * changed what the capabilities say; fit events (SPEC 5.2: a surface with
+ * f=1 hears the rows its document needs), with the rows of the last frame
+ * drawn, and view events (SPEC 9.5: which elements with data-on~=view are in
+ * view), with what it shows, at most one of each per surface; and, through
+ * fx->remove, the surfaces a panic cost (above). Call after
+ * hotty_host_render. */
 void hotty_host_events(hotty_host *h, const hotty_effects *fx);
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
 /* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's
@@ -100,7 +103,7 @@ void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
  * past its size), for drags (SPEC 9.1). Pass leave if the pointer is lost
  * before the release: it ends a drag. Pass no touch here, not even a tap: a
  * touch over a surface goes to hotty_host_touch.
- * A placement with v=1 hears hover (SPEC 9.4) from moves, releases and
+ * A surface with v=1 hears hover (SPEC 9.4) from moves, releases and
  * leaves: pass leave whenever the pointer goes off the surface (onto the
  * cells, another surface, a part it lets through, or out of the window).
  * count, for down and up: the platform's count of the press in a run of
@@ -206,14 +209,17 @@ bool hotty_host_paste(hotty_host *h, const uint8_t *text, size_t len, const hott
  * before giving the surface a press or a hover, not during its drag. */
 bool hotty_host_takes_pointer(hotty_host *h, const char *surface, float x, float y);
 /* The terminal does hand the pointer through (above): the capabilities then
- * carry "passthrough": true (SPEC 4). */
+ * list the feature "passthrough" (SPEC 4). */
 void hotty_host_set_passthrough(hotty_host *h, bool on);
 /* The terminal passes its platform's count of each press to
- * hotty_host_pointer: the capabilities then carry "count": true (SPEC 9). */
+ * hotty_host_pointer: the capabilities then list the feature "count" (SPEC
+ * 4, 9). */
 void hotty_host_set_counts(hotty_host *h, bool on);
 /* The host's half of the network policy (SPEC 7.2) in CSP's syntax, as its
  * user grants it: "img-src https://example.com; font-src https:". NULL or
- * empty: none, as a new host starts. The capabilities report it ("net"). */
+ * empty: none, as a new host starts. The capabilities report it ("net"). A
+ * change reaches a program that asked for them as a caps event, through the
+ * next hotty_host_events. */
 void hotty_host_set_network(hotty_host *h, const char *policy);
 /* wake(ctx) is called on a fetching thread when something a document fetched
  * arrives or fails: render then, on the terminal's thread
@@ -224,13 +230,12 @@ void hotty_host_set_waker(hotty_host *h, void (*wake)(void *ctx), void *ctx);
 /* How the host reads keys (SPEC 10.2, 10.4-10.6): meta, Mod is Meta
  * (Command) rather than Control; edit, the edit shortcuts as a data-keys
  * value of edit actions ("Control+c=copy ..."), NULL for the defaults;
- * leader, a key sequence, NULL for Space; timeout_ms, how long a sequence
- * waits for its next key, 0 for the default; commands, the terminal takes
- * a=edit (fx->edit, hotty_host_command); menus, it shows the which-key
- * menu (fx->menu). A program that asked for the capabilities hears what
- * changed ("caps") through fx. */
-void hotty_host_set_keys(hotty_host *h, bool meta, const char *edit, const char *leader,
-                         uint32_t timeout_ms, bool commands, bool menus, const hotty_effects *fx);
+ * commands, the terminal takes a=edit (fx->edit, hotty_host_command);
+ * menus, it shows the program's menu (fx->menu), which the capabilities
+ * then list as the feature "menu". A program that asked for the
+ * capabilities hears what changed ("caps") through fx. */
+void hotty_host_set_keys(hotty_host *h, bool meta, const char *edit, bool commands, bool menus,
+                         const hotty_effects *fx);
 /* The edit command a key is (SPEC 10.6): the edit action whose shortcut
  * the key is, static and NUL-terminated; NULL for none. */
 const char *hotty_host_edit_command(hotty_host *h, const uint8_t *name, size_t len);
@@ -240,9 +245,11 @@ const char *hotty_host_edit_command(hotty_host *h, const uint8_t *name, size_t l
 void hotty_host_command(const char *name, const uint8_t *key, size_t key_len,
                         const uint8_t *text, size_t text_len, const hotty_effects *fx);
 /* A key that reaches the program in the cells while its menu may show
- * (SPEC 10.6): Escape, and a key the menu does not list, hide it. */
+ * (SPEC 10.5): Escape, and a key the menu does not list, hide it. Keys for a
+ * surface hide it as well, through hotty_host_key_pressed and
+ * hotty_host_key_bytes. */
 void hotty_host_cells_key(hotty_host *h, const uint8_t *name, size_t len);
-/* The terminal's screen changed: the program's menu hides (SPEC 10.6). */
+/* The terminal's screen changed: the program's menu hides (SPEC 10.5). */
 void hotty_host_hide_menu(hotty_host *h);
 
 #endif

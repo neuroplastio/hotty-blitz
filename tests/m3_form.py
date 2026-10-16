@@ -166,7 +166,7 @@ def main():
     expect(len(toggles) == 1, f"only the left click toggles notify, got {toggles}")
     expect(alt_events == [], f"an Alt click reached the surface: {alt_events}")
     expect(("click", "save") in got, "click on save")
-    sub = detail("submit", "settings") or {}
+    sub = dict(tuple(f) for f in (detail("submit", "settings") or {}).get("fields", []))
     expect(sub.get("name") == "hello" and sub.get("email") == "a@b.c", f"submit fields, got {sub}")
     expect(sub.get("theme") == "dark" and sub.get("notify") == "yes", f"submit fields, got {sub}")
     expect("hello" not in keys and "a@b.c" not in keys, f"typed text leaked to the program: {keys!r}")

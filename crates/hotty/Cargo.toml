@@ -12,6 +12,7 @@ base64.workspace = true
 flate2.workspace = true
 png.workspace = true
 serde_json.workspace = true
+rmp-serde.workspace = true
 nix = { version = "0.30", features = ["term", "process", "signal", "fs", "mman", "ioctl", "poll"] }
 libc = "0.2"
 signal-hook = "0.3"

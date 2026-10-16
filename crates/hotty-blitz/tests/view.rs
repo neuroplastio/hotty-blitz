@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::body;
+use common::{body, delta_cmd};
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty_wire::{Command, Event, Scanner};
 use serde_json::{Value, json};
@@ -97,10 +97,7 @@ fn place(h: &mut Host, scroll: bool, html: &str) -> Vec<Value> {
 }
 
 fn delta(h: &mut Host, op: &str, t: &str, payload: &str) -> Vec<Effect> {
-    h.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", op), ("t", t), ("q", "2")],
-        payload,
-    ))
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], op, Some(t), None, payload))
 }
 
 #[test]
@@ -203,7 +200,8 @@ fn what_a_box_clips_hides_or_does_not_box_is_not_in_view() {
             "out": {"c": 10, "r": 2, "w": 4, "h": 1},
         }, "end": true})]
     );
-    // The same placement again: placing sends one first, whatever it was.
+    // The same placement again: what it carries is what the program last
+    // heard, so it sends nothing (SPEC §9.5).
     h.handle(&cmd(
         &[
             ("a", "place"),
@@ -214,7 +212,7 @@ fn what_a_box_clips_hides_or_does_not_box_is_not_in_view() {
         ],
         "",
     ));
-    assert_eq!(views(&mut h), first);
+    assert_eq!(views(&mut h), Vec::<Value>::new());
 }
 
 #[test]
@@ -284,17 +282,7 @@ fn reveal_moves_no_focus_and_scrolls_only_what_scrolls() {
         [rows(&[("a", 0), ("b", 1), ("c", 2), ("d", 3)], false)]
     );
     // An element with no box moves nothing.
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "attr"),
-            ("t", "e"),
-            ("k", "hidden"),
-            ("q", "2"),
-        ],
-        "",
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "attr", Some("e"), Some("hidden"), ""));
     assert_eq!(views(&mut h), Vec::<Value>::new());
     delta(&mut h, "reveal", "e", "start");
     assert_eq!(views(&mut h), Vec::<Value>::new(), "e is not rendered");

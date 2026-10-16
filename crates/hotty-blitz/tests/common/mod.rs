@@ -1,6 +1,7 @@
 //! What the tests share: reading the bodies the host sends.
 #![allow(dead_code)]
 
+use hotty_wire::Command;
 use serde_json::{Map, Number, Value};
 
 /// The largest int a body carries, either way from zero (SPEC §3.3).
@@ -219,4 +220,31 @@ fn float(v: f64, at: usize) -> Result<Value, String> {
     Number::from_f64(v)
         .map(Value::Number)
         .ok_or_else(|| format!("holds {v} at byte {at}, which JSON has no number for"))
+}
+
+/// A delta command (SPEC §6.1) of one op: `control` beside `a=delta`, and
+/// in its body, msgpack, the op, its target `t`, its name `k` and its
+/// value `v`.
+pub fn delta_cmd(
+    control: &[(&str, &str)],
+    op: &str,
+    t: Option<&str>,
+    k: Option<&str>,
+    v: &str,
+) -> Command {
+    let mut o = Map::new();
+    o.insert("op".into(), op.into());
+    for (name, value) in [("t", t), ("k", k)] {
+        if let Some(value) = value {
+            o.insert(name.into(), value.into());
+        }
+    }
+    // A reveal to the nearest carries no v: an empty one is EINVAL (SPEC §6.1).
+    if !(op == "reveal" && v.is_empty()) {
+        o.insert("v".into(), v.into());
+    }
+    let body = rmp_serde::to_vec_named(&serde_json::json!({ "ops": [o] })).unwrap();
+    let mut c = vec![("a", "delta")];
+    c.extend(control.iter().copied());
+    Command::new(c.into_iter().collect(), body)
 }

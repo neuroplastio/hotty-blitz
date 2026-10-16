@@ -14,6 +14,29 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command as Process, Stdio};
 
+/// A delta (SPEC §6.1) of ops, each `(op, t, k, v)`, as a program sends it:
+/// its body, msgpack, written by hand with strs shorter than 32 bytes.
+fn delta_body(ops: &[(&str, &str, Option<&str>, &str)]) -> Vec<u8> {
+    let str = |b: &mut Vec<u8>, s: &str| {
+        assert!(s.len() < 32);
+        b.push(0xa0 | s.len() as u8);
+        b.extend(s.as_bytes());
+    };
+    let mut b = vec![0x81];
+    str(&mut b, "ops");
+    b.push(0x90 | ops.len() as u8);
+    for (op, t, k, v) in ops {
+        b.push(0x80 | (3 + u8::from(k.is_some())));
+        for (name, value) in [("op", Some(op)), ("t", Some(t)), ("k", k.as_ref()), ("v", Some(v))] {
+            if let Some(value) = value {
+                str(&mut b, name);
+                str(&mut b, value);
+            }
+        }
+    }
+    b
+}
+
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/dump")
 }
@@ -220,7 +243,7 @@ fn program() -> Vec<u8> {
         hotty_wire::encode(&pairs.iter().copied().collect(), payload)
     };
     s.extend(b"$ python3 form.py\r\n");
-    s.extend(cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], b""));
+    s.extend(cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], b""));
     s.extend(b"\x1b[c\x1b[?2026h");
     // Long enough to be compressed (o=z).
     s.extend(cmd(
@@ -237,18 +260,22 @@ fn program() -> Vec<u8> {
         b"",
     ));
     s.extend(b"\x1b[?2026l");
+    // Two ops, which the host shows as one.
     s.extend(cmd(
-        &[
-            ("a", "delta"),
-            ("s", "form"),
-            ("op", "text"),
-            ("t", "status"),
-            ("q", "2"),
-        ],
-        "saved ✓\n".as_bytes(),
+        &[("a", "delta"), ("s", "form"), ("q", "2")],
+        &delta_body(&[
+            ("text", "status", None, "saved ✓\n"),
+            ("var", "level", Some("p"), "42"),
+        ]),
     ));
     // Ended by BEL, as a program may end one (SPEC §3.1).
-    s.extend(b"\x1b]7279;a=delta:s=form:op=var:t=level:k=p:q=2;NDI=\x07");
+    {
+        use base64::Engine as _;
+        let body = delta_body(&[("var", "level", Some("p"), "7")]);
+        s.extend(b"\x1b]7279;a=delta:s=form:q=2;");
+        s.extend(base64::engine::general_purpose::STANDARD.encode(body).as_bytes());
+        s.extend(b"\x07");
+    }
     // Bytes, not text, in two chunks.
     s.extend(cmd(
         &[("a", "res"), ("id", "noise"), ("type", "image/png")],
@@ -314,7 +341,7 @@ fn terminal() -> Vec<u8> {
         keep(h.take_events(), s);
     };
     keep(
-        h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], "")),
+        h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], "")),
         &mut s,
     );
     s.extend(b"\x1b[?62;22c");
@@ -330,14 +357,12 @@ fn terminal() -> Vec<u8> {
     .concat();
     keep(h.handle(&cmd(&place, "")), &mut s);
     frame(&mut h, &mut s);
-    let no_surface = [
-        ("a", "delta"),
-        ("s", "nope"),
-        ("op", "text"),
-        ("t", "x"),
-        ("n", "3"),
-    ];
-    keep(h.handle(&cmd(&no_surface, "x")), &mut s);
+    let no_surface = [("a", "delta"), ("s", "nope"), ("n", "3")];
+    let body = delta_body(&[("text", "x", None, "x")]);
+    keep(
+        h.handle(&Command::new(no_surface.into_iter().collect(), body)),
+        &mut s,
+    );
     // The user: hovers and ticks the box, types a name, drags the level
     // with Shift held, saves, and leaves the window.
     let point = |h: &mut Host, s: &mut Vec<u8>, kind, xy: (f32, f32), mods| {
@@ -391,8 +416,8 @@ fn terminal() -> Vec<u8> {
         (0.0, 0.0),
         Mods::default(),
     );
-    // The terminal's font grows: the surface's size in CSS pixels changes,
-    // and the rows it needs.
+    // The terminal's font grows: the cell in CSS pixels changes, which the
+    // program hears as `caps`, and so do the rows the surface needs.
     h.set_config(config(25, 49));
     frame(&mut h, &mut s);
     // Keys for the program, and a mouse report over the cells.

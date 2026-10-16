@@ -1,8 +1,9 @@
-//! The bodies a host sends (SPEC §3.3): the capabilities (§4), an error
-//! (§3.6) and an event's detail (§9). Each is one msgpack map, and each of
-//! its fields has a type, as the spec's tables give it: an int goes out as
-//! an int, a float as a float even when it is whole (`scale: 2.0`), and a
-//! field the host has nothing for is left out, never sent as nil.
+//! The bodies of HOTTY (SPEC §3.3): the capabilities (§4), an error (§3.6)
+//! and an event's detail (§9) that a host sends, and the delta (§6.1) and
+//! the menu (§10.5) that a program does. Each is one msgpack map, and each
+//! of its fields has a type, as the spec's tables give it: an int goes out
+//! as an int, a float as a float even when it is whole (`scale: 2.0`), and
+//! a field the host has nothing for is left out, never sent as nil.
 //!
 //! Nothing here writes what a body may not hold (§3.3), which would fail
 //! the whole body for its reader: no nil (an `Option` is skipped when
@@ -16,7 +17,7 @@
 //! `limits` here.
 
 use crate::policy::Policy;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// The largest int a body carries, either way from zero (SPEC §3.3), so
@@ -45,40 +46,24 @@ pub fn float(v: f32) -> f64 {
 pub struct Caps {
     /// The version the host answers in, which the query listed (§4).
     pub v: &'static str,
-    pub ops: &'static [&'static str],
-    pub events: Vec<&'static str>,
-    pub cell: Cell,
+    /// One cell, in CSS pixels.
+    pub cellcss: CellCss,
     pub scale: f64,
     pub scheme: &'static str,
+    /// The modifier `Mod` stands for in bindings (SPEC §10.4).
+    #[serde(rename = "mod")]
+    pub modifier: &'static str,
+    /// The optional features the host has (§4); absent: none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<&'static str>,
     pub limits: Limits,
     /// The host's half of the network policy (§7.2): directive to
     /// sources, empty unless its user granted something.
     pub net: Policy,
-    #[serde(skip_serializing_if = "is_false")]
-    pub passthrough: bool,
-    #[serde(skip_serializing_if = "is_false")]
-    pub scroll: bool,
-    #[serde(skip_serializing_if = "is_false")]
-    pub steps: bool,
-    /// An element with `drop` in its `data-on` can be a drag's target, and
-    /// one with `data-steps` hears where in it the pointer is (SPEC §9.1).
-    #[serde(skip_serializing_if = "is_false")]
-    pub drop: bool,
-    /// A repeated click carries its count (SPEC §9).
-    #[serde(skip_serializing_if = "is_false")]
-    pub count: bool,
-    /// The modifier `Mod` stands for in bindings (SPEC §10.4).
-    #[serde(rename = "mod")]
-    pub modifier: &'static str,
     /// The edit shortcuts (SPEC §10.2), where the terminal takes edit
     /// commands from a program in the cells (§10.6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit: Option<Edit>,
-    /// The leader and the timeout of key sequences (SPEC §10.5).
-    pub keys: Keys,
-    /// The terminal shows a program's which-key menus (SPEC §10.6).
-    #[serde(skip_serializing_if = "is_false")]
-    pub menu: bool,
     pub host: &'static str,
     pub version: &'static str,
 }
@@ -86,31 +71,31 @@ pub struct Caps {
 /// The edit shortcuts (SPEC §4, §10.2): each edit action, with its keys.
 pub type Edit = BTreeMap<String, Vec<String>>;
 
-/// How key sequences read (SPEC §4, §10.5): the leader, a key sequence,
-/// and how long a sequence waits for its next key, in milliseconds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Keys {
-    pub leader: String,
-    pub timeout: u64,
-}
-
 /// What a `caps` event carries (SPEC §9): the fields of the capabilities
-/// that changed, as the capabilities have them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+/// that changed since the program last heard them, as the capabilities
+/// have them. One that became absent comes as its type's empty value.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Changed {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cellcss: Option<CellCss>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<&'static str>,
     #[serde(rename = "mod", skip_serializing_if = "Option::is_none")]
     pub modifier: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub edit: Option<Edit>,
+    pub features: Option<Vec<&'static str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub keys: Option<Keys>,
+    pub net: Option<Policy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<Edit>,
 }
 
-/// A which-key menu (SPEC §10.5, §10.6), myelin's level: the keys typed so
-/// far, their group's label, and the keys that can follow them. A program
-/// sends one with `a=menu`; the host makes one for a key sequence.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+/// A which-key menu (SPEC §10.5), myelin's level: the keys typed so far,
+/// their group's label, and the keys that can follow them. A program sends
+/// one with `a=menu`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Menu {
     pub seq: Vec<String>,
     pub label: String,
@@ -119,8 +104,7 @@ pub struct Menu {
 
 /// A key a menu lists: the key, what it does, whether more keys follow it,
 /// and whether it does anything now.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuItem {
     pub key: String,
     pub label: String,
@@ -128,31 +112,11 @@ pub struct MenuItem {
     pub enabled: bool,
 }
 
-impl Default for MenuItem {
-    fn default() -> MenuItem {
-        MenuItem {
-            key: String::new(),
-            label: String::new(),
-            group: false,
-            enabled: true,
-        }
-    }
-}
-
-/// Reads a menu's body: one msgpack map (SPEC §3.3), `None` when it is
-/// not one.
-pub fn decode_menu(body: &[u8]) -> Option<Menu> {
-    let mut d = rmp_serde::Deserializer::new(body);
-    let m = Menu::deserialize(&mut d).ok()?;
-    // Nothing after the map.
-    (d.get_ref().is_empty()).then_some(m)
-}
-
-/// The cell size in device pixels.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct Cell {
-    pub w: u32,
-    pub h: u32,
+/// One cell's size in CSS pixels (SPEC §4: `cellcss`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct CellCss {
+    pub w: f64,
+    pub h: f64,
 }
 
 /// The host's limits (SPEC §13).
@@ -194,11 +158,14 @@ pub struct Area {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Detail {
-    /// `click`: where the element is, a link's `href` and `url`, and the
-    /// element's `value` attribute.
+    /// `click`: where the element is, the modifier keys held, a link's
+    /// `href` and `url`, and the element's `value` attribute.
     Click {
         #[serde(skip_serializing_if = "Option::is_none")]
         area: Option<Area>,
+        /// The modifier bits (§9), left out when none is held.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mods: Option<u8>,
         #[serde(skip_serializing_if = "Option::is_none")]
         href: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,8 +176,14 @@ pub enum Detail {
         #[serde(skip_serializing_if = "Option::is_none")]
         count: Option<u32>,
     },
-    /// `press`: where the element `t` names is.
-    Press { area: Area },
+    /// `press`: where the element `t` names is, and the modifier keys
+    /// held; each is left out when the press has none.
+    Press {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        area: Option<Area>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mods: Option<u8>,
+    },
     /// `change` of a checkbox or a radio button: whether it is checked,
     /// and its `value` attribute.
     Checked {
@@ -220,15 +193,17 @@ pub enum Detail {
     },
     /// `change` of any other control, and `input`.
     Value { value: String },
-    /// `submit`: the form's fields, names to values.
-    Fields(BTreeMap<String, String>),
+    /// `submit`: the form's fields, each its name and its value, in tree
+    /// order.
+    Fields { fields: Vec<(String, String)> },
     /// `dragstart`, `drag` and `dragend` (§9.1): the pointer's cell and
     /// the modifier keys held, its step in an element with `data-steps`,
     /// and its step in a drop target with them (`tx`, `ty`).
     Drag {
         c: i32,
         r: i32,
-        keys: Vec<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mods: Option<u8>,
         #[serde(skip_serializing_if = "Option::is_none")]
         x: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -238,8 +213,6 @@ pub enum Detail {
         #[serde(skip_serializing_if = "Option::is_none")]
         ty: Option<u64>,
     },
-    /// `resize`: the surface's size in CSS pixels.
-    Resize { w: f64, h: f64 },
     /// `fit`: the rows `r=auto` would choose now.
     Fit { r: u16 },
     /// `hover` over the window (§9.4): the pointer's cell.
@@ -272,8 +245,343 @@ pub struct View {
     pub end: bool,
 }
 
-fn is_false(b: &bool) -> bool {
-    !b
+/// A value of a body a program sent, read by [`read`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    Array(Vec<Value>),
+    /// A map's fields in the order they came, each name once.
+    Map(Vec<(String, Value)>),
+    /// A form of msgpack that no field of HOTTY has (bin, an extension): a
+    /// field a reader does not know may hold one.
+    Other,
+}
+
+impl Value {
+    fn field(&self, name: &str) -> Option<&Value> {
+        match self {
+            Value::Map(m) => m.iter().find(|(k, _)| k == name).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    fn str(&self) -> Option<&str> {
+        match self {
+            Value::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// How deep a body may nest, its map being the first level (SDK.md §3.9):
+/// so that no body exhausts a reader's stack.
+const LEVELS: usize = 32;
+
+/// The most values a body may hold, however many bytes it takes, so that
+/// a body of one-byte values cannot make the host allocate a value for
+/// each of its 64 MiB.
+const VALUES: usize = 1 << 22;
+
+/// Reads a body a program sent (SPEC §3.3): one msgpack map, with nothing
+/// after it, nested at most [`LEVELS`] deep. A body that breaks a rule of
+/// §3.3 anywhere in it, in a field a reader knows or not, does not decode:
+/// a nil, a key that is not a str or is given twice in one map (keys
+/// compared as the strs they are, whatever their form), a str that is not
+/// UTF-8, an int further than [`MAX_INT`] from zero, or a timestamp of
+/// another size, with a second's nanoseconds or more, or with seconds
+/// further than [`MAX_INT`] from 1970. Nothing is allocated for a length a
+/// body claims: only for the values it holds.
+pub fn read(body: &[u8]) -> Result<Value, String> {
+    let mut r = Reader { b: body, at: 0, values: 0 };
+    let v = r.value(1)?;
+    if r.at < body.len() {
+        return Err(format!("{} byte(s) after the body", body.len() - r.at));
+    }
+    if !matches!(v, Value::Map(_)) {
+        return Err("the body is not a map".into());
+    }
+    Ok(v)
+}
+
+struct Reader<'a> {
+    b: &'a [u8],
+    at: usize,
+    values: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
+        let end = self.at.checked_add(n).filter(|&e| e <= self.b.len());
+        let end = end.ok_or_else(|| format!("is cut short at byte {}", self.at))?;
+        let s = &self.b[self.at..end];
+        self.at = end;
+        Ok(s)
+    }
+
+    /// A big-endian unsigned int of `n` bytes.
+    fn uint(&mut self, n: usize) -> Result<u64, String> {
+        Ok(self.take(n)?.iter().fold(0, |v, &x| v << 8 | u64::from(x)))
+    }
+
+    fn len(&mut self, n: usize) -> Result<usize, String> {
+        self.uint(n).map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+    }
+
+    /// One value at `level` (the body's map is 1).
+    fn value(&mut self, level: usize) -> Result<Value, String> {
+        self.values += 1;
+        if self.values > VALUES {
+            return Err(format!("holds more than {VALUES} values"));
+        }
+        let at = self.at;
+        let tag = self.take(1)?[0];
+        match tag {
+            0x00..=0x7f => Ok(Value::Int(tag.into())),
+            0xe0..=0xff => Ok(Value::Int(i64::from(tag as i8))),
+            0xcc..=0xcf => {
+                let v = self.uint(1 << (tag - 0xcc))?;
+                int(i128::from(v), at)
+            }
+            0xd0..=0xd3 => {
+                let n = 1 << (tag - 0xd0);
+                let shift = 64 - 8 * n as u32;
+                let v = ((self.uint(n)? << shift) as i64) >> shift;
+                int(i128::from(v), at)
+            }
+            0xca => Ok(Value::Float(f64::from(f32::from_bits(self.uint(4)? as u32)))),
+            0xcb => Ok(Value::Float(f64::from_bits(self.uint(8)?))),
+            0xc0 => Err(format!("holds a nil at byte {at}")),
+            0xc2 => Ok(Value::Bool(false)),
+            0xc3 => Ok(Value::Bool(true)),
+            0xa0..=0xbf => self.str((tag & 0x1f).into(), at).map(Value::Str),
+            0xd9 => self.len(1).and_then(|n| self.str(n, at)).map(Value::Str),
+            0xda => self.len(2).and_then(|n| self.str(n, at)).map(Value::Str),
+            0xdb => self.len(4).and_then(|n| self.str(n, at)).map(Value::Str),
+            0xc4 => self.len(1).and_then(|n| self.take(n)).map(|_| Value::Other),
+            0xc5 => self.len(2).and_then(|n| self.take(n)).map(|_| Value::Other),
+            0xc6 => self.len(4).and_then(|n| self.take(n)).map(|_| Value::Other),
+            0x90..=0x9f => self.array((tag & 0x0f).into(), level, at),
+            0xdc => self.len(2).and_then(|n| self.array(n, level, at)),
+            0xdd => self.len(4).and_then(|n| self.array(n, level, at)),
+            0x80..=0x8f => self.map((tag & 0x0f).into(), level, at),
+            0xde => self.len(2).and_then(|n| self.map(n, level, at)),
+            0xdf => self.len(4).and_then(|n| self.map(n, level, at)),
+            0xd4..=0xd8 => self.ext(1 << (tag - 0xd4), at),
+            0xc7 => self.len(1).and_then(|n| self.ext(n, at)),
+            0xc8 => self.len(2).and_then(|n| self.ext(n, at)),
+            0xc9 => self.len(4).and_then(|n| self.ext(n, at)),
+            0xc1 => Err(format!("is not msgpack: 0xc1 at byte {at}")),
+        }
+    }
+
+    fn str(&mut self, n: usize, at: usize) -> Result<String, String> {
+        let s = self.take(n)?;
+        std::str::from_utf8(s)
+            .map(str::to_string)
+            .map_err(|_| format!("holds a str that is not UTF-8 at byte {at}"))
+    }
+
+    /// A map or an array at `level`: no deeper than [`LEVELS`].
+    fn nest(&self, level: usize, at: usize) -> Result<usize, String> {
+        if level > LEVELS {
+            return Err(format!("is nested more than {LEVELS} levels deep at byte {at}"));
+        }
+        Ok(level + 1)
+    }
+
+    fn array(&mut self, n: usize, level: usize, at: usize) -> Result<Value, String> {
+        let inner = self.nest(level, at)?;
+        let mut a = Vec::new();
+        for _ in 0..n {
+            a.push(self.value(inner)?);
+        }
+        Ok(Value::Array(a))
+    }
+
+    fn map(&mut self, n: usize, level: usize, at: usize) -> Result<Value, String> {
+        let inner = self.nest(level, at)?;
+        let mut m: Vec<(String, Value)> = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        for _ in 0..n {
+            let key = self.at;
+            if !matches!(self.b.get(key), Some(0xa0..=0xbf | 0xd9..=0xdb)) {
+                return Err(format!("holds a key that is not a str at byte {key}"));
+            }
+            let Value::Str(k) = self.value(inner)? else {
+                unreachable!("a str reads as a str");
+            };
+            if !names.insert(k.clone()) {
+                return Err(format!("holds the key {k:?} twice in one map, again at byte {key}"));
+            }
+            m.push((k, self.value(inner)?));
+        }
+        Ok(Value::Map(m))
+    }
+
+    /// An extension of `n` bytes after its type: a timestamp is checked,
+    /// any other is skipped.
+    fn ext(&mut self, n: usize, at: usize) -> Result<Value, String> {
+        let ty = self.take(1)?[0] as i8;
+        let data = self.take(n)?;
+        if ty != -1 {
+            return Ok(Value::Other);
+        }
+        let be = |b: &[u8]| b.iter().fold(0u64, |v, &x| v << 8 | u64::from(x));
+        let (sec, nsec) = match data.len() {
+            4 => (be(data) as i64, 0),
+            8 => ((be(data) & 0x3_ffff_ffff) as i64, be(data) >> 34),
+            12 => (be(&data[4..]) as i64, be(&data[..4])),
+            len => return Err(format!("holds a timestamp of {len} bytes at byte {at}")),
+        };
+        if nsec >= 1_000_000_000 {
+            return Err(format!("holds a timestamp of a second's nanoseconds or more at byte {at}"));
+        }
+        if sec.unsigned_abs() > MAX_INT as u64 {
+            return Err(format!("holds a timestamp past 2^53 − 1 seconds from 1970 at byte {at}"));
+        }
+        Ok(Value::Other)
+    }
+}
+
+/// An int, if a body may carry it.
+fn int(v: i128, at: usize) -> Result<Value, String> {
+    if v.unsigned_abs() > MAX_INT as u128 {
+        return Err(format!("holds an int further than 2^53 − 1 from zero at byte {at}"));
+    }
+    Ok(Value::Int(v as i64))
+}
+
+/// What a delta op does (SPEC §6.1), by the table's names.
+pub const OPS: &[&str] = &[
+    "morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr",
+    "unattr", "text", "var", "reveal",
+];
+
+/// One op of a delta (SPEC §6.1): what it does, its target, its name `k`
+/// and its value `v`. Each is absent when the op leaves it out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Op {
+    pub op: String,
+    pub t: Option<String>,
+    pub k: Option<String>,
+    pub v: Option<String>,
+}
+
+/// Why a delta is refused whole (SPEC §6.1): `EINVAL`, with the index of
+/// the first op at fault, where one is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fault {
+    pub index: Option<usize>,
+    pub detail: String,
+}
+
+/// Reads and checks a delta's body (SPEC §6.1) whole, before any op
+/// applies: it decodes ([`read`]), is `{"ops": [op]}` with at least one op,
+/// each op a map that names an op of the table, holds `op`, `t`, `k` and
+/// `v` as strs when it has them (whether or not the op takes them), has
+/// the `t` the op needs (every one but `morph`, whose empty `t` is none)
+/// and the `k` of `attr`, `unattr` and `var`, neither empty, and, for
+/// `reveal`, a `v` of `start`, `end` or none. A `v` an op takes and lacks
+/// is empty, one it does not take is ignored, as is a key the table does
+/// not name.
+pub fn decode_delta(body: &[u8]) -> Result<Vec<Op>, Fault> {
+    let whole = |detail: String| Fault { index: None, detail };
+    let root = read(body).map_err(|e| whole(format!("the delta's body does not decode: {e}")))?;
+    let ops = match root.field("ops") {
+        Some(Value::Array(a)) if !a.is_empty() => a,
+        Some(Value::Array(_)) => return Err(whole("the delta has no ops".into())),
+        _ => return Err(whole("the delta's body is not {\"ops\": [op]}".into())),
+    };
+    let mut out = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        let at = |detail: String| Fault { index: Some(i), detail };
+        if !matches!(op, Value::Map(_)) {
+            return Err(at(format!("op {i} is not a map")));
+        }
+        // A field an op takes is a str when it is there.
+        let text = |name: &str| match op.field(name) {
+            None => Ok(None),
+            Some(Value::Str(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(at(format!("op {i}: {name} is not a str"))),
+        };
+        let name = text("op")?.ok_or_else(|| at(format!("op {i} names no op")))?;
+        if !OPS.contains(&name.as_str()) {
+            return Err(at(format!("op {i}: unknown op {name}")));
+        }
+        // Every key read is a str when it is there, whether the op takes it.
+        let (t, k, v) = (text("t")?, text("k")?, text("v")?);
+        if name != "morph" && t.as_deref().is_none_or(str::is_empty) {
+            return Err(at(format!("op {i}: {name} needs t")));
+        }
+        if k.as_deref().is_none_or(str::is_empty)
+            && matches!(name.as_str(), "attr" | "unattr" | "var")
+        {
+            return Err(at(format!("op {i}: {name} needs k")));
+        }
+        // An empty `t` of a morph is no target: the whole tree.
+        let t = t.filter(|t| !t.is_empty());
+        let takes_v = !matches!(name.as_str(), "remove" | "unattr");
+        let v = v.filter(|_| takes_v);
+        if name == "reveal" && v.as_deref().is_some_and(|v| !matches!(v, "start" | "end")) {
+            return Err(at(format!("op {i}: reveal takes start, end or nothing")));
+        }
+        out.push(Op { op: name, t, k, v });
+    }
+    Ok(out)
+}
+
+/// Reads a menu's body (SPEC §10.5): one msgpack map ([`read`]),
+/// `{"seq": [str], "label": str, "items": [item]}` with each item
+/// `{"key": str, "label": str, "group": bool, "enabled": bool}`. A field
+/// left out is empty, false for `group` and true for `enabled`; one that
+/// holds another type fails the menu.
+pub fn decode_menu(body: &[u8]) -> Result<Menu, String> {
+    let root = read(body)?;
+    fn text(m: &Value, name: &str) -> Result<String, String> {
+        match m.field(name) {
+            None => Ok(String::new()),
+            Some(Value::Str(s)) => Ok(s.clone()),
+            Some(_) => Err(format!("{name} is not a str")),
+        }
+    }
+    fn flag(m: &Value, name: &str, default: bool) -> Result<bool, String> {
+        match m.field(name) {
+            None => Ok(default),
+            Some(Value::Bool(b)) => Ok(*b),
+            Some(_) => Err(format!("{name} is not a bool")),
+        }
+    }
+    let list = |name: &str| match root.field(name) {
+        None => Ok(&[][..]),
+        Some(Value::Array(a)) => Ok(a.as_slice()),
+        Some(_) => Err(format!("{name} is not an array")),
+    };
+    let seq = list("seq")?
+        .iter()
+        .map(|k| k.str().map(str::to_string).ok_or_else(|| "seq holds a non-str".to_string()))
+        .collect::<Result<_, _>>()?;
+    let items = list("items")?
+        .iter()
+        .map(|i| {
+            if !matches!(i, Value::Map(_)) {
+                return Err("an item is not a map".to_string());
+            }
+            Ok(MenuItem {
+                key: text(i, "key")?,
+                label: text(i, "label")?,
+                group: flag(i, "group", false)?,
+                enabled: flag(i, "enabled", true)?,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(Menu {
+        seq,
+        label: text(&root, "label")?,
+        items,
+    })
 }
 
 #[cfg(test)]
@@ -284,22 +592,28 @@ mod tests {
     fn a_body_is_a_map_by_name_and_a_whole_float_stays_a_float() {
         // {"w": 720.0, "h": 2.5}: float 64 for both.
         assert_eq!(
-            encode(&Detail::Resize { w: 720.0, h: 2.5 }),
+            encode(&CellCss { w: 720.0, h: 2.5 }),
             b"\x82\xa1w\xcb\x40\x86\x80\0\0\0\0\0\xa1h\xcb\x40\x04\0\0\0\0\0\0"
         );
-        // {"c": -1, "r": 300, "keys": []}: ints in their smallest form, and
-        // no x or y.
+        // {"c": -1, "r": 300}: ints in their smallest form, no mods, x or y.
         assert_eq!(
             encode(&Detail::Drag {
                 c: -1,
                 r: 300,
-                keys: vec![],
+                mods: None,
                 x: None,
                 y: None,
                 tx: None,
                 ty: None
             }),
-            b"\x83\xa1c\xff\xa1r\xcd\x01\x2c\xa4keys\x90"
+            b"\x82\xa1c\xff\xa1r\xcd\x01\x2c"
+        );
+        // {"fields": [["a", "1"], ["a", "2"]]}: pairs, a name twice.
+        assert_eq!(
+            encode(&Detail::Fields {
+                fields: vec![("a".into(), "1".into()), ("a".into(), "2".into())]
+            }),
+            b"\x81\xa6fields\x92\x92\xa1a\xa11\x92\xa1a\xa12"
         );
         assert_eq!(float(1.6), 1.6);
         // {"in": {"a": {"c": 0, "r": -2, "w": 4, "h": 1}}, "end": false}:

@@ -4,6 +4,9 @@
 //! it. Icons drawn this way change colour with no delta at all (`:hover`,
 //! `:focus`), so a program cannot work around a stale colour.
 
+mod common;
+
+use common::delta_cmd;
 use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
 use hotty_wire::Command;
 
@@ -34,11 +37,7 @@ fn pixel(h: &Host, s: &str, x: u32, y: u32) -> [u8; 3] {
 }
 
 fn delta(h: &mut Host, op: &str, t: &str, k: Option<&str>, payload: &str) {
-    let mut pairs = vec![("a", "delta"), ("s", "x"), ("op", op), ("t", t), ("q", "2")];
-    if let Some(k) = k {
-        pairs.push(("k", k));
-    }
-    h.handle(&cmd(&pairs, payload));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], op, Some(t), k, payload));
     render(h);
 }
 

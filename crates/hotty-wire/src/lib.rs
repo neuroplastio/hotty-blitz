@@ -73,7 +73,7 @@ impl Control {
     }
 
     fn only_chunk_keys(&self) -> bool {
-        self.0.iter().all(|(k, _)| k == "m" || k == "q")
+        self.0.iter().all(|(k, _)| k == "m")
     }
 
     pub fn encode(&self) -> String {
@@ -186,7 +186,6 @@ fn encode_with(control: &Control, payload: &[u8], compress: bool) -> Vec<u8> {
         write_osc(&mut out, &control.encode(), chunks.first().copied());
         return out;
     }
-    let quiet = control.get("q").map(str::to_string);
     for (i, chunk) in chunks.iter().enumerate() {
         let last = i + 1 == chunks.len();
         let ctl = if i == 0 {
@@ -196,9 +195,6 @@ fn encode_with(control: &Control, payload: &[u8], compress: bool) -> Vec<u8> {
         } else {
             let mut c = Control::default();
             c.set("m", if last { "0" } else { "1" });
-            if let Some(q) = &quiet {
-                c.set("q", q.clone());
-            }
             c.encode()
         };
         write_osc(&mut out, &ctl, Some(chunk));

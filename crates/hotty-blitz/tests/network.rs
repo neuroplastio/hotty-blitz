@@ -242,7 +242,7 @@ fn img(url: &str) -> String {
 fn the_capabilities_report_the_hosts_half() {
     let mut h = host();
     let caps = |h: &mut Host| -> serde_json::Value {
-        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.2")], "")));
+        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], "")));
         body(&r[0].payload)["net"].clone()
     };
     assert_eq!(
@@ -609,7 +609,7 @@ fn a_fetched_image_that_changes_the_height_is_heard_with_fit() {
         ),
     ));
     let r = replies(&h.handle(&cmd(
-        &[("a", "place"), ("s", "a"), ("c", "10"), ("f", "1")],
+        &[("a", "place"), ("s", "a"), ("c", "10"), ("f", "1"), ("n", "1")],
         "",
     )));
     assert_eq!(r[0].get("r"), Some("1"), "nothing to hold yet");

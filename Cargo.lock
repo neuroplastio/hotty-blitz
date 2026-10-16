@@ -776,6 +776,7 @@ dependencies = [
  "libc",
  "nix",
  "png 0.17.16",
+ "rmp-serde",
  "serde_json",
  "signal-hook",
  "vt100",

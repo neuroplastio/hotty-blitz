@@ -32,6 +32,8 @@ pub fn host_css(config: &Config) -> String {
     );
     let _ = writeln!(css, "  --hotty-cell-w: {cell_w}px;");
     let _ = writeln!(css, "  --hotty-cell-h: {cell_h}px;");
+    // One device pixel: the only property a zoom changes (SPEC §8).
+    let _ = writeln!(css, "  --hotty-px: {}px;", 1.0 / m.scale);
     let _ = writeln!(css, "  --hotty-font: {};", font_stack(&config.font_family));
     let _ = writeln!(css, "  font-family: var(--hotty-font);");
     let _ = writeln!(css, "  font-size: {font_size}px;");

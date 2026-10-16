@@ -1,23 +1,24 @@
 //! `hotty dump`: the HOTTY messages in a byte stream, one line each.
 //!
-//! A host's bodies are msgpack in base64 (SPEC §3.3), which no one reads
-//! off a terminal. This finds each HOTTY sequence in a stream as it was
+//! The bodies with fields are msgpack in base64 (SPEC §3.3), which no one
+//! reads off a terminal: a host's replies and events, and a program's
+//! deltas and menus. This finds each HOTTY sequence in a stream as it was
 //! captured, a program's output or a terminal's input, joins its chunks,
 //! inflates `o=z`, and prints its control, then its payload readable:
 //!
-//! - a host's body (`a=ok`, `a=err`, `a=ev`) as JSON with its types in
-//!   sight: a float always has a fraction or an exponent (`2.0`), an int
+//! - a body (`a=ok`, `a=err`, `a=ev`, `a=delta`, `a=menu`) as JSON with its
+//!   types in sight: a float always has a fraction or an exponent (`2.0`), an int
 //!   never; bytes are `h'…'` in hex, a timestamp (extension −1) `t'…'` in
 //!   RFC 3339, and any other extension `ext(<type>, h'…')`. What makes it
 //!   no body follows `  !`: not one map, bytes after it, nested deeper
 //!   than 32 levels, or not msgpack at all; or, anywhere in it, what no
-//!   host sends (§3.3), which fails the whole body for its reader (SDK.md
-//!   §3.9): a nil, a key that is not a str, a key given twice in one map
+//!   host or program sends (§3.3), which fails the whole body for its reader
+//!   (SDK.md §3.9): a nil, a key that is not a str, a key given twice in one map
 //!   (as the str it is, whatever its form), a str that is not UTF-8, an
 //!   int further than 2^53 − 1 from zero, or a timestamp of another size,
 //!   with a second's nanoseconds or more, or seconds past 2^53 − 1;
-//! - what a program sends (a document, a delta) as its text, with `\` and
-//!   control characters escaped, or a resource that is not text as hex.
+//! - what a program sends as text (a document) with `\` and control
+//!   characters escaped, or a resource that is not text as hex.
 //!
 //! The renderer is this tool's own, from msgpack's spec, so it shows a
 //! body however it was written, wrong or not.
@@ -84,14 +85,14 @@ fn message(c: &Command) -> String {
     if !c.payload.is_empty() {
         line.push_str("  ");
         line.push_str(&match c.action() {
-            "ok" | "err" | "ev" => body(&c.payload),
+            "ok" | "err" | "ev" | "delta" | "menu" => body(&c.payload),
             _ => payload(&c.payload),
         });
     }
     line
 }
 
-/// What a program sends: its text, or, where it is not UTF-8 (an image),
+/// What a program sends as text or bytes: its text, or, where it is not UTF-8 (an image),
 /// its size and its first bytes.
 fn payload(b: &[u8]) -> String {
     const SHOWN: usize = 32;
@@ -142,7 +143,7 @@ const MAX_INT: u64 = (1 << 53) - 1;
 /// How deep this renders: past this it stops, whatever the body.
 const LIMIT: usize = 256;
 
-/// A host's body, rendered: one msgpack map, and what is wrong with it.
+/// A body, rendered: one msgpack map, and what is wrong with it.
 pub fn body(b: &[u8]) -> String {
     match render(b) {
         Ok((value, notes)) => notes.iter().fold(value, |s, n| s + "  !" + n),
@@ -597,12 +598,19 @@ mod tests {
     #[test]
     fn a_program_payload_is_its_text() {
         let c = Command::new(
-            [("a", "delta"), ("s", "x"), ("op", "text"), ("t", "a")]
-                .into_iter()
-                .collect(),
+            [("a", "doc"), ("s", "x")].into_iter().collect(),
             "1\\2\n\x1b\u{7f}é".as_bytes().to_vec(),
         );
-        assert_eq!(message(&c), r"a=delta:s=x:op=text:t=a  1\\2\n\e\u{7f}é");
+        assert_eq!(message(&c), r"a=doc:s=x  1\\2\n\e\u{7f}é");
+        // A delta is msgpack: {"ops": [{"op": "text", "t": "a", "v": "x"}]}.
+        let delta = Command::new(
+            [("a", "delta"), ("s", "x")].into_iter().collect(),
+            b"\x81\xa3ops\x91\x83\xa2op\xa4text\xa1t\xa1a\xa1v\xa1x".to_vec(),
+        );
+        assert_eq!(
+            message(&delta),
+            r#"a=delta:s=x  {"ops": [{"op": "text", "t": "a", "v": "x"}]}"#
+        );
         let png = [0x89, b'P', b'N', b'G'];
         assert_eq!(payload(&png), "h'89504e47'");
         assert_eq!(

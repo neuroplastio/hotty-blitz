@@ -6,6 +6,9 @@
 //! A file of its own: the test counts the process's threads, and the other
 //! tests' would count with them.
 
+mod common;
+
+use common::delta_cmd;
 use hotty_blitz::{Config, Host, Metrics};
 use hotty_wire::Command;
 use std::time::{Duration, Instant};
@@ -67,16 +70,7 @@ fn many_surfaces_of_many_sizes_keep_a_few_painting_threads() {
             "",
         ));
         h.render_dirty(&mut |_, _, _| {});
-        h.handle(&cmd(
-            &[
-                ("a", "delta"),
-                ("s", &s),
-                ("op", "text"),
-                ("t", "p"),
-                ("q", "2"),
-            ],
-            &format!("changed {i}"),
-        ));
+        h.handle(&delta_cmd(&[("s", &s), ("q", "2")], "text", Some("p"), None, &format!("changed {i}")));
         h.render_dirty(&mut |_, _, _| {});
     }
     let kept = settled().saturating_sub(before);

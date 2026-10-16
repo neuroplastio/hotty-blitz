@@ -15,8 +15,8 @@ pub mod input;
 pub mod net;
 pub mod paint;
 pub mod policy;
+mod menu;
 mod scroll;
-mod seq;
 pub mod style;
 mod surface;
 
@@ -31,12 +31,12 @@ pub use input::{
     Event, Key, KeyName, KeyOutcome, Mods, PointerKind, Touch, TouchOutcome, TouchPhase,
     WheelOutcome,
 };
-pub use seq::MENU;
+pub use menu::MENU;
 pub use surface::{Damage, Frame, Timings};
 
 /// The HOTTY version this host speaks, its only one (SPEC §4): a query
 /// that does not list it is answered with `EVERSION`.
-pub const VERSION: &str = "0.2";
+pub const VERSION: &str = "0.3";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -133,41 +133,19 @@ impl Default for Config {
 /// How the host reads keys (SPEC §10.2, §10.4–§10.6), as the terminal
 /// embedding it sets them ([`Host::set_keys`]). The capabilities report
 /// them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeySettings {
     /// What `Mod` stands for, and the edit shortcuts.
     pub platform: Platform,
-    /// The leader `<leader>` stands for, a key sequence (SPEC §10.5).
-    pub leader: String,
-    /// How long a key sequence waits for its next key.
-    pub timeout: std::time::Duration,
     /// The terminal takes edit commands from a program in the cells (SPEC
     /// §10.6): the capabilities report `edit`, and the host reads `a=edit`
     /// ([`Effect::Edit`]).
     pub commands: bool,
-    /// The terminal shows the host's which-key menu ([`Effect::Menu`]): a
-    /// key sequence's (SPEC §10.5), and a program's (`a=menu`, §10.6),
-    /// which the capabilities then report as `menu`.
+    /// The terminal shows a program's menu ([`Effect::Menu`], `a=menu`,
+    /// SPEC §10.5), which the capabilities then report as the feature
+    /// `menu`.
     pub menus: bool,
 }
-
-impl Default for KeySettings {
-    fn default() -> KeySettings {
-        KeySettings {
-            platform: Platform::default(),
-            leader: "Space".into(),
-            // myelin: half a second suits vim-like sequences, and a menu
-            // people read wants seconds.
-            timeout: std::time::Duration::from_secs(2),
-            commands: false,
-            menus: false,
-        }
-    }
-}
-
-/// How long a key sequence waits before its menu shows (SPEC §10.5: a
-/// sequence typed quickly shows none).
-const MENU_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// What the host adapter must do after a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,19 +180,15 @@ pub enum Effect {
     /// its text to [`Host::paste`]. Only where `set_paste` said the
     /// terminal reads it.
     Paste,
-    /// A key typed while a key sequence waited (SPEC §10.5), offered by
-    /// name, goes on to the program now: send what the terminal sends for
-    /// it. A key offered as bytes goes on as a [`Effect::Reply`] of them.
-    Key { name: String },
     /// `a=edit` (SPEC §10.6): the edit commands the program takes from now
     /// on the screen it is on, in place of what it took before; none, to
     /// take none. The terminal keeps them per screen, sends a key of one
     /// as [`Host::command_event`], and drops them on leaving the alternate
     /// screen and on a full reset.
     Edit(Vec<String>),
-    /// Show the which-key menu, the surface [`MENU`], `cols`×`rows` cells,
+    /// Show the program's menu, the surface [`MENU`], `cols`×`rows` cells,
     /// at the bottom right of the terminal's viewport, above everything
-    /// (SPEC §10.5, §10.6). Its pixels come from [`Host::render_dirty`];
+    /// (SPEC §10.5). Its pixels come from [`Host::render_dirty`];
     /// [`Effect::Delete`] hides it.
     Menu { surface: String, cols: u16, rows: u16 },
 }
@@ -283,9 +257,6 @@ pub struct Host {
     /// `view` events renders found (SPEC §9.5), at most one per surface:
     /// what the last frame drawn shows.
     views: Vec<(String, body::View)>,
-    /// Surfaces whose size in CSS pixels changed with the terminal's font,
-    /// owed a `resize` (SPEC §5.3, §9).
-    resizes: Vec<String>,
     /// The wheel gesture under way (SPEC §5.3): where its first wheel sent
     /// it, which the rest of it follows.
     gesture: Option<Gesture>,
@@ -300,21 +271,35 @@ pub struct Host {
     lost: Vec<Effect>,
     /// How the host reads keys ([`Host::set_keys`]).
     keys: KeySettings,
-    /// A program asked for the capabilities since the last reset, and hears
-    /// `caps` when they change (SPEC §9).
-    queried: bool,
-    /// The which-key menu (SPEC §10.5, §10.6).
+    /// The capabilities a program last heard since the last reset, when it
+    /// asked for them: it hears `caps` when they change (SPEC §4, §9).
+    heard: Option<Heard>,
+    /// `caps` events that settings changed, for [`Host::take_events`].
+    owed: Vec<Effect>,
+    /// The program's menu (SPEC §10.5).
     menu: MenuState,
-    /// What waits that timed out sent (Surface::expire), for
-    /// [`Host::take_events`].
-    expired: Vec<Effect>,
 }
 
-/// The which-key menu: the program's, the one shown with its surface, and
-/// what showing or hiding it leaves the embedder to do.
+/// The capabilities that can change in a session, as a program last heard
+/// them or as they are now (SPEC §4): what a `caps` event is the
+/// difference of.
+#[derive(Clone, Debug, PartialEq)]
+struct Heard {
+    cellcss: body::CellCss,
+    scale: f64,
+    scheme: &'static str,
+    modifier: &'static str,
+    features: Vec<&'static str>,
+    net: policy::Policy,
+    edit: Option<body::Edit>,
+}
+
+/// The program's menu: what `a=menu` sent, the one shown with its surface,
+/// and what showing or hiding it leaves the embedder to do.
 #[derive(Default)]
 struct MenuState {
-    /// A program's (`a=menu`, SPEC §10.6), shown while no sequence's is.
+    /// The program's (`a=menu`, SPEC §10.5), shown while the terminal
+    /// shows menus.
     program: Option<body::Menu>,
     shown: Option<(body::Menu, surface::Surface)>,
     /// Something happened that may change it: Host::render_dirty looks.
@@ -444,16 +429,15 @@ impl Host {
             click_run: None,
             fits: Vec::new(),
             views: Vec::new(),
-            resizes: Vec::new(),
             gesture: None,
             finger: None,
             frame_log: FrameLog::open(),
             working: String::new(),
             lost: Vec::new(),
             keys: KeySettings::default(),
-            queried: false,
+            heard: None,
+            owed: Vec::new(),
             menu: MenuState::default(),
-            expired: Vec::new(),
         }
     }
 
@@ -464,7 +448,7 @@ impl Host {
         if keys == self.keys {
             return Vec::new();
         }
-        let old = std::mem::replace(&mut self.keys, keys);
+        self.keys = keys;
         for s in self.surfaces.values_mut() {
             s.settings = self.keys.clone();
         }
@@ -472,23 +456,64 @@ impl Host {
         if !self.keys.menus {
             self.menu.program = None;
         }
-        if !self.queried {
+        self.caps_changed(false)
+    }
+
+    /// The capabilities that can change as they are now (SPEC §4).
+    fn snapshot(&self) -> Heard {
+        let features = [
+            ("passthrough", self.passthrough),
+            // Every host of this one sends `hover`; the embedder passes the
+            // pointer's leaving (`PointerKind::Leave`).
+            ("hover", true),
+            ("count", self.counts),
+            ("menu", self.keys.menus),
+        ];
+        Heard {
+            cellcss: cellcss(&self.config.metrics),
+            scale: body::float(self.config.metrics.scale),
+            scheme: if self.config.theme.dark { "dark" } else { "light" },
+            modifier: self.keys.platform.mod_name(),
+            features: features.into_iter().filter(|f| f.1).map(|f| f.0).collect(),
+            net: self.store.host_policy(),
+            edit: edit_of(&self.keys),
+        }
+    }
+
+    /// The `caps` event a program that asked for the capabilities is owed
+    /// (SPEC §4, §9): the fields that differ from what it last heard, a
+    /// field that became absent as its type's empty value. `cell` is true
+    /// when the terminal's font changed, which alone changes `cellcss`: a
+    /// zoom moves a cell's device pixels and `scale` with it, and `scale`
+    /// is only sent along with a change of another field. None when
+    /// nothing is owed.
+    fn caps_changed(&mut self, cell: bool) -> Vec<Effect> {
+        let Some(old) = self.heard.clone() else {
             return Vec::new();
-        }
-        let mut c = body::Changed::default();
-        if old.platform.meta != self.keys.platform.meta {
-            c.modifier = Some(self.keys.platform.mod_name());
-        }
-        let (was, now) = (edit_of(&old), edit_of(&self.keys));
-        if was != now {
-            c.edit = Some(now.unwrap_or_default());
-        }
-        if (&old.leader, old.timeout) != (&self.keys.leader, self.keys.timeout) {
-            c.keys = Some(keys_of(&self.keys));
-        }
+        };
+        let now = self.snapshot();
+        let mut c = body::Changed {
+            cellcss: (cell && old.cellcss != now.cellcss).then_some(now.cellcss),
+            scheme: (old.scheme != now.scheme).then_some(now.scheme),
+            modifier: (old.modifier != now.modifier).then_some(now.modifier),
+            features: (old.features != now.features).then(|| now.features.clone()),
+            net: (old.net != now.net).then(|| now.net.clone()),
+            edit: (old.edit != now.edit).then(|| now.edit.clone().unwrap_or_default()),
+            scale: None,
+        };
         if c == body::Changed::default() {
             return Vec::new();
         }
+        c.scale = (old.scale != now.scale).then_some(now.scale);
+        // What the program heard now: the fields sent, and the rest as they were.
+        let mut next = now;
+        if c.cellcss.is_none() {
+            next.cellcss = old.cellcss;
+        }
+        if c.scale.is_none() {
+            next.scale = old.scale;
+        }
+        self.heard = Some(next);
         vec![Effect::Reply(terminal_event("caps", &Detail::Caps(c)))]
     }
 
@@ -513,7 +538,7 @@ impl Host {
     }
 
     /// A key that reaches the program in the cells, named as SPEC §10.4
-    /// names it, while its menu shows (SPEC §10.6): Escape, and a key the
+    /// names it, while its menu shows (SPEC §10.5): Escape, and a key the
     /// menu does not list, hide it. The key still reaches the program.
     pub fn cells_key(&mut self, name: &str) {
         let Some(m) = &self.menu.program else {
@@ -532,30 +557,21 @@ impl Host {
     }
 
     /// The terminal's screen changed: the program's menu hides (SPEC
-    /// §10.6).
+    /// §10.5).
     pub fn hide_program_menu(&mut self) {
         if self.menu.program.take().is_some() {
             self.menu.stale = true;
         }
     }
 
-    /// Shows the menu the focused surface's sequence waits with, once it
-    /// has waited a moment, or else the program's; hides it when there is
-    /// none (SPEC §10.5, §10.6).
-    fn sync_menu(&mut self, now: std::time::Instant) {
-        let due = self.surfaces.values().any(|s| {
-            s.waiting
-                .as_ref()
-                .is_some_and(|w| w.since + MENU_DELAY <= now)
-        }) && self.menu.shown.is_none();
-        if !std::mem::take(&mut self.menu.stale) && !due {
+    /// Shows the program's menu, or hides it when there is none (SPEC
+    /// §10.5).
+    fn sync_menu(&mut self) {
+        if !std::mem::take(&mut self.menu.stale) {
             return;
         }
         let want = if self.keys.menus {
-            self.focused_surface()
-                .and_then(|n| self.surfaces.get(n))
-                .and_then(|s| s.menu(now, MENU_DELAY))
-                .or_else(|| self.menu.program.clone())
+            self.menu.program.clone()
         } else {
             None
         };
@@ -575,7 +591,7 @@ impl Host {
         };
         // Laid out wide, then cut to the cells what it shows covers.
         let mut s = surface::Surface::new(
-            &seq::menu_html(&m),
+            &menu::menu_html(&m),
             &self.config,
             &self.css,
             self.store.clone(),
@@ -599,20 +615,6 @@ impl Host {
         self.menu.shown = Some((m, s));
     }
 
-    /// Waits that timed out by `now` end (SPEC §10.5): what they send goes
-    /// out with [`Host::take_events`].
-    fn expire_waits(&mut self, now: std::time::Instant) {
-        for (name, s) in self.surfaces.iter_mut() {
-            if !s.waiting.as_ref().is_some_and(|w| w.deadline <= now) {
-                continue;
-            }
-            enter(&mut self.working, name);
-            self.menu.stale = true;
-            let out = s.expire(now);
-            self.expired.extend(out.into_iter().filter_map(|o| key_out(o, name)));
-        }
-    }
-
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -620,19 +622,17 @@ impl Host {
     /// New cell size, theme or font: every surface restyles and re-renders at
     /// the new pixel size, with no help from the program (PoC-2's promise).
     /// A zoom (SPEC §5.3) changes `scale` with the cells, so a cell keeps its
-    /// size in CSS pixels and the layout stays. A new font changes it: each
-    /// placed surface is laid out again and owes the program a `resize`.
+    /// size in CSS pixels and the layout stays: only `--hotty-px` (§8)
+    /// changes, and the program hears nothing. A new font changes the cell
+    /// in CSS pixels: each placed surface is laid out again, and a program
+    /// that asked for the capabilities hears `caps` with the new `cellcss`
+    /// (SPEC §4, §9), as does one whose terminal's theme changed. The event
+    /// goes out with [`Host::take_events`].
     pub fn set_config(&mut self, config: Config) {
         if config == self.config {
             return;
         }
-        if font_resizes(&self.config, &config) {
-            for (name, s) in &self.surfaces {
-                if s.placed && !s.is_detached() && !self.resizes.contains(name) {
-                    self.resizes.push(name.clone());
-                }
-            }
-        }
+        let font = font_changed(&self.config, &config);
         let css = style::host_css(&config);
         for s in self.surfaces.values_mut() {
             s.replace_host_css(&self.css, &css);
@@ -640,6 +640,8 @@ impl Host {
         }
         self.css = css;
         self.config = config;
+        let owed = self.caps_changed(font);
+        self.owed.extend(owed);
     }
 
     /// Paint every surface in full on the next render, for a terminal that
@@ -755,15 +757,11 @@ impl Host {
     pub fn has_dirty(&self) -> bool {
         let now = std::time::Instant::now();
         // Lost surfaces' deletions go out with the next frame's events, and
-        // so does what a wait that timed out sends, and the menu.
+        // so do the `caps` that settings changed, and the menu.
         !self.lost.is_empty()
+            || !self.owed.is_empty()
             || self.menu.stale
             || self.menu.shown.as_ref().is_some_and(|(_, s)| s.dirty)
-            || self.surfaces.values().any(|s| {
-                s.waiting.as_ref().is_some_and(|w| {
-                    w.deadline <= now || (self.menu.shown.is_none() && w.since + MENU_DELAY <= now)
-                })
-            })
             || self.store.has_delivered()
             || self.surfaces.iter().any(|(name, s)| {
                 s.placed
@@ -779,18 +777,13 @@ impl Host {
     /// then. `None` while nothing plays, or nothing that plays is in a
     /// placement's window, no scrollbar fades and no `view` waits. Each
     /// animated image has one deadline at a time, so a host needs one
-    /// timer. Now, when something a document fetched has arrived.
+    /// timer. Now, when something a document fetched has arrived, or
+    /// `caps` is owed.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
         let now = std::time::Instant::now();
-        if self.store.has_delivered() {
+        if self.store.has_delivered() || !self.owed.is_empty() {
             return Some(now);
         }
-        // A key sequence times out, and its menu shows a moment after it
-        // began (SPEC §10.5).
-        let waits = self.surfaces.values().filter_map(|s| s.waiting.as_ref()).flat_map(|w| {
-            let menu = (self.keys.menus && self.menu.shown.is_none()).then_some(w.since + MENU_DELAY);
-            menu.into_iter().chain([w.deadline])
-        });
         self.surfaces
             .iter()
             .filter(|(_, s)| s.placed)
@@ -798,17 +791,20 @@ impl Host {
                 let rest = view_rest(&self.gesture, name, s, now);
                 s.next_frame().into_iter().chain(rest)
             })
-            .chain(waits)
             .min()
     }
 
     /// The host's half of the network policy (SPEC §7.2), in CSP's syntax:
     /// `img-src https://example.com; font-src https:`. A host run by a
     /// person starts with none, and its user grants it. The capabilities
-    /// report it (`net`). Fetching happens on threads of its own; set a
-    /// waker ([`Host::set_waker`]) to hear when something arrives.
+    /// report it (`net`), and a program that asked for them hears a change
+    /// as `caps` (SPEC §9), with [`Host::take_events`]. Fetching happens on
+    /// threads of its own; set a waker ([`Host::set_waker`]) to hear when
+    /// something arrives.
     pub fn set_network(&mut self, policy: &str) {
         self.store.set_host_policy(policy::Policy::parse(policy));
+        let owed = self.caps_changed(false);
+        self.owed.extend(owed);
     }
 
     /// Called on a fetching thread when something a document fetched
@@ -865,12 +861,12 @@ impl Host {
             .filter_map(|n| self.remove_surface(&n))
             .collect();
         // The program's menu goes, and the capabilities it asked for: the
-        // next program asks again (SPEC §10.6).
+        // next program asks again (SPEC §10.5).
         self.menu.program = None;
         self.menu.stale = false;
         self.menu.effects.clear();
-        self.expired.clear();
-        self.queried = false;
+        self.owed.clear();
+        self.heard = None;
         if let Some((_, s)) = self.menu.shown.take() {
             self.store.forget_document(s.doc_id());
             effects.push(Effect::Delete {
@@ -919,8 +915,7 @@ impl Host {
     pub fn render_dirty(&mut self, out: &mut dyn FnMut(&str, &Frame, &Damage)) {
         self.take_network();
         self.animate(std::time::Instant::now());
-        self.expire_waits(std::time::Instant::now());
-        self.sync_menu(std::time::Instant::now());
+        self.sync_menu();
         let metrics = self.config.metrics;
         let dark = self.config.theme.dark;
         let now = std::time::Instant::now();
@@ -986,41 +981,21 @@ impl Host {
         }
     }
 
-    /// The events rendering produced, for the program: `resize` (SPEC §9)
-    /// after the terminal's font changed, with the surface's size in CSS
-    /// pixels now, `fit` (SPEC §5.2), with the rows of the last frame
-    /// drawn, and `view` (§9.5), with what it shows, at most one each per
-    /// surface. Take them after [`Host::render_dirty`].
+    /// The events rendering and the terminal's settings produced, for the
+    /// program: `caps` (SPEC §4, §9) after the terminal's font, theme or
+    /// other settings changed what its capabilities say, `fit` (SPEC §5.2),
+    /// with the rows of the last frame drawn, and `view` (§9.5), with what
+    /// it shows, at most one each per surface. Take them after
+    /// [`Host::render_dirty`].
     pub fn take_events(&mut self) -> Vec<Effect> {
         let lost = std::mem::take(&mut self.lost);
-        let m = self.config.metrics;
-        let resizes: Vec<Effect> = std::mem::take(&mut self.resizes)
-            .into_iter()
-            .filter_map(|name| {
-                let s = self.surfaces.get(&name)?;
-                if !s.placed || s.is_detached() {
-                    return None;
-                }
-                let (w, h) = css_cell(&m);
-                // To a hundredth of a CSS pixel: no f32 noise on the wire.
-                let px = |v: f32| (f64::from(v) * 100.0).round() / 100.0;
-                let e = Event {
-                    kind: "resize",
-                    target: String::new(),
-                    detail: Some(Detail::Resize {
-                        w: px(w * s.cols as f32),
-                        h: px(h * s.rows as f32),
-                    }),
-                };
-                Some(Effect::Reply(e.encode(&name)))
-            })
-            .collect();
+        let owed = std::mem::take(&mut self.owed);
         let fits = std::mem::take(&mut self.fits)
             .into_iter()
             .filter(|(name, _)| {
                 self.surfaces
                     .get(name)
-                    .is_some_and(|s| s.fit.is_some() && !s.is_detached())
+                    .is_some_and(|s| s.placed && s.fit.is_some() && !s.is_detached())
             })
             .map(|(name, rows)| {
                 let e = Event {
@@ -1046,11 +1021,9 @@ impl Host {
                 Effect::Reply(e.encode(&name))
             });
         let menu = std::mem::take(&mut self.menu.effects);
-        let expired = std::mem::take(&mut self.expired);
         lost.into_iter()
             .chain(menu)
-            .chain(expired)
-            .chain(resizes)
+            .chain(owed)
             .chain(fits)
             .chain(views)
             .collect()
@@ -1109,8 +1082,15 @@ impl Host {
 
     fn handle_command(&mut self, cmd: &Command) -> Vec<Effect> {
         let mut effects = Vec::new();
-        let result = self.dispatch(cmd, &mut effects);
-        let quiet: u8 = cmd.get("q").and_then(|q| q.parse().ok()).unwrap_or(0);
+        let mut failed = None;
+        let result = self.dispatch(cmd, &mut effects, &mut failed);
+        // Without `q`, a command is answered only with an error, unless it
+        // has `n` or is a query (SPEC §3.5, §3.6).
+        let quiet: u8 = cmd
+            .get("q")
+            .and_then(|q| q.parse().ok())
+            .filter(|&q| q <= 2)
+            .unwrap_or(if cmd.action() == "q" || cmd.get("n").is_some() { 0 } else { 1 });
         match result {
             Ok(extra) => {
                 if quiet == 0 && cmd.action() != "ev" {
@@ -1123,17 +1103,22 @@ impl Host {
                         code,
                         detail: &detail,
                     });
-                    effects.push(Effect::Reply(reply("err", cmd, Vec::new(), Some(err))));
+                    // A delta's error names the op that failed (SPEC §3.6).
+                    let at = failed.map(|i| ("i".to_string(), i.to_string()));
+                    effects.push(Effect::Reply(reply("err", cmd, at.into_iter().collect(), Some(err))));
                 }
             }
         }
         effects
     }
 
+    /// Does what a command asks. `failed` is the index of the op of a delta
+    /// that an error names (SPEC §6.1).
     fn dispatch(
         &mut self,
         cmd: &Command,
         effects: &mut Vec<Effect>,
+        failed: &mut Option<usize>,
     ) -> Result<ReplyExtra, (&'static str, String)> {
         let surface_name = || -> Result<&str, (&'static str, String)> {
             let s = cmd
@@ -1153,7 +1138,7 @@ impl Host {
             "q" => {
                 // `v` lists the versions the program speaks, comma-separated
                 // (SPEC §4), and this host answers in the highest it shares:
-                // 0.2 when an entry is exactly that, whatever the others and
+                // 0.3 when an entry is exactly that, whatever the others and
                 // their order. Otherwise, a query with no `v` too, EVERSION,
                 // its detail the versions this host speaks.
                 if !cmd
@@ -1162,53 +1147,23 @@ impl Host {
                 {
                     return Err(("EVERSION", VERSION.to_string()));
                 }
-                let m = self.config.metrics;
-                self.queried = true;
+                let now = self.snapshot();
+                self.heard = Some(now.clone());
                 let caps = body::Caps {
                     v: VERSION,
-                    ops: &[
-                        "morph", "inner", "replace", "append", "prepend", "before", "after",
-                        "remove", "attr", "unattr", "text", "var", "reveal",
-                    ],
-                    // `caps` when the keys change (SPEC §9), and `command`
-                    // where the terminal takes edit commands (§10.6).
-                    events: input::EVENTS
-                        .iter()
-                        .copied()
-                        .chain(["caps"])
-                        .chain(self.keys.commands.then_some("command"))
-                        .collect(),
-                    cell: body::Cell {
-                        w: m.cell_w,
-                        h: m.cell_h,
-                    },
-                    scale: body::float(m.scale),
-                    scheme: if self.config.theme.dark {
-                        "dark"
-                    } else {
-                        "light"
-                    },
+                    cellcss: now.cellcss,
+                    scale: now.scale,
+                    scheme: now.scheme,
+                    modifier: now.modifier,
+                    features: now.features,
                     limits: body::Limits {
                         resources: self.store.quota as u64,
                         message: hotty_wire::MAX_COMMAND_BYTES as u64,
                     },
                     // The host's half of the network policy (SPEC §7.2):
                     // empty unless its user granted something.
-                    net: self.store.host_policy(),
-                    passthrough: self.passthrough,
-                    // A document can ask to scroll (SPEC §5.3).
-                    scroll: true,
-                    // A drag says where in an element with `data-steps` the
-                    // pointer is (SPEC §9.1).
-                    steps: true,
-                    // An element can be only a drop target, and one with
-                    // `data-steps` hears where in it a drag is (SPEC §9.1).
-                    drop: true,
-                    count: self.counts,
-                    modifier: self.keys.platform.mod_name(),
-                    edit: edit_of(&self.keys),
-                    keys: keys_of(&self.keys),
-                    menu: self.keys.menus,
+                    net: now.net,
+                    edit: now.edit,
                     host: "hotty-blitz",
                     // Raised with a change a program may need to know of
                     // (SPEC §15): 0.0.2 paints a box resized through a var
@@ -1325,16 +1280,29 @@ impl Host {
                 s.placed = true;
                 // A drag goes on across a new placement (SPEC §9.1).
                 s.window = Some(window);
-                // Like z, the placement's: placing again without it stops them.
-                s.presses = cmd.get("p") == Some("1");
-                // `fit` starts from the placement's own rows (SPEC §5.2).
-                s.fit = (cmd.get("f") == Some("1")).then_some(rows);
-                // `hover` goes on from what the program last heard, or
-                // starts from out (SPEC §9.4).
-                s.hover = (cmd.get("v") == Some("1"))
-                    .then(|| s.hover.take().unwrap_or(surface::Hovered::Out));
-                // `view` starts again: the frame drawn sends one (§9.5).
-                s.placed_anew();
+                // What the program hears belongs to the surface: `1` turns it
+                // on, `0` off, and a placement without it, or with any other
+                // value, leaves it as it was (SPEC §5.2).
+                match cmd.get("p") {
+                    Some("1") => s.presses = true,
+                    Some("0") => s.presses = false,
+                    _ => {}
+                }
+                // `fit` starts from the placement's own rows.
+                match cmd.get("f") {
+                    Some("1") => s.fit = Some(rows),
+                    Some("0") => s.fit = None,
+                    _ if s.fit.is_some() => s.fit = Some(rows),
+                    _ => {}
+                }
+                // `hover` starts from out when it is turned on (SPEC §9.4).
+                match cmd.get("v") {
+                    Some("1") => {
+                        s.hover.get_or_insert(surface::Hovered::Out);
+                    }
+                    Some("0") => s.hover = None,
+                    _ => {}
+                }
                 s.dirty = true;
                 effects.push(Effect::Place {
                     surface: name,
@@ -1359,16 +1327,17 @@ impl Host {
                     .surfaces
                     .get_mut(&name)
                     .ok_or(("ENOENT", format!("no surface {name}")))?;
-                let payload = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
-                let op = cmd.get("op").unwrap_or("morph");
-                // `reveal` changes no node: it scrolls (SPEC §6.1).
-                let res = match op {
-                    "reveal" => s.reveal(cmd.get("t"), payload, &self.config.metrics),
-                    _ => s.delta(op, cmd.get("t"), cmd.get("k"), payload),
-                };
-                s.dirty = true;
-                res.map(|_| (Vec::new(), None))
-                    .map_err(|e| (e.code, e.detail))
+                // The whole delta is checked before any op applies (SPEC
+                // §6.1).
+                let ops = body::decode_delta(&cmd.payload).map_err(|f| {
+                    *failed = f.index;
+                    ("EINVAL", f.detail)
+                })?;
+                s.apply(&ops, &self.config.metrics).map_err(|(i, e)| {
+                    *failed = Some(i);
+                    (e.code, e.detail)
+                })?;
+                Ok((Vec::new(), None))
             }
             "res" => {
                 let id = cmd
@@ -1420,11 +1389,11 @@ impl Host {
                 if let Some(e) = s.cancel_drag(Mods::default()) {
                     effects.push(Effect::Reply(e.encode(&name)));
                 }
+                // What the program hears stays asked for (SPEC §5.2), and
+                // goes on from what it last heard once the surface is placed
+                // again (§9).
                 if s.placed {
                     s.placed = false;
-                    s.presses = false;
-                    s.fit = None;
-                    s.hover = None;
                     s.window = None;
                     s.hidden();
                     effects.push(Effect::Hide { surface: name });
@@ -1484,12 +1453,12 @@ impl Host {
                 effects.push(Effect::Edit(names));
                 Ok((Vec::new(), None))
             }
-            // A program's which-key menu (SPEC §10.6): no body hides it.
+            // A program's menu (SPEC §10.5): no body hides it.
             "menu" if self.keys.menus => {
                 self.menu.program = if cmd.payload.is_empty() {
                     None
                 } else {
-                    Some(body::decode_menu(&cmd.payload).ok_or(("EINVAL", "bad menu".to_string()))?)
+                    Some(body::decode_menu(&cmd.payload).map_err(|e| ("EINVAL", format!("bad menu: {e}")))?)
                 };
                 self.menu.stale = true;
                 Ok((Vec::new(), None))
@@ -1598,7 +1567,7 @@ impl Host {
         // A press on a scrollbar's thumb is not the document's.
         let mut effects: Vec<Effect> = match kind {
             PointerKind::Down if !s.on_scrollbar() => {
-                s.pressed().map(|e| Effect::Reply(e.encode(surface)))
+                s.pressed(mods).map(|e| Effect::Reply(e.encode(surface)))
             }
             _ => None,
         }
@@ -1967,28 +1936,30 @@ impl Host {
 
     /// A key for the focused element of `surface`. `consumed` is false when
     /// the element has no use for it; the host then forwards it to the program.
+    /// After a prefix (SPEC §10.5) none is used.
     pub fn key(&mut self, surface: &str, key: &Key) -> KeyOutcome {
-        self.offer(surface, key, &[], surface::Offer::Typed)
+        self.offer(surface, key, surface::Offer::Typed)
     }
 
-    /// A key for the focused element of `surface`, as [`Host::key`], with
-    /// the bytes it came as: a key a sequence's wait typed (SPEC §10.5)
-    /// goes on to the program as them.
-    pub fn key_typed(&mut self, surface: &str, key: &Key, bytes: &[u8]) -> KeyOutcome {
-        self.offer(surface, key, bytes, surface::Offer::Typed)
-    }
-
-    fn offer(&mut self, surface: &str, key: &Key, bytes: &[u8], offer: surface::Offer) -> KeyOutcome {
+    fn offer(&mut self, surface: &str, key: &Key, offer: surface::Offer) -> KeyOutcome {
         enter(&mut self.working, surface);
         // A key ends a run of clicks: a click it makes is a first (SPEC §9).
         self.click_run = None;
         self.menu.stale = true;
+        // A key the program's menu does not list hides it (SPEC §10.5).
+        match key.spec_name() {
+            Some(name) => self.cells_key(&name),
+            None => self.hide_program_menu(),
+        }
         let Some(s) = self.surfaces.get_mut(surface) else {
             return KeyOutcome::default();
         };
         s.can_paste = self.paste;
-        let (consumed, out) = s.key(key, bytes, offer);
-        let mut effects: Vec<Effect> = out.into_iter().filter_map(|o| key_out(o, surface)).collect();
+        let (consumed, events) = s.key(key, offer);
+        let mut effects: Vec<Effect> = events
+            .into_iter()
+            .map(|e| Effect::Reply(e.encode(surface)))
+            .collect();
         effects.extend(s.clipboard.take().map(Effect::Clipboard));
         if std::mem::take(&mut s.paste_wanted) {
             effects.push(Effect::Paste);
@@ -2031,7 +2002,7 @@ impl Host {
             .as_deref()
             .and_then(Key::from_spec_name)
         {
-            Some(key) => self.offer(surface, &key, &[], surface::Offer::Pressed),
+            Some(key) => self.offer(surface, &key, surface::Offer::Pressed),
             None => KeyOutcome::default(),
         }
     }
@@ -2053,7 +2024,7 @@ impl Host {
         for (span, name) in hotty_wire::keys::decode_key_spans(bytes) {
             let used = match name.as_deref().and_then(Key::from_spec_name) {
                 Some(key) => {
-                    let o = self.key_typed(surface, &key, &bytes[span.clone()]);
+                    let o = self.key(surface, &key);
                     out.extend(o.effects.into_iter().map(Out::Effect));
                     o.consumed
                 }
@@ -2097,16 +2068,23 @@ impl Host {
     /// The pointer's shape over `surface` (Surface::cursor), for a host
     /// that shows the pointer: a CSS `cursor` name.
     /// The terminal embedding this host lets the pointer pass through where
-    /// a surface does not take it (SPEC §9.3): the capabilities say so.
+    /// a surface does not take it (SPEC §9.3): the capabilities list the
+    /// feature `passthrough`, and a program that asked for them hears a
+    /// change as `caps`, with [`Host::take_events`].
     pub fn set_passthrough(&mut self, on: bool) {
         self.passthrough = on;
+        let owed = self.caps_changed(false);
+        self.owed.extend(owed);
     }
 
     /// The terminal embedding this host hands over its platform's count of
-    /// each press (`pointer_counted`): the capabilities say `count` (SPEC
-    /// §9).
+    /// each press (`pointer_counted`): the capabilities list the feature
+    /// `count` (SPEC §4, §9), and a program that asked for them hears a
+    /// change as `caps`, with [`Host::take_events`].
     pub fn set_counts(&mut self, on: bool) {
         self.counts = on;
+        let owed = self.caps_changed(false);
+        self.owed.extend(owed);
     }
 
     /// Whether `surface` takes the pointer at device pixel (`x`, `y`) of the
@@ -2180,17 +2158,6 @@ impl Host {
     }
 }
 
-/// What a key did, as an effect: an event, or a key that goes on to the
-/// program, as the bytes it came as, or by its name.
-fn key_out(o: surface::KeyOut, surface: &str) -> Option<Effect> {
-    Some(match o {
-        surface::KeyOut::Event(e) => Effect::Reply(e.encode(surface)),
-        surface::KeyOut::Key(t) if !t.bytes.is_empty() => Effect::Reply(t.bytes),
-        surface::KeyOut::Key(t) if !t.name.is_empty() => Effect::Key { name: t.name },
-        surface::KeyOut::Key(_) => return None,
-    })
-}
-
 /// An event of the terminal's, of no surface (SPEC §9): `command` and
 /// `caps`, with neither `s` nor `t`.
 fn terminal_event(kind: &str, detail: &Detail) -> Vec<u8> {
@@ -2204,13 +2171,6 @@ fn terminal_event(kind: &str, detail: &Detail) -> Vec<u8> {
 /// terminal takes edit commands.
 fn edit_of(k: &KeySettings) -> Option<body::Edit> {
     k.commands.then(|| k.platform.edit().into_iter().collect())
-}
-
-fn keys_of(k: &KeySettings) -> body::Keys {
-    body::Keys {
-        leader: k.leader.clone(),
-        timeout: k.timeout.as_millis() as u64,
-    }
 }
 
 type ReplyExtra = (Vec<(String, String)>, Option<Vec<u8>>);
@@ -2259,12 +2219,23 @@ fn css_cell(m: &Metrics) -> (f32, f32) {
     (m.cell_w as f32 / scale, m.cell_h as f32 / scale)
 }
 
+/// A cell's size in CSS pixels as the capabilities report it (SPEC §4), to
+/// a thousandth: no f32 noise on the wire.
+fn cellcss(m: &Metrics) -> body::CellCss {
+    let scale = if m.scale > 0.0 { body::float(m.scale) } else { 1.0 };
+    let px = |device: u32| (f64::from(device) / scale * 1000.0).round() / 1000.0;
+    body::CellCss {
+        w: px(m.cell_w),
+        h: px(m.cell_h),
+    }
+}
+
 /// Whether a new config is the terminal's font changing a cell's size in
-/// CSS pixels, which owes each placed surface a `resize` (SPEC §5.3). A
-/// zoom keeps the font's size in CSS pixels, and moves a cell's only by
-/// the rounding of device pixels, so it owes none. A font derived from the
-/// cell (`font_size: None`) changes with it.
-fn font_resizes(old: &Config, new: &Config) -> bool {
+/// CSS pixels, which `caps` tells (SPEC §4, §5.3). A zoom keeps the font's
+/// size in CSS pixels, and moves a cell's only by the rounding of device
+/// pixels, so it tells nothing. A font derived from the cell
+/// (`font_size: None`) changes with it.
+fn font_changed(old: &Config, new: &Config) -> bool {
     let (ow, oh) = css_cell(&old.metrics);
     let (nw, nh) = css_cell(&new.metrics);
     let cell = (ow - nw).abs() > 1e-3 || (oh - nh).abs() > 1e-3;
@@ -2311,6 +2282,7 @@ fn count_clicks(
             d @ None => {
                 *d = Some(body::Detail::Click {
                     area: None,
+                    mods: None,
                     href: None,
                     url: None,
                     value: None,

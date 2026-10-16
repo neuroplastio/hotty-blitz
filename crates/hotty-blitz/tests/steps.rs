@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::body;
+use common::{body, delta_cmd};
 use hotty_blitz::{Config, Effect, Host, Metrics, Mods, PointerKind, TouchPhase};
 use hotty_wire::{Command, Event, Scanner};
 
@@ -73,19 +73,7 @@ fn at(h: &mut Host, kind: PointerKind, x: f32, y: f32) -> Vec<Drag> {
 }
 
 #[test]
-fn data_steps_is_one_or_two_whole_numbers_and_the_host_says_it_reads_them() {
-    let caps = host().handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.2")], ""));
-    let Some(Effect::Reply(b)) = caps.first() else {
-        panic!("no reply to q");
-    };
-    let mut steps = None;
-    Scanner::new().feed(b, &mut |e| {
-        if let Event::Command(c) = e {
-            steps = Some(body(&c.payload)["steps"].clone());
-        }
-    });
-    assert_eq!(steps, Some(serde_json::Value::Bool(true)));
-
+fn data_steps_is_one_or_two_whole_numbers() {
     // At the middle of the box: half of each count.
     for (value, want) in [
         ("4", (Some(2), None)),
@@ -197,10 +185,7 @@ fn an_element_that_leaves_keeps_its_last_steps_and_counts_are_read_at_the_start(
     place(&mut h, "<div id=t data-on=drag data-steps=4>t</div>");
     let mut got = at(&mut h, PointerKind::Down, 100.0, 10.0);
     got.extend(at(&mut h, PointerKind::Move, 150.0, 10.0));
-    h.handle(&cmd(
-        &[("a", "delta"), ("s", "x"), ("op", "remove"), ("t", "t"), ("q", "2")],
-        "",
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "remove", Some("t"), None, ""));
     got.extend(at(&mut h, PointerKind::Move, 50.0, 10.0));
     got.extend(at(&mut h, PointerKind::Move, 10.0, 10.0));
     got.extend(at(&mut h, PointerKind::Up, 10.0, 10.0));
@@ -225,17 +210,7 @@ fn an_element_that_leaves_keeps_its_last_steps_and_counts_are_read_at_the_start(
     // Counts changed during a drag change nothing until the next one.
     place(&mut h, "<div id=t data-on=drag data-steps=4>t</div>");
     at(&mut h, PointerKind::Down, 100.0, 10.0);
-    h.handle(&cmd(
-        &[
-            ("a", "delta"),
-            ("s", "x"),
-            ("op", "attr"),
-            ("t", "t"),
-            ("k", "data-steps"),
-            ("q", "2"),
-        ],
-        "8",
-    ));
+    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "attr", Some("t"), Some("data-steps"), "8"));
     assert_eq!(
         at(&mut h, PointerKind::Move, 150.0, 10.0),
         [ev("drag", "t", Some(3), None)]

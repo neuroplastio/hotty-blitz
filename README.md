@@ -6,15 +6,15 @@ text, and renders on the CPU. This repository holds:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of HOTTY 0.2: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of HOTTY 0.3: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout) and vello_cpu (its renderer), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
-The host speaks HOTTY 0.2 and no other version. It answers a query that
-lists 0.2 among the versions its program speaks (`a=q:n=1:v=0.2`, SPEC §4)
+The host speaks HOTTY 0.3 and no other version. It answers a query that
+lists 0.3 among the versions its program speaks (`a=q:n=1:v=0.3`, SPEC §4)
 with its capabilities, and any other, one with no `v` too, with `EVERSION`:
-a program of 0.1 finds no host.
+a program of 0.2 finds no host.
 
 ## Try it
 
@@ -50,9 +50,9 @@ then its body as JSON with each value's type in sight, or what a program
 sent as its text.
 
 ```
-a=ok:n=1:re=q  {"v": "0.2", "ops": ["morph", …], "cell": {"w": 20, "h": 42}, "scale": 2.0, …}
-a=delta:s=form:op=text:t=status:q=2  saved ✓\n
-a=ev:s=form:e=resize:t=  {"w": 500.0, "h": 147.0}
+a=ok:n=1:re=q  {"v": "0.3", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
+a=delta:s=form:q=2  {"ops": [{"op": "text", "t": "status", "v": "saved ✓"}]}
+a=ev:s=form:e=fit  {"r": 3}
 ```
 
 - A float always has a fraction or an exponent (`2.0`, `1e-7`), and an int

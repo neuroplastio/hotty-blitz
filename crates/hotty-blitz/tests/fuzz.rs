@@ -24,6 +24,9 @@
 //! shrinks that seed's steps and markup while it panics at the same place,
 //! and prints what is left.
 
+mod common;
+
+use common::delta_cmd;
 use hotty_blitz::{Config, Host, Metrics};
 use hotty_wire::Command;
 use std::sync::Mutex;
@@ -118,6 +121,8 @@ fn markup(r: &mut Rng, depth: u32, ids: &mut Ids) -> String {
 #[derive(Clone, Debug)]
 enum Step {
     Command(Vec<(String, String)>, String),
+    /// A delta of one op (SPEC §6): op, target, key, value.
+    Delta(String, String, Option<String>, String),
     Render,
 }
 
@@ -165,15 +170,17 @@ fn steps(seed: u64, repeat: bool, view: bool) -> Vec<Step> {
             }
             _ => (None, markup(&mut r, 2, &mut ids)),
         };
-        let mut pairs = vec![("a", "delta"), ("s", "f"), ("op", op), ("t", &t), ("q", "2")];
-        pairs.extend(k.map(|k| ("k", k)));
-        steps.push(command(&pairs, payload));
+        steps.push(Step::Delta(
+            op.to_string(),
+            t.clone(),
+            k.map(str::to_string),
+            payload,
+        ));
         if view {
             // Without a draw of its own, so that the same seed draws the
             // same steps.
             let at = ["", "start", "end"][i % 3].to_string();
-            let reveal = [("a", "delta"), ("s", "f"), ("op", "reveal"), ("t", &t), ("q", "2")];
-            steps.push(command(&reveal, at));
+            steps.push(Step::Delta("reveal".to_string(), t.clone(), None, at));
         }
         if r.below(3) == 0 {
             steps.push(Step::Render);
@@ -208,6 +215,9 @@ fn run(steps: &[Step]) -> Option<String> {
             Step::Command(pairs, payload) => {
                 let pairs = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()));
                 host.handle(&Command::new(pairs.collect(), payload.as_bytes().to_vec()));
+            }
+            Step::Delta(op, t, k, v) => {
+                host.handle(&delta_cmd(&[("s", "f"), ("q", "2")], op, Some(t), k.as_deref(), v));
             }
             Step::Render => host.render_dirty(&mut |_, _, _| {}),
         }));
@@ -319,12 +329,16 @@ fn shrink() {
     }
     'simpler: loop {
         for i in 0..steps.len() {
-            let Step::Command(pairs, payload) = steps[i].clone() else {
-                continue;
+            let text = match &steps[i] {
+                Step::Command(_, text) | Step::Delta(_, _, _, text) => text.clone(),
+                Step::Render => continue,
             };
-            for markup in simpler(&payload) {
+            for markup in simpler(&text) {
                 let mut tried = steps.clone();
-                tried[i] = Step::Command(pairs.clone(), markup);
+                match &mut tried[i] {
+                    Step::Command(_, text) | Step::Delta(_, _, _, text) => *text = markup,
+                    Step::Render => {}
+                }
                 if run(&tried).as_ref() == Some(&want) {
                     steps = tried;
                     continue 'simpler;
@@ -340,6 +354,9 @@ fn shrink() {
             Step::Command(pairs, payload) => {
                 let pairs: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 eprintln!("  {}  {payload}", pairs.join(":"));
+            }
+            Step::Delta(op, t, k, v) => {
+                eprintln!("  delta {op} t={t} k={k:?}  {v}");
             }
         }
     }

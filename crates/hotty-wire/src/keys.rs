@@ -6,8 +6,8 @@
 //! `data-keys` of each element from the root to the field ([`resolve`]);
 //! [`Keymap::lookup`] says what the field does with a key. Any other
 //! focused element's keymap ([`element_keymap`]) gives keys to the program
-//! ([`Keymap::program`]) or scrolls with them ([`Keymap::scroll`]). A
-//! keymap reads a binding's `Mod` as its [`Platform`]'s (SPEC §10.4).
+//! ([`Keymap::program`]), starts a prefix ([`Keymap::prefix`]) or scrolls
+//! with them ([`Keymap::scroll`]). A keymap reads a binding's `Mod` as its [`Platform`]'s (SPEC §10.4).
 
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -36,6 +36,7 @@ pub const ACTIONS: &[&str] = &[
     "newline",
     "submit",
     "program",
+    "prefix",
     "copy",
     "cut",
     "paste",
@@ -587,30 +588,6 @@ pub fn read_key(platform: &Platform, name: &str) -> Option<String> {
     split_key(name).map(|k| k.read_mod(platform.meta).canonical().name())
 }
 
-/// Reads a `data-key` value (SPEC §10.5): its keys separated by ASCII white
-/// space, each as [`read_key`] reads it, and `<leader>` as the keys of
-/// `leader`, a sequence written the same way. `None` for a value a host
-/// ignores: no keys, a key that does not parse, Tab, Shift+Tab or Escape,
-/// or any other name in angle brackets.
-pub fn parse_sequence(platform: &Platform, leader: &str, value: &str) -> Option<Vec<String>> {
-    let mut out = Vec::new();
-    for w in value.split([' ', '\t', '\n', '\x0c', '\r']).filter(|w| !w.is_empty()) {
-        if w == "<leader>" {
-            out.extend(parse_sequence(platform, "", leader)?);
-            continue;
-        }
-        if w.len() > 2 && w.starts_with('<') && w.ends_with('>') {
-            return None;
-        }
-        let k = read_key(platform, w)?;
-        if matches!(k.as_str(), "Tab" | "Shift+Tab" | "Escape") {
-            return None;
-        }
-        out.push(k);
-    }
-    (!out.is_empty()).then_some(out)
-}
-
 /// Bindings of keys to actions (SPEC §10.2), read on a [`Platform`].
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
@@ -732,9 +709,10 @@ pub fn resolve<'a>(
 }
 
 /// An element's keymap outside a text field: each `data-keys` value, the
-/// root's first, with no default keymap. Only its `program` bindings and its
-/// scroll actions count there ([`Keymap::program`], [`Keymap::scroll`];
-/// SPEC §10.2, keys for the program, scrolling keys).
+/// root's first, with no default keymap. Only its `program` and `prefix`
+/// bindings and its scroll actions count there ([`Keymap::program`],
+/// [`Keymap::prefix`], [`Keymap::scroll`]; SPEC §10.2, keys for the program,
+/// scrolling keys).
 pub fn element_keymap<'a>(
     platform: &Platform,
     values: impl IntoIterator<Item = &'a str>,
@@ -808,10 +786,17 @@ impl Keymap {
 
     /// Whether the keymap gives a key to the program, before the focused
     /// element or a scroll uses it (SPEC §10.2): it binds the key to
-    /// `program`, or, for a key with Shift it does not bind, the key without
-    /// Shift.
+    /// `program` or `prefix`, or, for a key with Shift it does not bind, the
+    /// key without Shift.
     pub fn program(&self, key: &str) -> bool {
-        self.bound(key) == Some("program")
+        matches!(self.bound(key), Some("program" | "prefix"))
+    }
+
+    /// Whether the keymap binds a key to `prefix`, with the same fallback
+    /// without Shift: the key reaches the program, and so does every key
+    /// after it (SPEC §10.2, §10.5).
+    pub fn prefix(&self, key: &str) -> bool {
+        self.bound(key) == Some("prefix")
     }
 
     /// The scroll action the keymap binds a key to, with the same fallback
@@ -837,7 +822,7 @@ impl Keymap {
             .get(&name)
             .or_else(|| self.get(&unshifted.name()).filter(|_| k.shift()));
         match bound {
-            Some("program") => None,
+            Some("program" | "prefix") => None,
             Some(a) if multiline_action(a) && !self.multiline => None,
             Some(a) => Some(a),
             None if is_char(&k.value) && k.mods & (CONTROL | ALT | META) == 0 => Some(INSERT),

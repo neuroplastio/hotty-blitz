@@ -1,8 +1,7 @@
 //! One surface: a Blitz document, its placement size, its last frame, and the
 //! glue that turns host input into DOM events and DOM events into HOTTY ones.
 
-use crate::body::{Area, Detail, MAX_INT, Menu, View};
-use crate::seq::{self, Nearness, Step};
+use crate::body::{Detail, MAX_INT, Op, View};
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
@@ -141,11 +140,11 @@ pub(crate) struct Surface {
     pub rows: u16,
     pub auto_rows: bool,
     pub placed: bool,
-    /// Its placement asked for `press` (`p=1`, SPEC §5.2): every press in
-    /// it is reported, whatever it lands on.
+    /// The program asked for `press` (`p=1`, SPEC §5.2): every press in
+    /// the window is reported, whatever it lands on.
     pub presses: bool,
-    /// Its placement asked for `fit` (`f=1`, SPEC §5.2): the rows the
-    /// program last heard the document needs, the placement's own first.
+    /// The program asked for `fit` (`f=1`, SPEC §5.2): the rows it last
+    /// heard the document needs, the placement's own first.
     pub fit: Option<u16>,
     /// A `fit` the last render found, with the rows of its layout, for the
     /// host to send.
@@ -154,8 +153,8 @@ pub(crate) struct Surface {
     /// `data-on`, in tree order: found again after a delta changes the
     /// document.
     view_askers: Option<Vec<NodeId>>,
-    /// The `view` the program last heard in this placement; none when it
-    /// has heard none, so that the next frame tells it whatever it shows.
+    /// The `view` the program last heard; none when it has heard none, so
+    /// that the next frame tells it whatever it shows.
     view_heard: Option<View>,
     /// A `view` the last render found, with what its frame shows, for the
     /// host to send.
@@ -163,8 +162,8 @@ pub(crate) struct Surface {
     /// A `view` is owed once the scroll that held it back comes to rest
     /// (SPEC §9.5): a frame was drawn while one moved.
     pub view_due: bool,
-    /// Its placement asked for `hover` (`v=1`, SPEC §9.4): where the
-    /// program last heard the pointer is, out first.
+    /// The program asked for `hover` (`v=1`, SPEC §5.2, §9.4): where it
+    /// last heard the pointer is, out first.
     pub hover: Option<Hovered>,
     pub dirty: bool,
     /// Which surface this is in the order of creation (the `a=doc` that
@@ -247,53 +246,37 @@ pub(crate) struct Surface {
     pub paste_wanted: bool,
     /// How the host reads keys (Host::set_keys).
     pub settings: crate::KeySettings,
-    /// A key sequence waiting for its next key (SPEC §10.5).
-    pub waiting: Option<Waiting>,
-}
-
-/// A key as it came to the host: the key, its name (SPEC §10.4; empty for
-/// none), and the bytes it came as, empty for a key offered by name.
-#[derive(Clone, Debug)]
-pub(crate) struct Typed {
-    pub key: Key,
-    pub name: String,
-    pub bytes: Vec<u8>,
-}
-
-/// A key sequence waiting for its next key (SPEC §10.5): the keys typed,
-/// when the wait began (the menu shows a moment later), and when it times
-/// out.
-pub(crate) struct Waiting {
-    pub typed: Vec<Typed>,
-    pub since: Instant,
-    pub deadline: Instant,
-}
-
-/// What a key did (Surface::key), in order: the events it sent, and the
-/// keys that go on to the program.
-pub(crate) enum KeyOut {
-    Event(Event),
-    Key(Typed),
+    /// A prefix is under way (SPEC §10.5): every key goes to the program,
+    /// until it sends `a=focus` or `a=blur`, the surface loses the
+    /// keyboard, or the user focuses an element with a press.
+    prefix: bool,
+    /// The modifier keys held for the input being driven, which the clicks
+    /// it makes carry (SPEC §9).
+    held: Mods,
 }
 
 /// How a key is offered to a surface (Surface::key).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Offer {
-    /// As the user pressed it, before the terminal's shortcuts: a key that
-    /// a sequence would take is left to come again as the program reads
-    /// it.
+    /// As the user pressed it, before the terminal's shortcuts: a key the
+    /// surface gives to the program is left to come again as the program
+    /// reads it.
     Pressed,
     /// As the program would read it.
     Typed,
 }
 
-/// Whether a key the focused element does not use may start a key
-/// sequence (Surface::plain_key): not while keys a wait typed go on, and
-/// only as the program reads it.
-enum Start<'a> {
+/// What a focused element's keymap does with a key it gives away (SPEC
+/// §10.2, keys for the program).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gives {
+    /// It keeps the key.
     No,
-    Defer,
-    Yes(&'a Typed),
+    /// The key reaches the program (`program`).
+    Program,
+    /// The key reaches the program, and so does every key after it
+    /// (`prefix`, §10.5).
+    Prefix,
 }
 
 /// A text field's history of edits (SPEC §10.2, undo), as a browser keeps
@@ -399,8 +382,8 @@ fn step(d: f64, size: f64, count: u64) -> Option<u64> {
 }
 
 /// A drag's event: its detail is the pointer's cell of the surface and the
-/// modifier keys held, in the spec's order, with its steps in an element
-/// with `data-steps`, and in a target with them, `in_target` (SPEC §9.1).
+/// modifier keys held, with its steps in an element with `data-steps`, and
+/// in a target with them, `in_target` (SPEC §9.1).
 fn drag_event(
     kind: &'static str,
     target: String,
@@ -409,22 +392,13 @@ fn drag_event(
     steps: Steps,
     in_target: Steps,
 ) -> Event {
-    let held: Vec<&str> = [
-        (keys.shift, "shift"),
-        (keys.ctrl, "ctrl"),
-        (keys.alt, "alt"),
-        (keys.meta, "meta"),
-    ]
-    .into_iter()
-    .filter_map(|(on, name)| on.then_some(name))
-    .collect();
     Event {
         kind,
         target,
         detail: Some(Detail::Drag {
             c: cell.0,
             r: cell.1,
-            keys: held,
+            mods: keys.bits(),
             x: steps.x,
             y: steps.y,
             tx: in_target.x,
@@ -717,7 +691,8 @@ impl Surface {
             clipboard: None,
             paste_wanted: false,
             settings: crate::KeySettings::default(),
-            waiting: None,
+            prefix: false,
+            held: Mods::default(),
         }
     }
 
@@ -1183,16 +1158,9 @@ impl Surface {
         found
     }
 
-    /// The surface is placed anew (SPEC §5.2): its program hears `view`
-    /// first from the frame it draws, as if it had heard none (§9.5).
-    pub fn placed_anew(&mut self) {
-        self.view_heard = None;
-    }
-
-    /// The surface is hidden (SPEC §5.4): `view` stops, and placing it
-    /// again starts it from nothing heard (§9.5).
+    /// The surface is hidden (SPEC §5.4): `view` stops, and goes on from
+    /// what the program last heard once it is placed again (§9.5).
     pub fn hidden(&mut self) {
-        self.view_heard = None;
         self.view_event = None;
         self.view_due = false;
     }
@@ -1283,7 +1251,32 @@ impl Surface {
         }
     }
 
-    pub fn delta(
+    /// Applies a delta's ops in order (SPEC §6.1), the whole delta having
+    /// been checked ([`crate::body::decode_delta`]). An op whose target is
+    /// missing changes nothing, and the ops after it still apply; the
+    /// first that failed is returned, with its index.
+    pub fn apply(
+        &mut self,
+        ops: &[Op],
+        m: &Metrics,
+    ) -> Result<(), (usize, delta::DeltaError)> {
+        let mut first = None;
+        for (i, op) in ops.iter().enumerate() {
+            let (t, v) = (op.t.as_deref(), op.v.as_deref().unwrap_or_default());
+            let res = match op.op.as_str() {
+                // `reveal` changes no node: it scrolls (SPEC §6.1).
+                "reveal" => self.reveal(t, v, m),
+                name => self.delta(name, t, op.k.as_deref(), v),
+            };
+            if let Err(e) = res {
+                first.get_or_insert((i, e));
+            }
+        }
+        self.dirty = true;
+        first.map_or(Ok(()), Err)
+    }
+
+    fn delta(
         &mut self,
         op: &str,
         t: Option<&str>,
@@ -1338,7 +1331,7 @@ impl Surface {
         }
         self.detached = true;
         self.keyboard = false;
-        self.waiting = None;
+        self.prefix = false;
         self.focus_value = None;
         self.told = None;
         self.press = None;
@@ -1621,6 +1614,8 @@ impl Surface {
             }
         }
         self.keyboard = true;
+        // `a=focus`, with `t` or without, gives the keys back (SPEC §10.5).
+        self.prefix = false;
         self.wake_caret(Instant::now());
         if self.focused() != was {
             self.snapshot_focus();
@@ -1697,9 +1692,8 @@ impl Surface {
         self.finish_change(&mut events);
         self.move_focus(None);
         let had = std::mem::replace(&mut self.keyboard, false);
-        // A wait ends with the keyboard, and its keys do nothing (SPEC
-        // §10.5).
-        self.waiting = None;
+        // A prefix ends with the keyboard (SPEC §10.5).
+        self.prefix = false;
         self.told = None;
         if had {
             events.push(keyboard_event("blur"));
@@ -1776,9 +1770,10 @@ impl Surface {
     }
 
     /// The program's word of the press that just happened (SPEC §9), when
-    /// its placement asked (`p=1`) and it is not detached: `t` is the
-    /// nearest element with an id, from the pressed one outward.
-    pub fn pressed(&self) -> Option<Event> {
+    /// it asked (`p=1`) and the surface is not detached: `t` is the nearest
+    /// element with an id, from the pressed one outward, and `mods` the
+    /// modifier keys held.
+    pub fn pressed(&self, mods: Mods) -> Option<Event> {
         if !self.presses || self.detached {
             return None;
         }
@@ -1793,12 +1788,13 @@ impl Surface {
             }
             node = self.doc.get_node(n).and_then(|x| x.parent);
         }
-        // Where the element is (SPEC §9: `area`); a press on no element
-        // with an id has no detail.
+        // Where the element is (SPEC §9: `area`), and the keys held; a press
+        // on no element with an id, with none held, has no detail.
+        let mods = mods.bits();
         Some(Event {
             kind: "press",
             target,
-            detail: area.map(|area| Detail::Press { area }),
+            detail: (area.is_some() || mods.is_some()).then_some(Detail::Press { area, mods }),
         })
     }
 
@@ -1823,6 +1819,7 @@ impl Surface {
         match (had, self.keyboard) {
             (true, false) => {
                 self.told = None;
+                self.prefix = false;
                 events.push(keyboard_event("blur"));
             }
             (false, true) => {
@@ -1845,6 +1842,9 @@ impl Surface {
             return;
         }
         self.told = Some(now);
+        // The user focused an element: a prefix ends, and the program hears
+        // where its keys come from (SPEC §10.5).
+        self.prefix = false;
         let mut node = Some(now);
         let mut target = String::new();
         while let Some(n) = node {
@@ -2057,12 +2057,13 @@ impl Surface {
         })
     }
 
-    /// The program's word of where the pointer is now (SPEC §9.4), when its
-    /// placement asked (`v=1`), it is not detached, and that differs from
-    /// what it heard last. `cell` is the pointer's cell of the surface; on a
-    /// host with `passthrough`, a point no element takes is out.
+    /// The program's word of where the pointer is now (SPEC §9.4), when it
+    /// asked (`v=1`), the surface is placed and not detached, and that
+    /// differs from what it heard last. `cell` is the pointer's cell of the
+    /// surface; on a host with `passthrough`, a point no element takes is
+    /// out.
     pub fn hovered(&mut self, cell: (i32, i32), passthrough: bool) -> Option<Event> {
-        if self.detached || self.hover.is_none() {
+        if self.detached || !self.placed || self.hover.is_none() {
             return None;
         }
         let now = match self.pointer_at {
@@ -2200,6 +2201,7 @@ impl Surface {
     }
 
     pub fn pointer(&mut self, kind: PointerKind, x: f32, y: f32, mods: Mods) -> Vec<Event> {
+        self.held = mods;
         let button = MouseEventButton::Main;
         match kind {
             PointerKind::Down => {
@@ -2279,236 +2281,30 @@ impl Surface {
         events
     }
 
-    /// A key for the focused element (SPEC §10.2), in the order §10.2 and
-    /// §10.5 give: a sequence waiting takes it first, and a key no element
-    /// uses may start one. `bytes` are what it came as, empty for a key
-    /// offered by name. Whether the surface used it, and what it did: the
-    /// events, and the keys that go on to the program after a wait.
-    pub fn key(&mut self, key: &Key, bytes: &[u8], offer: Offer) -> (bool, Vec<KeyOut>) {
-        if !self.keyboard {
+    /// A key for the focused element (SPEC §10.2). After a prefix every key
+    /// reaches the program (§10.5); else the element, the scroll actions
+    /// and the program take it in the order §10.2 gives. Whether the
+    /// surface used it, and the events it sent.
+    pub fn key(&mut self, key: &Key, offer: Offer) -> (bool, Vec<Event>) {
+        if !self.keyboard || self.prefix {
             return (false, Vec::new());
         }
-        let typed = Typed {
-            key: key.clone(),
-            name: key.spec_name().unwrap_or_default(),
-            bytes: bytes.to_vec(),
-        };
-        if let Some(w) = self.waiting.take() {
-            if offer == Offer::Pressed {
-                self.waiting = Some(w);
-                return (false, Vec::new());
-            }
-            return self.go_on(w, typed);
-        }
-        let start = match offer {
-            Offer::Pressed => Start::Defer,
-            Offer::Typed => Start::Yes(&typed),
-        };
-        let (used, events) = self.plain_key(key, start);
-        (used, events.into_iter().map(KeyOut::Event).collect())
+        self.plain_key(key, offer)
     }
 
-    /// The next key while a sequence waits (SPEC §10.5): Escape ends the
-    /// wait; a key that finishes a sequence runs it, unless a longer one at
-    /// least as near the focus goes on from it, and then it waits again;
-    /// any other key ends the wait, and the keys typed go on in order.
-    fn go_on(&mut self, mut w: Waiting, t: Typed) -> (bool, Vec<KeyOut>) {
-        if t.name == "Escape" {
-            return (true, Vec::new());
-        }
-        w.typed.push(t);
-        let names: Vec<String> = w.typed.iter().map(|t| t.name.clone()).collect();
-        let (seqs, near) = self.sequences();
-        match seq::step(&self.doc, &seqs, &near, &names) {
-            Step::Run(id) => {
-                let events = self.run_sequence(id);
-                (true, events.into_iter().map(KeyOut::Event).collect())
-            }
-            Step::Wait => {
-                w.deadline = Instant::now() + self.settings.timeout;
-                self.waiting = Some(w);
-                (true, Vec::new())
-            }
-            Step::Dead => (true, self.replay(w.typed)),
-        }
-    }
-
-    /// The keys a wait typed, going on in order as if no element had a
-    /// `data-key` (SPEC §10.5): to the element, the scroll actions and the
-    /// program.
-    fn replay(&mut self, typed: Vec<Typed>) -> Vec<KeyOut> {
-        let mut out = Vec::new();
-        for t in typed {
-            let (used, events) = self.plain_key(&t.key, Start::No);
-            out.extend(events.into_iter().map(KeyOut::Event));
-            if !used {
-                out.push(KeyOut::Key(t));
-            }
-        }
-        out
-    }
-
-    /// A wait that timed out by `now` ends (SPEC §10.5): the sequence typed
-    /// runs if it finishes one, and its keys go on otherwise.
-    pub fn expire(&mut self, now: Instant) -> Vec<KeyOut> {
-        let Some(w) = self.waiting.take_if(|w| w.deadline <= now) else {
-            return Vec::new();
-        };
-        let names: Vec<String> = w.typed.iter().map(|t| t.name.clone()).collect();
-        let (seqs, near) = self.sequences();
-        match seq::finished(&self.doc, &seqs, &near, &names) {
-            Some(id) => self.run_sequence(id).into_iter().map(KeyOut::Event).collect(),
-            None => self.replay(w.typed),
-        }
-    }
-
-    /// The which-key menu of the sequence waiting, once it has waited
-    /// `delay` (SPEC §10.5).
-    pub fn menu(&self, now: Instant, delay: std::time::Duration) -> Option<Menu> {
-        let w = self.waiting.as_ref().filter(|w| now >= w.since + delay)?;
-        let names: Vec<String> = w.typed.iter().map(|t| t.name.clone()).collect();
-        let (seqs, near) = self.sequences();
-        Some(seq::menu(&self.doc, &seqs, &near, &names))
-    }
-
-    /// The document's sequences, and how near the focus each element is.
-    fn sequences(&self) -> (Vec<seq::Seq>, Nearness) {
-        let k = &self.settings;
-        (
-            seq::sequences(&self.doc, &k.platform, &k.leader),
-            Nearness::new(&self.doc, self.focused()),
-        )
-    }
-
-    /// A key the focused element does not use may start a sequence (SPEC
-    /// §10.5). `Some` when it does: used, and run at once where it
-    /// finishes one that no longer one goes on from; or, offered as
-    /// pressed, left to come again as bytes.
-    fn start_sequence(&mut self, key: &Key, start: &Start) -> Option<(bool, Vec<Event>)> {
-        if matches!(start, Start::No) {
-            return None;
-        }
-        let name = key.spec_name()?;
-        let (seqs, near) = self.sequences();
-        let step = seq::step(&self.doc, &seqs, &near, std::slice::from_ref(&name));
-        match (step, start) {
-            (Step::Dead, _) => None,
-            (_, Start::Defer | Start::No) => Some((false, Vec::new())),
-            (Step::Run(id), Start::Yes(_)) => Some((true, self.run_sequence(id))),
-            (Step::Wait, Start::Yes(t)) => {
-                let now = Instant::now();
-                self.waiting = Some(Waiting {
-                    typed: vec![(*t).clone()],
-                    since: now,
-                    deadline: now + self.settings.timeout,
-                });
-                Some((true, Vec::new()))
-            }
-        }
-    }
-
-    /// Runs an element's sequence (SPEC §10.5), as a browser does an access
-    /// key: it clicks an element a click activates, as a click from the
-    /// keyboard does, and focuses any other that takes focus. A disabled
-    /// element's does nothing.
-    fn run_sequence(&mut self, id: NodeId) -> Vec<Event> {
-        if seq::disabled(&self.doc, id) {
-            return Vec::new();
-        }
-        self.dirty = true;
-        if self.click_activated(id) {
-            return self.key_click(id);
-        }
-        let mut events = Vec::new();
-        if !self.focus_order().contains(&id) {
-            return events;
-        }
-        self.finish_change(&mut events);
-        self.move_focus(Some(id));
-        self.snapshot_focus();
-        self.tell_focus(&mut events);
-        self.bring_into_view(id);
-        events
-    }
-
-    /// Whether a click activates an element (SPEC §10.5): a `button`, a
-    /// link, a `summary`, a checkbox or radio button, an `input` of type
-    /// `button`, `submit` or `reset`, or one with `data-on~=click`.
-    fn click_activated(&self, id: NodeId) -> bool {
-        let Some(el) = self.doc.get_node(id).and_then(|n| n.element_data()) else {
-            return false;
-        };
-        let attr = |name: &str| {
-            el.attrs()
-                .iter()
-                .find(|a| &*a.name.local == name)
-                .map(|a| a.value.to_string())
-        };
-        let on = attr("data-on").is_some_and(|v| v.split_whitespace().any(|w| w == "click"));
-        on || match el.name.local.as_ref() {
-            "button" | "summary" => true,
-            "a" => attr("href").is_some(),
-            "input" => matches!(
-                attr("type").map(|t| t.to_ascii_lowercase()).as_deref(),
-                Some("button" | "submit" | "reset" | "checkbox" | "radio")
-            ),
-            _ => false,
-        }
-    }
-
-    /// Clicks `id` as the keyboard does, without moving the focus. A hidden
-    /// element has no cells: its click's `area` is all zeros.
-    fn key_click(&mut self, id: NodeId) -> Vec<Event> {
-        self.resolve();
-        let before = self.focused();
-        let rect = self
-            .doc
-            .get_client_bounding_rect(id)
-            .filter(|r| r.width > 0.0 || r.height > 0.0);
-        let (x, y) = rect.map_or((0.0, 0.0), |r| {
-            ((r.x + r.width / 2.0) as f32, (r.y + r.height / 2.0) as f32)
-        });
-        let click = self.pointer_event(x, y, MouseEventButtons::None, Mods::default());
-        let mut events =
-            self.drive_input(Input::Dom(DomEvent::new(id, DomEventData::Click(click))));
-        events.retain(|e| e.kind != "focus" && e.kind != "blur");
-        if self.focused() != before {
-            self.move_focus(before);
-        }
-        if rect.is_none()
-            && let Some(target) = self.id_of(id)
-        {
-            let none = Area { c: 0, r: 0, w: 0, h: 0 };
-            for e in events.iter_mut().filter(|e| e.kind == "click" && e.target == target) {
-                match &mut e.detail {
-                    Some(Detail::Click { area, .. }) => *area = Some(none),
-                    d => {
-                        *d = Some(Detail::Click {
-                            area: Some(none),
-                            href: None,
-                            url: None,
-                            value: None,
-                            count: None,
-                        })
-                    }
-                }
-            }
-        }
-        events
-    }
-
-    /// A key for the focused element as if no element had a `data-key`
-    /// but where `start` lets one start (SPEC §10.2).
-    fn plain_key(&mut self, key: &Key, start: Start) -> (bool, Vec<Event>) {
-        if !self.keyboard {
-            return (false, Vec::new());
-        }
+    /// A key for the focused element (SPEC §10.2): the element's use of it
+    /// comes after the keys it gives to the program, which start a prefix
+    /// when it is `prefix` and `offer` is the key as the program reads it
+    /// (§10.5).
+    fn plain_key(&mut self, key: &Key, offer: Offer) -> (bool, Vec<Event>) {
+        self.held = key.mods;
         self.wake_caret(Instant::now());
         let focused = self.focused();
         let kind = focused
             .map(|id| self.control_kind(id))
             .unwrap_or(Control::None);
         let plain = !key.mods.ctrl && !key.mods.alt && !key.mods.meta;
+        let gives = focused.map_or(Gives::No, |id| self.gives(id, key, kind));
         match (&key.name, kind) {
             (KeyName::Tab, _) if plain => {
                 let before = focused;
@@ -2532,7 +2328,6 @@ impl Surface {
                     self.finish_change(&mut events);
                     self.move_focus(None);
                     self.keyboard = false;
-                    self.waiting = None;
                     self.told = None;
                     events.push(keyboard_event("blur"));
                 } else {
@@ -2547,7 +2342,14 @@ impl Surface {
                 (true, events)
             }
             (KeyName::Escape, _) => (false, Vec::new()),
-            _ if focused.is_some_and(|id| self.gives_program(id, key, kind)) => (false, Vec::new()),
+            _ if gives != Gives::No => {
+                // Offered as pressed, the key comes again as the program
+                // reads it, and starts the prefix then.
+                if offer == Offer::Typed && gives == Gives::Prefix {
+                    self.prefix = true;
+                }
+                (false, Vec::new())
+            }
             (_, Control::Text | Control::TextArea) => {
                 let id = focused.expect("a text control is focused");
                 match self.field_key(id, key, kind == Control::TextArea) {
@@ -2555,10 +2357,7 @@ impl Surface {
                         self.dirty = true;
                         (true, events)
                     }
-                    None => match self.start_sequence(key, &start) {
-                        Some(used) => used,
-                        None => self.scroll_key(key, focused),
-                    },
+                    None => self.scroll_key(key, focused),
                 }
             }
             (KeyName::Space | KeyName::Enter, Control::Activatable) if plain => {
@@ -2570,21 +2369,18 @@ impl Surface {
                 let id = focused.expect("a select is focused");
                 match self.select_key(id, key) {
                     Some(events) => (true, events),
-                    None => self.unused_key(key, focused, &start),
+                    None => self.unused_key(key, focused),
                 }
             }
-            _ => self.unused_key(key, focused, &start),
+            _ => self.unused_key(key, focused),
         }
     }
 
-    /// A key the focused element (a text field aside) does not use: it may
-    /// start a key sequence (SPEC §10.5); a key its keymap binds to a
-    /// scroll action scrolls (§10.2, scrolling keys), and any other goes on
-    /// as the surface takes keys it does not use (§5.3).
-    fn unused_key(&mut self, key: &Key, focused: Option<NodeId>, start: &Start) -> (bool, Vec<Event>) {
-        if let Some(used) = self.start_sequence(key, start) {
-            return used;
-        }
+    /// A key the focused element (a text field aside) does not use: a key
+    /// its keymap binds to a scroll action scrolls (SPEC §10.2, scrolling
+    /// keys), and any other goes on as the surface takes keys it does not
+    /// use (§5.3).
+    fn unused_key(&mut self, key: &Key, focused: Option<NodeId>) -> (bool, Vec<Event>) {
         if let Some(used) = focused.and_then(|id| self.scroll_action_key(id, key)) {
             return used;
         }
@@ -2638,20 +2434,28 @@ impl Surface {
     }
 
     /// Whether the focused element `id`, of kind `kind`, gives `key` to the
-    /// program: its keymap binds it to `program` (SPEC §10.2, keys for the
-    /// program). The key then reaches the program before the element or a
-    /// scroll uses it. A text field's keymap leaves scroll actions out, so a
-    /// nearer scroll binding there does not hide a farther `program`.
-    fn gives_program(&self, id: NodeId, key: &Key, kind: Control) -> bool {
+    /// program: its keymap binds it to `program` or to `prefix` (SPEC
+    /// §10.2, keys for the program). The key then reaches the program
+    /// before the element or a scroll uses it. A text field's keymap leaves
+    /// scroll actions out, so a nearer scroll binding there does not hide a
+    /// farther `program`.
+    fn gives(&self, id: NodeId, key: &Key, kind: Control) -> Gives {
         let Some(name) = key.spec_name() else {
-            return false;
+            return Gives::No;
         };
         let values = self.keymap_values(id);
         let values = values.iter().map(String::as_str);
-        match kind {
-            Control::Text => keys::resolve(&self.settings.platform, false, values).program(&name),
-            Control::TextArea => keys::resolve(&self.settings.platform, true, values).program(&name),
-            _ => keys::element_keymap(&self.settings.platform, values).program(&name),
+        let m = match kind {
+            Control::Text => keys::resolve(&self.settings.platform, false, values),
+            Control::TextArea => keys::resolve(&self.settings.platform, true, values),
+            _ => keys::element_keymap(&self.settings.platform, values),
+        };
+        if m.prefix(&name) {
+            Gives::Prefix
+        } else if m.program(&name) {
+            Gives::Program
+        } else {
+            Gives::No
         }
     }
 
@@ -3367,6 +3171,7 @@ impl Surface {
             base: self.base.clone(),
             cell: self.cell,
             slack: self.slack(),
+            mods: self.held.bits(),
             ..Recorder::default()
         };
         {
@@ -3477,7 +3282,9 @@ impl Surface {
             events.push(Event {
                 kind: "submit",
                 target: self.id_of(form).unwrap_or_default(),
-                detail: Some(Detail::Fields(form_fields(&nav))),
+                detail: Some(Detail::Fields {
+                    fields: form_fields(&nav),
+                }),
             });
         }
         events
@@ -3585,6 +3392,8 @@ struct Recorder {
     /// A cell's size in CSS pixels, and half a device pixel, for `area`.
     cell: (f64, f64),
     slack: f64,
+    /// The modifier keys held, for a click's `mods` (SPEC §9).
+    mods: Option<u8>,
     /// The elements Blitz scrolled (the root for the viewport).
     scrolled: Vec<NodeId>,
     form: Option<NodeId>,
@@ -3671,12 +3480,16 @@ impl EventHandler for &mut Recorder {
                             .as_deref()
                             .filter(|_| link)
                             .and_then(|h| link_url(&self.base, h));
-                        let some = area.is_some() || href.is_some() || value.is_some();
+                        let some = area.is_some()
+                            || self.mods.is_some()
+                            || href.is_some()
+                            || value.is_some();
                         self.events.push(Event {
                             kind: "click",
                             target,
                             detail: some.then_some(Detail::Click {
                                 area,
+                                mods: self.mods,
                                 href,
                                 url,
                                 value,
@@ -3723,10 +3536,12 @@ impl EventHandler for &mut Recorder {
     }
 }
 
-fn form_fields(nav: &NavigationOptions) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
+/// A form's fields, each its name and its value, in tree order (SPEC §9):
+/// two of one name are two.
+fn form_fields(nav: &NavigationOptions) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
     let mut add = |k: String, v: String| {
-        map.insert(k, v);
+        fields.push((k, v));
     };
     match &nav.document_resource {
         Body::Form(data) => {
@@ -3745,7 +3560,7 @@ fn form_fields(nav: &NavigationOptions) -> BTreeMap<String, String> {
             }
         }
     }
-    map
+    fields
 }
 
 fn url_pairs(q: &str) -> Vec<(String, String)> {
