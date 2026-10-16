@@ -1,7 +1,7 @@
 ---
 title: "Flushing waits for the workers without spinning"
 patch: 0001-vello_cpu-flushing-waits-for-the-workers-without-spi.patch
-upstream-fit: no
+upstream-fit: yes
 ---
 
 **What it changes:** `MultiThreadedDispatcher::flush` drained the workers'
@@ -16,6 +16,6 @@ fewer, and frame times stayed the same.
 **Why we carry it:** a quarter of hotty-blitz's instructions on that
 dashboard were this spin.
 
-**For upstream:** no, by the maintainer's decision (2026-10-10) not to
-offer these patches. Upstream's 0.3.0 still spins this way, so the fix
-itself would apply there.
+**For upstream:** yes. It is a fix with no trade-off: the order and the
+results are the same, and only the busy wait goes. vello_cpu 0.3.0 still
+drains this way, and the patch applies there.
