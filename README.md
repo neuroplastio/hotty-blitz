@@ -1,17 +1,17 @@
 # hotty-blitz
 
-[HOTTY](https://github.com/neuroplastio/hotty) on Blitz. Blitz assembles
+[hotty](https://github.com/neuroplastio/hotty) on Blitz. Blitz assembles
 Firefox's style engine (Stylo), html5ever, Taffy for layout and Parley for
 text, and renders on the CPU. This repository holds:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of HOTTY 0.3: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
-| `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
+| `crates/hotty-blitz` | the host of hotty 0.3: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields hotty commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout) and vello_cpu (its renderer), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
-The host speaks HOTTY 0.3 and no other version. It answers a query that
+The host speaks hotty 0.3 and no other version. It answers a query that
 lists 0.3 among the versions its program speaks (`a=q:n=1:v=0.3`, SPEC §4)
 with its capabilities, and any other, one with no `v` too, with `EVERSION`:
 a program of 0.2 finds no host.
@@ -25,11 +25,11 @@ next to this repository (or `HOTTY_DIR`).
 mise install && make release       # also patches Blitz at ../blitz, parley at ../parley and vello_cpu at ../vello_cpu
 ./target/release/hotty run -- python3 ../hotty/examples/dash.py
 ./target/release/hotty render ../hotty/corpus/01-card.html -o card.png
-./target/release/hotty dump capture.bin     # the HOTTY messages in a captured stream
+./target/release/hotty dump capture.bin     # the hotty messages in a captured stream
 ```
 
 `hotty run` works in any terminal with kitty graphics (kitty, Ghostty, and
-others). It sits on the pty, passes everything through except HOTTY, and shows
+others). It sits on the pty, passes everything through except hotty, and shows
 surfaces as images (SPEC §14). It also works across SSH:
 `hotty run -- ssh host program`.
 
@@ -45,7 +45,7 @@ A host's replies and events carry msgpack bodies (SPEC §3.3), in base64,
 which no one reads off a terminal. `hotty dump [FILE]` reads a captured
 stream from FILE or stdin, a program's output or what its terminal gave it
 to read (util-linux's `script -I in.bin -O out.bin`), and prints one line
-for each HOTTY message, its chunks joined and `o=z` inflated: its control,
+for each hotty message, its chunks joined and `o=z` inflated: its control,
 then its body as JSON with each value's type in sight, or what a program
 sent as its text.
 
