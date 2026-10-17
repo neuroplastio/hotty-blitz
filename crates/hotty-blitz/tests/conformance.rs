@@ -30,6 +30,8 @@ struct Mouse {
     /// The edit commands the program took (`a=edit`, SPEC §10.6), which
     /// the runner keeps as a terminal does.
     taken: Vec<String>,
+    /// The runner offers keys as pressed, then as bytes (`"pressed"`).
+    pressed: bool,
 }
 
 /// Where the vectors' finger is (touch steps): the surface its touch began
@@ -414,6 +416,97 @@ fn key_name(name: &str) -> KeyName {
     }
 }
 
+/// The physical key a US keyboard has a character on.
+fn us_physical(c: &str) -> Option<String> {
+    let c = c.chars().next()?;
+    Some(match c {
+        'a'..='z' => format!("key_{c}"),
+        'A'..='Z' => format!("key_{}", c.to_ascii_lowercase()),
+        '0'..='9' => format!("digit_{c}"),
+        ' ' => "space".into(),
+        '-' => "minus".into(),
+        '=' => "equal".into(),
+        _ => return None,
+    })
+}
+
+/// The bytes a legacy terminal sends for a key, none for a key with
+/// `super`.
+fn legacy_bytes(key: &Key) -> Option<Vec<u8>> {
+    let m = key.mods;
+    if m.super_ {
+        return None;
+    }
+    let bits = 1 + u8::from(m.shift) + 2 * u8::from(m.alt) + 4 * u8::from(m.ctrl);
+    let csi = |fin: &str, tilde: Option<u8>| -> Vec<u8> {
+        match (tilde, bits) {
+            (None, 1) => format!("\x1b[{fin}"),
+            (None, b) => format!("\x1b[1;{b}{fin}"),
+            (Some(n), 1) => format!("\x1b[{n}~"),
+            (Some(n), b) => format!("\x1b[{n};{b}~"),
+        }
+        .into_bytes()
+    };
+    let plain: Vec<u8> = match &key.name {
+        KeyName::Up => return Some(csi("A", None)),
+        KeyName::Down => return Some(csi("B", None)),
+        KeyName::Right => return Some(csi("C", None)),
+        KeyName::Left => return Some(csi("D", None)),
+        KeyName::Home => return Some(csi("H", None)),
+        KeyName::End => return Some(csi("F", None)),
+        KeyName::Delete => return Some(csi("", Some(3))),
+        KeyName::PageUp => return Some(csi("", Some(5))),
+        KeyName::PageDown => return Some(csi("", Some(6))),
+        KeyName::Tab if m.shift => return Some(b"\x1b[Z".to_vec()),
+        KeyName::Tab => vec![9],
+        KeyName::Enter => vec![13],
+        KeyName::Escape => vec![27],
+        KeyName::Backspace => vec![0x7f],
+        KeyName::Space if m.ctrl => vec![0],
+        KeyName::Space => vec![b' '],
+        KeyName::Char(c) if m.ctrl => {
+            let b = c.to_ascii_lowercase().bytes().next()?;
+            vec![match b {
+                b'a'..=b'z' => b - 0x60,
+                _ => return None,
+            }]
+        }
+        KeyName::Char(c) => c.as_bytes().to_vec(),
+        KeyName::Other => return None,
+    };
+    Some(if m.alt { [&[0x1b][..], &plain].concat() } else { plain })
+}
+
+/// A key offered as a terminal that sees the key pressed offers it (SPEC
+/// §10.4): as pressed, by both its names, for a key that types no text,
+/// then, if the surface did not use it, as the bytes a terminal sends.
+fn offered(host: &mut Host, surface: &str, key: &Key) -> hotty_blitz::KeyOutcome {
+    let m = key.mods;
+    let types_text = matches!(key.name, KeyName::Char(_)) && !m.ctrl && !m.super_;
+    if !types_text {
+        let bits = hotty_wire::keys::KeyParts::new(m.super_, m.ctrl, m.alt, m.shift, "").mods;
+        let (physical, other) = match &key.name {
+            KeyName::Char(c) => (
+                us_physical(c).map(|p| hotty_wire::keys::KeyParts { mods: bits, value: p }.name()),
+                key.spec_name(),
+            ),
+            _ => (key.spec_name(), None),
+        };
+        let out = host.key_pressed(
+            surface,
+            physical.as_deref().unwrap_or(""),
+            other.as_deref().unwrap_or(""),
+        );
+        if out.consumed {
+            return out;
+        }
+    }
+    match legacy_bytes(key) {
+        Some(bytes) => host.key_bytes(surface, &bytes),
+        None => hotty_blitz::KeyOutcome::default(),
+    }
+}
+
 /// A key pressed where the keyboard is: the surface that has it, or else
 /// the terminal (conformance/README). A key that reaches the program as a
 /// command it took is not the terminal's (SPEC §10.6).
@@ -428,7 +521,11 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
     let mut sent = Vec::new();
     let mut terminal = match host.focused_surface().map(str::to_string) {
         Some(s) => {
-            let out = host.key(&s, &key);
+            let out = if mouse.pressed {
+                offered(host, &s, &key)
+            } else {
+                host.key(&s, &key)
+            };
             for e in out.effects {
                 if let Effect::Reply(b) = e {
                     sent.extend(b);
@@ -656,6 +753,7 @@ fn protocol_vectors() {
                         | "steps"
                         | "drop"
                         | "view"
+                        | "pressed"
                 )
             )
         };
@@ -677,7 +775,14 @@ fn protocol_vectors() {
             menus: true,
             ..KeySettings::default()
         });
-        let mut mouse = Mouse::default();
+        let mut mouse = Mouse {
+            pressed: match vector.get("requires") {
+                Some(Value::Array(all)) => all.iter().any(|r| r == "pressed"),
+                Some(r) => r == "pressed",
+                None => false,
+            },
+            ..Mouse::default()
+        };
         for (i, step) in vector["steps"].as_array().unwrap().iter().enumerate() {
             if let Err(e) = run_step(&mut host, &mut mouse, step) {
                 failures.push(format!(

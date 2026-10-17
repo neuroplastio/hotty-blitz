@@ -250,6 +250,10 @@ pub(crate) struct Surface {
     /// until it sends `a=focus` or `a=blur`, the surface loses the
     /// keyboard, or the user focuses an element with a press.
     prefix: bool,
+    /// The press given to the program as pressed (SPEC §10.4): the one name
+    /// its bytes will have, and whether it was bound to `prefix`. It stays
+    /// the program's when it comes again as bytes.
+    given: Option<(String, bool)>,
     /// The modifier keys held for the input being driven, which the clicks
     /// it makes carry (SPEC §9).
     held: Mods,
@@ -692,6 +696,7 @@ impl Surface {
             paste_wanted: false,
             settings: crate::KeySettings::default(),
             prefix: false,
+            given: None,
             held: Mods::default(),
         }
     }
@@ -2298,6 +2303,17 @@ impl Surface {
     /// when it is `prefix` and `offer` is the key as the program reads it
     /// (§10.5).
     fn plain_key(&mut self, key: &Key, offer: Offer) -> (bool, Vec<Event>) {
+        // A press given to the program as pressed stays the program's when
+        // it comes again as bytes, whatever its one name is bound to now,
+        // and a `prefix` binding starts its prefix then (SPEC §10.4).
+        if offer == Offer::Pressed {
+            self.given = None;
+        } else if let Some((name, prefix)) = self.given.take()
+            && key.names() == [name]
+        {
+            self.prefix |= prefix;
+            return (false, Vec::new());
+        }
         self.held = key.mods;
         self.wake_caret(Instant::now());
         let focused = self.focused();
@@ -2348,6 +2364,9 @@ impl Surface {
                 // reads it, and starts the prefix then.
                 if offer == Offer::Typed && gives == Gives::Prefix {
                     self.prefix = true;
+                }
+                if offer == Offer::Pressed {
+                    self.given = key.names().pop().map(|n| (n, gives == Gives::Prefix));
                 }
                 (false, Vec::new())
             }

@@ -383,3 +383,40 @@ fn an_edit_command_is_found_by_either_name() {
     assert_eq!(h.edit_command("", "ctrl+x").as_deref(), Some("undo"));
     assert_eq!(h.edit_command("", ""), None);
 }
+
+/// A press given to the program as pressed stays the program's when it
+/// comes again as bytes, whatever its one name is bound to, and a `prefix`
+/// binding starts its prefix then (SPEC §10.4, §10.5).
+#[test]
+fn a_press_given_to_the_program_stays_its_as_bytes() {
+    let mut h = host(KeySettings::default());
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        b"<input id=a data-keys='ctrl+key_a=program'><input id=b data-keys='ctrl+key_a=prefix'>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], b""));
+    h.render_dirty(&mut |_, _, _| {});
+    let focus = |h: &mut Host, t: &str| {
+        h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", t)], b""));
+    };
+    // `program`: ctrl+a is the program's both times, though the field
+    // selects all with it; a key after it is the field's.
+    focus(&mut h, "a");
+    assert!(!h.key_pressed("f", "ctrl+key_a", "ctrl+a").consumed);
+    assert!(!h.key_bytes("f", b"\x01").consumed);
+    assert!(h.key_bytes("f", b"x").consumed);
+    // Bytes of another name clear it, and so does the next press.
+    assert!(!h.key_pressed("f", "ctrl+key_a", "ctrl+a").consumed);
+    assert!(h.key_bytes("f", b"y").consumed);
+    assert!(h.key_bytes("f", b"\x01").consumed, "no press gave it");
+    assert!(!h.key_pressed("f", "ctrl+key_a", "ctrl+a").consumed);
+    assert!(!h.key_pressed("f", "ctrl+key_b", "ctrl+b").consumed);
+    assert!(h.key_bytes("f", b"\x01").consumed);
+    // `prefix`: the bytes start it, and the next `x` reaches the program.
+    focus(&mut h, "b");
+    assert!(!h.key_pressed("f", "ctrl+key_a", "ctrl+a").consumed);
+    assert!(!h.key_bytes("f", b"\x01").consumed);
+    assert!(!h.key_bytes("f", b"x").consumed, "after the prefix");
+    focus(&mut h, "b");
+    assert!(h.key_bytes("f", b"x").consumed);
+}
