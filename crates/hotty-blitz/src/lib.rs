@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use input::{
-    Event, Key, KeyName, KeyOutcome, Mods, PointerKind, Touch, TouchOutcome, TouchPhase,
-    WheelOutcome,
+    CellsTouch, CellsTouchOutcome, Event, Key, KeyName, KeyOutcome, Mods, MouseReport,
+    PointerKind, Touch, TouchOutcome, TouchPhase, WheelOutcome,
 };
 pub use menu::{MENU, Shown};
 pub use surface::{Damage, Frame, Timings};
@@ -262,6 +262,11 @@ pub struct Host {
     gesture: Option<Gesture>,
     /// The touch under way (Host::touch).
     finger: Option<Finger>,
+    /// The touch on the cells under way (Host::cells_touch).
+    cells_finger: Option<CellsFinger>,
+    /// The touch areas of the main screen and the alternate screen
+    /// (`a=touch`, SPEC §9.6), on the screen `menu.on_alt` says.
+    areas: [Vec<body::TouchArea>; 2],
     frame_log: Option<FrameLog>,
     /// The surface whose document the host is working in (empty: none),
     /// so that a panic there costs that surface alone ([`Host::recover`]).
@@ -343,9 +348,35 @@ struct Finger {
     tap: bool,
 }
 
+/// A touch on the cells under way (SPEC §9.6): where it began and where it
+/// last was, with which keys held when it began, the pans the area it
+/// began in leaves (none when no area applies), whose it is so far, and
+/// whether it can still be a tap.
+struct CellsFinger {
+    start: (f32, f32),
+    at: (f32, f32),
+    mods: Mods,
+    pans: Option<(bool, bool)>,
+    touch: CellsTouch,
+    tap: bool,
+}
+
 /// How far a finger moves, in CSS pixels, before its touch is a pan or a
 /// drag rather than a tap: GTK's drag threshold, and xterm-addon-hotty's.
 pub const TAP_SLOP: f32 = 8.0;
+
+/// Whether a touch that went past [`TAP_SLOP`] by (`dx`, `dy`) pans, where
+/// `pans` are the pans allowed across and up and down: along the larger
+/// delta, and a tie pans (SPEC §9.1, §9.6).
+fn pans_along(dx: f32, dy: f32, pans: (bool, bool)) -> bool {
+    if dx.abs() > dy.abs() {
+        pans.0
+    } else if dy.abs() > dx.abs() {
+        pans.1
+    } else {
+        true
+    }
+}
 
 /// A wheel gesture: a wheel's notches, or a touchpad's scroll and its
 /// momentum, as long as they come within [`GESTURE`] of each other.
@@ -448,6 +479,8 @@ impl Host {
             views: Vec::new(),
             gesture: None,
             finger: None,
+            cells_finger: None,
+            areas: Default::default(),
             frame_log: FrameLog::open(),
             working: String::new(),
             lost: Vec::new(),
@@ -610,14 +643,16 @@ impl Host {
     }
 
     /// The terminal's screen changed, or is told for the first time (SPEC
-    /// §10.7): leaving the alternate screen drops its menu, as the edit
-    /// commands taken there are; any change hides the level shown.
+    /// §10.7): leaving the alternate screen drops its menu and its touch
+    /// areas (§9.6), as the edit commands taken there are; any change hides
+    /// the level shown.
     pub fn set_screen(&mut self, alt: bool) {
         if alt == self.menu.on_alt {
             return;
         }
         if self.menu.on_alt {
             self.menu.alt = None;
+            self.areas[1].clear();
         }
         self.menu.on_alt = alt;
         self.menu.seq = None;
@@ -938,8 +973,16 @@ impl Host {
         }
     }
 
-    /// Everything goes: full reset, or the program's session ended.
+    /// Everything goes: full reset (RIS), or the program's session ended.
+    /// The touch areas of both screens go too (SPEC §9.6).
     pub fn reset(&mut self) -> Vec<Effect> {
+        self.areas = Default::default();
+        self.delete_all()
+    }
+
+    /// Every surface goes (`a=del`): what [`Host::reset`] drops, but the
+    /// touch areas.
+    fn delete_all(&mut self) -> Vec<Effect> {
         let names: Vec<String> = self.surfaces.keys().cloned().collect();
         let mut effects: Vec<Effect> = names
             .into_iter()
@@ -1456,7 +1499,9 @@ impl Host {
                         }
                         effects.extend(self.remove_surface(&name));
                     }
-                    None => effects.extend(self.reset()),
+                    // The touch areas stay: they are cells of the screen
+                    // (SPEC §9.6).
+                    None => effects.extend(self.delete_all()),
                 }
                 Ok((Vec::new(), None))
             }
@@ -1561,6 +1606,16 @@ impl Host {
                     Some(other) => return Err(("EINVAL", format!("show={other} is not 0 or 1"))),
                 }
                 self.menu.stale = true;
+                Ok((Vec::new(), None))
+            }
+            // Cells of the screen the program is on where a finger drags
+            // as the mouse (SPEC §9.6), in place of those it sent there
+            // before; no body, or an empty list, leaves none. Taken
+            // whether or not the terminal takes touch.
+            "touch" => {
+                let areas = body::decode_touch(&cmd.payload)
+                    .map_err(|e| ("EINVAL", format!("bad touch areas: {e}")))?;
+                self.areas[usize::from(self.menu.on_alt)] = areas;
                 Ok((Vec::new(), None))
             }
             "" => Err(("EINVAL", "missing a=<action>".into())),
@@ -1818,15 +1873,7 @@ impl Host {
                     }
                     Touch::Undecided if f.tap => out.touch = Touch::Undecided,
                     Touch::Undecided => {
-                        // Along the larger delta; a tie pans (SPEC §9.1).
-                        let pan = if dx.abs() > dy.abs() {
-                            f.pans.0
-                        } else if dy.abs() > dx.abs() {
-                            f.pans.1
-                        } else {
-                            true
-                        };
-                        if pan {
+                        if pans_along(dx, dy, f.pans) {
                             f.touch = Touch::Terminal;
                         } else {
                             f.touch = Touch::Surface;
@@ -1867,6 +1914,223 @@ impl Host {
             }
         }
         out
+    }
+
+    /// A finger on the cells, at device pixel (`x`, `y`) counted from the
+    /// top left of the screen's cells, even outside them. `mods` as for a
+    /// pointer event. A terminal passes every phase of a touch that begins
+    /// on the cells here: one outside every surface, or where a surface
+    /// lets the pointer through (SPEC §9.3). A touch that begins on a
+    /// surface goes to [`Host::touch`] instead, whatever lies beneath.
+    ///
+    /// The program names areas of the screen where a finger drags as its
+    /// mouse (`a=touch`, SPEC §9.6). An area applies to a touch that begins
+    /// in it without Alt held, while `reports` (the program has the
+    /// terminal report the mouse's buttons, in any mode) and `at_screen`
+    /// (the terminal shows the screen, not its scrollback): both are read
+    /// at `Down`. hotty-blitz decides as [`Host::touch`] does, past
+    /// [`TAP_SLOP`] and along the larger delta, and says whose the touch
+    /// is:
+    /// - `Down`: [`CellsTouch::Undecided`] in an area that applies, and the
+    ///   terminal then holds the touch's moves and its tap;
+    ///   [`CellsTouch::Terminal`] otherwise, and the touch is the
+    ///   terminal's as any touch is.
+    /// - `Move`: `Undecided` until the finger has gone past the slop. Then
+    ///   [`CellsTouch::Mouse`] if it went the way the area drags: the
+    ///   primary button is pressed on the cell where the touch began, with
+    ///   a move to the finger's cell if that is another, and every move
+    ///   after is the button's, wherever the finger goes. Or `Terminal`, a
+    ///   pan: the terminal scrolls with it from where it began.
+    /// - `Up`: `Mouse` with the release where the finger lifted, after a
+    ///   drag; `Mouse` with a press and a release there for a tap in an
+    ///   area. `Terminal` otherwise.
+    /// - `Cancel` (a second finger, or the platform cancelled the touch): a
+    ///   drag releases the button on the cell the finger was last on; the
+    ///   rest of the gesture is the terminal's.
+    /// - `LongPress`: the terminal took the touch for one before it
+    ///   dragged. It never drags, nor taps.
+    ///
+    /// The terminal makes each of [`CellsTouchOutcome::mouse`] as it
+    /// reports the mouse's, in the program's mode and encoding, and
+    /// selects nothing. It leaves out of a report a modifier with which it
+    /// keeps a mouse press for itself, such as Shift where Shift and a
+    /// press select. Where the touch landed, on a surface or on the cells,
+    /// is as the platform says. The press is a click on the cells: a
+    /// surface that has the keyboard gives it back (SPEC §10.1).
+    pub fn cells_touch(
+        &mut self,
+        phase: TouchPhase,
+        x: f32,
+        y: f32,
+        mods: Mods,
+        reports: bool,
+        at_screen: bool,
+    ) -> CellsTouchOutcome {
+        self.leave();
+        // A tap is a click of its own (SPEC §9).
+        self.click_run = None;
+        let mut out = CellsTouchOutcome::default();
+        match phase {
+            TouchPhase::Down => {
+                // A touch that never lifted: a drag of a surface's ends,
+                // and the program's button is released.
+                out.effects = self.cancel_touch();
+                self.finger = None;
+                if let Some(f) = self.cells_finger.take()
+                    && f.touch == CellsTouch::Mouse
+                {
+                    out.mouse.push(self.report(PointerKind::Up, f.at, f.mods));
+                }
+                let area = if mods.alt || !reports || !at_screen {
+                    None
+                } else {
+                    self.area_at(x, y)
+                };
+                // An area that drags one way leaves the other to pan.
+                let pans = area.map(|a| (!a.x, !a.y));
+                out.touch = if pans.is_some() {
+                    CellsTouch::Undecided
+                } else {
+                    CellsTouch::Terminal
+                };
+                self.cells_finger = Some(CellsFinger {
+                    start: (x, y),
+                    at: (x, y),
+                    mods,
+                    pans,
+                    touch: out.touch,
+                    tap: true,
+                });
+            }
+            TouchPhase::Move => {
+                let scale = self.config.metrics.scale.max(f32::EPSILON);
+                let Some(f) = self.cells_finger.as_mut() else {
+                    return out;
+                };
+                f.at = (x, y);
+                let (dx, dy) = ((x - f.start.0) / scale, (y - f.start.1) / scale);
+                if f.tap && dx.hypot(dy) >= TAP_SLOP {
+                    f.tap = false;
+                }
+                match f.touch {
+                    CellsTouch::Terminal => {}
+                    CellsTouch::Mouse => {
+                        out.touch = CellsTouch::Mouse;
+                        out.mouse.push(self.report(PointerKind::Move, (x, y), mods));
+                    }
+                    CellsTouch::Undecided if f.tap => out.touch = CellsTouch::Undecided,
+                    CellsTouch::Undecided => {
+                        if pans_along(dx, dy, f.pans.unwrap_or((true, true))) {
+                            f.touch = CellsTouch::Terminal;
+                        } else {
+                            f.touch = CellsTouch::Mouse;
+                            let (start, keys) = (f.start, f.mods);
+                            out.touch = CellsTouch::Mouse;
+                            let press = self.report(PointerKind::Down, start, keys);
+                            let now = self.report(PointerKind::Move, (x, y), mods);
+                            out.mouse.push(press);
+                            if (now.c, now.r) != (press.c, press.r) {
+                                out.mouse.push(now);
+                            }
+                            out.effects.extend(self.cells_press());
+                        }
+                    }
+                }
+            }
+            TouchPhase::Up => {
+                let Some(f) = self.cells_finger.take() else {
+                    return out;
+                };
+                match f.touch {
+                    CellsTouch::Mouse => {
+                        out.touch = CellsTouch::Mouse;
+                        out.mouse.push(self.report(PointerKind::Up, (x, y), mods));
+                    }
+                    // A tap in an area: a press and a release where it
+                    // lifted (SPEC §9.6).
+                    CellsTouch::Undecided if f.tap => {
+                        out.touch = CellsTouch::Mouse;
+                        out.mouse.push(self.report(PointerKind::Down, (x, y), mods));
+                        out.mouse.push(self.report(PointerKind::Up, (x, y), mods));
+                        out.effects.extend(self.cells_press());
+                    }
+                    _ => {}
+                }
+            }
+            TouchPhase::Cancel => {
+                if let Some(f) = self.cells_finger.as_mut() {
+                    let dragged = f.touch == CellsTouch::Mouse;
+                    let at = f.at;
+                    f.touch = CellsTouch::Terminal;
+                    f.tap = false;
+                    if dragged {
+                        out.mouse.push(self.report(PointerKind::Up, at, mods));
+                    }
+                }
+            }
+            TouchPhase::LongPress => {
+                if let Some(f) = self.cells_finger.as_mut() {
+                    if f.touch == CellsTouch::Mouse {
+                        out.touch = CellsTouch::Mouse;
+                    } else {
+                        f.touch = CellsTouch::Terminal;
+                        f.tap = false;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The screen's cell at device pixel (`x`, `y`) of the cells.
+    fn screen_cell(&self, x: f32, y: f32) -> (i64, i64) {
+        let m = self.config.metrics;
+        (
+            (x / m.cell_w.max(1) as f32).floor() as i64,
+            (y / m.cell_h.max(1) as f32).floor() as i64,
+        )
+    }
+
+    /// A report of the mouse's primary button at device pixel `at` of the
+    /// cells.
+    fn report(&self, kind: PointerKind, at: (f32, f32), mods: Mods) -> MouseReport {
+        let (c, r) = self.screen_cell(at.0, at.1);
+        MouseReport {
+            kind,
+            x: at.0,
+            y: at.1,
+            c,
+            r,
+            mods,
+        }
+    }
+
+    /// The touch area of the current screen at device pixel (`x`, `y`) of
+    /// the cells: where areas overlap, the last listed (SPEC §9.6).
+    fn area_at(&self, x: f32, y: f32) -> Option<body::TouchArea> {
+        let (c, r) = self.screen_cell(x, y);
+        self.areas[usize::from(self.menu.on_alt)]
+            .iter()
+            .rev()
+            .find(|a| a.covers(c, r))
+            .copied()
+    }
+
+    /// A finger presses the program's mouse on the cells: a click there,
+    /// which gives the keyboard back and drops the selection (SPEC §10.1,
+    /// §11).
+    fn cells_press(&mut self) -> Vec<Effect> {
+        self.gesture = None;
+        self.clear_selection(None);
+        let mut effects = Vec::new();
+        for (name, s) in self.surfaces.iter_mut() {
+            if s.has_focus() {
+                enter(&mut self.working, name);
+                effects.extend(s.blur().into_iter().map(|e| Effect::Reply(e.encode(name))));
+                s.dirty = true;
+            }
+        }
+        effects
     }
 
     /// A tap at device pixel (`x`, `y`) of `surface`, where the finger

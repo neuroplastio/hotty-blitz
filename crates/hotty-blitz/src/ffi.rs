@@ -4,7 +4,8 @@
 //! finishes them. Everything the host must do comes back through callbacks.
 
 use crate::{
-    Config, CopyKey, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme, Touch, TouchPhase,
+    CellsTouch, Config, CopyKey, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme, Touch,
+    TouchPhase,
 };
 use hotty_wire::{Event, Scanner};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -419,7 +420,8 @@ fn rect(r: crate::Rect) -> HottyRect {
     }
 }
 
-/// Drops every surface (full reset). Deletions arrive through `fx`.
+/// Drops every surface (full reset), the program's menus, and the touch
+/// areas of both screens (SPEC §9.6). Deletions arrive through `fx`.
 ///
 /// # Safety
 /// `h` must be valid; `fx` may be null.
@@ -568,6 +570,113 @@ pub unsafe extern "C" fn hotty_host_touch(
             Touch::Terminal => 0,
             Touch::Undecided => 1,
             Touch::Surface => 2,
+        }
+    })
+}
+
+/// A report of the mouse's primary button for a finger in the cells (SPEC
+/// §9.6), which the terminal makes as it reports the mouse's: in the
+/// program's mode and encoding. See `hotty_host_cells_touch`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HottyMouse {
+    /// 0 a move with the button held, 1 the press, 2 the release.
+    pub kind: u32,
+    /// Device pixels from the top left of the screen's cells.
+    pub x: f32,
+    pub y: f32,
+    /// The screen's cell, from 0 at its top left: negative, or past the
+    /// screen, where the finger is off it.
+    pub c: i32,
+    pub r: i32,
+    /// As for pointer events: 1 shift, 2 ctrl, 4 alt, 8 super. Leave out
+    /// one with which the terminal keeps a mouse press for itself, such as
+    /// shift where shift and a press select (SPEC §9.6).
+    pub mods: u32,
+}
+
+/// The most reports one call of `hotty_host_cells_touch` makes.
+pub const HOTTY_MOUSE_MAX: usize = 4;
+
+fn mod_bits(m: Mods) -> u32 {
+    u32::from(m.shift) | u32::from(m.ctrl) << 1 | u32::from(m.alt) << 2 | u32::from(m.super_) << 3
+}
+
+/// A finger on the cells, at device pixel `(x, y)` from the top left of the
+/// screen's cells, even outside them. Pass every phase of a touch that
+/// begins on the cells here (outside every surface, or where one lets the
+/// pointer through), down first; one that begins over a surface goes to
+/// `hotty_host_touch`. `phase` and `mods` as for `hotty_host_touch`.
+/// `reports`: the program has the terminal report the mouse's buttons, in
+/// any mode; `at_screen`: the terminal shows the screen, not its
+/// scrollback. Both are read at down: only then does an area the program
+/// named with `a=touch` apply (SPEC §9.6). Returns whose the touch is:
+/// 0 the terminal's (it scrolls, taps or long-presses with it, as with any
+/// touch), 1 undecided (it began in an area and may still drag: hold its
+/// moves, and take it for no tap), 2 the program's mouse (do nothing with
+/// it but the reports). The reports to make, in order, at most
+/// `HOTTY_MOUSE_MAX`, are written to `mouse`, and their count to `nmouse`:
+/// a drag's press where the touch began and its moves and release, a tap's
+/// press and release where it lifted, and the release a cancel makes. The
+/// events a press on the cells makes (`blur`, SPEC §10.1) come through `fx`.
+/// See `Host::cells_touch`.
+///
+/// # Safety
+/// `h` must be valid; `mouse` null or room for `HOTTY_MOUSE_MAX`; `nmouse`
+/// may be null; `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_cells_touch(
+    h: *mut HottyHost,
+    phase: u32,
+    x: f32,
+    y: f32,
+    mod_bits_in: u32,
+    reports: bool,
+    at_screen: bool,
+    mouse: *mut HottyMouse,
+    nmouse: *mut usize,
+    fx: *const HottyEffects,
+) -> u32 {
+    if let Some(n) = unsafe { nmouse.as_mut() } {
+        *n = 0;
+    }
+    let fx = unsafe { fx.as_ref() };
+    let phase = match phase {
+        0 => TouchPhase::Down,
+        1 => TouchPhase::Move,
+        2 => TouchPhase::Up,
+        3 => TouchPhase::Cancel,
+        4 => TouchPhase::LongPress,
+        _ => return 0,
+    };
+    guard(h, 0, |h| {
+        let out = h.host.cells_touch(phase, x, y, mods(mod_bits_in), reports, at_screen);
+        run_effects(out.effects, fx);
+        if !mouse.is_null() {
+            let to = unsafe { std::slice::from_raw_parts_mut(mouse, HOTTY_MOUSE_MAX) };
+            let clamp = |v: i64| v.clamp(i32::MIN.into(), i32::MAX.into()) as i32;
+            for (slot, m) in to.iter_mut().zip(&out.mouse) {
+                *slot = HottyMouse {
+                    kind: match m.kind {
+                        PointerKind::Down => 1,
+                        PointerKind::Up => 2,
+                        PointerKind::Move | PointerKind::Leave => 0,
+                    },
+                    x: m.x,
+                    y: m.y,
+                    c: clamp(m.c),
+                    r: clamp(m.r),
+                    mods: mod_bits(m.mods),
+                };
+            }
+            if let Some(n) = unsafe { nmouse.as_mut() } {
+                *n = out.mouse.len().min(HOTTY_MOUSE_MAX);
+            }
+        }
+        match out.touch {
+            CellsTouch::Terminal => 0,
+            CellsTouch::Undecided => 1,
+            CellsTouch::Mouse => 2,
         }
     })
 }
@@ -1081,8 +1190,8 @@ pub unsafe extern "C" fn hotty_host_cells_key(
 }
 
 /// The terminal's screen changed, or is told for the first time (SPEC
-/// §10.7): leaving the alternate screen drops its menu, and any change
-/// hides the level shown.
+/// §10.7): leaving the alternate screen drops its menu and its touch areas
+/// (§9.6), and any change hides the level shown.
 ///
 /// # Safety
 /// `h` must be valid.
@@ -1196,6 +1305,40 @@ mod tests {
             true
         });
         assert!(ok);
+        unsafe { hotty_host_free(h) };
+    }
+
+    #[test]
+    fn a_finger_in_an_area_is_the_mouse_through_the_c_abi() {
+        // Cells 16×34 device pixels, 2 device pixels per CSS pixel.
+        let h = unsafe { hotty_host_new(&c_config(0.0)) };
+        let body = rmp_serde::to_vec_named(&serde_json::json!({
+            "areas": [{"c": 1, "r": 0, "w": 10, "h": 1, "drag": "x"}]
+        }))
+        .unwrap();
+        unsafe { &mut (*h).host }.handle(&hotty_wire::Command::new(
+            [("a", "touch"), ("q", "2")].into_iter().collect(),
+            body,
+        ));
+        let mut mouse = [HottyMouse::default(); HOTTY_MOUSE_MAX];
+        let mut n = 9;
+        let mut touch = |phase: u32, x: f32, mods: u32, reports: bool| unsafe {
+            let r = hotty_host_cells_touch(h, phase, x, 17.0, mods, reports, true, mouse.as_mut_ptr(), &mut n, std::ptr::null());
+            (r, mouse[..n].to_vec())
+        };
+        // Outside the area, and in it while the program reads no mouse: the
+        // terminal's.
+        assert_eq!(touch(0, 8.0, 0, true), (0, vec![]));
+        assert_eq!(touch(0, 24.0, 0, false), (0, vec![]));
+        // In it, with shift: undecided, then 20 CSS px across, the mouse's.
+        assert_eq!(touch(0, 24.0, 1, true), (1, vec![]));
+        let (r, got) = touch(1, 64.0, 2, true);
+        assert_eq!(r, 2);
+        let m = |kind, x, c, mods| HottyMouse { kind, x, y: 17.0, c, r: 0, mods };
+        assert_eq!(got, [m(1, 24.0, 1, 1), m(0, 64.0, 4, 2)]);
+        assert_eq!(touch(2, -40.0, 8, true), (2, vec![m(2, -40.0, -3, 8)]));
+        // A phase there is no such: nothing.
+        assert_eq!(touch(9, 24.0, 0, true), (0, vec![]));
         unsafe { hotty_host_free(h) };
     }
 

@@ -233,6 +233,56 @@ pub struct TouchOutcome {
     pub effects: Vec<Effect>,
 }
 
+/// Whose a touch on the cells is, so far ([`crate::Host::cells_touch`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CellsTouch {
+    /// The terminal's: it scrolls with the touch, or taps or long-presses
+    /// with it, as with any touch.
+    #[default]
+    Terminal,
+    /// It began in an area of the program's (SPEC §9.6) and may still
+    /// drag: the terminal holds it, neither scrolling with it nor taking
+    /// it for a tap.
+    Undecided,
+    /// The program's mouse (SPEC §9.6): the terminal makes the reports
+    /// that come with it, and does nothing else with the touch.
+    Mouse,
+}
+
+/// A report of the mouse's primary button that the terminal makes for a
+/// finger in the cells (SPEC §9.6), as it reports the mouse's: in the
+/// program's mode and encoding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MouseReport {
+    /// `Down`, `Move` (with the button held) or `Up`.
+    pub kind: PointerKind,
+    /// Where, in device pixels from the top left of the screen's cells, as
+    /// the touch was given: for the press, where the touch began.
+    pub x: f32,
+    pub y: f32,
+    /// The cell that is, counted from 0 at the screen's top left: negative,
+    /// or past the screen, where the finger is off it.
+    pub c: i64,
+    pub r: i64,
+    /// The keys held, as the touch was given: the terminal leaves out one
+    /// with which it keeps a mouse press for itself, such as Shift where
+    /// Shift and a press select (SPEC §9.6).
+    pub mods: Mods,
+}
+
+/// What became of a phase of a touch on the cells
+/// ([`crate::Host::cells_touch`]).
+#[derive(Debug, Default)]
+pub struct CellsTouchOutcome {
+    pub touch: CellsTouch,
+    /// The reports to make of the mouse, in order.
+    pub mouse: Vec<MouseReport>,
+    /// Events for the program: a press on the cells gives the keyboard
+    /// back (SPEC §10.1), and a touch on a surface that never lifted ends
+    /// its drag when this one begins.
+    pub effects: Vec<Effect>,
+}
+
 /// Something the program should hear about.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {

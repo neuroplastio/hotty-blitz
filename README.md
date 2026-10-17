@@ -171,6 +171,24 @@ surface's (2).
   slop, is a click where the finger lifted: a press there, never a drag.
 - A touch hovers nothing.
 
+A touch that begins on the cells, outside every surface or where one lets
+the pointer through, goes to `hotty_host_cells_touch`
+(`Host::cells_touch`), every phase of it, with whether the program reads
+the mouse and whether the terminal shows the screen rather than its
+scrollback. The areas a program names with `a=touch` (SPEC §9.6) are kept
+per screen, as its menu is: leaving the alternate screen
+(`hotty_host_set_screen`) drops its areas, and a full reset
+(`hotty_host_reset`) drops both. In an area, while the program reads the
+mouse on the screen and without Alt, the touch is decided as on a surface:
+the way the area drags makes it the program's mouse (2), and hotty-blitz
+hands back the reports to make, in the program's mode and encoding: the
+primary button pressed where the touch began, moved with the finger
+wherever it goes, and released where it lifts, or on the last cell at a
+cancel, with the keys held but one the terminal keeps a press for (Shift,
+where Shift and a press select). The other way is a pan (0), and a tap
+there is a press and a release where it lifted. Anywhere else the touch is
+the terminal's (0).
+
 ## Text fields
 
 A focused text field types and edits only as its program's keymap says

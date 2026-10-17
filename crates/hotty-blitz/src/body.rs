@@ -124,6 +124,34 @@ impl MenuItem {
 /// How deep a menu's items nest, the top level's being one (SPEC §10.7).
 pub const MENU_DEPTH: usize = 8;
 
+/// Cells of the screen where a finger drags as the mouse does (SPEC
+/// §9.6): the first column and row, counted from 0 at the screen's top
+/// left, the columns and rows it spans, at least 1 each, and the ways a
+/// finger drags in it, across (`x`) and up and down (`y`). A program sends
+/// them with `a=touch`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TouchArea {
+    pub c: u64,
+    pub r: u64,
+    pub w: u64,
+    pub h: u64,
+    pub x: bool,
+    pub y: bool,
+}
+
+impl TouchArea {
+    /// Whether it covers the screen's cell (`c`, `r`).
+    pub fn covers(&self, c: i64, r: i64) -> bool {
+        let inside = |at: i64, from: u64, len: u64| {
+            u64::try_from(at).is_ok_and(|at| at >= from && at - from < len)
+        };
+        inside(c, self.c, self.w) && inside(r, self.r, self.h)
+    }
+}
+
+/// The most areas one `a=touch` names (SPEC §9.6).
+pub const MAX_TOUCH_AREAS: usize = 256;
+
 /// One cell's size in CSS pixels (SPEC §4: `cellcss`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct CellCss {
@@ -598,6 +626,59 @@ pub fn decode_menu(body: &[u8]) -> Result<Menu, String> {
         label: text(&root, "label")?,
         items: items(&root, 1)?,
     })
+}
+
+/// Reads the body of `a=touch` (SPEC §9.6): one msgpack map ([`read`]),
+/// `{"areas": [area]}` with at most [`MAX_TOUCH_AREAS`], each area `{"c":
+/// int, "r": int, "w": int, "h": int, "drag": str}`, `c` and `r` at least
+/// 0, `w` and `h` at least 1, and `drag` `x`, `y` or `xy`. Every field must
+/// be there; a key the body does not name is ignored. No body is no areas.
+pub fn decode_touch(body: &[u8]) -> Result<Vec<TouchArea>, String> {
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = read(body)?;
+    let areas = match root.field("areas") {
+        Some(Value::Array(a)) => a,
+        Some(_) => return Err("areas is not an array".into()),
+        None => return Err("the body is not {\"areas\": [area]}".into()),
+    };
+    if areas.len() > MAX_TOUCH_AREAS {
+        return Err(format!("{} areas, more than {MAX_TOUCH_AREAS}", areas.len()));
+    }
+    areas
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if !matches!(a, Value::Map(_)) {
+                return Err(format!("area {i} is not a map"));
+            }
+            let int = |name: &str, least: i64| match a.field(name) {
+                Some(Value::Int(v)) if *v >= least => Ok(*v as u64),
+                Some(Value::Int(_)) => Err(format!("area {i}: {name} is under {least}")),
+                Some(_) => Err(format!("area {i}: {name} is not an int")),
+                None => Err(format!("area {i} has no {name}")),
+            };
+            let (x, y) = match a.field("drag") {
+                Some(Value::Str(d)) => match d.as_str() {
+                    "x" => (true, false),
+                    "y" => (false, true),
+                    "xy" => (true, true),
+                    _ => return Err(format!("area {i}: drag {d:?} is not x, y or xy")),
+                },
+                Some(_) => return Err(format!("area {i}: drag is not a str")),
+                None => return Err(format!("area {i} has no drag")),
+            };
+            Ok(TouchArea {
+                c: int("c", 0)?,
+                r: int("r", 0)?,
+                w: int("w", 1)?,
+                h: int("h", 1)?,
+                x,
+                y,
+            })
+        })
+        .collect()
 }
 
 /// Reads the body of `a=menu:show=1` (SPEC §10.7): `{"seq": [str]}`, the

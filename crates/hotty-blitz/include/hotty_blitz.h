@@ -95,6 +95,8 @@ void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
  * fx->remove, the surfaces a panic cost (above). Call after
  * hotty_host_render. */
 void hotty_host_events(hotty_host *h, const hotty_effects *fx);
+/* Full reset (RIS): every surface goes, with the program's menus and the
+ * touch areas of both screens (SPEC 9.6). Deletions arrive through fx. */
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
 /* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's
  * (SPEC 10.1): pass no other button. A press also takes the
@@ -149,6 +151,46 @@ void hotty_host_end_gesture(hotty_host *h);
  * terminal's until the next down (SPEC 9.1). Events come through fx. */
 uint32_t hotty_host_touch(hotty_host *h, const char *surface, uint32_t phase, float x, float y,
                           uint32_t mods, const hotty_effects *fx);
+/* A report of the mouse's primary button for a finger in the cells (SPEC
+ * 9.6), which the terminal makes as it reports the mouse's: in the
+ * program's mode and encoding, selecting nothing. */
+typedef struct {
+  uint32_t kind; /* 0 a move with the button held, 1 the press, 2 the release */
+  float x, y;    /* device pixels from the top left of the screen's cells */
+  int32_t c, r;  /* the screen's cell, from 0 at its top left; off it,
+                    negative or past the screen */
+  uint32_t mods; /* as for pointer events; leave out one with which the
+                    terminal keeps a press for itself, such as shift where
+                    shift and a press select (SPEC 9.6) */
+} hotty_mouse;
+/* The most reports one call of hotty_host_cells_touch makes. */
+#define HOTTY_MOUSE_MAX 4
+/* A finger on the cells, at device pixel (x, y) from the top left of the
+ * screen's cells, even outside them. Pass every phase of a touch that
+ * begins on the cells here (outside every surface, or where one lets the
+ * pointer through), down first; one that begins over a surface goes to
+ * hotty_host_touch. phase and mods as for hotty_host_touch. reports: the
+ * program has the terminal report the mouse's buttons, in any mode;
+ * at_screen: the terminal shows the screen, not its scrollback. Both are
+ * read at down: only then does an area the program named with a=touch
+ * apply (SPEC 9.6). Returns whose the touch is:
+ *   0 the terminal's: it scrolls, taps or long-presses with it, as with
+ *     any touch;
+ *   1 undecided: it began in an area and may still drag, so hold its moves
+ *     (no scroll yet), and take it for no tap;
+ *   2 the program's mouse: do nothing with it but the reports.
+ * The reports to make, in order, at most HOTTY_MOUSE_MAX, are written to
+ * mouse (NULL: none), and their count to *nmouse: a drag's press where the
+ * touch began, its moves and its release where the finger lifts; a tap's
+ * press and release where it lifted; the release a cancel makes on the
+ * cell the finger was last on. A move past the 8 CSS px tap slop decides,
+ * along the larger delta, a tie a pan: the program's (2) the way the area
+ * drags, else a pan (0), which the terminal scrolls from where the touch
+ * began. The events a press on the cells makes (blur, SPEC 10.1) come
+ * through fx. */
+uint32_t hotty_host_cells_touch(hotty_host *h, uint32_t phase, float x, float y, uint32_t mods,
+                                bool reports, bool at_screen, hotty_mouse *mouse, size_t *nmouse,
+                                const hotty_effects *fx);
 /* A key for the focused surface as the user pressed it, offered first,
  * before the terminal's own shortcuts and the bindings that translate keys
  * (SPEC 10.4). A press has up to two names, UTF-8, as myelin key names
@@ -272,8 +314,8 @@ void hotty_host_command(const char *name, const uint8_t *key, size_t key_len,
 void hotty_host_cells_key(hotty_host *h, const uint8_t *physical, size_t physical_len,
                           const uint8_t *other, size_t other_len);
 /* The terminal's screen changed, or is told for the first time (SPEC 10.7):
- * leaving the alternate screen drops its menu, and any change hides the
- * level shown. */
+ * leaving the alternate screen drops its menu and its touch areas (SPEC
+ * 9.6), and any change hides the level shown. */
 void hotty_host_set_screen(hotty_host *h, bool alt);
 /* Picks the first item of the program's menu that has the UTF-8 name,
  * depth-first (SPEC 10.7). If it is enabled, sends the program `command`

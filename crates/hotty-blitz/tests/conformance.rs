@@ -5,7 +5,8 @@ mod common;
 
 use common::read_body;
 use hotty_blitz::{
-    Config, Effect, Host, Key, KeyName, KeySettings, Mods, PointerKind, Touch, TouchPhase,
+    CellsTouch, Config, Effect, Host, Key, KeyName, KeySettings, Mods, MouseReport, PointerKind,
+    Touch, TouchPhase,
 };
 use hotty_wire::{Command, Control, Event, Scanner};
 use serde_json::Value;
@@ -32,14 +33,19 @@ struct Mouse {
     taken: Vec<String>,
     /// The runner offers keys as pressed, then as bytes (`"pressed"`).
     pressed: bool,
+    /// The program has the terminal report the mouse's buttons (`CSI ?
+    /// 1002 h`, a write step), as a terminal keeps it.
+    reports: bool,
 }
 
 /// Where the vectors' finger is (touch steps): the surface its touch began
-/// on (empty over the cells, or where the surface lets it through), where
-/// it is, and where the terminal last scrolled with it from.
+/// on (empty over the cells, or where the surface lets it through), whether
+/// it began on the screen's cells (a step without `s`), where it is, and
+/// where the terminal last scrolled with it from.
 #[derive(Default)]
 struct Finger {
     surface: String,
+    cells: bool,
     at: (f32, f32),
     from: (f32, f32),
 }
@@ -285,13 +291,17 @@ fn cell_centre(step: &Value) -> (f32, f32) {
 
 /// A finger, as hottyterm passes a touch (conformance/README): a touch that
 /// begins over a surface, where it takes the pointer, goes to `Host::touch`
-/// phase by phase, and one the terminal is given back scrolls as a wheel
-/// would, the content following the finger from where the terminal last
-/// scrolled with it (the moves it held while the touch was undecided
-/// included). A move is one jump.
+/// phase by phase, and one on the screen's cells (a step without `s`) to
+/// `Host::cells_touch`, told whether the program reads the mouse; one the
+/// terminal is given back scrolls as a wheel would, the content following
+/// the finger from where the terminal last scrolled with it (the moves it
+/// held while the touch was undecided included). A move is one jump. A
+/// touch with `s` that the surface lets through is the terminal's: the
+/// runner does not know which of the screen's cells it is on.
 fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     host.render_dirty(&mut |_, _, _| {});
     let mut sent = Vec::new();
+    let mut reported: Vec<MouseReport> = Vec::new();
     let keep = |effects: Vec<Effect>, sent: &mut Vec<u8>| {
         for e in effects {
             if let Effect::Reply(b) = e {
@@ -300,25 +310,53 @@ fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
         }
     };
     let mut terminal = false;
+    let reports = mouse.reports;
     let f = &mut mouse.finger;
+    // A phase of a touch on the cells: what the program hears of it, and
+    // whose the touch is then, the program's mouse counting as a surface.
+    let mut cells = |host: &mut Host, phase, at: (f32, f32), sent: &mut Vec<u8>| {
+        let out = host.cells_touch(phase, at.0, at.1, mods(step), reports, true);
+        keep(out.effects, sent);
+        reported.extend(out.mouse);
+        match out.touch {
+            CellsTouch::Terminal => Touch::Terminal,
+            CellsTouch::Undecided => Touch::Undecided,
+            CellsTouch::Mouse => Touch::Surface,
+        }
+    };
     match step["touch"].as_str().unwrap() {
         "down" => {
-            let s = step["s"].as_str().unwrap().to_string();
             let at = cell_centre(step);
-            let over = host.is_placed(&s) && host.takes_pointer(&s, at.0, at.1);
-            *f = Finger {
-                surface: if over { s } else { String::new() },
-                at,
-                from: at,
-            };
-            if over {
-                let out = host.touch(&f.surface, TouchPhase::Down, at.0, at.1, mods(step));
-                keep(out.effects, &mut sent);
+            match step.get("s").and_then(Value::as_str) {
+                Some(s) => {
+                    let over = host.is_placed(s) && host.takes_pointer(s, at.0, at.1);
+                    *f = Finger {
+                        surface: if over { s.to_string() } else { String::new() },
+                        cells: false,
+                        at,
+                        from: at,
+                    };
+                    if over {
+                        let out = host.touch(&f.surface, TouchPhase::Down, at.0, at.1, mods(step));
+                        keep(out.effects, &mut sent);
+                    }
+                }
+                None => {
+                    *f = Finger {
+                        surface: String::new(),
+                        cells: true,
+                        at,
+                        from: at,
+                    };
+                    cells(host, TouchPhase::Down, at, &mut sent);
+                }
             }
         }
         "move" => {
             f.at = cell_centre(step);
-            let touch = if f.surface.is_empty() {
+            let touch = if f.cells {
+                cells(host, TouchPhase::Move, f.at, &mut sent)
+            } else if f.surface.is_empty() {
                 Touch::Terminal
             } else {
                 let out = host.touch(&f.surface, TouchPhase::Move, f.at.0, f.at.1, mods(step));
@@ -338,7 +376,9 @@ fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
             }
         }
         "up" => {
-            if !f.surface.is_empty() {
+            if f.cells {
+                cells(host, TouchPhase::Up, f.at, &mut sent);
+            } else if !f.surface.is_empty() {
                 let out = host.touch(&f.surface, TouchPhase::Up, f.at.0, f.at.1, mods(step));
                 keep(out.effects, &mut sent);
             }
@@ -348,7 +388,82 @@ fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
         other => return Err(format!("unknown touch {other}")),
     }
     check_terminal(step, terminal)?;
+    check_mouse(step, &reported)?;
     check_events(step, &events(&from_host(&sent)?))
+}
+
+/// What the terminal reported of the mouse's primary button for a touch
+/// step, against its `mouse` (absent: not checked), each `[kind, c, r]`.
+/// How many moves a terminal reports depends on how the finger moved, so
+/// each list keeps only the last move of each run of moves
+/// (conformance/README).
+fn check_mouse(step: &Value, got: &[MouseReport]) -> Result<(), String> {
+    let Some(want) = step.get("mouse") else {
+        return Ok(());
+    };
+    let collapse = |list: Vec<Value>| -> Vec<Value> {
+        let mut out: Vec<Value> = Vec::new();
+        for r in list {
+            if r[0] == "move" && out.last().is_some_and(|l| l[0] == "move") {
+                out.pop();
+            }
+            out.push(r);
+        }
+        out
+    };
+    let got = collapse(
+        got.iter()
+            .map(|m| {
+                let kind = match m.kind {
+                    PointerKind::Down => "down",
+                    PointerKind::Up => "up",
+                    PointerKind::Move | PointerKind::Leave => "move",
+                };
+                serde_json::json!([kind, m.c, m.r])
+            })
+            .collect(),
+    );
+    let want = collapse(want.as_array().ok_or("mouse is not a list")?.clone());
+    if got == want {
+        Ok(())
+    } else {
+        Err(format!(
+            "mouse: want {}, got {}",
+            Value::Array(want),
+            Value::Array(got)
+        ))
+    }
+}
+
+/// The program writes text to the terminal (conformance/README, Write): the
+/// modes the vectors set, which the runner keeps as a terminal does. `CSI ?
+/// 9, 1000, 1002 or 1003 h` reports the mouse's buttons and `l` no longer;
+/// `CSI ? 1049 h` (or 1047, 47) is the alternate screen and `l` the main
+/// one, which the runner tells the host. Other modes (the encoding, `1006`)
+/// change nothing here.
+fn write_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
+    let text = step["write"].as_str().ok_or("write is not text")?;
+    let mut rest = text;
+    while let Some(i) = rest.find("\x1b[?") {
+        rest = &rest[i + 3..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == ';'))
+            .ok_or("a mode sequence without its end")?;
+        let on = match &rest[end..end + 1] {
+            "h" => true,
+            "l" => false,
+            other => return Err(format!("CSI ? … {other} is no mode the runner sets")),
+        };
+        for mode in rest[..end].split(';') {
+            match mode {
+                "9" | "1000" | "1002" | "1003" => mouse.reports = on,
+                "47" | "1047" | "1049" => host.set_screen(on),
+                _ => {}
+            }
+        }
+        rest = &rest[end + 1..];
+    }
+    Ok(())
 }
 
 /// The program's menu (SPEC §10.7): the level the host shows, or a pick of
@@ -602,6 +717,8 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         touch_step(host, mouse, step)
     } else if step.get("key").is_some() {
         key_step(host, mouse, step)
+    } else if step.get("write").is_some() {
+        write_step(host, mouse, step)
     } else if step.get("menu").is_some() {
         menu_step(host, step)
     } else if let Some(ctl) = step.get("send") {
@@ -735,9 +852,10 @@ fn protocol_vectors() {
     let mut skipped = 0;
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through, counts clicks, takes edit
-        // commands and shows menus as hottyterm does, and hotty-blitz sends
-        // hover, scrolls, takes touch, drags in steps, takes drop targets,
-        // tells `view` and keeps a history for its text fields.
+        // commands, shows menus and reports the mouse as hottyterm does, and
+        // hotty-blitz sends hover, scrolls, takes touch, drags in steps,
+        // takes drop targets, tells `view` and keeps a history for its text
+        // fields.
         let has = |r: &Value| {
             matches!(
                 r.as_str(),
@@ -748,6 +866,7 @@ fn protocol_vectors() {
                         | "menu"
                         | "touch"
                         | "commands"
+                        | "mouse"
                         | "undo"
                         | "scroll"
                         | "steps"
