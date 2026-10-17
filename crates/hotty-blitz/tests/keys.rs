@@ -63,9 +63,9 @@ fn a_prefix_gives_the_program_every_key_after_it() {
     surface(&mut h, DOC);
     // As pressed, the key is left to come as bytes, and starts nothing: Tab
     // moves focus.
-    let o = h.key_pressed("x", "g");
+    let o = h.key_pressed("x", "key_g", "g");
     assert!(!o.consumed && o.effects.is_empty());
-    let o = h.key_pressed("x", "Tab");
+    let o = h.key_pressed("x", "tab", "");
     assert!(o.consumed);
     assert_eq!(replies(&o.effects)[0].get("t"), Some("c"));
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")], b""));
@@ -74,7 +74,7 @@ fn a_prefix_gives_the_program_every_key_after_it() {
         let o = h.key_bytes("x", keys);
         assert!(!o.consumed && o.effects.is_empty(), "{keys:?}");
     }
-    let o = h.key_pressed("x", "Tab");
+    let o = h.key_pressed("x", "tab", "");
     assert!(!o.consumed && o.effects.is_empty());
     // Several in one read are the program's too.
     let o = h.key_bytes("x", b"\t x");
@@ -147,7 +147,7 @@ fn a_level_of_the_programs_menu() {
     // Escape, to the cells.
     level(&mut h);
     assert_eq!(shown(&mut h).len(), 1);
-    h.cells_key("Escape");
+    h.cells_key("escape");
     assert_eq!(shown(&mut h), hidden);
     // A key to the cells that it does not list.
     level(&mut h);
@@ -192,6 +192,7 @@ fn a_key_of_a_surface_without_a_name_hides_the_level_too() {
     h.take_events();
     let other = Key {
         name: KeyName::Other,
+        names: Vec::new(),
         mods: Mods::default(),
     };
     h.key("x", &other);
@@ -212,12 +213,12 @@ fn a_program_takes_edit_commands() {
         b"",
     ));
     assert_eq!(fx, vec![Effect::Edit(vec!["copy".into(), "paste".into()])]);
-    assert_eq!(h.edit_command("Control+v").as_deref(), Some("paste"));
-    assert_eq!(h.edit_command("Control+Z").as_deref(), Some("redo"));
-    assert_eq!(h.edit_command("Meta+v"), None);
+    assert_eq!(h.edit_command("ctrl+v").as_deref(), Some("paste"));
+    assert_eq!(h.edit_command("ctrl+shift+z").as_deref(), Some("redo"));
+    assert_eq!(h.edit_command("super+v"), None);
     let r = replies(&[Effect::Reply(Host::command_event(
         "paste",
-        Some("Control+v"),
+        Some("ctrl+v"),
         Some("hi"),
     ))]);
     assert_eq!(
@@ -226,7 +227,7 @@ fn a_program_takes_edit_commands() {
     );
     assert_eq!(
         body(&r[0].payload),
-        serde_json::json!({"name": "paste", "key": "Control+v", "text": "hi"})
+        serde_json::json!({"name": "paste", "key": "ctrl+v", "text": "hi"})
     );
     // A host whose terminal does not take them knows no `a=edit`.
     let mut h = host(KeySettings::default());
@@ -246,7 +247,7 @@ fn caps_report_the_settings_and_their_changes() {
     h.set_passthrough(true);
     // Not asked yet: nothing to tell.
     let mac = Platform {
-        meta: true,
+        mod_super: true,
         edit: None,
     };
     assert!(
@@ -257,12 +258,12 @@ fn caps_report_the_settings_and_their_changes() {
         })
         .is_empty()
     );
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.4")], b"")));
     let caps = body(&r[0].payload);
-    assert_eq!(caps["mod"], "Control");
+    assert_eq!(caps["mod"], "ctrl");
     assert_eq!(
         caps["edit"]["redo"],
-        serde_json::json!(["Control+Z", "Control+y"])
+        serde_json::json!(["ctrl+shift+z", "ctrl+y"])
     );
     assert_eq!(caps["features"], serde_json::json!(["passthrough", "hover", "menu"]));
     for gone in ["keys", "menu", "events", "ops", "cell", "scroll", "steps", "drop"] {
@@ -279,15 +280,15 @@ fn caps_report_the_settings_and_their_changes() {
         (Some("caps"), None, None)
     );
     let changed = body(&r[0].payload);
-    assert_eq!(changed["mod"], "Meta");
-    assert_eq!(changed["edit"]["copy"], serde_json::json!(["Meta+c"]));
+    assert_eq!(changed["mod"], "super");
+    assert_eq!(changed["edit"]["copy"], serde_json::json!(["super+c"]));
     assert_eq!(changed.as_object().unwrap().len(), 2);
     // A field that became absent comes as its type's empty value.
     let fx = h.set_keys(KeySettings::default());
     let changed = body(&replies(&fx)[0].payload);
     assert_eq!(
         changed,
-        serde_json::json!({"mod": "Control", "edit": {}, "features": ["passthrough", "hover"]})
+        serde_json::json!({"mod": "ctrl", "edit": {}, "features": ["passthrough", "hover"]})
     );
 }
 
@@ -305,7 +306,7 @@ fn a_new_font_tells_caps_and_a_zoom_does_not() {
     // Before a query: nothing is owed.
     h.set_config(config(12, 24, 1.0, 19.0));
     assert!(h.take_events().is_empty());
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.4")], b"")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["cellcss"], serde_json::json!({"w": 12.0, "h": 24.0}));
     assert_eq!(caps["scale"], serde_json::json!(1.0));
@@ -330,4 +331,27 @@ fn a_new_font_tells_caps_and_a_zoom_does_not() {
     h.set_config(light);
     let r = replies(&h.take_events());
     assert_eq!(body(&r[0].payload), serde_json::json!({"scheme": "light"}));
+}
+
+/// A press has two names, physical and character, and the field's keymap
+/// goes by the physical one where it binds it (SPEC §10.4).
+#[test]
+fn a_press_with_two_names_is_the_surfaces_by_either() {
+    let mut h = host(KeySettings::default());
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        b"<input id=f data-on=input value='one two' data-keys='ctrl+key_w=program ctrl+w=line-start ctrl+key_k=line-end'>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], b""));
+    h.render_dirty(&mut |_, _, _| {});
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], b""));
+    // Both names are bound: the physical `program` wins, and the key is the program's.
+    assert!(!h.key_pressed("f", "ctrl+key_w", "ctrl+w").consumed);
+    // By its character alone, or by a physical name alone.
+    assert!(h.key_pressed("f", "ctrl+key_k", "ctrl+k").consumed);
+    assert!(h.key_pressed("f", "", "ctrl+w").consumed);
+    assert!(!h.key_pressed("f", "ctrl+key_w", "").consumed);
+    // A modifier tapped alone is nobody's.
+    assert!(!h.key_pressed("f", "shift_left", "shift").consumed);
+    assert!(!h.key_pressed("f", "", "").consumed);
 }

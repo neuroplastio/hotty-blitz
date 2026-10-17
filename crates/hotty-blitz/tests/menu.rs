@@ -108,10 +108,10 @@ fn the_walk_reads_keys_as_a_binding_is_read() {
     show(&mut h, &["x"]);
     assert_eq!(keys(&h), None);
     // Mod is the host's mod, in either order of modifiers.
-    set(&mut h, &json!({"items": [{"key": "Shift+Mod+k", "label": "G", "enabled": true,
-        "items": [{"key": "Mod+x", "label": "X", "enabled": true}]}]}));
-    show(&mut h, &["Control+Shift+K"]);
-    assert_eq!(keys(&h), Some(vec!["Mod+x".into()]));
+    set(&mut h, &json!({"items": [{"key": "shift+mod+k", "label": "G", "enabled": true,
+        "items": [{"key": "mod+x", "label": "X", "enabled": true}]}]}));
+    show(&mut h, &["ctrl+shift+k"]);
+    assert_eq!(keys(&h), Some(vec!["mod+x".into()]));
     // A level shows only the keyed items.
     set(&mut h, &json!({"items": [{"key": "a", "label": "G", "enabled": true, "items": [
         {"label": "Keyless", "name": "k", "enabled": true},

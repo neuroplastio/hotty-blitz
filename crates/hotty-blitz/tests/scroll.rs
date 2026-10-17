@@ -89,6 +89,7 @@ fn key(h: &mut Host, name: KeyName) -> bool {
         "x",
         &Key {
             name,
+            names: Vec::new(),
             mods: Mods::default(),
         },
     )
@@ -257,6 +258,7 @@ fn along_an_axis_not_asked_for_nothing_moves() {
         "x",
         &Key {
             name: KeyName::Enter,
+            names: Vec::new(),
             mods: Mods::default(),
         },
     );
@@ -387,6 +389,7 @@ fn key_events(h: &mut Host, name: KeyName) -> (bool, Vec<(String, String)>) {
         "x",
         &Key {
             name,
+            names: Vec::new(),
             mods: Mods::default(),
         },
     );
@@ -416,7 +419,7 @@ fn scroll_actions_scroll_the_nearest_box_then_outward_never_the_terminal() {
     let page = BOX.replace(
         "<div id=box>",
         "<div id=box tabindex=0 data-keys=\"j=scroll-down d=scroll-half-page-down \
-         g=scroll-start G=scroll-end\">",
+         g=scroll-start shift+g=scroll-end\">",
     );
     place(&mut h, Some("1"), &page, "20", "4");
     h.handle(&cmd(
@@ -456,9 +459,9 @@ fn a_scroll_binding_leaves_the_elements_own_keys_and_its_fields_alone() {
     let mut h = host();
     let page = format!(
         "<div id=box style=\"height:40px;overflow:auto\" \
-         data-keys=\"Space=scroll-page-down j=scroll-down k=program ArrowDown=program\">\
+         data-keys=\"space=scroll-page-down j=scroll-down k=program arrow_down=program\">\
          <button id=b>b</button><input id=i data-on=input data-keys=\"k=scroll-up \
-         ArrowDown=scroll-down\">{ROWS}</div>"
+         arrow_down=scroll-down\">{ROWS}</div>"
     );
     place(&mut h, Some("1"), &page, "20", "4");
     let at = y(&h, "a");

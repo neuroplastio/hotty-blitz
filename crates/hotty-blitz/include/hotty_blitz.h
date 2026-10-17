@@ -151,14 +151,24 @@ uint32_t hotty_host_touch(hotty_host *h, const char *surface, uint32_t phase, fl
                           uint32_t mods, const hotty_effects *fx);
 /* A key for the focused surface as the user pressed it, offered first,
  * before the terminal's own shortcuts and the bindings that translate keys
- * (SPEC 10.4): name, UTF-8, as SPEC 10.4 writes it (Meta+ArrowLeft,
- * Control+Backspace), from the key event, with the platform's command key
- * as Meta. For keys that type no text. True if the surface used it; its
+ * (SPEC 10.4). A press has up to two names, UTF-8, as myelin key names
+ * write them, from the key event, with the platform's command key as
+ * "super":
+ *   physical: the physical key with the modifiers held ("ctrl+key_w",
+ *     "super+arrow_left", "backspace"); for a modifier tapped alone and
+ *     named on its release, its sided key ("shift_left");
+ *   other: the character it types with the modifiers ("ctrl+w", "super+c");
+ *     for that modifier, the modifier key ("shift"). Empty for a key that
+ *     types no character, such as "arrow_left".
+ * Either may be empty (length 0, the pointer may then be NULL), not both.
+ * The host looks the physical name up first: the surface uses the press if
+ * it uses either name, and where a keymap binds both, the physical binding
+ * wins. For keys that type no text. True if the surface used it; its
  * events go through fx, and the terminal does nothing more with the key.
  * On false nothing happened: go on with the shortcuts, then
  * hotty_host_key_bytes. */
-bool hotty_host_key_pressed(hotty_host *h, const uint8_t *name, size_t len,
-                            const hotty_effects *fx);
+bool hotty_host_key_pressed(hotty_host *h, const uint8_t *physical, size_t physical_len,
+                            const uint8_t *other, size_t other_len, const hotty_effects *fx);
 /* A key for the focused surface, as the bytes the terminal would send the
  * program for it (SPEC 10.4): its key encoding, in the modes the program
  * set, or what a binding writes. True if the surface used any of the keys
@@ -228,14 +238,14 @@ void hotty_host_set_network(hotty_host *h, const char *policy);
  * hotty-blitz. NULL wake removes it; once this returns, or the host is freed,
  * the old one is not called again. */
 void hotty_host_set_waker(hotty_host *h, void (*wake)(void *ctx), void *ctx);
-/* How the host reads keys (SPEC 10.2, 10.4-10.6): meta, Mod is Meta
- * (Command) rather than Control; edit, the edit shortcuts as a data-keys
- * value of edit actions ("Control+c=copy ..."), NULL for the defaults;
+/* How the host reads keys (SPEC 10.2, 10.4-10.6): mod_super, mod is "super"
+ * (Command) rather than "ctrl" (SPEC 4); edit, the edit shortcuts as a
+ * data-keys value of edit actions ("ctrl+c=copy ..."), NULL for the defaults;
  * commands, the terminal takes a=edit (fx->edit, hotty_host_command);
  * menus, it shows the program's menu (fx->menu), which the capabilities
  * then list as the feature "menu". A program that asked for the
  * capabilities hears what changed ("caps") through fx. */
-void hotty_host_set_keys(hotty_host *h, bool meta, const char *edit, bool commands, bool menus,
+void hotty_host_set_keys(hotty_host *h, bool mod_super, const char *edit, bool commands, bool menus,
                          const hotty_effects *fx);
 /* The edit command a key is (SPEC 10.6): the edit action whose shortcut
  * the key is, static and NUL-terminated; NULL for none. */
@@ -246,7 +256,7 @@ const char *hotty_host_edit_command(hotty_host *h, const uint8_t *name, size_t l
 void hotty_host_command(const char *name, const uint8_t *key, size_t key_len,
                         const uint8_t *text, size_t text_len, const hotty_effects *fx);
 /* A key that reaches the program in the cells while a level of its menu may
- * show (SPEC 10.7): Escape, and a key the level does not list, hide it.
+ * show (SPEC 10.7): "escape", and a key the level does not list, hide it.
  * Keys for a surface hide it as well, through hotty_host_key_pressed and
  * hotty_host_key_bytes. */
 void hotty_host_cells_key(hotty_host *h, const uint8_t *name, size_t len);

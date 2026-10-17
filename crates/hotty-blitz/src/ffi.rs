@@ -441,7 +441,7 @@ fn mods(bits: u32) -> Mods {
         shift: bits & 1 != 0,
         ctrl: bits & 2 != 0,
         alt: bits & 4 != 0,
-        meta: bits & 8 != 0,
+        super_: bits & 8 != 0,
     }
 }
 
@@ -585,37 +585,56 @@ pub unsafe extern "C" fn hotty_host_end_gesture(h: *mut HottyHost) {
 
 /// A key for the focused surface as the user pressed it, offered first,
 /// before the terminal's own shortcuts and the bindings that translate keys
-/// (SPEC §10.4): `name` is its name, UTF-8, as SPEC §10.4 writes it
-/// (`Meta+ArrowLeft`, `Control+Backspace`), from the key event, with the
-/// platform's command key as Meta. For keys that type no text. Returns true
-/// if the surface used it; its events then go through `fx`, and the
-/// terminal does nothing more with the key. On false nothing happened: the
-/// terminal goes on, with its shortcuts and then
-/// [`hotty_host_key_bytes`].
+/// (SPEC §10.4). A press has up to two names, UTF-8, as myelin key names
+/// write them, from the key event, with the platform's command key as
+/// `super`:
+/// - `physical`: the physical key, with the modifiers held
+///   (`ctrl+key_w`, `super+arrow_left`, `backspace`); or, for a modifier
+///   tapped alone and named on its release, its sided key (`shift_left`);
+/// - `other`: the character it types, with the modifiers (`ctrl+w`,
+///   `super+c`); or, for that modifier, the modifier key (`shift`). Empty
+///   for a key that types no character, such as `arrow_left`.
+///
+/// Either may be empty (`*_len` 0, the pointer may then be null), not both.
+/// The host looks the physical name up first: the surface uses the press if
+/// it uses either name, and where a keymap binds both, the physical binding
+/// wins. For keys that type no text. Returns true if the surface used it;
+/// its events then go through `fx`, and the terminal does nothing more with
+/// the key. On false nothing happened: the terminal goes on, with its
+/// shortcuts and then [`hotty_host_key_bytes`].
 ///
 /// # Safety
-/// `h` must be valid; `name` must hold `len` bytes (it may be null when
-/// `len` is 0); `fx` may be null.
+/// `h` must be valid; `physical` and `other` must hold `physical_len` and
+/// `other_len` bytes (a pointer may be null when its length is 0); `fx` may
+/// be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_key_pressed(
     h: *mut HottyHost,
-    name: *const u8,
-    len: usize,
+    physical: *const u8,
+    physical_len: usize,
+    other: *const u8,
+    other_len: usize,
     fx: *const HottyEffects,
 ) -> bool {
     let fx = unsafe { fx.as_ref() };
-    if name.is_null() || len == 0 {
-        return false;
-    }
-    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+    let text = |p: *const u8, n: usize| -> Option<&str> {
+        if p.is_null() || n == 0 {
+            return Some("");
+        }
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, n) }).ok()
+    };
+    let (Some(physical), Some(other)) = (text(physical, physical_len), text(other, other_len)) else {
         return false;
     };
+    if physical.is_empty() && other.is_empty() {
+        return false;
+    }
     guard(h, false, |h| {
         let Some(surface) = h.host.focused_surface().map(str::to_string) else {
             return false;
         };
         h.host.set_paste(fx.is_some_and(|f| f.paste.is_some()));
-        let outcome = h.host.key_pressed(&surface, name);
+        let outcome = h.host.key_pressed(&surface, physical, other);
         run_effects(outcome.effects, fx);
         outcome.consumed
     })
@@ -908,9 +927,10 @@ pub unsafe extern "C" fn hotty_host_takes_pointer(h: *mut HottyHost, surface: *c
 }
 
 /// How the host reads keys (SPEC §10.2, §10.4–§10.6), from the terminal's
-/// settings: `meta`, `Mod` is Meta (macOS's Command) rather than Control;
+/// settings: `mod_super`, `mod` is `"super"` (macOS's Command) rather than
+/// `"ctrl"` (SPEC §4);
 /// `edit`, the edit shortcuts as a `data-keys` value of edit actions
-/// (`Control+c=copy Control+Insert=copy …`), null for the defaults;
+/// (`ctrl+c=copy ctrl+insert=copy …`), null for the defaults;
 /// `commands`, the terminal takes `a=edit` (`fx.edit`, `hotty_host_command`);
 /// `menus`, it shows the program's menu (`fx.menu`), which the
 /// capabilities then list as the feature `menu`. A program that asked for
@@ -921,7 +941,7 @@ pub unsafe extern "C" fn hotty_host_takes_pointer(h: *mut HottyHost, surface: *c
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_set_keys(
     h: *mut HottyHost,
-    meta: bool,
+    mod_super: bool,
     edit: *const c_char,
     commands: bool,
     menus: bool,
@@ -931,7 +951,7 @@ pub unsafe extern "C" fn hotty_host_set_keys(
     let edit = (!edit.is_null()).then(|| unsafe { CStr::from_ptr(edit) }.to_string_lossy().into_owned());
     let k = crate::KeySettings {
         platform: hotty_wire::keys::Platform {
-            meta,
+            mod_super,
             edit: edit.map(|e| edit_shortcuts(&e)),
         },
         commands,
@@ -1018,7 +1038,7 @@ pub unsafe extern "C" fn hotty_host_command(
 }
 
 /// A key that reaches the program in the cells, UTF-8 as SPEC §10.4 names
-/// it, while a level of the program's menu may show (SPEC §10.7): Escape,
+/// it, while a level of the program's menu may show (SPEC §10.7): `escape`,
 /// and a key it does not list, hide the level. The key still reaches the
 /// program.
 ///

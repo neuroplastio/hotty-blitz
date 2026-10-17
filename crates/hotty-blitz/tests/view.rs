@@ -144,6 +144,7 @@ fn a_key_that_scrolls_tells_view_with_the_next_frame() {
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("q", "2")], ""));
     let end = Key {
         name: KeyName::End,
+        names: Vec::new(),
         mods: Mods::default(),
     };
     assert!(h.key("x", &end).consumed);

@@ -23,18 +23,18 @@ pub struct Mods {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
-    pub meta: bool,
+    pub super_: bool,
 }
 
 impl Mods {
     /// The modifier keys held as an event's `mods` carries them (SPEC §9):
-    /// 1 Shift, 2 Alt, 4 Control, 8 Meta; `None` when none is held, as the
+    /// 1 shift, 2 alt, 4 ctrl, 8 super; `None` when none is held, as the
     /// field is then left out.
     pub fn bits(&self) -> Option<u8> {
         let bits = u8::from(self.shift)
             | u8::from(self.alt) << 1
             | u8::from(self.ctrl) << 2
-            | u8::from(self.meta) << 3;
+            | u8::from(self.super_) << 3;
         (bits != 0).then_some(bits)
     }
 }
@@ -65,68 +65,118 @@ pub enum KeyName {
 pub struct Key {
     pub name: KeyName,
     pub mods: Mods,
+    /// The names the press has (SPEC §10.4), canonical, the physical one
+    /// first; empty for the one name [`Key::spec_name`] gives.
+    pub names: Vec<String>,
 }
 
 impl Key {
-    /// The key as HOTTY SPEC §10.4 names it, the name a text field's keymap
-    /// looks up (`Control+a`, `Alt+ArrowLeft`, `A`); `None` for a key with
-    /// no name here.
+    /// A key with the one name its [`KeyName`] and modifiers give.
+    pub fn new(name: KeyName, mods: Mods) -> Key {
+        Key {
+            name,
+            mods,
+            names: Vec::new(),
+        }
+    }
+
+    /// The key as HOTTY SPEC §10.4 names it, the name a keymap looks up
+    /// (`ctrl+a`, `alt+arrow_left`, `shift+a`): a character, or the physical
+    /// key where it has none. `None` for a key with no name here.
     pub fn spec_name(&self) -> Option<String> {
+        let m = self.mods;
+        let bits = keys::KeyParts::new(m.super_, m.ctrl, m.alt, m.shift, "").mods;
         let value = match &self.name {
-            KeyName::Char(s) => s.as_str(),
-            KeyName::Space => " ",
-            KeyName::Enter => "Enter",
-            KeyName::Tab => "Tab",
-            KeyName::Backspace => "Backspace",
-            KeyName::Delete => "Delete",
-            KeyName::Escape => "Escape",
-            KeyName::Left => "ArrowLeft",
-            KeyName::Right => "ArrowRight",
-            KeyName::Up => "ArrowUp",
-            KeyName::Down => "ArrowDown",
-            KeyName::Home => "Home",
-            KeyName::End => "End",
-            KeyName::PageUp => "PageUp",
-            KeyName::PageDown => "PageDown",
+            KeyName::Char(s) => return Some(keys::char_key(bits, s)),
+            KeyName::Space => "space",
+            KeyName::Enter => "enter",
+            KeyName::Tab => "tab",
+            KeyName::Backspace => "backspace",
+            KeyName::Delete => "delete",
+            KeyName::Escape => "escape",
+            KeyName::Left => "arrow_left",
+            KeyName::Right => "arrow_right",
+            KeyName::Up => "arrow_up",
+            KeyName::Down => "arrow_down",
+            KeyName::Home => "home",
+            KeyName::End => "end",
+            KeyName::PageUp => "page_up",
+            KeyName::PageDown => "page_down",
             KeyName::Other => return None,
         };
-        let m = self.mods;
-        let k = keys::KeyParts::new(m.ctrl, m.alt, m.meta, m.shift, value);
-        keys::parse_key(&k.name())
+        Some(keys::KeyParts { mods: bits, value: value.into() }.name())
+    }
+
+    /// The names a keymap looks up for the press (SPEC §10.4), the physical
+    /// one first: those it has, else the one [`Key::spec_name`] gives.
+    pub fn names(&self) -> Vec<String> {
+        if self.names.is_empty() {
+            self.spec_name().into_iter().collect()
+        } else {
+            self.names.clone()
+        }
     }
 
     /// The key a name of HOTTY SPEC §10.4 names (as [`keys::decode_keys`]
-    /// reads it from what the terminal sent); `None` for a key with no
-    /// [`KeyName`].
+    /// reads it from what the terminal sent); `None` for a name that does
+    /// not parse.
     pub fn from_spec_name(name: &str) -> Option<Key> {
-        let k = keys::split_key(name)?;
-        let name = match k.value.as_str() {
-            " " => KeyName::Space,
-            "Enter" => KeyName::Enter,
-            "Tab" => KeyName::Tab,
-            "Backspace" => KeyName::Backspace,
-            "Delete" => KeyName::Delete,
-            "Escape" => KeyName::Escape,
-            "ArrowLeft" => KeyName::Left,
-            "ArrowRight" => KeyName::Right,
-            "ArrowUp" => KeyName::Up,
-            "ArrowDown" => KeyName::Down,
-            "Home" => KeyName::Home,
-            "End" => KeyName::End,
-            "PageUp" => KeyName::PageUp,
-            "PageDown" => KeyName::PageDown,
-            v if keys::is_char(v) => KeyName::Char(v.to_string()),
+        Key::pressed(name, "")
+    }
+
+    /// The key a press is, as the user pressed it (SPEC §10.4): its physical
+    /// name (`ctrl+key_w`) and the other, the character it types (`ctrl+w`)
+    /// or, for a modifier tapped alone, its modifier key (`shift`), each
+    /// possibly empty. `None` when neither parses.
+    pub fn pressed(physical: &str, other: &str) -> Option<Key> {
+        let (p, o) = (keys::parse_key(physical), keys::parse_key(other));
+        let mut names: Vec<String> = Vec::new();
+        for n in [&p, &o].into_iter().flatten() {
+            if !names.contains(n) {
+                names.push(n.clone());
+            }
+        }
+        // The key is what the character is, else what the place is.
+        let parts = |n: &Option<String>| n.as_deref().map(keys::KeyParts::split);
+        let k = parts(&o)
+            .filter(|k| k.kind() != keys::Kind::Modifier)
+            .or_else(|| parts(&p))
+            .or_else(|| parts(&o))?;
+        let name = match (k.kind(), k.value.as_str()) {
+            (keys::Kind::Modifier, _) => KeyName::Other,
+            (_, "space") => KeyName::Space,
+            (_, "enter" | "numpad_enter") => KeyName::Enter,
+            (_, "tab") => KeyName::Tab,
+            (_, "backspace") => KeyName::Backspace,
+            (_, "delete") => KeyName::Delete,
+            (_, "escape") => KeyName::Escape,
+            (_, "arrow_left") => KeyName::Left,
+            (_, "arrow_right") => KeyName::Right,
+            (_, "arrow_up") => KeyName::Up,
+            (_, "arrow_down") => KeyName::Down,
+            (_, "home") => KeyName::Home,
+            (_, "end") => KeyName::End,
+            (_, "page_up") => KeyName::PageUp,
+            (_, "page_down") => KeyName::PageDown,
+            (keys::Kind::Character, v) => {
+                KeyName::Char(keys::key_text(&k.name()).unwrap_or_else(|| v.to_string()))
+            }
             _ => KeyName::Other,
         };
-        Some(Key {
+        let mut key = Key::new(
             name,
-            mods: Mods {
+            Mods {
                 shift: k.shift(),
-                ctrl: k.control(),
+                ctrl: k.ctrl(),
                 alt: k.alt(),
-                meta: k.meta(),
+                super_: k.super_(),
             },
-        })
+        );
+        // The one name a key has is what `spec_name` gives.
+        if key.names() != names {
+            key.names = names;
+        }
+        Some(key)
     }
 }
 

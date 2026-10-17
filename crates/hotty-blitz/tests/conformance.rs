@@ -153,7 +153,7 @@ fn mods(step: &Value) -> Mods {
         shift: held("shift"),
         ctrl: held("ctrl"),
         alt: held("alt"),
-        meta: held("meta"),
+        super_: held("super"),
     }
 }
 
@@ -421,6 +421,7 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
     host.render_dirty(&mut |_, _, _| {});
     let key = Key {
         name: key_name(step["key"].as_str().unwrap()),
+        names: Vec::new(),
         mods: mods(step),
     };
     let name = key.spec_name().unwrap_or_default();
@@ -839,8 +840,25 @@ fn keys_vectors() {
             if got != want {
                 failures.push(format!("{name}: {got:?}, want {want:?}"));
             }
+        } else if k.get("text").is_some() {
+            let got = hotty_wire::keys::key_text(k["key"].as_str().unwrap());
+            let want = k["text"].as_str().map(str::to_string);
+            if got != want {
+                failures.push(format!("{name}: {got:?}, want {want:?}"));
+            }
         } else {
-            let got = hotty_wire::keys::parse_key(k["key"].as_str().unwrap());
+            // `read` vectors are the default reading; `mod` ones are read on
+            // a platform whose `mod` is the one named.
+            let got = match k.get("mod").and_then(Value::as_str) {
+                Some(m) => {
+                    let p = hotty_wire::keys::Platform {
+                        mod_super: m == "super",
+                        edit: None,
+                    };
+                    hotty_wire::keys::read_key(&p, k["key"].as_str().unwrap())
+                }
+                None => hotty_wire::keys::parse_key(k["key"].as_str().unwrap()),
+            };
             let want = k["canon"].as_str().map(str::to_string);
             if got != want {
                 failures.push(format!("{name}: {got:?}, want {want:?}"));
@@ -859,11 +877,11 @@ fn keymap_vectors() {
     for k in v["keymap"].as_array().unwrap() {
         let name = k["name"].as_str().unwrap();
         let terminal = k.get("terminal_keys").and_then(Value::as_bool) == Some(true);
-        // The platform (conformance/README): Control, with the default
+        // The platform (conformance/README): `ctrl`, with the default
         // edit shortcuts, where absent.
         let p = k.get("platform");
         let platform = keys::Platform {
-            meta: p.and_then(|p| p.get("mod")).and_then(Value::as_str) == Some("Meta"),
+            mod_super: p.and_then(|p| p.get("mod")).and_then(Value::as_str) == Some("super"),
             edit: p.and_then(|p| p.get("edit")).and_then(Value::as_object).map(|e| {
                 keys::EDIT_ACTIONS
                     .iter()
@@ -913,6 +931,12 @@ fn keymap_vectors() {
             let got = m.lookup(key);
             if got != want.as_str() {
                 failures.push(format!("{name}: {key}: {got:?}, want {want:?}"));
+            }
+        }
+        for (key, want) in k.get("binds").and_then(Value::as_object).into_iter().flatten() {
+            let got = m.binds(key);
+            if Some(got) != want.as_bool() {
+                failures.push(format!("{name}: {key}: binds {got}, want {want}"));
             }
         }
         for (key, want) in k.get("selects").and_then(Value::as_object).into_iter().flatten() {
@@ -986,6 +1010,7 @@ fn edit_vectors() {
                         "x",
                         &Key {
                             name: KeyName::Char(ch),
+                            names: Vec::new(),
                             mods: Mods::default(),
                         },
                     );

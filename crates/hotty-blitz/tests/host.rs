@@ -48,7 +48,7 @@ fn render(h: &mut Host) -> Vec<(String, u32, u32, hotty_blitz::Damage)> {
 #[test]
 fn query_answers_with_capabilities() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "7"), ("v", "0.3")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "7"), ("v", "0.4")], "")));
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(r[0].get("n"), Some("7"));
@@ -56,7 +56,7 @@ fn query_answers_with_capabilities() {
     // Each field as its type (SPEC §3.3, §4): the sizes and scale floats
     // though whole, and nothing this host does not do, not even as false.
     let want = serde_json::json!({
-        "v": "0.3",
+        "v": "0.4",
         "cellcss": {"w": 10.0, "h": 20.0},
         "scale": 1.0,
         "scheme": "dark",
@@ -353,6 +353,7 @@ fn type_text(h: &mut Host, s: &str) {
             "f",
             &Key {
                 name: KeyName::Char(c.to_string()),
+                names: Vec::new(),
                 mods: Mods::default(),
             },
         );
@@ -449,7 +450,7 @@ fn links_report_href_and_url_with_or_without_an_id() {
     );
 
     // This host fetches nothing from the network (SPEC §7.2), and says so.
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.4")], "")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["net"], serde_json::json!({}));
 }
@@ -507,6 +508,7 @@ fn keys_the_surface_does_not_use_go_to_the_program() {
     // Without the keyboard, nothing is consumed.
     let q = Key {
         name: KeyName::Char("q".into()),
+        names: Vec::new(),
         mods: Mods::default(),
     };
     assert!(!h.key("f", &q).consumed);
@@ -515,6 +517,7 @@ fn keys_the_surface_does_not_use_go_to_the_program() {
     assert!(!h.key("f", &q).consumed);
     let esc = Key {
         name: KeyName::Escape,
+        names: Vec::new(),
         mods: Mods::default(),
     };
     assert!(!h.key("f", &esc).consumed);
@@ -1172,6 +1175,7 @@ fn key(h: &mut Host, s: &str, c: &str) -> hotty_blitz::KeyOutcome {
         s,
         &Key {
             name: KeyName::Char(c.into()),
+            names: Vec::new(),
             mods: Mods::default(),
         },
     )
@@ -1922,6 +1926,7 @@ fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
         "f",
         &Key {
             name: KeyName::Space,
+            names: Vec::new(),
             mods: Mods::default(),
         },
     );
@@ -2242,7 +2247,7 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
 #[test]
 fn the_capabilities_name_the_host_and_its_version() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.4")], "")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["host"], "hotty-blitz");
     assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
@@ -2259,7 +2264,7 @@ fn the_capabilities_name_the_host_and_its_version() {
 fn passthrough_is_the_terminals_to_announce_and_pointer_events_decide_where() {
     let mut h = host();
     let caps = |h: &mut Host| {
-        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], "")));
+        let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.4")], "")));
         body(&r[0].payload)
     };
     let listed = |h: &mut Host| {
@@ -2797,7 +2802,7 @@ fn cells(w: u32, h: u32, scale: f32) -> Metrics {
 
 /// Ask for the capabilities, so the host tells what changes from then on.
 fn ask(h: &mut Host) {
-    h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], ""));
+    h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.4")], ""));
 }
 
 /// The `caps` events the host owes after rendering, as their bodies.
@@ -3106,7 +3111,7 @@ fn losing_the_pointer_during_a_drag_ends_it_and_then_leaves() {
 #[test]
 fn hover_is_listed_in_the_capabilities() {
     let mut h = host();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.3")], "")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.4")], "")));
     let caps = body(&r[0].payload);
     assert!(
         caps["features"]
@@ -3169,6 +3174,7 @@ fn a_text_fields_caret_blinks_then_stays_on() {
         "f",
         &Key {
             name: KeyName::Right,
+            names: Vec::new(),
             mods: Mods::default(),
         },
     );
@@ -3177,6 +3183,7 @@ fn a_text_fields_caret_blinks_then_stays_on() {
         "f",
         &Key {
             name: KeyName::Left,
+            names: Vec::new(),
             mods: Mods::default(),
         },
     );
@@ -3224,7 +3231,7 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
             .collect()
     };
     let press = |h: &mut Host, name: KeyName, mods: Mods| {
-        let out = h.key("f", &Key { name, mods });
+        let out = h.key("f", &Key::new(name, mods));
         assert!(out.consumed);
         out.effects
     };
@@ -3293,10 +3300,10 @@ fn passed(effects: &[Effect]) -> Vec<u8> {
 }
 
 /// A key offered as the user pressed it (SPEC §10.4), before the terminal's
-/// shortcuts and translations: Command+ArrowLeft is Meta+ArrowLeft, the
-/// line's start, not the 0x01 (Control+a, select all) a macOS terminal
-/// sends for it; Control+Backspace deletes a word, not what 0x08
-/// (Control+h) would do. A key the surface does not use does nothing, and
+/// shortcuts and translations: Command+Left is `super+arrow_left`, the
+/// line's start, not the 0x01 (`ctrl+a`, select all) a macOS terminal
+/// sends for it; `ctrl+backspace` deletes a word, not what 0x08
+/// (`ctrl+h`) would do. A key the surface does not use does nothing, and
 /// leaves the terminal to go on.
 #[test]
 fn key_pressed_is_offered_before_the_terminal_translates_it() {
@@ -3313,31 +3320,39 @@ fn key_pressed_is_offered_before_the_terminal_translates_it() {
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], ""));
     h.set_text_field("f", "f", "one two", 7, 7);
 
-    assert!(h.key_pressed("f", "Control+Backspace").consumed);
+    assert!(h.key_pressed("f", "ctrl+backspace", "").consumed);
     assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 4)));
-    // Where Mod is Meta, as on macOS (SPEC §10.2, §10.4).
-    assert!(!h.key_pressed("f", "Meta+ArrowLeft").consumed);
+    // Where `mod` is `super`, as on macOS (SPEC §10.2, §10.4).
+    assert!(!h.key_pressed("f", "super+arrow_left", "").consumed);
     h.set_keys(hotty_blitz::KeySettings {
         platform: hotty_wire::keys::Platform {
-            meta: true,
+            mod_super: true,
             edit: None,
         },
         ..Default::default()
     });
-    assert!(h.key_pressed("f", "Meta+ArrowLeft").consumed);
+    assert!(h.key_pressed("f", "super+arrow_left", "").consumed);
     assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 0)));
-    assert!(h.key_pressed("f", "Meta+Shift+ArrowRight").consumed);
+    assert!(h.key_pressed("f", "super+shift+arrow_right", "").consumed);
     assert_eq!(
         (h.text_field("f", "f"), h.text_anchor("f", "f")),
         (Some(("one ".into(), 4)), Some(0))
     );
-    assert!(h.key_pressed("f", "Meta+a").consumed);
+    assert!(h.key_pressed("f", "super+key_a", "super+a").consumed);
 
     // Not the field's: nothing happens, and the terminal goes on.
-    for name in ["Control+s", "Escape", "F5", "not a key"] {
-        let out = h.key_pressed("f", name);
-        assert!(!out.consumed, "{name}");
-        assert!(out.effects.is_empty(), "{name}");
+    for (physical, other) in [
+        ("ctrl+key_s", "ctrl+s"),
+        ("escape", ""),
+        ("f5", ""),
+        ("", "ctrl+s"),
+        ("not a key", ""),
+        ("shift_left", "shift"),
+    ] {
+        let name = (physical, other);
+        let out = h.key_pressed("f", physical, other);
+        assert!(!out.consumed, "{name:?}");
+        assert!(out.effects.is_empty(), "{name:?}");
     }
     assert_eq!(h.text_field("f", "f"), Some(("one ".into(), 4)));
 }
@@ -3361,17 +3376,17 @@ fn key_bytes_name_keys_from_what_the_program_would_read() {
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], ""));
     h.set_text_field("f", "f", "one two three", 13, 13);
 
-    // ESC b: Alt+b, word-backward.
+    // ESC b: `alt+b`, word-backward.
     assert!(h.key_bytes("f", b"\x1bb").consumed);
     assert_eq!(h.text_field("f", "f"), Some(("one two three".into(), 8)));
-    // 0x01: Control+a, select-all; then typed text, in its place.
+    // 0x01: `ctrl+a`, select-all; then typed text, in its place.
     assert!(h.key_bytes("f", b"\x01").consumed);
     let out = h.key_bytes("f", b"X ");
     assert!(out.consumed);
     assert_eq!(h.text_field("f", "f"), Some(("X ".into(), 2)));
     assert_eq!(passed(&out.effects), b"");
 
-    // Control+s is the program's: nothing used, and the host sends it.
+    // `ctrl+s` is the program's: nothing used, and the host sends it.
     let out = h.key_bytes("f", b"\x13");
     assert!(!out.consumed);
     assert_eq!(passed(&out.effects), b"");
@@ -3393,6 +3408,7 @@ fn named(h: &mut Host, s: &str, name: KeyName) -> hotty_blitz::KeyOutcome {
         s,
         &Key {
             name,
+            names: Vec::new(),
             mods: Mods::default(),
         },
     )
@@ -3444,11 +3460,12 @@ fn a_select_picks_with_keys_repaints_as_a_full_paint_and_submits_its_pick() {
         assert!(out.consumed);
         assert!(events(&out.effects).is_empty());
     }
-    // Keys with Control are the program's.
+    // Keys with `ctrl` are the program's.
     let out = inc.key(
         "f",
         &Key {
             name: KeyName::Down,
+            names: Vec::new(),
             mods: Mods {
                 ctrl: true,
                 ..Mods::default()
@@ -3567,7 +3584,7 @@ fn counted_click(h: &mut Host, s: &str, x: f32, y: f32, n: u32) -> Vec<(String, 
 fn a_click_carries_the_platforms_count_kept_to_one_element() {
     let mut h = host();
     let counts = |h: &mut Host| {
-        let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.3")], "")));
+        let r = replies(&h.handle(&cmd(&[("a", "q"), ("n", "1"), ("v", "0.4")], "")));
         body(&r[0].payload)["features"]
             .as_array()
             .unwrap()
@@ -3658,6 +3675,7 @@ fn the_selection_is_the_hosts_to_copy_and_there_is_one() {
             "x",
             &Key {
                 name: KeyName::Char("a".into()),
+                names: Vec::new(),
                 mods: ctrl,
             },
         );
@@ -3709,6 +3727,7 @@ fn a_field_cuts_and_pastes_on_the_terminals_clipboard() {
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
     let ctrl = |c: &str| Key {
         name: KeyName::Char(c.into()),
+        names: Vec::new(),
         mods: Mods {
             ctrl: true,
             ..Mods::default()
@@ -3754,34 +3773,35 @@ fn copying_follows_the_keymap() {
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x")],
         "<style>body{margin:0;font:16px monospace}</style>\
-         <p id=a>copy me</p><p id=b data-keys='Control+c=program Control+k=copy'>not me</p>\
+         <p id=a>copy me</p><p id=b data-keys='ctrl+c=program ctrl+k=copy'>not me</p>\
          <input id=f value='one two'>",
     ));
     h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")], ""));
     render(&mut h);
     let m = Mods::default();
-    assert_eq!(h.copy_key("Control+c"), CopyKey::None);
+    assert_eq!(h.copy_key("ctrl+c"), CopyKey::None);
     // A double click selects a word in #a, whose keymap is the default.
     for n in 1..=2 {
         h.pointer_counted("x", PointerKind::Down, 10.0, 25.0, m, n);
         h.pointer_counted("x", PointerKind::Up, 10.0, 25.0, m, n);
     }
-    assert_eq!(h.copy_key("Control+c"), CopyKey::Copy("copy".into()));
-    // Meta+c copies where Mod is Meta (SPEC §10.2), and not here.
-    assert_eq!(h.copy_key("Meta+c"), CopyKey::Other);
-    assert_eq!(h.copy_key("Control+x"), CopyKey::Other);
-    // In #b, Control+c is the program's, and Control+k copies.
+    assert_eq!(h.copy_key("ctrl+c"), CopyKey::Copy("copy".into()));
+    // `super+c` copies where `mod` is `super` (SPEC §10.2), and not here.
+    assert_eq!(h.copy_key("super+c"), CopyKey::Other);
+    assert_eq!(h.copy_key("ctrl+x"), CopyKey::Other);
+    // In #b, `ctrl+c` is the program's, and `ctrl+k` copies.
     for n in 1..=2 {
         h.pointer_counted("x", PointerKind::Down, 10.0, 60.0, m, n);
         h.pointer_counted("x", PointerKind::Up, 10.0, 60.0, m, n);
     }
-    assert_eq!(h.copy_key("Control+c"), CopyKey::Other);
-    assert_eq!(h.copy_key("Control+k"), CopyKey::Copy("not".into()));
+    assert_eq!(h.copy_key("ctrl+c"), CopyKey::Other);
+    assert_eq!(h.copy_key("ctrl+k"), CopyKey::Copy("not".into()));
 
     // A focused field copies its selection by its own keymap.
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
     let ctrl = |c: &str| Key {
         name: KeyName::Char(c.into()),
+        names: Vec::new(),
         mods: Mods {
             ctrl: true,
             ..Mods::default()
@@ -3789,7 +3809,7 @@ fn copying_follows_the_keymap() {
     };
     assert!(!h.key("x", &ctrl("c")).consumed, "nothing selected");
     h.key("x", &ctrl("a"));
-    assert_eq!(h.copy_key("Control+c"), CopyKey::None);
+    assert_eq!(h.copy_key("ctrl+c"), CopyKey::None);
     let o = h.key("x", &ctrl("c"));
     assert!(o.consumed);
     assert!(o.effects.contains(&Effect::Clipboard("one two".into())), "{:?}", o.effects);

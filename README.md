@@ -6,13 +6,13 @@ text, and renders on the CPU. This repository holds:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of HOTTY 0.3: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of HOTTY 0.4: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields HOTTY commands, plus the encoder |
 | `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout) and vello_cpu (its renderer), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
-The host speaks HOTTY 0.3 and no other version. It answers a query that
-lists 0.3 among the versions its program speaks (`a=q:n=1:v=0.3`, SPEC §4)
+The host speaks HOTTY 0.4 and no other version. It answers a query that
+lists 0.4 among the versions its program speaks (`a=q:n=1:v=0.4`, SPEC §4)
 with its capabilities, and any other, one with no `v` too, with `EVERSION`:
 a program of 0.2 finds no host.
 
@@ -50,7 +50,7 @@ then its body as JSON with each value's type in sight, or what a program
 sent as its text.
 
 ```
-a=ok:n=1:re=q  {"v": "0.3", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
+a=ok:n=1:re=q  {"v": "0.4", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
 a=delta:s=form:q=2  {"ops": [{"op": "text", "t": "status", "v": "saved ✓"}]}
 a=ev:s=form:e=fit  {"r": 3}
 ```
@@ -175,14 +175,16 @@ surface's (2).
 
 A focused text field types and edits only as its program's keymap says
 (SPEC §10.2): the default keymap, then each `data-keys` from the root to
-the field. A bound key does its action, a printable key without Control,
-Alt or Meta types, and every other key goes to the program. Words, lines
+the field. A bound key does its action, a printable key without `ctrl`,
+`alt` or `super` types, and every other key goes to the program. Words, lines
 and a password field are the spec's (`crates/hotty-blitz/src/edit.rs`);
 moves by rows and pages follow the field's layout. A terminal offers a key
-twice at most (SPEC §10.4): first as the user pressed it, named from the
-key event, before its own shortcuts and translations
-(`hotty_host_key_pressed`), so Command+ArrowLeft is Meta+ArrowLeft and not
-the Control+a a macOS terminal sends for it; then, if the surface did not
+twice at most (SPEC §10.4), its keys named as myelin key names 0.1 names
+them: first as the user pressed it, named from the key event with its
+physical key and the character it types (`ctrl+key_w`, `ctrl+w`), before
+its own shortcuts and translations (`hotty_host_key_pressed`), so
+Command+Left is `super+arrow_left` and not the `ctrl+a` a macOS terminal
+sends for it, and the physical name is looked up first; then, if the surface did not
 use it, as the bytes its key encoding or a binding would write
 (`hotty_host_key_bytes`), named by what the program would read
 (`hotty_wire::keys`), so a remapped key is the key it sends. The keys a

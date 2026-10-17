@@ -36,7 +36,7 @@ pub use surface::{Damage, Frame, Timings};
 
 /// The HOTTY version this host speaks, its only one (SPEC §4): a query
 /// that does not list it is answered with `EVERSION`.
-pub const VERSION: &str = "0.3";
+pub const VERSION: &str = "0.4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -557,22 +557,28 @@ impl Host {
     }
 
     /// A key that reaches the program in the cells, named as SPEC §10.4
-    /// names it, while it shows a level of its menu (SPEC §10.7): Escape,
+    /// names it, while it shows a level of its menu (SPEC §10.7): `escape`,
     /// and a key the level does not list, hide it. Keys that reach no group
     /// list none. The key still reaches the program.
     pub fn cells_key(&mut self, name: &str) {
+        self.cells_names(&[name.to_string()]);
+    }
+
+    /// [`Host::cells_key`] for a press with several names: it is listed if
+    /// the level lists either.
+    fn cells_names(&mut self, names: &[String]) {
         if self.menu.seq.is_none() {
             return;
         }
         let p = &self.keys.platform;
-        let key = keys::read_key(p, name);
+        let read: Vec<String> = names.iter().filter_map(|n| keys::read_key(p, n)).collect();
         let listed = self.level().is_some_and(|level| {
             level
                 .items
                 .iter()
-                .any(|i| key.is_some() && keys::read_key(p, &i.key) == key)
+                .any(|i| keys::read_key(p, &i.key).is_some_and(|k| read.contains(&k)))
         });
-        if name == "Escape" || !listed {
+        if read.iter().any(|n| n == "escape") || !listed {
             self.hide_level();
         }
     }
@@ -1214,7 +1220,7 @@ impl Host {
             "q" => {
                 // `v` lists the versions the program speaks, comma-separated
                 // (SPEC §4), and this host answers in the highest it shares:
-                // 0.3 when an entry is exactly that, whatever the others and
+                // 0.4 when an entry is exactly that, whatever the others and
                 // their order. Otherwise, a query with no `v` too, EVERSION,
                 // its detail the versions this host speaks.
                 if !cmd
@@ -2036,9 +2042,11 @@ impl Host {
         self.click_run = None;
         self.menu.stale = true;
         // A key the level shown does not list hides it (SPEC §10.7).
-        match key.spec_name() {
-            Some(name) => self.cells_key(&name),
-            None => self.hide_level(),
+        let names = key.names();
+        if names.is_empty() {
+            self.hide_level();
+        } else {
+            self.cells_names(&names);
         }
         let Some(s) = self.surfaces.get_mut(surface) else {
             return KeyOutcome::default();
@@ -2080,17 +2088,17 @@ impl Host {
         )
     }
 
-    /// A key for `surface` as the user pressed it, named as SPEC §10.4
-    /// writes it (`Meta+ArrowLeft`), offered before the terminal's own
-    /// shortcuts and translations. `consumed` is false, with no effects,
-    /// when the surface has no use for it or the name does not parse: the
-    /// terminal then goes on, and offers the key again as bytes
-    /// ([`Host::key_bytes`]).
-    pub fn key_pressed(&mut self, surface: &str, name: &str) -> KeyOutcome {
-        match hotty_wire::keys::parse_key(name)
-            .as_deref()
-            .and_then(Key::from_spec_name)
-        {
+    /// A key for `surface` as the user pressed it, offered before the
+    /// terminal's own shortcuts and translations, with the names SPEC §10.4
+    /// gives a press: the physical key (`ctrl+key_w`) and the other, the
+    /// character it types (`ctrl+w`) or, for a modifier tapped alone, its
+    /// modifier key (`shift`), each possibly empty. The surface uses the
+    /// press if it uses either name, and where its keymap binds both, the
+    /// physical binding wins. `consumed` is false, with no effects, when the
+    /// surface has no use for it or neither name parses: the terminal then
+    /// goes on, and offers the key again as bytes ([`Host::key_bytes`]).
+    pub fn key_pressed(&mut self, surface: &str, physical: &str, other: &str) -> KeyOutcome {
+        match Key::pressed(physical, other) {
             Some(key) => self.offer(surface, &key, surface::Offer::Pressed),
             None => KeyOutcome::default(),
         }

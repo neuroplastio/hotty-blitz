@@ -2303,7 +2303,7 @@ impl Surface {
         let kind = focused
             .map(|id| self.control_kind(id))
             .unwrap_or(Control::None);
-        let plain = !key.mods.ctrl && !key.mods.alt && !key.mods.meta;
+        let plain = !key.mods.ctrl && !key.mods.alt && !key.mods.super_;
         let gives = focused.map_or(Gives::No, |id| self.gives(id, key, kind));
         match (&key.name, kind) {
             (KeyName::Tab, _) if plain => {
@@ -2396,11 +2396,10 @@ impl Surface {
     /// none, and along an axis the document does not scroll, where the key
     /// goes on as if the keymap did not bind it.
     fn scroll_action_key(&mut self, id: NodeId, key: &Key) -> Option<(bool, Vec<Event>)> {
-        let name = key.spec_name()?;
+        let names = key.names();
         let values = self.keymap_values(id);
-        let action = keys::element_keymap(&self.settings.platform, values.iter().map(String::as_str))
-            .scroll(&name)?
-            .to_string();
+        let keymap = keys::element_keymap(&self.settings.platform, values.iter().map(String::as_str));
+        let action = keymap.scroll(keymap.press(&names)?)?.to_string();
         let k = scroll::action_scroll(&action)?;
         if self.scroll_axes & k.axis.bit() == 0 {
             return None;
@@ -2440,9 +2439,7 @@ impl Surface {
     /// scroll actions out, so a nearer scroll binding there does not hide a
     /// farther `program`.
     fn gives(&self, id: NodeId, key: &Key, kind: Control) -> Gives {
-        let Some(name) = key.spec_name() else {
-            return Gives::No;
-        };
+        let names = key.names();
         let values = self.keymap_values(id);
         let values = values.iter().map(String::as_str);
         let m = match kind {
@@ -2450,9 +2447,12 @@ impl Surface {
             Control::TextArea => keys::resolve(&self.settings.platform, true, values),
             _ => keys::element_keymap(&self.settings.platform, values),
         };
-        if m.prefix(&name) {
+        let Some(name) = m.press(&names) else {
+            return Gives::No;
+        };
+        if m.prefix(name) {
             Gives::Prefix
-        } else if m.program(&name) {
+        } else if m.program(name) {
             Gives::Program
         } else {
             Gives::No
@@ -2465,7 +2465,7 @@ impl Surface {
     /// `data-on~=input`. This host shows no list, so Space and Enter are the
     /// select's but do nothing. `None` when the key is not the select's.
     fn select_key(&mut self, id: NodeId, key: &Key) -> Option<Vec<Event>> {
-        if key.mods.ctrl || key.mods.alt || key.mods.meta {
+        if key.mods.ctrl || key.mods.alt || key.mods.super_ {
             return None;
         }
         let options: Vec<NodeId> = self
@@ -2536,11 +2536,13 @@ impl Surface {
     /// element from the root to the field. `None` when the key is not the
     /// field's: it reaches the program.
     fn field_key(&mut self, id: NodeId, key: &Key, multiline: bool) -> Option<Vec<Event>> {
-        let name = key.spec_name()?;
+        let names = key.names();
         let values = self.keymap_values(id);
         let keymap = keys::resolve(&self.settings.platform, multiline, values.iter().map(String::as_str));
-        let action = keymap.lookup(&name)?.to_string();
-        let extend = keymap.selects(&name);
+        // A press is the field's by either name, by the physical one first.
+        let name = keymap.press(&names)?;
+        let action = keymap.lookup(name)?.to_string();
+        let extend = keymap.selects(name);
         // A field has no copy or cut with nothing selected nor in a
         // password field, and no paste where the host cannot read the
         // clipboard: the key reaches the program.
@@ -2719,10 +2721,7 @@ impl Surface {
         multiline: bool,
         extend: bool,
     ) -> Vec<Event> {
-        let typed = |name| Key {
-            name,
-            mods: Mods::default(),
-        };
+        let typed = |name| Key::new(name, Mods::default());
         match action {
             "copy" | "cut" => {
                 let Some(f) = self.field_state(id) else {
@@ -2841,10 +2840,7 @@ impl Surface {
         if !matches!(kind, Control::Text | Control::TextArea) {
             return Vec::new();
         }
-        let key = Key {
-            name: KeyName::Other,
-            mods: Mods::default(),
-        };
+        let key = Key::new(KeyName::Other, Mods::default());
         let events = self.field_action(id, &key, action, kind == Control::TextArea, extend);
         self.dirty = true;
         events
@@ -3655,7 +3651,7 @@ fn modifiers(m: Mods) -> Modifiers {
     out.set(Modifiers::SHIFT, m.shift);
     out.set(Modifiers::CONTROL, m.ctrl);
     out.set(Modifiers::ALT, m.alt);
-    out.set(Modifiers::META, m.meta);
+    out.set(Modifiers::META, m.super_);
     out
 }
 

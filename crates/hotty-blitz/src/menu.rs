@@ -75,9 +75,27 @@ pub(crate) fn find<'a>(items: &'a [MenuItem], name: &str) -> Option<&'a MenuItem
     })
 }
 
-/// A key as the host shows it: `Mod` read as the host's `mod` says.
+/// A key as the host shows it: `mod` read as the host's `mod` says, and
+/// shown as myelin key names §6 has it, canonical but for the arrows, `tab`
+/// and `shift+tab`.
 fn shown_key(p: &Platform, key: &str) -> String {
-    keys::read_key(p, key).unwrap_or_else(|| key.to_string())
+    let Some(read) = keys::read_key(p, key) else {
+        return key.to_string();
+    };
+    let k = keys::KeyParts::split(&read);
+    let (value, shift) = match k.value.as_str() {
+        "arrow_left" => ("←", true),
+        "arrow_right" => ("→", true),
+        "arrow_up" => ("↑", true),
+        "arrow_down" => ("↓", true),
+        "tab" if k.shift() => ("⇧⇥", false),
+        "tab" => ("⇥", true),
+        v => (v, true),
+    };
+    let mods = if shift { k.mods } else { k.mods & !keys::SHIFT };
+    let mut out = keys::KeyParts { mods, value: String::new() }.name();
+    out.push_str(value);
+    out
 }
 
 /// A level as a document: a title row, the keys typed and their group's
@@ -158,4 +176,36 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A key is shown canonical, but for the arrows and tab (myelin key
+    /// names §6), `mod` read as the host's.
+    #[test]
+    fn keys_are_shown_as_myelin_key_names_display_them() {
+        let ctrl = Platform::default();
+        let sup = Platform {
+            mod_super: true,
+            edit: None,
+        };
+        for (key, p, want) in [
+            ("g", &ctrl, "g"),
+            ("Space", &ctrl, "space"),
+            ("Left", &ctrl, "←"),
+            ("arrow_right", &ctrl, "→"),
+            ("up", &ctrl, "↑"),
+            ("arrow_down", &ctrl, "↓"),
+            ("tab", &ctrl, "⇥"),
+            ("shift+tab", &ctrl, "⇧⇥"),
+            ("ctrl+shift+tab", &ctrl, "ctrl+⇧⇥"),
+            ("shift+mod+arrow_left", &ctrl, "ctrl+shift+←"),
+            ("mod+x", &sup, "super+x"),
+            ("meta+x", &sup, "meta+x"),
+        ] {
+            assert_eq!(shown_key(p, key), want, "{key}");
+        }
+    }
 }

@@ -7,7 +7,7 @@
 //! [`Keymap::lookup`] says what the field does with a key. Any other
 //! focused element's keymap ([`element_keymap`]) gives keys to the program
 //! ([`Keymap::program`]), starts a prefix ([`Keymap::prefix`]) or scrolls
-//! with them ([`Keymap::scroll`]). A keymap reads a binding's `Mod` as its [`Platform`]'s (SPEC §10.4).
+//! with them ([`Keymap::scroll`]). A keymap reads a binding's `mod` as its [`Platform`]'s (SPEC §10.4).
 
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -92,35 +92,81 @@ pub fn move_action(action: &str) -> bool {
 }
 
 /// The SDK's keymap (SDK.md §3.10), bubbles' text input and text area, but
-/// Mod+a selects all, as a `data-keys` value.
+/// `mod+a` selects all, as a `data-keys` value.
 pub const TERMINAL_KEYS: &str = concat!(
-    "ArrowLeft=char-backward Control+b=char-backward ArrowRight=char-forward Control+f=char-forward ",
-    "Alt+ArrowLeft=word-backward Control+ArrowLeft=word-backward Alt+b=word-backward ",
-    "Alt+ArrowRight=word-forward Control+ArrowRight=word-forward Alt+f=word-forward ",
-    "Home=line-start End=line-end Control+e=line-end ",
-    "Backspace=delete-char-backward Control+h=delete-char-backward ",
-    "Delete=delete-char-forward Control+d=delete-char-forward ",
-    "Alt+Backspace=delete-word-backward Control+w=delete-word-backward Control+Backspace=delete-word-backward ",
-    "Alt+Delete=delete-word-forward Alt+d=delete-word-forward Control+Delete=delete-word-forward ",
-    "Control+u=delete-to-line-start Control+k=delete-to-line-end ",
-    "ArrowUp=line-previous Control+p=line-previous ArrowDown=line-next Control+n=line-next ",
-    "PageUp=page-up PageDown=page-down ",
-    "Alt+<=input-start Control+Home=input-start Alt+>=input-end Control+End=input-end ",
-    "Mod+a=select-all Control+m=newline",
+    "arrow_left=char-backward ctrl+b=char-backward arrow_right=char-forward ctrl+f=char-forward ",
+    "alt+arrow_left=word-backward ctrl+arrow_left=word-backward alt+b=word-backward ",
+    "alt+arrow_right=word-forward ctrl+arrow_right=word-forward alt+f=word-forward ",
+    "home=line-start end=line-end ctrl+e=line-end ",
+    "backspace=delete-char-backward ctrl+h=delete-char-backward ",
+    "delete=delete-char-forward ctrl+d=delete-char-forward ",
+    "alt+backspace=delete-word-backward ctrl+w=delete-word-backward ctrl+backspace=delete-word-backward ",
+    "alt+delete=delete-word-forward alt+d=delete-word-forward ctrl+delete=delete-word-forward ",
+    "ctrl+u=delete-to-line-start ctrl+k=delete-to-line-end ",
+    "arrow_up=line-previous ctrl+p=line-previous arrow_down=line-next ctrl+n=line-next ",
+    "page_up=page-up page_down=page-down ",
+    "alt+<=input-start ctrl+home=input-start alt+>=input-end ctrl+end=input-end ",
+    "mod+a=select-all ctrl+m=newline",
 );
 
-/// The modifiers, in the order a key's name writes them. `Mod` is a
-/// binding's platform modifier (SPEC §10.4), which a keymap reads as its
-/// [`Platform`]'s; a pressed key is never named with it.
-const MODIFIERS: [&str; 5] = ["Mod", "Control", "Alt", "Meta", "Shift"];
-const MOD: u8 = 1;
-const CONTROL: u8 = 2;
+/// The modifiers, in the order a key's name writes them (myelin key names
+/// §2). A bit of [`KeyParts::mods`] for each.
+const MODIFIERS: [&str; 4] = ["super", "ctrl", "alt", "shift"];
+const SUPER: u8 = 1;
+const CTRL: u8 = 2;
 const ALT: u8 = 4;
-const META: u8 = 8;
-const SHIFT: u8 = 16;
+pub const SHIFT: u8 = 8;
 
-/// A key's name, split: its modifiers (a bit for each of [`MODIFIERS`]) and
-/// its value, `" "` for the space bar.
+/// The physical keys (myelin key names, Appendix A).
+const PHYSICAL: &[&str] = &[
+    "backquote", "backslash", "bracket_left", "bracket_right", "comma", "digit_0", "digit_1", "digit_2",
+    "digit_3", "digit_4", "digit_5", "digit_6", "digit_7", "digit_8", "digit_9", "equal",
+    "intl_backslash", "intl_ro", "intl_yen", "key_a", "key_b", "key_c", "key_d", "key_e", "key_f",
+    "key_g", "key_h", "key_i", "key_j", "key_k", "key_l", "key_m", "key_n", "key_o", "key_p", "key_q",
+    "key_r", "key_s", "key_t", "key_u", "key_v", "key_w", "key_x", "key_y", "key_z", "minus", "period",
+    "quote", "semicolon", "slash", "alt_left", "alt_right", "backspace", "caps_lock", "context_menu",
+    "control_left", "control_right", "enter", "meta_left", "meta_right", "shift_left", "shift_right",
+    "space", "tab", "convert", "kana_mode", "non_convert", "delete", "end", "help", "home", "insert",
+    "page_down", "page_up", "arrow_down", "arrow_left", "arrow_right", "arrow_up", "num_lock",
+    "numpad_0", "numpad_1", "numpad_2", "numpad_3", "numpad_4", "numpad_5", "numpad_6", "numpad_7",
+    "numpad_8", "numpad_9", "numpad_add", "numpad_backspace", "numpad_clear", "numpad_clear_entry",
+    "numpad_comma", "numpad_decimal", "numpad_divide", "numpad_enter", "numpad_equal",
+    "numpad_memory_add", "numpad_memory_clear", "numpad_memory_recall", "numpad_memory_store",
+    "numpad_memory_subtract", "numpad_multiply", "numpad_paren_left", "numpad_paren_right",
+    "numpad_subtract", "numpad_separator", "numpad_up", "numpad_down", "numpad_right", "numpad_left",
+    "numpad_begin", "numpad_home", "numpad_end", "numpad_insert", "numpad_delete", "numpad_page_up",
+    "numpad_page_down", "escape", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11",
+    "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24", "f25",
+    "fn", "fn_lock", "print_screen", "scroll_lock", "pause", "browser_back", "browser_favorites",
+    "browser_forward", "browser_home", "browser_refresh", "browser_search", "browser_stop", "eject",
+    "launch_app_1", "launch_app_2", "launch_mail", "media_play_pause", "media_select", "media_stop",
+    "media_track_next", "media_track_previous", "power", "sleep", "audio_volume_down",
+    "audio_volume_mute", "audio_volume_up", "wake_up", "copy", "cut", "paste",
+];
+
+/// Other keymaps' names for physical keys, which the default reading takes.
+const OTHER: &[(&str, &str)] = &[
+    ("up", "arrow_up"),
+    ("down", "arrow_down"),
+    ("left", "arrow_left"),
+    ("right", "arrow_right"),
+    ("pageup", "page_up"),
+    ("pagedown", "page_down"),
+    ("pgup", "page_up"),
+    ("pgdn", "page_down"),
+    ("esc", "escape"),
+];
+
+/// What a key's value is (myelin key names §2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Character,
+    Physical,
+    Modifier,
+}
+
+/// A canonical key's name, split: its modifiers (a bit for each of
+/// [`MODIFIERS`]) and its value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyParts {
     pub mods: u8,
@@ -128,23 +174,23 @@ pub struct KeyParts {
 }
 
 impl KeyParts {
-    pub fn control(&self) -> bool {
-        self.mods & CONTROL != 0
+    pub fn super_(&self) -> bool {
+        self.mods & SUPER != 0
+    }
+    pub fn ctrl(&self) -> bool {
+        self.mods & CTRL != 0
     }
     pub fn alt(&self) -> bool {
         self.mods & ALT != 0
-    }
-    pub fn meta(&self) -> bool {
-        self.mods & META != 0
     }
     pub fn shift(&self) -> bool {
         self.mods & SHIFT != 0
     }
 
     /// Builds a key from its modifiers and its value.
-    pub fn new(control: bool, alt: bool, meta: bool, shift: bool, value: &str) -> KeyParts {
+    pub fn new(super_: bool, ctrl: bool, alt: bool, shift: bool, value: &str) -> KeyParts {
         let mut mods = 0;
-        for (on, bit) in [(control, CONTROL), (alt, ALT), (meta, META), (shift, SHIFT)] {
+        for (on, bit) in [(super_, SUPER), (ctrl, CTRL), (alt, ALT), (shift, SHIFT)] {
             if on {
                 mods |= bit;
             }
@@ -155,51 +201,56 @@ impl KeyParts {
         }
     }
 
-    /// The key with its `Mod` read as `meta` says: Meta, or Control.
-    fn read_mod(mut self, meta: bool) -> KeyParts {
-        if self.mods & MOD != 0 {
-            self.mods = self.mods & !MOD | if meta { META } else { CONTROL };
-        }
-        self
-    }
-
-    /// Shift shown in a letter where it can be: Shift with a small letter is
-    /// its capital, and Shift with a capital is the capital.
-    fn canonical(mut self) -> KeyParts {
-        if !self.shift() || !is_char(&self.value) {
-            return self;
-        }
-        let mut cs = self.value.chars();
-        let (Some(c), None) = (cs.next(), cs.next()) else {
-            return self;
-        };
-        let up = single(c.to_uppercase());
-        let low = single(c.to_lowercase());
-        if let Some(u) = up.filter(|&u| u != c) {
-            self.value = u.to_string();
-            self.mods &= !SHIFT;
-        } else if low.is_some_and(|l| l != c) {
-            self.mods &= !SHIFT;
-        }
-        self
-    }
-
-    /// The key's canonical name (SPEC §10.4).
-    pub fn name(&self) -> String {
-        let mut out = String::new();
-        for (i, m) in MODIFIERS.iter().enumerate() {
-            if self.mods & (1 << i) != 0 {
-                out.push_str(m);
-                out.push('+');
+    /// A canonical key's parts.
+    pub fn split(name: &str) -> KeyParts {
+        let mut rest = name;
+        let mut mods = 0;
+        while let Some(i) = rest.find('+') {
+            match MODIFIERS.iter().position(|m| *m == &rest[..i]) {
+                Some(b) => mods |= 1 << b,
+                None => break,
             }
+            rest = &rest[i + 1..];
         }
-        out.push_str(if self.value == " " {
-            "Space"
-        } else {
-            &self.value
-        });
-        out
+        KeyParts {
+            mods,
+            value: rest.to_string(),
+        }
     }
+
+    pub fn kind(&self) -> Kind {
+        if PHYSICAL.contains(&self.value.as_str()) {
+            Kind::Physical
+        } else if MODIFIERS.contains(&self.value.as_str()) {
+            Kind::Modifier
+        } else {
+            Kind::Character
+        }
+    }
+
+    /// The key's canonical name, its modifiers in order.
+    pub fn name(&self) -> String {
+        join(self.mods, &self.value)
+    }
+
+    /// The key with `shift`, if it has none (a letter's capital is `shift`
+    /// and its letter, myelin key names §2.3).
+    fn with(mut self, mods: u8) -> KeyParts {
+        self.mods |= mods;
+        self
+    }
+}
+
+fn join(mods: u8, value: &str) -> String {
+    let mut out = String::new();
+    for (i, m) in MODIFIERS.iter().enumerate() {
+        if mods & (1 << i) != 0 {
+            out.push_str(m);
+            out.push('+');
+        }
+    }
+    out.push_str(value);
+    out
 }
 
 /// The one char a case mapping gives, if it gives one.
@@ -208,66 +259,223 @@ fn single(mut it: impl Iterator<Item = char>) -> Option<char> {
     it.next().is_none().then_some(c)
 }
 
-/// Whether a key's value is a character: one grapheme cluster that is not a
-/// control.
+/// Each code point's simple lowercase mapping.
+fn lower(s: &str) -> String {
+    s.chars().map(|c| single(c.to_lowercase()).unwrap_or(c)).collect()
+}
+
+/// Each code point's simple uppercase mapping.
+fn upper(s: &str) -> String {
+    s.chars().map(|c| single(c.to_uppercase()).unwrap_or(c)).collect()
+}
+
+fn is_capital(c: &str) -> bool {
+    c.chars().count() == 1 && lower(c) != c && upper(&lower(c)) == c
+}
+
+/// Whether a character has case: its simple uppercase mapping differs, or
+/// it is a capital.
+fn is_letter(c: &str) -> bool {
+    upper(c) != c || is_capital(c)
+}
+
+/// Whether a key's value is a character (myelin key names §2.4): one
+/// grapheme cluster, its first code point neither a space nor a control.
 pub fn is_char(v: &str) -> bool {
     let mut g = v.graphemes(true);
     match (g.next(), g.next()) {
-        (Some(first), None) => !first.chars().next().is_some_and(char::is_control),
+        (Some(first), None) => !first.chars().next().is_some_and(|c| c == ' ' || c.is_control()),
         _ => false,
     }
 }
 
-/// Whether a key's value is a named key value: a capital, then letters and
-/// digits (`Enter`, `ArrowLeft`, `F12`).
-fn is_named(v: &str) -> bool {
-    let b = v.as_bytes();
-    b.len() >= 2 && b[0].is_ascii_uppercase() && b.iter().all(u8::is_ascii_alphanumeric)
+/// A physical key as the default reading takes it: its name in any case,
+/// another keymap's name for it, or a W3C code value (`PageDown`).
+fn physical(part: &str) -> Option<String> {
+    let low = part.to_lowercase();
+    if PHYSICAL.contains(&low.as_str()) {
+        return Some(low);
+    }
+    if let Some((_, p)) = OTHER.iter().find(|(o, _)| *o == low) {
+        return Some(p.to_string());
+    }
+    let mut out = String::new();
+    for (i, c) in part.chars().enumerate() {
+        if !c.is_ascii_alphanumeric() {
+            return None;
+        }
+        if i > 0 && (c.is_ascii_uppercase() || c.is_ascii_digit()) {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    PHYSICAL.contains(&out.as_str()).then_some(out)
 }
 
-/// Reads a key's name, its modifiers in any order.
-pub fn split_key(name: &str) -> Option<KeyParts> {
-    let (head, value) = if name == "+" {
-        ("", "+")
-    } else if name.len() > 2 && name.ends_with("++") {
-        (&name[..name.len() - 2], "+")
-    } else {
-        match name.rfind('+') {
-            Some(i) => (&name[..i], &name[i + 1..]),
-            None => ("", name),
-        }
-    };
-    let mut mods = 0u8;
-    if !head.is_empty() {
-        for m in head.split('+') {
-            let i = MODIFIERS.iter().position(|k| *k == m)?;
-            if mods & (1 << i) != 0 {
-                return None;
-            }
-            mods |= 1 << i;
-        }
-    }
-    let value = if value == "Space" { " " } else { value };
-    if !is_char(value) && !is_named(value) {
+/// A key's name read with myelin key names' default reading (SPEC §10.4),
+/// in its canonical form: `Shift+Ctrl+A` is `ctrl+shift+a`, `PageDown` is
+/// `page_down`, `esc` is `escape`. `None` where the reading refuses it, and
+/// for a name with `mod`, which only a [`Platform`] reads ([`read_key`]).
+pub fn parse_key(name: &str) -> Option<String> {
+    read(name, None, false)
+}
+
+/// A key's name read as [`parse_key`] does, with `mod` standing for the
+/// platform's modifier (myelin key names §4.4).
+pub fn read_key(platform: &Platform, name: &str) -> Option<String> {
+    read(name, Some(platform.mod_super), false)
+}
+
+/// The default reading of a key's name, `mod` standing for `super` or
+/// `ctrl` (refused when `None`). With `keep`, the key keeps `mod`, first,
+/// where it was written with it.
+fn read(text: &str, mod_super: Option<bool>, keep: bool) -> Option<String> {
+    if text.is_empty() || is_alias(text) {
         return None;
     }
-    Some(KeyParts {
-        mods,
-        value: value.to_string(),
+    let mut parts = Vec::new();
+    let mut i = 0;
+    loop {
+        match text[i..].find('+') {
+            None => {
+                parts.push(&text[i..]);
+                break;
+            }
+            Some(j) => {
+                parts.push(&text[i..i + j]);
+                i += j + 1;
+                if i == text.len() {
+                    if parts.last().is_some_and(|p| !p.is_empty()) {
+                        return None; // `ctrl+`, `a+`
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    let (mut mods, mut written, mut named) = (0u8, 0u8, 0u8);
+    let mut order = Vec::new();
+    let mut value: Option<String> = None;
+    let mut mod_named = false;
+    for p in parts {
+        let low = p.to_lowercase();
+        if low == "meta" {
+            return None;
+        }
+        let mut m = match low.as_str() {
+            "super" | "cmd" | "command" => Some(SUPER),
+            "ctrl" | "control" => Some(CTRL),
+            "alt" | "opt" | "option" => Some(ALT),
+            "shift" => Some(SHIFT),
+            _ => None,
+        };
+        if low == "mod" {
+            let is_super = mod_super?;
+            // `mod` with `super` or `ctrl` is refused (SPEC §10.4), and
+            // `mod` twice, as any modifier is.
+            if mod_named || named & (SUPER | CTRL) != 0 {
+                return None;
+            }
+            mod_named = true;
+            let bit = if is_super { SUPER } else { CTRL };
+            written |= bit;
+            m = Some(bit);
+        } else if let Some(bit) = m {
+            if bit & (SUPER | CTRL) != 0 && mod_named {
+                return None;
+            }
+            named |= bit;
+        }
+        if let Some(bit) = m {
+            if mods & bit != 0 {
+                return None;
+            }
+            mods |= bit;
+            order.push(bit);
+            continue;
+        }
+        if value.is_some() {
+            return None;
+        }
+        value = Some(if p.is_empty() {
+            "+".to_string()
+        } else if is_char(p) {
+            lower(p)
+        } else {
+            physical(p)?
+        });
+    }
+    let value = match value {
+        Some(v) => v,
+        None => {
+            // A modifier tapped on its own: the last one is the key.
+            let last = *order.last()?;
+            mods &= !last;
+            written &= !last;
+            MODIFIERS[last.trailing_zeros() as usize].to_string()
+        }
+    };
+    if keep && written != 0 {
+        Some(format!(
+            "mod+{}",
+            join(mods & !written, &value)
+        ))
+    } else {
+        Some(join(mods, &value))
+    }
+}
+
+/// A name like `<c-a>`, which the default reading refuses.
+fn is_alias(text: &str) -> bool {
+    text.len() > 2
+        && text.starts_with('<')
+        && text.ends_with('>')
+        && text[1..text.len() - 1]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// The text a key types in a field (SPEC §10.2, SDK.md §3.10): a
+/// character's, a letter with `shift` as its capital, a space for `space`;
+/// none for any other key, or for a key with `ctrl`, `alt` or `super`.
+pub fn key_text(key: &str) -> Option<String> {
+    let k = KeyParts::split(&parse_key(key)?);
+    if k.mods & (SUPER | CTRL | ALT) != 0 {
+        return None;
+    }
+    if k.value == "space" {
+        return Some(" ".into());
+    }
+    if k.kind() != Kind::Character {
+        return None;
+    }
+    Some(if k.shift() && is_letter(&k.value) {
+        upper(&k.value)
+    } else {
+        k.value
     })
 }
 
-/// A key's name in its canonical form (SPEC §10.4): `Shift+Control+a` is
-/// `Control+A`, `Control+ ` is `Control+Space`, and a binding's `Mod` is
-/// kept, written first. `None` when it does not parse.
-pub fn parse_key(name: &str) -> Option<String> {
-    split_key(name).map(|k| k.canonical().name())
+/// The key of a character with modifiers: a capital is `shift` with its
+/// letter, the space bar is `space`, and `shift` is in any other character
+/// already (`!`, not `shift+!`).
+pub fn char_key(mut mods: u8, c: &str) -> String {
+    if mods & SHIFT != 0 && !is_letter(c) && c != " " {
+        mods &= !SHIFT;
+    }
+    if c == " " {
+        return join(mods, "space");
+    }
+    if is_capital(c) {
+        return join(mods | SHIFT, &lower(c));
+    }
+    join(mods, c)
 }
 
-/// The keys in input from the terminal, as SPEC §10.4 names them: a
+/// The keys in input from the terminal, as SPEC §10.4's table names them: a
 /// canonical name for each, `None` for input that is no key it names (a
 /// mouse report, a sequence it does not know, a release). An ESC at the end
-/// of the input is Escape.
+/// of the input is `escape`.
 pub fn decode_keys(input: &[u8]) -> Vec<Option<String>> {
     decode_key_spans(input).into_iter().map(|(_, k)| k).collect()
 }
@@ -285,7 +493,7 @@ pub fn decode_key_spans(input: &[u8]) -> Vec<(Range<usize>, Option<String>)> {
             k
         } else if i + 1 == input.len() {
             i += 1;
-            Some("Escape".into())
+            Some("escape".into())
         } else if input[i + 1] == b'O' && i + 2 < input.len() {
             i += 3;
             final_key(input[i - 1]).map(str::to_string)
@@ -307,11 +515,7 @@ pub fn decode_key_spans(input: &[u8]) -> Vec<(Range<usize>, Option<String>)> {
         } else {
             let (k, n) = one_key(&input[i + 1..]);
             i += 1 + n;
-            k.and_then(|k| {
-                let mut p = split_key(&k)?;
-                p.mods |= ALT;
-                Some(p.canonical().name())
-            })
+            k.map(|k| KeyParts::split(&k).with(ALT).name())
         };
         out.push((at..i, key));
     }
@@ -323,24 +527,24 @@ pub fn decode_key_spans(input: &[u8]) -> Vec<(Range<usize>, Option<String>)> {
 fn one_key(input: &[u8]) -> (Option<String>, usize) {
     let b = input[0];
     let name = match b {
-        0x00 => Some("Control+Space"),
-        0x08 => Some("Control+h"),
-        0x09 => Some("Tab"),
-        0x0d => Some("Enter"),
-        0x1b => Some("Escape"),
-        0x7f => Some("Backspace"),
-        0x1c => Some("Control+\\"),
-        0x1d => Some("Control+]"),
-        0x1e => Some("Control+^"),
-        0x1f => Some("Control+_"),
-        0x20 => Some("Space"),
+        0x00 => Some("ctrl+space"),
+        0x08 => Some("ctrl+h"),
+        0x09 => Some("tab"),
+        0x0d => Some("enter"),
+        0x1b => Some("escape"),
+        0x7f => Some("backspace"),
+        0x1c => Some("ctrl+\\"),
+        0x1d => Some("ctrl+]"),
+        0x1e => Some("ctrl+^"),
+        0x1f => Some("ctrl+_"),
+        0x20 => Some("space"),
         _ => None,
     };
     if let Some(n) = name {
         return (Some(n.into()), 1);
     }
     if b < 0x20 {
-        return (Some(format!("Control+{}", (b + 0x60) as char)), 1);
+        return (Some(format!("ctrl+{}", (b + 0x60) as char)), 1);
     }
     let end = input.len().min(64);
     let text = match std::str::from_utf8(&input[..end]) {
@@ -354,18 +558,18 @@ fn one_key(input: &[u8]) -> (Option<String>, usize) {
         Some((i, _)) => &g[..i],
         None => g,
     };
-    (Some(g.to_string()), g.len().max(1))
+    (Some(char_key(0, g)), g.len().max(1))
 }
 
 /// The keys CSI and SS3 name by their final byte.
 fn final_key(f: u8) -> Option<&'static str> {
     Some(match f {
-        b'A' => "ArrowUp",
-        b'B' => "ArrowDown",
-        b'C' => "ArrowRight",
-        b'D' => "ArrowLeft",
-        b'H' => "Home",
-        b'F' => "End",
+        b'A' => "arrow_up",
+        b'B' => "arrow_down",
+        b'C' => "arrow_right",
+        b'D' => "arrow_left",
+        b'H' => "home",
+        b'F' => "end",
         _ => return None,
     })
 }
@@ -384,73 +588,62 @@ fn mods_of(field: &str) -> Option<(u8, bool)> {
         m |= ALT;
     }
     if bits & 4 != 0 {
-        m |= CONTROL;
+        m |= CTRL;
     }
     if bits & (8 | 32) != 0 {
-        m |= META;
+        m |= SUPER;
     }
     Some((m, e == 3))
 }
 
 /// The key a code of the kitty protocol or of modifyOtherKeys names.
-fn code_key(code: u32, mut mods: u8, shifted: u32, text: &str) -> Option<String> {
+fn code_key(code: u32, mods: u8, shifted: u32, text: &str) -> Option<String> {
     let named = match code {
-        9 => Some("Tab"),
-        13 => Some("Enter"),
-        27 => Some("Escape"),
-        8 | 127 => Some("Backspace"),
-        57399..=57408 => {
-            let value = char::from(b'0' + (code - 57399) as u8).to_string();
-            return Some(KeyParts { mods, value }.name());
-        }
-        57409 => Some("."),
-        57410 => Some("/"),
-        57411 => Some("*"),
-        57412 => Some("-"),
-        57413 => Some("+"),
-        57414 => Some("Enter"),
-        57415 => Some("="),
-        57417 => Some("ArrowLeft"),
-        57418 => Some("ArrowRight"),
-        57419 => Some("ArrowUp"),
-        57420 => Some("ArrowDown"),
-        57421 => Some("PageUp"),
-        57422 => Some("PageDown"),
-        57423 => Some("Home"),
-        57424 => Some("End"),
-        57425 => Some("Insert"),
-        57426 => Some("Delete"),
-        57441 | 57447 => Some("Shift"),
-        57442 | 57448 => Some("Control"),
-        57443 | 57449 => Some("Alt"),
-        57444 | 57450 => Some("Meta"),
+        9 => "tab",
+        13 => "enter",
+        27 => "escape",
+        8 | 127 => "backspace",
+        32 => "space",
+        57399..=57408 => return Some(join(mods, &char::from(b'0' + (code - 57399) as u8).to_string())),
+        57409 => return Some(join(mods, ".")),
+        57410 => return Some(join(mods, "/")),
+        57411 => return Some(join(mods, "*")),
+        57412 => return Some(join(mods, "-")),
+        57413 => return Some(join(mods, "+")),
+        57414 => "enter",
+        57415 => return Some(join(mods, "=")),
+        57417 => "arrow_left",
+        57418 => "arrow_right",
+        57419 => "arrow_up",
+        57420 => "arrow_down",
+        57421 => "page_up",
+        57422 => "page_down",
+        57423 => "home",
+        57424 => "end",
+        57425 => "insert",
+        57426 => "delete",
         57344.. => return None,
-        _ => None,
+        _ => "",
     };
-    if let Some(v) = named {
-        return Some(
-            KeyParts {
-                mods,
-                value: v.into(),
-            }
-            .name(),
-        );
+    if !named.is_empty() {
+        return Some(join(mods, named));
     }
-    let base = char::from_u32(code).filter(|c| !c.is_control())?;
-    let mut value = base.to_string();
+    if code < 0x20 || code == 0x7f {
+        return None;
+    }
+    let base = char::from_u32(code)?.to_string();
+    if is_letter(&base) {
+        return Some(join(mods, &lower(&base)));
+    }
     if mods & SHIFT != 0 {
-        value = if let Some(s) = char::from_u32(shifted).filter(|_| shifted > 0) {
-            s.to_string()
-        } else if !text.is_empty() {
-            text.to_string()
-        } else {
-            single(base.to_uppercase()).unwrap_or(base).to_string()
-        };
-        if value != base.to_string() {
-            mods &= !SHIFT;
+        if let Some(s) = char::from_u32(shifted).filter(|_| shifted > 0) {
+            return Some(char_key(mods & !SHIFT, &s.to_string()));
+        }
+        if !text.is_empty() {
+            return Some(char_key(mods & !SHIFT, text));
         }
     }
-    Some(KeyParts { mods, value }.name())
+    Some(join(mods, &base))
 }
 
 /// The key a CSI sequence names.
@@ -490,45 +683,33 @@ fn csi_key(params: &str, fin: u8) -> Option<String> {
                 return code_key(fields[2].parse().ok()?, mods, 0, "");
             }
             let v = match n {
-                1 | 7 => "Home",
-                4 | 8 => "End",
-                2 => "Insert",
-                3 => "Delete",
-                5 => "PageUp",
-                6 => "PageDown",
+                1 | 7 => "home",
+                4 | 8 => "end",
+                2 => "insert",
+                3 => "delete",
+                5 => "page_up",
+                6 => "page_down",
                 _ => return None,
             };
             let (mods, release) = mods_of(field(1))?;
-            (!release).then(|| {
-                KeyParts {
-                    mods,
-                    value: v.into(),
-                }
-                .name()
-            })
+            (!release).then(|| join(mods, v))
         }
-        b'Z' => Some("Shift+Tab".into()),
+        b'Z' => Some("shift+tab".into()),
         f => {
             let v = final_key(f)?;
             let (mods, release) = mods_of(field(1))?;
-            (!release).then(|| {
-                KeyParts {
-                    mods,
-                    value: v.into(),
-                }
-                .name()
-            })
+            (!release).then(|| join(mods, v))
         }
     }
 }
 
-/// How a host reads bindings (SPEC §10.2, §10.4): the modifier `Mod`
-/// stands for, and its edit shortcuts. The default is Control with the
-/// default edit shortcuts.
+/// How a host reads bindings (SPEC §10.2, §10.4): what `mod` stands for,
+/// and its edit shortcuts. The default is `ctrl` with the default edit
+/// shortcuts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Platform {
-    /// Whether `Mod` is Meta (Command, on macOS); Control where false.
-    pub meta: bool,
+    /// Whether `mod` is `super` (Command, on macOS); `ctrl` where false.
+    pub mod_super: bool,
     /// The host's edit shortcuts, each edit action with its keys (SPEC
     /// §10.2); `None` is [`default_edit`].
     pub edit: Option<Vec<(String, Vec<String>)>>,
@@ -537,17 +718,21 @@ pub struct Platform {
 /// The edit actions, in SPEC §10.2's order.
 pub const EDIT_ACTIONS: [&str; 6] = ["select-all", "copy", "cut", "paste", "undo", "redo"];
 
-/// The default edit shortcuts for a `Mod` (SPEC §10.2), Meta where `meta`
-/// and Control otherwise, the keys canonical with `Mod` read.
-pub fn default_edit(meta: bool) -> Vec<(String, Vec<String>)> {
-    let m = if meta { "Meta" } else { "Control" };
+/// The default edit shortcuts for a `mod` (SPEC §10.2), `super` where
+/// `mod_super` and `ctrl` otherwise, the keys canonical with `mod` read.
+pub fn default_edit(mod_super: bool) -> Vec<(String, Vec<String>)> {
+    let m = if mod_super { "super" } else { "ctrl" };
     EDIT_ACTIONS
         .iter()
-        .zip(["a", "c", "x", "v", "z", "Z"])
+        .zip(["a", "c", "x", "v", "z", "shift+z"])
         .map(|(a, k)| {
-            let mut keys = vec![format!("{m}+{k}")];
-            if *a == "redo" && !meta {
-                keys.push("Control+y".into());
+            let key = match k.split_once('+') {
+                Some((s, k)) => format!("{m}+{s}+{k}"),
+                None => format!("{m}+{k}"),
+            };
+            let mut keys = vec![key];
+            if *a == "redo" && !mod_super {
+                keys.push("ctrl+y".into());
             }
             (a.to_string(), keys)
         })
@@ -555,62 +740,52 @@ pub fn default_edit(meta: bool) -> Vec<(String, Vec<String>)> {
 }
 
 impl Platform {
-    /// `Mod`'s name, as capabilities report it: `"Meta"` or `"Control"`.
+    /// What `mod` stands for, as capabilities report it: `"super"` or
+    /// `"ctrl"`.
     pub fn mod_name(&self) -> &'static str {
-        if self.meta { "Meta" } else { "Control" }
+        if self.mod_super { "super" } else { "ctrl" }
     }
 
     /// The edit shortcuts: the host's, or [`default_edit`].
     pub fn edit(&self) -> Vec<(String, Vec<String>)> {
-        self.edit.clone().unwrap_or_else(|| default_edit(self.meta))
+        self.edit.clone().unwrap_or_else(|| default_edit(self.mod_super))
     }
 
     /// The edit action whose shortcut a pressed key is, if it is one: the
-    /// key's own name, or, for a key with Shift that no shortcut names, the
-    /// key without Shift, as a keymap reads it.
+    /// key's own name, or, for a key with `shift` that is not a character
+    /// and that no shortcut names, the key without it, as a keymap reads
+    /// it.
     pub fn edit_action(&self, key: &str) -> Option<String> {
-        let mut m = Keymap {
-            meta: self.meta,
-            ..Keymap::default()
-        };
+        let mut m = Keymap::new(self.mod_super, false);
         for (a, keys) in self.edit() {
             for k in keys {
                 m.bind(&k, &a);
             }
         }
-        m.bound(key).map(str::to_string)
+        m.bound(&parse_key(key)?).map(str::to_string)
     }
-}
-
-/// A key's name as the platform reads it: canonical, with `Mod` read.
-/// `None` when it does not parse.
-pub fn read_key(platform: &Platform, name: &str) -> Option<String> {
-    split_key(name).map(|k| k.read_mod(platform.meta).canonical().name())
 }
 
 /// Bindings of keys to actions (SPEC §10.2), read on a [`Platform`].
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
-    /// Each key, canonical with `Mod` read, in the order first bound, and
+    /// Each key, canonical with `mod` read, in the order first bound, and
     /// its action.
     bindings: Vec<(String, String)>,
-    /// Each key's last binding as written, `Mod` kept, by index.
+    /// Each key's last binding as written, `mod` kept, by index.
     written: Vec<String>,
     multiline: bool,
-    /// Whether `Mod` reads as Meta.
-    meta: bool,
+    /// Whether `mod` reads as `super`.
+    mod_super: bool,
 }
 
 /// Reads a `data-keys` value as SPEC §10.2 has hosts read it: bindings
 /// separated by ASCII white space, each `key=action`, split at its last
 /// `=`; dropping a key that does not parse, an action it does not know,
-/// and Tab, Shift+Tab and Escape. `Mod` reads as the platform's: where it
-/// is Control, `Mod+a` and `Control+a` are one key.
+/// and `tab`, `shift+tab` and `escape`. `mod` reads as the platform's:
+/// where it is `ctrl`, `mod+a` and `ctrl+a` are one key.
 pub fn parse_keymap(platform: &Platform, value: &str) -> Keymap {
-    let mut m = Keymap {
-        meta: platform.meta,
-        ..Keymap::default()
-    };
+    let mut m = Keymap::new(platform.mod_super, false);
     for (k, a) in bindings(value) {
         m.bind(k, a);
     }
@@ -625,55 +800,55 @@ fn bindings(value: &str) -> impl Iterator<Item = (&str, &str)> {
         .filter_map(|b| b.rfind('=').map(|i| (&b[..i], &b[i + 1..])))
 }
 
-/// The default keymap's keys on every host (SPEC §10.2); Enter, those of
-/// the platform's `Mod` and the edit shortcuts follow.
+/// The default keymap's keys on every host (SPEC §10.2); `enter`, those of
+/// the platform's `mod` and the edit shortcuts follow.
 const DEFAULT_KEYS: &[(&str, &str)] = &[
-    ("ArrowLeft", "char-backward"),
-    ("ArrowRight", "char-forward"),
-    ("Alt+ArrowLeft", "word-backward"),
-    ("Alt+ArrowRight", "word-forward"),
-    ("Home", "line-start"),
-    ("End", "line-end"),
-    ("Backspace", "delete-char-backward"),
-    ("Delete", "delete-char-forward"),
-    ("Alt+Backspace", "delete-word-backward"),
-    ("Alt+Delete", "delete-word-forward"),
-    ("ArrowUp", "line-previous"),
-    ("ArrowDown", "line-next"),
-    ("PageUp", "page-up"),
-    ("PageDown", "page-down"),
+    ("arrow_left", "char-backward"),
+    ("arrow_right", "char-forward"),
+    ("alt+arrow_left", "word-backward"),
+    ("alt+arrow_right", "word-forward"),
+    ("home", "line-start"),
+    ("end", "line-end"),
+    ("backspace", "delete-char-backward"),
+    ("delete", "delete-char-forward"),
+    ("alt+backspace", "delete-word-backward"),
+    ("alt+delete", "delete-word-forward"),
+    ("arrow_up", "line-previous"),
+    ("arrow_down", "line-next"),
+    ("page_up", "page-up"),
+    ("page_down", "page-down"),
 ];
 
-/// The default keymap's keys where `Mod` is Control.
-const CONTROL_KEYS: &[(&str, &str)] = &[
-    ("Control+ArrowLeft", "word-backward"),
-    ("Control+ArrowRight", "word-forward"),
-    ("Control+Home", "input-start"),
-    ("Control+End", "input-end"),
-    ("Control+Backspace", "delete-word-backward"),
-    ("Control+Delete", "delete-word-forward"),
+/// The default keymap's keys where `mod` is `ctrl`.
+const CTRL_KEYS: &[(&str, &str)] = &[
+    ("ctrl+arrow_left", "word-backward"),
+    ("ctrl+arrow_right", "word-forward"),
+    ("ctrl+home", "input-start"),
+    ("ctrl+end", "input-end"),
+    ("ctrl+backspace", "delete-word-backward"),
+    ("ctrl+delete", "delete-word-forward"),
 ];
 
-/// The default keymap's keys where `Mod` is Meta: macOS's, with Emacs's
-/// Control keys.
-const META_KEYS: &[(&str, &str)] = &[
-    ("Meta+ArrowLeft", "line-start"),
-    ("Meta+ArrowRight", "line-end"),
-    ("Meta+ArrowUp", "input-start"),
-    ("Meta+ArrowDown", "input-end"),
-    ("Meta+Backspace", "delete-to-line-start"),
-    ("Control+a", "line-start"),
-    ("Control+e", "line-end"),
-    ("Control+b", "char-backward"),
-    ("Control+f", "char-forward"),
-    ("Control+p", "line-previous"),
-    ("Control+n", "line-next"),
-    ("Control+h", "delete-char-backward"),
-    ("Control+d", "delete-char-forward"),
-    ("Control+k", "delete-to-line-end"),
+/// The default keymap's keys where `mod` is `super`: macOS's, with Emacs's
+/// `ctrl` keys.
+const SUPER_KEYS: &[(&str, &str)] = &[
+    ("super+arrow_left", "line-start"),
+    ("super+arrow_right", "line-end"),
+    ("super+arrow_up", "input-start"),
+    ("super+arrow_down", "input-end"),
+    ("super+backspace", "delete-to-line-start"),
+    ("ctrl+a", "line-start"),
+    ("ctrl+e", "line-end"),
+    ("ctrl+b", "char-backward"),
+    ("ctrl+f", "char-forward"),
+    ("ctrl+p", "line-previous"),
+    ("ctrl+n", "line-next"),
+    ("ctrl+h", "delete-char-backward"),
+    ("ctrl+d", "delete-char-forward"),
+    ("ctrl+k", "delete-to-line-end"),
 ];
 
-/// A field's keymap: the default keymap for the platform's `Mod`, with its
+/// A field's keymap: the default keymap for the platform's `mod`, with its
 /// edit shortcuts, for an input or a multi-line field, then each
 /// `data-keys` value, the root's first. A binding to a scroll action is
 /// left out where it stands, in its own value too: it neither acts nor
@@ -683,16 +858,12 @@ pub fn resolve<'a>(
     multiline: bool,
     values: impl IntoIterator<Item = &'a str>,
 ) -> Keymap {
-    let mut m = Keymap {
-        multiline,
-        meta: platform.meta,
-        ..Keymap::default()
-    };
+    let mut m = Keymap::new(platform.mod_super, multiline);
     for (k, a) in DEFAULT_KEYS {
         m.bind(k, a);
     }
-    m.bind("Enter", if multiline { "newline" } else { "submit" });
-    for (k, a) in if platform.meta { META_KEYS } else { CONTROL_KEYS } {
+    m.bind("enter", if multiline { "newline" } else { "submit" });
+    for (k, a) in if platform.mod_super { SUPER_KEYS } else { CTRL_KEYS } {
         m.bind(k, a);
     }
     for (a, keys) in platform.edit() {
@@ -717,10 +888,7 @@ pub fn element_keymap<'a>(
     platform: &Platform,
     values: impl IntoIterator<Item = &'a str>,
 ) -> Keymap {
-    let mut m = Keymap {
-        meta: platform.meta,
-        ..Keymap::default()
-    };
+    let mut m = Keymap::new(platform.mod_super, false);
     for v in values {
         for (k, a) in bindings(v) {
             m.bind(k, a);
@@ -730,31 +898,41 @@ pub fn element_keymap<'a>(
 }
 
 impl Keymap {
+    fn new(mod_super: bool, multiline: bool) -> Keymap {
+        Keymap {
+            multiline,
+            mod_super,
+            ..Keymap::default()
+        }
+    }
+
     /// Binds a key to an action; false, binding nothing, where a host ignores
     /// the binding.
     pub fn bind(&mut self, key: &str, action: &str) -> bool {
-        let Some(w) = split_key(key).map(KeyParts::canonical) else {
+        let (Some(k), Some(w)) = (
+            read(key, Some(self.mod_super), false),
+            read(key, Some(self.mod_super), true),
+        ) else {
             return false;
         };
-        let k = w.clone().read_mod(self.meta).canonical().name();
-        if !ACTIONS.contains(&action) || matches!(k.as_str(), "Tab" | "Shift+Tab" | "Escape") {
+        if !ACTIONS.contains(&action) || matches!(k.as_str(), "tab" | "shift+tab" | "escape") {
             return false;
         }
         match self.bindings.iter().position(|(b, _)| *b == k) {
             Some(i) => {
                 self.bindings[i].1 = action.to_string();
-                self.written[i] = w.name();
+                self.written[i] = w;
             }
             None => {
                 self.bindings.push((k, action.to_string()));
-                self.written.push(w.name());
+                self.written.push(w);
             }
         }
         true
     }
 
     /// The keymap as a `data-keys` value: each key once, where it was first
-    /// bound, as its last binding wrote it (`Mod` kept), with its last
+    /// bound, as its last binding wrote it (`mod` kept), with its last
     /// action.
     pub fn format(&self) -> String {
         self.bindings
@@ -772,69 +950,79 @@ impl Keymap {
             .map(|(_, a)| a.as_str())
     }
 
-    /// The action bound to a key, or, for a key with Shift it does not
-    /// bind, to the key without Shift.
+    /// The action bound to a canonical key, or, for a key with `shift`
+    /// that is not a character and that is not bound itself, to the key
+    /// without `shift` (SPEC §10.2).
     fn bound(&self, key: &str) -> Option<&str> {
-        let k = split_key(key)?.read_mod(self.meta).canonical();
-        let unshifted = KeyParts {
-            mods: k.mods & !SHIFT,
-            value: k.value.clone(),
-        };
-        self.get(&k.name())
-            .or_else(|| self.get(&unshifted.name()).filter(|_| k.shift()))
+        self.get(key).or_else(|| {
+            let k = KeyParts::split(key);
+            if !k.shift() || k.kind() == Kind::Character {
+                return None;
+            }
+            self.get(&join(k.mods & !SHIFT, &k.value))
+        })
+    }
+
+    /// Whether the keymap binds a key, or, for a key with `shift` that is
+    /// not a character and that it does not bind, the key without `shift`.
+    pub fn binds(&self, key: &str) -> bool {
+        parse_key(key).is_some_and(|k| self.bound(&k).is_some())
+    }
+
+    /// The name of a press that a keymap goes by (SPEC §10.4), among its
+    /// names, the physical one first: the first the keymap binds, else the
+    /// first the field types. A press the keymap uses by either name is
+    /// its; where it binds both, the physical binding wins.
+    pub fn press<'a>(&self, names: &'a [String]) -> Option<&'a str> {
+        names
+            .iter()
+            .find(|n| self.binds(n))
+            .or_else(|| names.iter().find(|n| self.lookup(n).is_some()))
+            .map(String::as_str)
     }
 
     /// Whether the keymap gives a key to the program, before the focused
     /// element or a scroll uses it (SPEC §10.2): it binds the key to
-    /// `program` or `prefix`, or, for a key with Shift it does not bind, the
-    /// key without Shift.
+    /// `program` or `prefix`, with the fallback of [`Keymap::binds`].
     pub fn program(&self, key: &str) -> bool {
-        matches!(self.bound(key), Some("program" | "prefix"))
+        parse_key(key).is_some_and(|k| matches!(self.bound(&k), Some("program" | "prefix")))
     }
 
-    /// Whether the keymap binds a key to `prefix`, with the same fallback
-    /// without Shift: the key reaches the program, and so does every key
-    /// after it (SPEC §10.2, §10.5).
+    /// Whether the keymap binds a key to `prefix`, with the same fallback:
+    /// the key reaches the program, and so does every key after it (SPEC
+    /// §10.2, §10.5).
     pub fn prefix(&self, key: &str) -> bool {
-        self.bound(key) == Some("prefix")
+        parse_key(key).is_some_and(|k| self.bound(&k) == Some("prefix"))
     }
 
-    /// The scroll action the keymap binds a key to, with the same fallback
-    /// without Shift, or `None` (SPEC §10.2, scrolling keys). A host asks it
-    /// of an element's keymap for a key the element does not use.
+    /// The scroll action the keymap binds a key to, with the same fallback,
+    /// or `None` (SPEC §10.2, scrolling keys). A host asks it of an
+    /// element's keymap for a key the element does not use.
     pub fn scroll(&self, key: &str) -> Option<&str> {
-        self.bound(key).filter(|a| scroll_action(a))
+        self.bound(&parse_key(key)?).filter(|a| scroll_action(a))
     }
 
     /// What a field with this keymap does with a key: an action, [`INSERT`]
-    /// for a character it types, or `None` when the key is not the field's.
+    /// for a key it types ([`key_text`]), or `None` when the key is not the
+    /// field's.
     pub fn lookup(&self, key: &str) -> Option<&str> {
-        let k = split_key(key)?.read_mod(self.meta).canonical();
-        let name = k.name();
-        if matches!(name.as_str(), "Tab" | "Shift+Tab" | "Escape") {
+        let k = parse_key(key)?;
+        if matches!(k.as_str(), "tab" | "shift+tab" | "escape") {
             return None;
         }
-        let unshifted = KeyParts {
-            mods: k.mods & !SHIFT,
-            value: k.value.clone(),
-        };
-        let bound = self
-            .get(&name)
-            .or_else(|| self.get(&unshifted.name()).filter(|_| k.shift()));
-        match bound {
+        match self.bound(&k) {
             Some("program" | "prefix") => None,
             Some(a) if multiline_action(a) && !self.multiline => None,
             Some(a) => Some(a),
-            None if is_char(&k.value) && k.mods & (CONTROL | ALT | META) == 0 => Some(INSERT),
-            None => None,
+            None => key_text(&k).map(|_| INSERT),
         }
     }
 
     /// Whether a field with this keymap selects with a key (SPEC §10.2,
-    /// Shift selects): it looks up a move, and the key's name has Shift.
+    /// Shift selects): it looks up a move, and the key's name has `shift`.
     /// The field then moves its caret and keeps its anchor.
     pub fn selects(&self, key: &str) -> bool {
-        split_key(key).is_some_and(|k| k.canonical().shift())
+        parse_key(key).is_some_and(|k| KeyParts::split(&k).shift())
             && self.lookup(key).is_some_and(move_action)
     }
 }

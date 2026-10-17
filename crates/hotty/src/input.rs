@@ -232,7 +232,7 @@ impl InputRouter {
             shift: b & 4 != 0,
             alt: b & 8 != 0,
             ctrl: b & 16 != 0,
-            meta: false,
+            super_: false,
         };
         let motion = b & 32 != 0;
         let wheel = b & 64 != 0;
@@ -458,7 +458,7 @@ impl KeyIn {
     fn press(name: KeyName, mods: Mods) -> KeyIn {
         KeyIn {
             base: unshifted(&name),
-            key: Key { name, mods },
+            key: Key::new(name, mods),
             release: false,
         }
     }
@@ -639,7 +639,7 @@ fn parse_csi(d: &[u8]) -> Parsed {
         shift: bits & 1 != 0,
         alt: bits & 2 != 0,
         ctrl: bits & 4 != 0,
-        meta: bits & 8 != 0,
+        super_: bits & 8 != 0,
     };
     // 1 a press, 2 a repeat, 3 a release.
     let release = field(1, 1) == 3;
@@ -715,7 +715,7 @@ fn parse_csi(d: &[u8]) -> Parsed {
         len,
         key: Some(KeyIn {
             base: base.unwrap_or_else(|| unshifted(&name)),
-            key: Key { name, mods },
+            key: Key::new(name, mods),
             release,
         }),
     }

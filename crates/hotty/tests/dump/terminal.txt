@@ -1,4 +1,4 @@
-a=ok:n=1:re=q  {"v": "0.3", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, "scheme": "dark", "mod": "Control", "features": ["passthrough", "hover"], "limits": {"resources": 67108864, "message": 67108864}, "net": {}, "host": "hotty-blitz", "version": "0.0.3"}
+a=ok:n=1:re=q  {"v": "0.4", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, "scheme": "dark", "mod": "ctrl", "features": ["passthrough", "hover"], "limits": {"resources": 67108864, "message": 67108864}, "net": {}, "host": "hotty-blitz", "version": "0.0.3"}
 a=ok:n=2:s=form:re=place:c=40:r=6
 a=err:n=3:s=nope:re=delta  {"code": "ENOENT", "detail": "no surface nope"}
 a=ev:s=form:e=hover:t=notify  {"c": 1, "r": 1}

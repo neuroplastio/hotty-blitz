@@ -230,9 +230,9 @@ fn esc_inside_a_command_aborts_it_and_starts_a_new_sequence() {
     assert_eq!(got.bytes, b"\x1b[31mred");
 }
 
-/// The default platform: `Mod` is Control.
+/// The default platform: `mod` is `ctrl`.
 const P: crate::keys::Platform = crate::keys::Platform {
-    meta: false,
+    mod_super: false,
     edit: None,
 };
 
@@ -241,44 +241,44 @@ const P: crate::keys::Platform = crate::keys::Platform {
 /// and an unbound key with Shift is looked up without it (SPEC §10.2).
 #[test]
 fn an_elements_keymap_gives_keys_to_the_program() {
-    let m = crate::keys::element_keymap(&P, ["ArrowDown=program End=program PageUp=program", "End=line-end"]);
-    assert!(m.program("ArrowDown"));
-    assert!(m.program("Shift+ArrowDown"));
-    assert!(!m.program("End"));
-    assert!(m.program("PageUp"));
-    assert!(!m.program("ArrowUp"));
-    assert!(!m.program("Control+ArrowDown"));
+    let m = crate::keys::element_keymap(&P, ["arrow_down=program end=program page_up=program", "end=line-end"]);
+    assert!(m.program("arrow_down"));
+    assert!(m.program("shift+arrow_down"));
+    assert!(!m.program("end"));
+    assert!(m.program("page_up"));
+    assert!(!m.program("arrow_up"));
+    assert!(!m.program("ctrl+arrow_down"));
     // No default keymap, and Escape and Tab cannot be bound.
-    let m = crate::keys::element_keymap(&P, ["Escape=program Tab=program"]);
-    assert!(!m.program("Escape"));
-    assert!(!m.program("Tab"));
-    assert!(!m.program("Enter"));
+    let m = crate::keys::element_keymap(&P, ["escape=program tab=program"]);
+    assert!(!m.program("escape"));
+    assert!(!m.program("tab"));
+    assert!(!m.program("enter"));
 }
 
 #[test]
 fn an_elements_keymap_scrolls_and_a_fields_leaves_scroll_actions_out() {
     use crate::keys::{element_keymap, resolve, INSERT};
-    let m = element_keymap(&P, ["k=program j=program", "j=scroll-down G=scroll-end Space=scroll-page-down"]);
+    let m = element_keymap(&P, ["k=program j=program", "j=scroll-down g=scroll-end space=scroll-page-down"]);
     assert_eq!(m.scroll("j"), Some("scroll-down"));
     assert!(!m.program("j"));
     assert!(m.program("k"));
     assert_eq!(m.scroll("k"), None);
-    assert_eq!(m.scroll("G"), Some("scroll-end"));
-    assert_eq!(m.scroll("Shift+Space"), Some("scroll-page-down"));
-    assert_eq!(m.scroll("Control+j"), None);
+    assert_eq!(m.scroll("g"), Some("scroll-end"));
+    assert_eq!(m.scroll("shift+space"), Some("scroll-page-down"));
+    assert_eq!(m.scroll("ctrl+j"), None);
     // A field: j is typed, a farther program keeps k, PageDown keeps
     // page-down, and a scroll binding overrides nothing in its own value.
     let f = resolve(
         &P,
         true,
-        ["k=program", "j=scroll-down k=scroll-up PageDown=scroll-page-down"],
+        ["k=program", "j=scroll-down k=scroll-up page_down=scroll-page-down"],
     );
     assert_eq!(f.lookup("j"), Some(INSERT));
     assert_eq!(f.lookup("k"), None);
     assert!(f.program("k"));
-    assert_eq!(f.lookup("PageDown"), Some("page-down"));
-    let f = resolve(&P, false, ["Control+d=delete-char-forward Control+d=scroll-half-page-down"]);
-    assert_eq!(f.lookup("Control+d"), Some("delete-char-forward"));
+    assert_eq!(f.lookup("page_down"), Some("page-down"));
+    let f = resolve(&P, false, ["ctrl+d=delete-char-forward ctrl+d=scroll-half-page-down"]);
+    assert_eq!(f.lookup("ctrl+d"), Some("delete-char-forward"));
 }
 
 /// What a scanner whose commands take at most `max` bytes makes of input.
@@ -361,45 +361,62 @@ fn the_chunks_after_one_too_large_are_dropped_too() {
     assert_eq!(got.commands, vec![cmd(&[("a", "del"), ("s", "x")], b"")]);
 }
 
-/// `Mod` reads as the platform's, and the default keymap follows it: where
-/// it is Control, Control+ArrowLeft moves by a word and Control+a selects
-/// all; where it is Meta, Meta+ArrowLeft goes to the line's start and
-/// Control+a too (SPEC §10.2, §10.4).
+/// `mod` reads as the platform's, and the default keymap follows it: where
+/// it is `ctrl`, `ctrl+arrow_left` moves by a word and `ctrl+a` selects
+/// all; where it is `super`, `super+arrow_left` goes to the line's start and
+/// `ctrl+a` too (SPEC §10.2, §10.4).
 #[test]
 fn mod_reads_as_the_platforms() {
-    use crate::keys::{parse_key, parse_keymap, resolve, Platform};
-    assert_eq!(parse_key("Shift+Mod+z").as_deref(), Some("Mod+Z"));
-    assert_eq!(parse_key("Control+Mod+a").as_deref(), Some("Mod+Control+a"));
+    use crate::keys::{parse_key, parse_keymap, read_key, resolve, Platform};
+    // Only a platform reads `mod`, and it refuses `mod` with `ctrl` or `super`.
+    assert_eq!(parse_key("mod+z"), None);
+    assert_eq!(read_key(&P, "shift+mod+z").as_deref(), Some("ctrl+shift+z"));
+    assert_eq!(read_key(&P, "ctrl+mod+a"), None);
     let mac = Platform {
-        meta: true,
+        mod_super: true,
         edit: None,
     };
+    assert_eq!(read_key(&mac, "mod+super+a"), None);
     let f = resolve(&P, false, []);
-    assert_eq!(f.lookup("Control+ArrowLeft"), Some("word-backward"));
-    assert_eq!(f.lookup("Control+a"), Some("select-all"));
-    assert_eq!(f.lookup("Meta+c"), None);
-    assert_eq!(f.lookup("Control+y"), Some("redo"));
+    assert_eq!(f.lookup("ctrl+arrow_left"), Some("word-backward"));
+    assert_eq!(f.lookup("ctrl+a"), Some("select-all"));
+    assert_eq!(f.lookup("super+c"), None);
+    assert_eq!(f.lookup("ctrl+y"), Some("redo"));
     let f = resolve(&mac, false, []);
-    assert_eq!(f.lookup("Meta+ArrowLeft"), Some("line-start"));
-    assert_eq!(f.lookup("Control+a"), Some("line-start"));
-    assert_eq!(f.lookup("Meta+a"), Some("select-all"));
-    assert_eq!(f.lookup("Control+c"), None);
-    assert_eq!(f.lookup("Control+y"), None);
-    assert_eq!(f.lookup("Control+ArrowLeft"), None);
-    // On Control, Mod+a and Control+a are one key, written as last bound.
-    let m = parse_keymap(&P, "Mod+a=program Control+a=copy Mod+x=cut");
-    assert_eq!(m.format(), "Control+a=copy Mod+x=cut");
-    let m = parse_keymap(&mac, "Mod+a=program Control+a=copy");
-    assert_eq!(m.format(), "Mod+a=program Control+a=copy");
+    assert_eq!(f.lookup("super+arrow_left"), Some("line-start"));
+    assert_eq!(f.lookup("ctrl+a"), Some("line-start"));
+    assert_eq!(f.lookup("super+a"), Some("select-all"));
+    assert_eq!(f.lookup("ctrl+c"), None);
+    assert_eq!(f.lookup("ctrl+y"), None);
+    assert_eq!(f.lookup("ctrl+arrow_left"), None);
+    // On ctrl, mod+a and ctrl+a are one key, written as last bound.
+    let m = parse_keymap(&P, "mod+a=program ctrl+a=copy mod+x=cut");
+    assert_eq!(m.format(), "ctrl+a=copy mod+x=cut");
+    let m = parse_keymap(&mac, "mod+a=program super+a=copy");
+    assert_eq!(m.format(), "super+a=copy");
     // The edit shortcuts are the host's.
     let mine = Platform {
-        meta: false,
-        edit: Some(vec![("copy".into(), vec!["Control+Shift+c".into()])]),
+        mod_super: false,
+        edit: Some(vec![("copy".into(), vec!["ctrl+shift+c".into()])]),
     };
     let f = resolve(&mine, false, []);
-    assert_eq!(f.lookup("Control+C"), Some("copy"));
-    assert_eq!(f.lookup("Control+c"), None);
-    assert_eq!(mine.edit_action("Control+C").as_deref(), Some("copy"));
-    assert_eq!(P.edit_action("Control+Z").as_deref(), Some("redo"));
-    assert_eq!(mac.edit_action("Control+v"), None);
+    assert_eq!(f.lookup("ctrl+shift+c"), Some("copy"));
+    assert_eq!(f.lookup("ctrl+c"), None);
+    assert_eq!(mine.edit_action("ctrl+shift+c").as_deref(), Some("copy"));
+    assert_eq!(P.edit_action("ctrl+shift+z").as_deref(), Some("redo"));
+    assert_eq!(mac.edit_action("ctrl+v"), None);
+}
+
+/// A press has two names, and a keymap goes by the physical one where it
+/// binds it (SPEC §10.4).
+#[test]
+fn a_press_is_looked_up_by_its_physical_name_first() {
+    use crate::keys::{key_text, parse_keymap};
+    let m = parse_keymap(&P, "ctrl+key_w=program ctrl+w=line-start");
+    let both = ["ctrl+key_w".to_string(), "ctrl+w".to_string()];
+    assert_eq!(m.press(&both), Some("ctrl+key_w"));
+    let m = parse_keymap(&P, "ctrl+w=line-start");
+    assert_eq!(m.press(&both), Some("ctrl+w"));
+    assert_eq!(key_text("shift+g").as_deref(), Some("G"));
+    assert_eq!(key_text("ctrl+g"), None);
 }

@@ -344,7 +344,7 @@ const PAGE_FRACTION: f64 = 0.875;
 pub fn key_scroll(key: &crate::Key) -> Option<KeyScroll> {
     use crate::KeyName as K;
     let m = key.mods;
-    if m.ctrl || m.alt || m.meta {
+    if m.ctrl || m.alt || m.super_ {
         return None;
     }
     let (axis, sign, by) = match (&key.name, m.shift) {
