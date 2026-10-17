@@ -1,11 +1,11 @@
 # Fidelity: hotty-blitz (Blitz) next to Chromium
 
-`make oracle` renders every page of the HOTTY corpus twice, at 80 columns of 20×42 px
+`make oracle` renders every page of the hotty corpus twice, at 80 columns of 20×42 px
 cells (scale 2), with the same host stylesheet (`hotty css`): once by
 `hotty render`, once by headless Chromium 153 (Playwright). Left is hotty-blitz,
 right is Chromium. Read on 2026-09-29, Blitz `674d7d2`; 05-forms again on
 2026-10-09, with the Blitz patches through 0023 (`mods/blitz/`).
-A select draws closed, without its list (HOTTY SPEC §10.2 lets a host show
+A select draws closed, without its list (hotty SPEC §10.2 lets a host show
 none); Blitz still draws no range, progress or meter.
 
 | page | tests |

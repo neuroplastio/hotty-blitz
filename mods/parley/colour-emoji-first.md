@@ -15,7 +15,7 @@ stack or the emoji family, and falls back to the old choice only when none
 does. Fontique gets `QueryFont::has_color_glyphs`. Text presentation (VS15,
 or a text-default character alone) is unchanged.
 
-**Why we carry it:** HOTTY surfaces in a terminal often use its monospace
+**Why we carry it:** hotty surfaces in a terminal often use its monospace
 stack, and plx's dialogs showed emoji in monochrome.
 
 **For upstream:** yes. Browsers and Ghostty choose colour fonts first for

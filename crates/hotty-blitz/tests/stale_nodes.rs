@@ -1,7 +1,7 @@
 //! Deltas after which a node they freed was still named: by a morph, or by
 //! Blitz's layout data. Each panicked ("invalid SlotMap key used", or an
 //! unwrap in paint), at the delta or at the render after it; hottyterm then
-//! turned HOTTY off. Found by fuzzing random deltas against layout, and
+//! turned hotty off. Found by fuzzing random deltas against layout, and
 //! shrunk.
 
 mod common;

@@ -1,4 +1,4 @@
-//! hotty-blitz: everything a HOTTY host needs between "a command arrived" and
+//! hotty-blitz: everything a hotty host needs between "a command arrived" and
 //! "here are the pixels for this cell rectangle".
 //!
 //! Two hosts use it: the `hotty run` polyfill (through the Rust API)
@@ -34,7 +34,7 @@ pub use input::{
 pub use menu::{MENU, Shown};
 pub use surface::{Damage, Frame, Timings};
 
-/// The HOTTY version this host speaks, its only one (SPEC §4): a query
+/// The hotty version this host speaks, its only one (SPEC §4): a query
 /// that does not list it is answered with `EVERSION`.
 pub const VERSION: &str = "0.4";
 

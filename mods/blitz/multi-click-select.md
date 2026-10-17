@@ -8,7 +8,7 @@ upstream-fit: yes
 selects the word under the pointer (`Selection::word_from_point`), and a
 triple click the inline root's whole text. A text input already did both.
 
-**Why we carry it:** HOTTY documents are read and copied from like pages
+**Why we carry it:** hotty documents are read and copied from like pages
 (SPEC §9).
 
 **For upstream:** yes. It is what browsers do.

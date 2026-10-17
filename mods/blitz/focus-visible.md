@@ -10,7 +10,7 @@ script sets. Focus moved by the pointer (`set_focus_by_pointer`, which
 Blitz's own click handling now calls) keeps the ring only on a text field,
 as browsers do.
 
-**Why we carry it:** HOTTY's host stylesheet draws focus rings with
+**Why we carry it:** hotty's host stylesheet draws focus rings with
 `:focus-visible` (SPEC §8).
 
 **For upstream:** yes. It is the selector as browsers match it.

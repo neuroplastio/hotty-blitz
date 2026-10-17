@@ -15,7 +15,7 @@ arrow, as wide as its widest option. `BaseDocument::pick_option` picks.
 Its list isn't drawn, nor is a `multiple` select or one with `size` above
 1.
 
-**Why we carry it:** HOTTY lets a host show no list, and hotty-blitz
+**Why we carry it:** hotty lets a host show no list, and hotty-blitz
 picks with the keys (SPEC §10.2).
 
 **For upstream:** yes. Selectedness and the closed select are HTML's, and

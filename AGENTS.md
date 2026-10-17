@@ -1,6 +1,6 @@
 # For agents
 
-hotty-blitz implements HOTTY (`SPEC.md` in neuroplastio/hotty) on Blitz. It
+hotty-blitz implements hotty (`SPEC.md` in neuroplastio/hotty) on Blitz. It
 must not grow the protocol: a behaviour the spec does not state is a question
 for the hotty repository.
 

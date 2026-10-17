@@ -16,7 +16,7 @@ the nodes whose layout changed and the subtrees that moved, and everything
 when more than a quarter changed. Debug builds compare every incremental
 rounding with `taffy::round_layout`, and Blitz's 299 tests pass.
 
-**Why we carry it:** HOTTY programs send deltas many times a second; a
+**Why we carry it:** hotty programs send deltas many times a second; a
 one-cell change to a large dashboard cost the whole document.
 
 **For upstream:** maybe. The cache and the rounding are generic, but the

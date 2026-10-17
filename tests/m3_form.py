@@ -9,7 +9,7 @@ logged. Nothing here renders; it tests who gets what.
 
     python3 tests/m3_form.py [path/to/hotty]
 
-The form comes from the HOTTY repository: HOTTY_DIR, or a checkout next to
+The form comes from the hotty repository: HOTTY_DIR, or a checkout next to
 this one.
 """
 import fcntl
@@ -34,7 +34,7 @@ def hotty_dir():
     for c in (os.path.join(ROOT, "..", "hotty"), os.path.join(ROOT, "..", "..", "hotty", "main")):
         if os.path.isfile(os.path.join(c, "SPEC.md")):
             return os.path.abspath(c)
-    sys.exit("no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository")
+    sys.exit("no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository")
 
 
 def kitty(code, shifted=None, mods=1):

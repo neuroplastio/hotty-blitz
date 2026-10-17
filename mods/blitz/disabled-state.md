@@ -13,7 +13,7 @@ disables a control with `Node::disable`, leaving the attributes alone, gets
 what the attribute gives: no focus, no toggle, no submit, no selection, and
 a grey checkbox.
 
-**Why we carry it:** a detached HOTTY surface's controls act disabled
+**Why we carry it:** a detached hotty surface's controls act disabled
 (SPEC §5.5) while the document keeps the program's attributes.
 
 **For upstream:** yes. It is small, and makes the state and the attribute

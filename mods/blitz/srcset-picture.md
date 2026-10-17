@@ -13,7 +13,7 @@ device's, else the densest; a `w` candidate's density is its width over
 the size `sizes` gives it, with Stylo's `SourceSizeList`. Changing the
 attributes loads the image again.
 
-**Why we carry it:** HOTTY surfaces are drawn at the terminal's scale and
+**Why we carry it:** hotty surfaces are drawn at the terminal's scale and
 theme, and programs send images for each.
 
 **For upstream:** yes. It is HTML's image source selection.

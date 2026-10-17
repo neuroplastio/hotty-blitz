@@ -11,7 +11,7 @@ used"). The context now goes with the inline layout, first, and is built
 again while the node is a table with children.
 
 **Why we carry it:** a delta that emptied a table panicked, and in
-hottyterm that turned HOTTY off for the terminal. hotty-blitz's fuzz test
+hottyterm that turned hotty off for the terminal. hotty-blitz's fuzz test
 found it.
 
 **For upstream:** yes. It is a crash fix.

@@ -1,7 +1,7 @@
 # Toolchain comes from mise.toml (Rust, and Node for the oracle): `mise install` first.
 CARGO ?= mise x -- cargo
 
-# The HOTTY repository (vectors, corpus, example programs): HOTTY_DIR, or a
+# The hotty repository (vectors, corpus, example programs): HOTTY_DIR, or a
 # checkout next to this one.
 HOTTY_DIR ?= $(abspath $(patsubst %/SPEC.md,%,$(firstword $(wildcard ../hotty/SPEC.md ../../hotty/main/SPEC.md))))
 export HOTTY_DIR
@@ -11,7 +11,7 @@ export HOTTY_DIR
 check: mods build test clippy test-pty fuzz   ## the gate
 
 hotty:
-	@test -n "$(HOTTY_DIR)" || { echo "no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
+	@test -n "$(HOTTY_DIR)" || { echo "no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
 
 # A set's base, from its mod.md.
 base = $(shell sed -n 's/^base:[[:space:]]*\([^[:space:]\#]*\).*/\1/p' mods/$(1)/mod.md)

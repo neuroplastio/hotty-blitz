@@ -12,7 +12,7 @@ parent's class, a theme, `:hover` and `:focus`. A hash of the source each
 inline svg was built from is now kept, and when an svg or anything under
 it is damaged and its source differs, that svg alone is constructed again.
 
-**Why we carry it:** the HOTTY UI kit draws its icons in `currentColor`.
+**Why we carry it:** the hotty UI kit draws its icons in `currentColor`.
 
 **For upstream:** maybe. The bug is real, but Blitz has since rebuilt
 inline SVG when its styles change in its own way, after our base, which

@@ -25,7 +25,7 @@ fn cmd(pairs: &[(&str, &str)], payload: &[u8]) -> Command {
     Command::new(pairs.iter().copied().collect(), payload.to_vec())
 }
 
-/// The HOTTY messages in the effects' replies.
+/// The hotty messages in the effects' replies.
 fn replies(effects: &[Effect]) -> Vec<Command> {
     let mut out = Vec::new();
     let mut s = Scanner::new();

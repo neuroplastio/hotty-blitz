@@ -1,8 +1,8 @@
-//! `hotty dump`: the HOTTY messages in a byte stream, one line each.
+//! `hotty dump`: the hotty messages in a byte stream, one line each.
 //!
 //! The bodies with fields are msgpack in base64 (SPEC §3.3), which no one
 //! reads off a terminal: a host's replies and events, and a program's
-//! deltas and menus. This finds each HOTTY sequence in a stream as it was
+//! deltas and menus. This finds each hotty sequence in a stream as it was
 //! captured, a program's output or a terminal's input, joins its chunks,
 //! inflates `o=z`, and prints its control, then its payload readable:
 //!
@@ -619,7 +619,7 @@ mod tests {
         );
     }
 
-    /// The HOTTY checkout's vectors (HOTTY_DIR, or a checkout next to this
+    /// The hotty checkout's vectors (HOTTY_DIR, or a checkout next to this
     /// repository), as `make test` finds them.
     fn vectors() -> serde_json::Value {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -630,7 +630,7 @@ mod tests {
                     .into_iter()
                     .find(|c| c.join("SPEC.md").exists())
             })
-            .expect("no HOTTY checkout: set HOTTY_DIR");
+            .expect("no hotty checkout: set HOTTY_DIR");
         let text = std::fs::read_to_string(dir.join("conformance/vectors.json")).unwrap();
         serde_json::from_str(&text).unwrap()
     }

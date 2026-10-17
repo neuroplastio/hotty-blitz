@@ -1,4 +1,4 @@
-//! The bodies of HOTTY (SPEC §3.3): the capabilities (§4), an error (§3.6)
+//! The bodies of hotty (SPEC §3.3): the capabilities (§4), an error (§3.6)
 //! and an event's detail (§9) that a host sends, and the delta (§6.1) and
 //! the menu (§10.7) that a program does. Each is one msgpack map, and each
 //! of its fields has a type, as the spec's tables give it: an int goes out
@@ -295,7 +295,7 @@ pub enum Value {
     Array(Vec<Value>),
     /// A map's fields in the order they came, each name once.
     Map(Vec<(String, Value)>),
-    /// A form of msgpack that no field of HOTTY has (bin, an extension): a
+    /// A form of msgpack that no field of hotty has (bin, an extension): a
     /// field a reader does not know may hold one.
     Other,
 }

@@ -1,4 +1,4 @@
-//! The menu a program keeps with `a=menu` (HOTTY SPEC §10.7), drawn as a
+//! The menu a program keeps with `a=menu` (hotty SPEC §10.7), drawn as a
 //! surface of the host's own: myelin's which-key level, as a document.
 
 use crate::body::{Menu, MenuItem};

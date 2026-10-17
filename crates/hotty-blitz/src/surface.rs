@@ -1,5 +1,5 @@
 //! One surface: a Blitz document, its placement size, its last frame, and the
-//! glue that turns host input into DOM events and DOM events into HOTTY ones.
+//! glue that turns host input into DOM events and DOM events into hotty ones.
 
 use crate::body::{Detail, MAX_INT, Op, View};
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};

@@ -141,7 +141,7 @@ fn guard<R>(h: *mut HottyHost, default: R, f: impl FnOnce(&mut HottyHost) -> R) 
                 }
                 Ok(None) => eprintln!("hotty-blitz: host panicked; every surface is deleted"),
                 Err(_) => {
-                    eprintln!("hotty-blitz: host panicked; HOTTY is disabled for this terminal");
+                    eprintln!("hotty-blitz: host panicked; hotty is disabled for this terminal");
                     host.dead = true;
                 }
             }

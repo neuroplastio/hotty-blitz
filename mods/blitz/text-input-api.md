@@ -10,7 +10,7 @@ field's value too, its mask following) and redraws; `move_text_input_rows`
 moves the caret by laid-out rows from Parley's selection; and
 `text_input_rows_shown` counts the rows the field shows, for a page.
 
-**Why we carry it:** a text field's keys are its program's keymap (HOTTY
+**Why we carry it:** a text field's keys are its program's keymap (hotty
 SPEC §10.2), so hotty-blitz does the editing itself rather than send keys
 Blitz's editor would read its own way.
 

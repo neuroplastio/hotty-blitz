@@ -13,7 +13,7 @@ arrive, the outermost `<svg>` is built again, and the resolver hands usvg
 those bytes. An SVG that is itself an image still loads only `data:`, as
 in a browser.
 
-**Why we carry it:** `cid:` resources in an SVG `href` (HOTTY SPEC §7.1),
+**Why we carry it:** `cid:` resources in an SVG `href` (hotty SPEC §7.1),
 and `img-src` reaching images in SVG (§7.2).
 
 **For upstream:** yes. Inline SVG images then load as in a browser.

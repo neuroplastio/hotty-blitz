@@ -195,7 +195,7 @@ impl<'a> Reader<'a> {
             ));
         }
         Err(format!(
-            "holds a timestamp at byte {at}, which no field of HOTTY 0.2 has a host send"
+            "holds a timestamp at byte {at}, which no field of hotty 0.2 has a host send"
         ))
     }
 }

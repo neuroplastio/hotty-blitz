@@ -21,7 +21,7 @@ fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
     Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
-/// Decodes every HOTTY message in the effects' replies.
+/// Decodes every hotty message in the effects' replies.
 fn replies(effects: &[Effect]) -> Vec<Command> {
     let mut out = Vec::new();
     let mut s = Scanner::new();
@@ -1146,7 +1146,7 @@ fn incremental_layout_matches_a_fresh_document() {
     }
 }
 
-/// A click (press and release) at `(x, y)`: every HOTTY message it produced.
+/// A click (press and release) at `(x, y)`: every hotty message it produced.
 fn click(h: &mut Host, s: &str, x: f32, y: f32) -> Vec<Command> {
     let mut fx = h.pointer(s, PointerKind::Down, x, y, Mods::default());
     fx.extend(h.pointer(s, PointerKind::Up, x, y, Mods::default()));
@@ -3287,7 +3287,7 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
     );
 }
 
-/// What `key_bytes` sent the program as keys, apart from HOTTY events.
+/// What `key_bytes` sent the program as keys, apart from hotty events.
 fn passed(effects: &[Effect]) -> Vec<u8> {
     effects
         .iter()

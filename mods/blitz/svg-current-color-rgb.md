@@ -10,7 +10,7 @@ upstream-fit: yes
 doesn't parse, and the icon drew black. It is now written as `rgb()` or
 `rgba()` (`into_srgb_legacy`).
 
-**Why we carry it:** every icon in the HOTTY UI kit's muted text, a
+**Why we carry it:** every icon in the hotty UI kit's muted text, a
 `color-mix()`, drew black.
 
 **For upstream:** yes. It is small, and any page with modern colours hits

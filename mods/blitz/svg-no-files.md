@@ -12,7 +12,7 @@ page could draw any image the user's files hold, without asking the
 patch) what the document fetched for an inline SVG's `<image>`, and
 nothing else. A test in blitz-dom checks it.
 
-**Why we carry it:** HOTTY documents come from programs, and a surface
+**Why we carry it:** hotty documents come from programs, and a surface
 must never read the user's files (SPEC §12).
 
 **For upstream:** yes. It closes a file read that browsers never allow.

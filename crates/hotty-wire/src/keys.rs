@@ -1,4 +1,4 @@
-//! Key names and keymaps (HOTTY SPEC §10.2, §10.4).
+//! Key names and keymaps (hotty SPEC §10.2, §10.4).
 //!
 //! A host names a key as the program would read it: [`decode_keys`] reads
 //! what the terminal would send the program, and [`parse_key`] reads a name

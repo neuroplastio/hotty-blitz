@@ -1,4 +1,4 @@
-//! The HOTTY envelope (HOTTY SPEC §3):
+//! The hotty envelope (hotty SPEC §3):
 //!
 //! ```text
 //! ESC ] 7279 ; <control> ; <base64 payload> ST
@@ -6,9 +6,9 @@
 //!
 //! [`Scanner`] splits a program's output stream into passthrough bytes, the
 //! few control sequences a host has to see (synchronized output, alternate
-//! screen, clears, resets, mouse modes), and complete HOTTY [`Command`]s with
+//! screen, clears, resets, mouse modes), and complete hotty [`Command`]s with
 //! their chunks reassembled and their payload decoded. Every byte that is not a
-//! HOTTY command comes out unchanged, however the reads split it.
+//! hotty command comes out unchanged, however the reads split it.
 //!
 //! [`encode`] is the other direction: one command, chunked and encoded;
 //! [`encode_plain`] is the same without compression, for what a host sends.
@@ -19,7 +19,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use std::io::{Read, Write};
 
-/// The OSC number: ASCII `H` `O`, for HOTTY (SPEC §3.1).
+/// The OSC number: ASCII `H` `O`, for hotty (SPEC §3.1).
 pub const OSC_NUMBER: &str = "7279";
 /// Largest base64 payload per chunk (SPEC §3.4; VTE ignores longer strings).
 pub const CHUNK: usize = 4096;
@@ -100,7 +100,7 @@ impl<K: Into<String>, V: Into<String>> FromIterator<(K, V)> for Control {
     }
 }
 
-/// A complete HOTTY command: control data plus the decoded payload.
+/// A complete hotty command: control data plus the decoded payload.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Command {
     pub control: Control,
@@ -222,9 +222,9 @@ pub enum Event<'a> {
     /// A control sequence a host may need to act on. Its raw bytes must still
     /// be forwarded (or deliberately withheld) by the consumer.
     Seq(Seq, &'a [u8]),
-    /// A complete HOTTY command.
+    /// A complete hotty command.
     Command(Command),
-    /// A HOTTY command that could not be decoded; nothing was forwarded.
+    /// A hotty command that could not be decoded; nothing was forwarded.
     Invalid(String),
 }
 
@@ -266,7 +266,7 @@ pub struct Scanner {
     state: State,
     /// Bytes held back because they might start a sequence we must see whole.
     pending: Vec<u8>,
-    /// The chunk being collected (control + payload) of a HOTTY OSC.
+    /// The chunk being collected (control + payload) of a hotty OSC.
     ours: Vec<u8>,
     partial: Option<Partial>,
     /// A chunked command was dropped as too large: its further chunks are
@@ -426,7 +426,7 @@ impl Scanner {
                     } else {
                         // ESC inside our string aborts it (VT500 parser rule);
                         // the ESC starts whatever comes next.
-                        sink(Event::Invalid("HOTTY command aborted by ESC".into()));
+                        sink(Event::Invalid("hotty command aborted by ESC".into()));
                         self.ours.clear();
                         self.partial = None;
                         self.pending.push(ESC);

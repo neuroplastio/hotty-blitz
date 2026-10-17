@@ -12,7 +12,7 @@ stylesheets, their reload and `@import`, `Font` for `@font-face`,
 `Request::get` leaves it `Empty`. The struct was `non_exhaustive`
 already.
 
-**Why we carry it:** HOTTY applies a fetch policy per kind of resource, as
+**Why we carry it:** hotty applies a fetch policy per kind of resource, as
 CSP's `img-src`, `style-src` and `font-src` do (SPEC §7.2).
 
 **For upstream:** yes. It is fetch's own field, and any embedder with a

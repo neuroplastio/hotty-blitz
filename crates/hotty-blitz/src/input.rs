@@ -80,7 +80,7 @@ impl Key {
         }
     }
 
-    /// The key as HOTTY SPEC §10.4 names it, the name a keymap looks up
+    /// The key as hotty SPEC §10.4 names it, the name a keymap looks up
     /// (`ctrl+a`, `alt+arrow_left`, `shift+a`): a character, or the physical
     /// key where it has none. `None` for a key with no name here.
     pub fn spec_name(&self) -> Option<String> {
@@ -117,7 +117,7 @@ impl Key {
         }
     }
 
-    /// The key a name of HOTTY SPEC §10.4 names (as [`keys::decode_keys`]
+    /// The key a name of hotty SPEC §10.4 names (as [`keys::decode_keys`]
     /// reads it from what the terminal sent); `None` for a name that does
     /// not parse.
     pub fn from_spec_name(name: &str) -> Option<Key> {

@@ -51,7 +51,7 @@ struct Finger {
 }
 
 fn vectors() -> Value {
-    // The vectors live in the HOTTY repository: HOTTY_DIR, or a checkout next
+    // The vectors live in the hotty repository: HOTTY_DIR, or a checkout next
     // to this one (../hotty, or ../../hotty/main in the worktree layout).
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = std::env::var_os("HOTTY_DIR")
@@ -62,7 +62,7 @@ fn vectors() -> Value {
                 .find(|c| c.join("SPEC.md").exists())
         })
         .expect(
-            "no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository",
+            "no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository",
         );
     let path = dir.join("conformance/vectors.json");
     serde_json::from_str(&std::fs::read_to_string(&path).expect("conformance/vectors.json"))
@@ -965,7 +965,7 @@ fn the_reader_fails_what_no_host_sends() {
             (false, Ok(v)) => panic!("{b:02x?} reads as {v}"),
             // A timestamp msgpack defines, which an SDK skips in a field it
             // does not know, but no field has a host send.
-            (true, Err(e)) if e.contains("no field of HOTTY 0.2") => {}
+            (true, Err(e)) if e.contains("no field of hotty 0.2") => {}
             (true, Err(e)) => panic!("{e}"),
             (true, Ok(_)) => {}
         }

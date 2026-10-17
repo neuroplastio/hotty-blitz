@@ -8,7 +8,7 @@ public: true
 ---
 
 Blitz lays out text with Parley, at the revision Blitz pins, which is our
-`base`. hotty-blitz draws HOTTY surfaces, often with a terminal's
+`base`. hotty-blitz draws hotty surfaces, often with a terminal's
 monospace font stack, and Parley chose a font for emoji in a way that drew
 them in monochrome there. We mod Parley rather than fork it so that the
 fix stays one change on the revision Blitz builds with, until Parley has

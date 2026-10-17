@@ -1,7 +1,7 @@
-//! `hotty run -- <program>`: the kitty graphics polyfill (HOTTY SPEC §14).
+//! `hotty run -- <program>`: the kitty graphics polyfill (hotty SPEC §14).
 //!
 //! It owns a pty for the program and passes every byte through unchanged
-//! except HOTTY commands, which it executes against a [`Host`] and replaces,
+//! except hotty commands, which it executes against a [`Host`] and replaces,
 //! at the same position in the stream, with kitty graphics.
 
 use crate::input::InputRouter;
@@ -98,7 +98,7 @@ impl Shim {
             }
             Event::Invalid(e) => {
                 self.stats.invalid += 1;
-                crate::log(&format!("invalid HOTTY command: {e}"));
+                crate::log(&format!("invalid hotty command: {e}"));
             }
         });
         if !self.in_sync {

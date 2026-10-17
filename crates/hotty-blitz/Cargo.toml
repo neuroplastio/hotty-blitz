@@ -1,6 +1,6 @@
 [package]
 name = "hotty-blitz"
-description = "A HOTTY host on Blitz: surfaces, deltas, in-band resources, CPU rendering, and a C ABI"
+description = "A hotty host on Blitz: surfaces, deltas, in-band resources, CPU rendering, and a C ABI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -31,7 +31,7 @@ base64.workspace = true
 serde.workspace = true
 # The bodies a host sends are msgpack (SPEC §3.3, body.rs).
 rmp-serde.workspace = true
-# `Host::inspect`, a debugging view of an element: not a HOTTY body.
+# `Host::inspect`, a debugging view of an element: not a hotty body.
 serde_json.workspace = true
 keyboard-types = "0.7"
 stylo_static_prefs = "0.21"

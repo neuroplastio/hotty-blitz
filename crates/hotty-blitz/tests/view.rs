@@ -25,7 +25,7 @@ fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
     Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
-/// Every HOTTY event in the effects, as (`e`, `t`, detail).
+/// Every hotty event in the effects, as (`e`, `t`, detail).
 fn events(effects: &[Effect]) -> Vec<(String, String, Value)> {
     let mut out = Vec::new();
     let mut s = Scanner::new();

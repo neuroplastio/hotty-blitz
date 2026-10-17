@@ -14,6 +14,6 @@ event, form submission and `TextInputData::value` carry the value, and the
 the field composes nothing, and changing `type` to or from `password` masks
 or shows the value, which is how a page makes a reveal toggle.
 
-**Why we carry it:** HOTTY forms ask for passwords.
+**Why we carry it:** hotty forms ask for passwords.
 
 **For upstream:** yes. It is what browsers do, with tests in blitz-dom.

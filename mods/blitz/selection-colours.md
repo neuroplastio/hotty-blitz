@@ -10,7 +10,7 @@ own colours. The highlight is now the inline root's, or the text field's,
 text is drawn again over it, clipped to it, in each run's `::selection`
 colour.
 
-**Why we carry it:** HOTTY's host stylesheet colours selections with the
+**Why we carry it:** hotty's host stylesheet colours selections with the
 terminal's palette (SPEC §8).
 
 **For upstream:** yes. It is `::selection` as CSS has it.

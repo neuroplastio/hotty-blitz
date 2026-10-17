@@ -8,7 +8,7 @@ upstream-fit: yes
 bullet is a word of its own, so a double click selected one. As in a
 browser, a double click selects the whole value, as a triple click does.
 
-**Why we carry it:** password inputs in HOTTY forms.
+**Why we carry it:** password inputs in hotty forms.
 
 **For upstream:** yes, with "A password input shows a mask and edits its
 value".

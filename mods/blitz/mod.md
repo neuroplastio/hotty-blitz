@@ -7,9 +7,9 @@ builds: hotty-blitz
 public: true
 ---
 
-hotty-blitz is HOTTY's renderer: it lays out and paints a terminal
+hotty-blitz is hotty's renderer: it lays out and paints a terminal
 program's HTML surfaces with Blitz, behind the C ABI that hottyterm links
-and in the polyfill for other terminals. A HOTTY program changes its
+and in the polyfill for other terminals. A hotty program changes its
 documents by small deltas many times a second, and expects of them what a
 browser does: layout that costs the change rather than the document, form
 controls in the page's colour scheme, `srcset`, password inputs and

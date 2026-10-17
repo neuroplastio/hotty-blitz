@@ -1,4 +1,4 @@
-//! `hotty`: render HTML the way a HOTTY host would, and be one.
+//! `hotty`: render HTML the way a hotty host would, and be one.
 
 mod diacritics;
 mod dump;
@@ -14,7 +14,7 @@ use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
-hotty — HOTTY on Blitz: render, show, and `hotty run`, the kitty graphics polyfill
+hotty — hotty on Blitz: render, show, and `hotty run`, the kitty graphics polyfill
 
 usage:
   hotty render <file.html> [-o out.png] [--cols N] [--rows N|auto] [--cell WxH] [--scale S] [--font F] [--time]
@@ -22,8 +22,8 @@ usage:
   hotty run    [--transport shm|direct] [--frames on|off] [--scale S] [--font F] [--net POLICY] -- <program> [args…]
                                               --net: what surfaces may fetch, in CSP syntax
                                               (\"img-src https:\"); nothing without it
-  hotty send   <key=value>… [< payload]      write one HOTTY command to stdout
-  hotty dump   [FILE] [--all]                the HOTTY messages in a captured stream (stdin
+  hotty send   <key=value>… [< payload]      write one hotty command to stdout
+  hotty dump   [FILE] [--all]                the hotty messages in a captured stream (stdin
                                               without FILE), one line each, msgpack bodies
                                               as JSON; --all: the other bytes too
   hotty bench  [--frames N] [--only size|flat|nested]

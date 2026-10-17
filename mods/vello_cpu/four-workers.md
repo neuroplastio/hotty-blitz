@@ -12,7 +12,7 @@ dominates, while each worker adds dispatch and idle spinning to every
 small paint. With 4, replay paint time fell about 16% and CPU time about
 35% on the 5600X, and a full paint stayed within a millisecond.
 
-**Why we carry it:** HOTTY repaints are mostly small, and a host keeps 8
+**Why we carry it:** hotty repaints are mostly small, and a host keeps 8
 render contexts, so this halves its threads, from 64 to 32. The
 maintainer chose 4 (2026-10-10).
 

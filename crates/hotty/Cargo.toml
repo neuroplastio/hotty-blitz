@@ -1,6 +1,6 @@
 [package]
 name = "hotty"
-description = "hotty: render and show HOTTY surfaces, and `hotty run`, the kitty graphics polyfill"
+description = "hotty: render and show hotty surfaces, and `hotty run`, the kitty graphics polyfill"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

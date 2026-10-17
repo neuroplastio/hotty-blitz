@@ -14,7 +14,7 @@ buttons are drawn in the used scheme (`BaseDocument::used_color_scheme`),
 with Chromium's colours for `accent-color: auto` and its 13px geometry. A
 document's own colours still win.
 
-**Why we carry it:** surfaces on a dark terminal are dark (HOTTY SPEC
+**Why we carry it:** surfaces on a dark terminal are dark (hotty SPEC
 §8).
 
 **For upstream:** yes. Browsers draw controls this way; the shades are

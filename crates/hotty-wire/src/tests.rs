@@ -45,7 +45,7 @@ fn scan_split(input: &[u8], rng: &mut Lcg) -> Collected {
     out
 }
 
-/// Random terminal output that contains no HOTTY command.
+/// Random terminal output that contains no hotty command.
 fn noise(rng: &mut Lcg, len: usize) -> Vec<u8> {
     let pieces: [&[u8]; 14] = [
         b"hello ",
