@@ -536,10 +536,11 @@ impl Host {
         vec![Effect::Reply(terminal_event("caps", &Detail::Caps(c)))]
     }
 
-    /// The edit command a key is (SPEC §10.6): the edit action whose
-    /// shortcut it is, named as SPEC §10.4 names it.
-    pub fn edit_command(&self, name: &str) -> Option<String> {
-        self.keys.platform.edit_action(name)
+    /// The edit command a press is (SPEC §10.6): the edit action whose
+    /// shortcut either of its names is (`physical` and `other`, SPEC §10.4,
+    /// each possibly empty), the physical one first.
+    pub fn edit_command(&self, physical: &str, other: &str) -> Option<String> {
+        self.keys.platform.edit_press(&press_names(physical, other))
     }
 
     /// The event `command` (SPEC §10.6) for the program in the cells: the
@@ -557,11 +558,15 @@ impl Host {
     }
 
     /// A key that reaches the program in the cells, named as SPEC §10.4
-    /// names it, while it shows a level of its menu (SPEC §10.7): `escape`,
+    /// names it (a press has two names, each possibly empty), while it shows
+    /// a level of its menu (SPEC §10.7): `escape`,
     /// and a key the level does not list, hide it. Keys that reach no group
     /// list none. The key still reaches the program.
-    pub fn cells_key(&mut self, name: &str) {
-        self.cells_names(&[name.to_string()]);
+    pub fn cells_key(&mut self, physical: &str, other: &str) {
+        let names = press_names(physical, other);
+        if !names.is_empty() {
+            self.cells_names(&names);
+        }
     }
 
     /// [`Host::cells_key`] for a press with several names: it is listed if
@@ -2216,20 +2221,22 @@ impl Host {
             .or_else(|| self.surfaces.values().find_map(surface::Surface::selected_text))
     }
 
-    /// A key, named as SPEC §10.4 writes it, for the selection in a
+    /// A key as pressed, with its names (SPEC §10.4, each possibly empty,
+    /// the physical one looked up first), for the selection in a
     /// surface's document outside a text field (SPEC §11), which the
     /// terminal offers every key first, before the surface that has the
     /// keyboard and its own shortcuts, whether or not a surface has the
     /// keyboard. A focused text field's selection is its keymap's, through
     /// [`Host::key`].
-    pub fn copy_key(&self, name: &str) -> CopyKey {
-        let Some(name) = hotty_wire::keys::parse_key(name) else {
+    pub fn copy_key(&self, physical: &str, other: &str) -> CopyKey {
+        let names = press_names(physical, other);
+        if names.is_empty() {
             return CopyKey::None;
-        };
+        }
         let focused = self.focused_surface().and_then(|n| self.surfaces.get(n));
         let found = focused
-            .and_then(|s| s.copy_key(&name))
-            .or_else(|| self.surfaces.values().find_map(|s| s.copy_key(&name)));
+            .and_then(|s| s.copy_key(&names))
+            .or_else(|| self.surfaces.values().find_map(|s| s.copy_key(&names)));
         match found {
             None => CopyKey::None,
             Some(Some(text)) => CopyKey::Copy(text),
@@ -2253,6 +2260,20 @@ impl Host {
             .find(|(_, s)| s.has_focus())
             .map(|(n, _)| n.as_str())
     }
+}
+
+/// The canonical names of a press (SPEC §10.4), the physical one first,
+/// leaving out one that is empty or does not parse.
+fn press_names(physical: &str, other: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for n in [physical, other] {
+        if let Some(n) = keys::parse_key(n)
+            && !names.contains(&n)
+        {
+            names.push(n);
+        }
+    }
+    names
 }
 
 /// An event of the terminal's, of no surface (SPEC §9): `command` and

@@ -3779,23 +3779,23 @@ fn copying_follows_the_keymap() {
     h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")], ""));
     render(&mut h);
     let m = Mods::default();
-    assert_eq!(h.copy_key("ctrl+c"), CopyKey::None);
+    assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::None);
     // A double click selects a word in #a, whose keymap is the default.
     for n in 1..=2 {
         h.pointer_counted("x", PointerKind::Down, 10.0, 25.0, m, n);
         h.pointer_counted("x", PointerKind::Up, 10.0, 25.0, m, n);
     }
-    assert_eq!(h.copy_key("ctrl+c"), CopyKey::Copy("copy".into()));
+    assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::Copy("copy".into()));
     // `super+c` copies where `mod` is `super` (SPEC §10.2), and not here.
-    assert_eq!(h.copy_key("super+c"), CopyKey::Other);
-    assert_eq!(h.copy_key("ctrl+x"), CopyKey::Other);
+    assert_eq!(h.copy_key("super+c", ""), CopyKey::Other);
+    assert_eq!(h.copy_key("ctrl+x", ""), CopyKey::Other);
     // In #b, `ctrl+c` is the program's, and `ctrl+k` copies.
     for n in 1..=2 {
         h.pointer_counted("x", PointerKind::Down, 10.0, 60.0, m, n);
         h.pointer_counted("x", PointerKind::Up, 10.0, 60.0, m, n);
     }
-    assert_eq!(h.copy_key("ctrl+c"), CopyKey::Other);
-    assert_eq!(h.copy_key("ctrl+k"), CopyKey::Copy("not".into()));
+    assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::Other);
+    assert_eq!(h.copy_key("ctrl+k", ""), CopyKey::Copy("not".into()));
 
     // A focused field copies its selection by its own keymap.
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
@@ -3809,9 +3809,40 @@ fn copying_follows_the_keymap() {
     };
     assert!(!h.key("x", &ctrl("c")).consumed, "nothing selected");
     h.key("x", &ctrl("a"));
-    assert_eq!(h.copy_key("ctrl+c"), CopyKey::None);
+    assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::None);
     let o = h.key("x", &ctrl("c"));
     assert!(o.consumed);
     assert!(o.effects.contains(&Effect::Clipboard("one two".into())), "{:?}", o.effects);
     assert_eq!(h.text_field("x", "f").unwrap().0, "one two");
+}
+
+/// A key to the selection has two names, and the selection's keymap goes
+/// by the first it binds, the physical one first (SPEC §10.4, §11).
+#[test]
+fn copying_goes_by_either_name() {
+    use hotty_blitz::CopyKey;
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0;font:16px monospace}</style>\
+         <p id=a data-keys='ctrl+key_c=program ctrl+c=copy ctrl+key_k=copy ctrl+j=copy'>copy me</p>",
+    ));
+    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")], ""));
+    render(&mut h);
+    let m = Mods::default();
+    for n in 1..=2 {
+        h.pointer_counted("x", PointerKind::Down, 10.0, 25.0, m, n);
+        h.pointer_counted("x", PointerKind::Up, 10.0, 25.0, m, n);
+    }
+    let copy = CopyKey::Copy("copy".into());
+    // A physical binding, a character binding.
+    assert_eq!(h.copy_key("ctrl+key_k", "ctrl+k"), copy);
+    assert_eq!(h.copy_key("ctrl+key_k", ""), copy);
+    assert_eq!(h.copy_key("ctrl+key_j", "ctrl+j"), copy);
+    assert_eq!(h.copy_key("", "ctrl+j"), copy);
+    assert_eq!(h.copy_key("ctrl+key_q", "ctrl+q"), CopyKey::Other);
+    // Both bound: the physical `program` wins over the character's `copy`.
+    assert_eq!(h.copy_key("ctrl+key_c", "ctrl+c"), CopyKey::Other);
+    assert_eq!(h.copy_key("", "ctrl+c"), copy);
+    assert_eq!(h.copy_key("", ""), CopyKey::None);
 }

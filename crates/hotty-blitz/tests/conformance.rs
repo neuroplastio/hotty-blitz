@@ -439,7 +439,7 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
         None => true,
     };
     if terminal
-        && let Some(c) = host.edit_command(&name)
+        && let Some(c) = host.edit_command(&name, "")
         && mouse.taken.contains(&c)
     {
         sent.extend(Host::command_event(&c, Some(&name), None));
@@ -447,7 +447,7 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
     }
     // A key that reaches the cells may hide the level shown (SPEC §10.7).
     if terminal {
-        host.cells_key(&name);
+        host.cells_key(&name, "");
     }
     check_terminal(step, terminal)?;
     check_events(step, &events(&from_host(&sent)?))

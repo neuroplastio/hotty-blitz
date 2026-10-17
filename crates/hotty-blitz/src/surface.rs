@@ -1515,7 +1515,7 @@ impl Surface {
     /// or a focused text field holds the selection; else its text when the
     /// keymap of the element whose text it starts in, read as a text
     /// field's, binds the key to `copy`, and `Some(None)` when it does not.
-    pub fn copy_key(&self, name: &str) -> Option<Option<String>> {
+    pub fn copy_key(&self, names: &[String]) -> Option<Option<String>> {
         if self
             .focused()
             .is_some_and(|id| self.doc.text_input_selection(id).is_some())
@@ -1530,7 +1530,8 @@ impl Surface {
         let text = self.selected_text()?;
         let values = self.keymap_values(first);
         let keymap = keys::resolve(&self.settings.platform, false, values.iter().map(String::as_str));
-        Some((keymap.lookup(name) == Some("copy")).then_some(text))
+        let copies = keymap.press(names).and_then(|n| keymap.lookup(n)) == Some("copy");
+        Some(copies.then_some(text))
     }
 
     /// Drops the document's selection: the user pressed somewhere else

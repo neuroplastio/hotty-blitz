@@ -135,7 +135,7 @@ fn a_level_of_the_programs_menu() {
     assert!(matches!(fx.as_slice(), [Effect::Menu { rows: 2, .. }]), "{fx:?}");
     assert!(h.text_rows(MENU).is_empty(), "the menu is no program's surface");
     // Listed keys leave it, to the cells and to a surface.
-    h.cells_key("n");
+    h.cells_key("n", "");
     assert!(shown(&mut h).is_empty(), "n is listed");
     assert!(!h.key_bytes("x", b"n").consumed);
     assert!(shown(&mut h).is_empty(), "n is listed");
@@ -147,12 +147,12 @@ fn a_level_of_the_programs_menu() {
     // Escape, to the cells.
     level(&mut h);
     assert_eq!(shown(&mut h).len(), 1);
-    h.cells_key("escape");
+    h.cells_key("escape", "");
     assert_eq!(shown(&mut h), hidden);
     // A key to the cells that it does not list.
     level(&mut h);
     shown(&mut h);
-    h.cells_key("q");
+    h.cells_key("q", "");
     assert_eq!(shown(&mut h), hidden);
     // `show=0` hides it, and so does the screen changing.
     level(&mut h);
@@ -213,9 +213,9 @@ fn a_program_takes_edit_commands() {
         b"",
     ));
     assert_eq!(fx, vec![Effect::Edit(vec!["copy".into(), "paste".into()])]);
-    assert_eq!(h.edit_command("ctrl+v").as_deref(), Some("paste"));
-    assert_eq!(h.edit_command("ctrl+shift+z").as_deref(), Some("redo"));
-    assert_eq!(h.edit_command("super+v"), None);
+    assert_eq!(h.edit_command("ctrl+v", "").as_deref(), Some("paste"));
+    assert_eq!(h.edit_command("ctrl+shift+z", "").as_deref(), Some("redo"));
+    assert_eq!(h.edit_command("super+v", ""), None);
     let r = replies(&[Effect::Reply(Host::command_event(
         "paste",
         Some("ctrl+v"),
@@ -354,4 +354,32 @@ fn a_press_with_two_names_is_the_surfaces_by_either() {
     // A modifier tapped alone is nobody's.
     assert!(!h.key_pressed("f", "shift_left", "shift").consumed);
     assert!(!h.key_pressed("f", "", "").consumed);
+}
+
+/// The edit command a press is: by either name, the physical one first
+/// where each is a different shortcut (SPEC §10.4, §10.6).
+#[test]
+fn an_edit_command_is_found_by_either_name() {
+    let h = host(KeySettings {
+        platform: Platform {
+            mod_super: false,
+            edit: Some(vec![
+                ("copy".into(), vec!["ctrl+key_c".into()]),
+                ("paste".into(), vec!["ctrl+v".into()]),
+                ("cut".into(), vec!["ctrl+key_x".into()]),
+                ("undo".into(), vec!["ctrl+x".into()]),
+            ]),
+        },
+        commands: true,
+        ..KeySettings::default()
+    });
+    // A physical binding, a character binding.
+    assert_eq!(h.edit_command("ctrl+key_c", "ctrl+c").as_deref(), Some("copy"));
+    assert_eq!(h.edit_command("ctrl+key_v", "ctrl+v").as_deref(), Some("paste"));
+    assert_eq!(h.edit_command("", "ctrl+v").as_deref(), Some("paste"));
+    assert_eq!(h.edit_command("ctrl+key_v", ""), None);
+    // Both bound: the physical one wins.
+    assert_eq!(h.edit_command("ctrl+key_x", "ctrl+x").as_deref(), Some("cut"));
+    assert_eq!(h.edit_command("", "ctrl+x").as_deref(), Some("undo"));
+    assert_eq!(h.edit_command("", ""), None);
 }

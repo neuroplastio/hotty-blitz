@@ -198,14 +198,18 @@ const char *hotty_host_selected_text(hotty_host *h);
  * A press on a surface drops the others' itself. */
 void hotty_host_clear_selection(hotty_host *h);
 
-/* A key, named as SPEC 10.4 writes it, for the selection in a surface's
- * document outside a text field (SPEC 11), offered before the surface that
- * has the keyboard and the terminal's own shortcuts, keyboard or not.
+/* A key as pressed, for the selection in a surface's document outside a
+ * text field (SPEC 11), offered before the surface that has the keyboard
+ * and the terminal's own shortcuts, keyboard or not. It has up to two
+ * names, as for hotty_host_key_pressed (physical, other; either may be
+ * empty, not both): the selection's keymap goes by the first it binds,
+ * the physical one first.
  * 0: no surface has such a selection; the key goes on. 1: its keymap binds
  * the key to copy: *text is the text for the clipboard, valid until the
  * next call, and the key goes no further. 2: it does not: the key goes on
  * as if nothing were selected, and the terminal copies nothing with it. */
-int hotty_host_copy_key(hotty_host *h, const uint8_t *name, size_t len, const char **text);
+int hotty_host_copy_key(hotty_host *h, const uint8_t *physical, size_t physical_len,
+                        const uint8_t *other, size_t other_len, const char **text);
 
 /* Types the UTF-8 text into the focused text field of the surface that has
  * the keyboard, as a field's paste does (SPEC 10.2, 11): the clipboard read
@@ -247,9 +251,12 @@ void hotty_host_set_waker(hotty_host *h, void (*wake)(void *ctx), void *ctx);
  * capabilities hears what changed ("caps") through fx. */
 void hotty_host_set_keys(hotty_host *h, bool mod_super, const char *edit, bool commands, bool menus,
                          const hotty_effects *fx);
-/* The edit command a key is (SPEC 10.6): the edit action whose shortcut
- * the key is, static and NUL-terminated; NULL for none. */
-const char *hotty_host_edit_command(hotty_host *h, const uint8_t *name, size_t len);
+/* The edit command a press is (SPEC 10.6): the edit action whose shortcut
+ * either of its names is (physical, other, as for hotty_host_key_pressed;
+ * either may be empty, not both), the physical one first. Static and
+ * NUL-terminated; NULL for none. */
+const char *hotty_host_edit_command(hotty_host *h, const uint8_t *physical, size_t physical_len,
+                                    const uint8_t *other, size_t other_len);
 /* Sends the program in the cells the edit command `name` (SPEC 10.6)
  * through fx's reply: from the key `key` (NULL from a menu), and, for a
  * paste, the clipboard's UTF-8 `text` (NULL when it holds no text). */
@@ -257,9 +264,13 @@ void hotty_host_command(const char *name, const uint8_t *key, size_t key_len,
                         const uint8_t *text, size_t text_len, const hotty_effects *fx);
 /* A key that reaches the program in the cells while a level of its menu may
  * show (SPEC 10.7): "escape", and a key the level does not list, hide it.
+ * The key has up to two names (physical, other, as for
+ * hotty_host_key_pressed; either may be empty, not both); it is listed if
+ * the level lists either.
  * Keys for a surface hide it as well, through hotty_host_key_pressed and
  * hotty_host_key_bytes. */
-void hotty_host_cells_key(hotty_host *h, const uint8_t *name, size_t len);
+void hotty_host_cells_key(hotty_host *h, const uint8_t *physical, size_t physical_len,
+                          const uint8_t *other, size_t other_len);
 /* The terminal's screen changed, or is told for the first time (SPEC 10.7):
  * leaving the alternate screen drops its menu, and any change hides the
  * level shown. */

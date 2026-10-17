@@ -145,7 +145,7 @@ fn a_new_menu_shows_the_same_keys_level_of_it() {
     set(&mut h, &files());
     assert_eq!(keys(&h), Some(vec!["f".into(), "q".into()]));
     set(&mut h, &json!({"items": []}));
-    h.cells_key("z");
+    h.cells_key("z", "");
     set(&mut h, &files());
     assert_eq!(keys(&h), None);
 }
@@ -255,4 +255,33 @@ fn a_screen_change_hides_the_level() {
     show(&mut h, &[]);
     flush(&mut h);
     assert_eq!(h.reset(), vec![Effect::Delete { surface: MENU.into() }]);
+}
+
+/// A key to the cells has up to two names, and the level lists it if it
+/// lists either (SPEC §10.4, §10.7).
+#[test]
+fn a_cells_key_with_two_names_is_listed_by_either() {
+    let mut h = host();
+    let items = json!({"items": [
+        {"key": "ctrl+key_w", "label": "Physical", "enabled": true,
+         "items": [{"key": "a", "label": "A", "enabled": true}]},
+        {"key": "ctrl+x", "label": "Character", "enabled": true,
+         "items": [{"key": "a", "label": "A", "enabled": true}]},
+    ]});
+    // Listed by its physical name, by its character, by either of two.
+    for (physical, other, listed) in [
+        ("ctrl+key_w", "", true),
+        ("ctrl+key_w", "ctrl+w", true),
+        ("", "ctrl+x", true),
+        ("ctrl+key_x", "ctrl+x", true),
+        ("ctrl+key_x", "", false),
+        ("ctrl+key_q", "ctrl+q", false),
+        ("", "ctrl+w", false),
+    ] {
+        set(&mut h, &items);
+        show(&mut h, &[]);
+        assert!(keys(&h).is_some());
+        h.cells_key(physical, other);
+        assert_eq!(keys(&h).is_some(), listed, "{physical:?} {other:?}");
+    }
 }

@@ -766,6 +766,21 @@ impl Platform {
     }
 }
 
+impl Platform {
+    /// The edit action whose shortcut a press is, by either of its names
+    /// (canonical, the physical one first, SPEC §10.4).
+    pub fn edit_press(&self, names: &[String]) -> Option<String> {
+        let mut m = Keymap::new(self.mod_super, false);
+        for (a, keys) in self.edit() {
+            for k in keys {
+                m.bind(&k, &a);
+            }
+        }
+        let name = names.iter().find(|n| m.binds(n))?;
+        m.bound(name).map(str::to_string)
+    }
+}
+
 /// Bindings of keys to actions (SPEC §10.2), read on a [`Platform`].
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {

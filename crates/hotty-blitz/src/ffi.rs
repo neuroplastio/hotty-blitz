@@ -756,32 +756,47 @@ pub unsafe extern "C" fn hotty_host_selected_text(h: *mut HottyHost) -> *const c
     })
 }
 
-/// A key, named as SPEC §10.4 writes it, for the selection in a surface's
-/// document outside a text field (SPEC §11), offered before the surface
-/// that has the keyboard and the terminal's own shortcuts, whether or not a
-/// surface has the keyboard. 0: no surface has such a selection, and the
-/// key goes on. 1: the selection's keymap binds the key to `copy`; `*text`
-/// is the text to put on the clipboard, valid until the next call, and the
-/// key goes no further. 2: it does not, and the key goes on as if nothing
-/// were selected, the terminal copying nothing with it.
+/// A press's two names from the C ABI (SPEC §10.4), each possibly empty;
+/// `None` when both are or either is not UTF-8.
+unsafe fn press<'a>(p: *const u8, pn: usize, o: *const u8, on: usize) -> Option<(&'a str, &'a str)> {
+    let text = |p: *const u8, n: usize| -> Option<&'a str> {
+        if p.is_null() || n == 0 {
+            return Some("");
+        }
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, n) }).ok()
+    };
+    let (p, o) = (text(p, pn)?, text(o, on)?);
+    (!p.is_empty() || !o.is_empty()).then_some((p, o))
+}
+
+/// A key as pressed, for the selection in a surface's document outside a
+/// text field (SPEC §11), offered before the surface that has the keyboard
+/// and the terminal's own shortcuts, whether or not a surface has the
+/// keyboard. It has up to two names, as for [`hotty_host_key_pressed`]
+/// (`physical`, `other`; either may be empty, not both); the selection's
+/// keymap goes by the first it binds, the physical one first. 0: no surface
+/// has such a selection, and the key goes on. 1: the selection's keymap
+/// binds the key to `copy`; `*text` is the text to put on the clipboard,
+/// valid until the next call, and the key goes no further. 2: it does not,
+/// and the key goes on as if nothing were selected, the terminal copying
+/// nothing with it.
 ///
 /// # Safety
-/// `h` must be valid, `name` must point to `len` bytes, and `text` must be
-/// null or valid.
+/// `h` must be valid, `physical` and `other` must point to their lengths in
+/// bytes (null when 0), and `text` must be null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_copy_key(
     h: *mut HottyHost,
-    name: *const u8,
-    len: usize,
+    physical: *const u8,
+    physical_len: usize,
+    other: *const u8,
+    other_len: usize,
     text: *mut *const c_char,
 ) -> c_int {
-    if name.is_null() || len == 0 {
-        return 0;
-    }
-    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) }) else {
         return 0;
     };
-    guard(h, 0, |h| match h.host.copy_key(name) {
+    guard(h, 0, |h| match h.host.copy_key(physical, other) {
         CopyKey::None => 0,
         CopyKey::Other => 2,
         CopyKey::Copy(t) => {
@@ -985,24 +1000,29 @@ fn edit_shortcuts(value: &str) -> Vec<(String, Vec<String>)> {
     out
 }
 
-/// The edit command a key is (SPEC §10.6): the edit action whose shortcut
-/// the key `name` is, UTF-8 as SPEC §10.4 names it, NUL-terminated and
-/// static; null for none.
+/// The edit command a press is (SPEC §10.6): the edit action whose shortcut
+/// either of its names is (`physical`, `other`, UTF-8 as for
+/// [`hotty_host_key_pressed`]; either may be empty, not both), the physical
+/// one first. NUL-terminated and static; null for none.
 ///
 /// # Safety
-/// `h` must be valid; `name` must hold `len` bytes.
+/// `h` must be valid; `physical` and `other` must hold their lengths in
+/// bytes (null when 0).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_edit_command(h: *mut HottyHost, name: *const u8, len: usize) -> *const c_char {
+pub unsafe extern "C" fn hotty_host_edit_command(
+    h: *mut HottyHost,
+    physical: *const u8,
+    physical_len: usize,
+    other: *const u8,
+    other_len: usize,
+) -> *const c_char {
     const NAMES: [&CStr; 6] = [c"select-all", c"copy", c"cut", c"paste", c"undo", c"redo"];
-    if name.is_null() || len == 0 {
-        return std::ptr::null();
-    }
-    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) }) else {
         return std::ptr::null();
     };
     guard(h, std::ptr::null(), |h| {
         h.host
-            .edit_command(name)
+            .edit_command(physical, other)
             .and_then(|a| NAMES.iter().find(|n| n.to_bytes() == a.as_bytes()))
             .map_or(std::ptr::null(), |n| n.as_ptr())
     })
@@ -1037,22 +1057,27 @@ pub unsafe extern "C" fn hotty_host_command(
     run_effects(vec![Effect::Reply(event)], fx);
 }
 
-/// A key that reaches the program in the cells, UTF-8 as SPEC §10.4 names
-/// it, while a level of the program's menu may show (SPEC §10.7): `escape`,
-/// and a key it does not list, hide the level. The key still reaches the
-/// program.
+/// A key that reaches the program in the cells, while a level of the
+/// program's menu may show (SPEC §10.7): `escape`, and a key it does not
+/// list, hide the level. The key has up to two names, UTF-8 as for
+/// [`hotty_host_key_pressed`] (either may be empty, not both); it is listed
+/// if the level lists either. The key still reaches the program.
 ///
 /// # Safety
-/// `h` must be valid; `name` must hold `len` bytes.
+/// `h` must be valid; `physical` and `other` must hold their lengths in
+/// bytes (null when 0).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_cells_key(h: *mut HottyHost, name: *const u8, len: usize) {
-    if name.is_null() || len == 0 {
-        return;
-    }
-    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name, len) }) else {
+pub unsafe extern "C" fn hotty_host_cells_key(
+    h: *mut HottyHost,
+    physical: *const u8,
+    physical_len: usize,
+    other: *const u8,
+    other_len: usize,
+) {
+    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) }) else {
         return;
     };
-    guard(h, (), |h| h.host.cells_key(name))
+    guard(h, (), |h| h.host.cells_key(physical, other))
 }
 
 /// The terminal's screen changed, or is told for the first time (SPEC
