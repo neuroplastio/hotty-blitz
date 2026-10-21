@@ -1295,10 +1295,14 @@ impl Host {
                     net: now.net,
                     edit: now.edit,
                     host: "hotty-blitz",
-                    // Raised with a change a program may need to know of
-                    // (SPEC §15): 0.0.2 paints a box resized through a var
-                    // delta (Blitz fork 0005); 0.0.3 takes `a=delta`, which
-                    // was `a=patch`, and no longer the old name.
+                    // The package's version. From 0.4.0, the first under gov
+                    // P-5 rule 6, its MAJOR.MINOR is the hotty version the
+                    // host speaks (VERSION), and its PATCH is raised with a
+                    // change of its own a program may need to know of (SPEC
+                    // §15). Before that it counted those changes alone: 0.0.2
+                    // paints a box resized through a var delta (Blitz fork
+                    // 0005); 0.0.3 takes `a=delta`, which was `a=patch`, and
+                    // no longer the old name.
                     version: env!("CARGO_PKG_VERSION"),
                 };
                 Ok((Vec::new(), Some(body::encode(&caps))))

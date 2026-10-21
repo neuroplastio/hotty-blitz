@@ -2243,7 +2243,10 @@ fn a_drag_selects_no_text_and_neither_does_user_select_none() {
 /// The capabilities name the implementation and its version (SPEC §4, §15):
 /// a program sends var deltas only from the version that lays a var
 /// delta out like a fresh document (0.0.2), and `a=delta` only from the
-/// version that took the name (0.0.3).
+/// version that took the name (0.0.3). From 0.4.0, the first under gov P-5
+/// rule 6, the version's MAJOR.MINOR is the hotty version the host speaks
+/// (conformance.rs, `the_version_is_the_specs`), so every version since is
+/// above both.
 #[test]
 fn the_capabilities_name_the_host_and_its_version() {
     let mut h = host();

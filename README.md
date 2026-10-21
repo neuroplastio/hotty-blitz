@@ -16,6 +16,9 @@ lists 0.4 among the versions its program speaks (`a=q:n=1:v=0.4`, SPEC §4)
 with its capabilities, and any other, one with no `v` too, with `EVERSION`:
 a program of 0.2 finds no host.
 
+0.4.x speaks hotty 0.4; the patch number is this repository's own. The
+capabilities name it: `"host": "hotty-blitz"`, `"version": "0.4.0"`.
+
 ## Try it
 
 Needs [mise](https://mise.jdx.dev) and a checkout of `neuroplastio/hotty`
