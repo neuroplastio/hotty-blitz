@@ -6,12 +6,15 @@ CARGO ?= mise x -- cargo
 HOTTY_DIR ?= $(abspath $(patsubst %/SPEC.md,%,$(firstword $(wildcard ../hotty/SPEC.md ../../hotty/main/SPEC.md))))
 export HOTTY_DIR
 
-.PHONY: check mods canary build release test fuzz clippy fmt corpus bench oracle blitz hotty
+.PHONY: check mods canary build release test fuzz clippy fmt corpus bench oracle blitz hotty hotty-rs
 
 check: mods build test clippy test-pty fuzz   ## the gate
 
 hotty:
 	@test -n "$(HOTTY_DIR)" || { echo "no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
+
+hotty-rs:   ## hotty-rs, whose hotty crate this one builds with (a path dependency until it is published, gov P-5)
+	@test -f ../hotty-rs/crates/hotty/Cargo.toml || { echo "no hotty-rs checkout: clone neuroplastio/hotty-rs next to this repository"; exit 1; }
 
 # A set's base, from its mod.md.
 base = $(shell sed -n 's/^base:[[:space:]]*\([^[:space:]\#]*\).*/\1/p' mods/$(1)/mod.md)
@@ -30,22 +33,22 @@ mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the o
 canary: blitz   ## do the sets in mods/ still apply to upstream's latest?
 	@scripts/canary.sh
 
-build: blitz
+build: blitz hotty-rs
 	$(CARGO) build --workspace
 
-release: blitz
+release: blitz hotty-rs
 	$(CARGO) build --release --workspace
 
-test: blitz hotty
+test: blitz hotty hotty-rs
 	$(CARGO) test --workspace -q
 
 test-pty: release hotty   ## input routing through the polyfill, this script as the terminal
 	python3 tests/m3_form.py
 
-fuzz: blitz   ## random deltas, rendered, in a release build: no panic (tests/fuzz.rs)
+fuzz: blitz hotty-rs   ## random deltas, rendered, in a release build: no panic (tests/fuzz.rs)
 	$(CARGO) test --release -q -p hotty-blitz --test fuzz
 
-clippy: blitz
+clippy: blitz hotty-rs
 	$(CARGO) clippy --workspace -q -- -D warnings
 
 fmt:

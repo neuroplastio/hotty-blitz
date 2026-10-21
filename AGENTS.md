@@ -25,12 +25,19 @@ for the hotty repository.
   export, `scripts/mods.py relink <set> <dir>` points each `.md` at its
   renumbered patch. `make mods` checks the sets and that each applies on
   its base; `make canary` tries them on upstream's latest.
-- **A body is typed** (SPEC §3.3): every reply and event body is a serde
-  type in `src/body.rs`, written as one msgpack map, each field as the
-  spec's tables type it, and holds nothing §3.3 has no host send (nil, a
-  key that is not a str or is given twice, an int past 2^53 − 1). Tests
-  read bodies back with `tests/common`, which keeps `2.0` a float and
-  fails such a body; `hotty dump` shows a captured stream's, and flags it.
+- **The protocol is hotty-rs's `hotty` crate**, at `../hotty-rs` (a path
+  dependency, until it is published, gov P-5): the splitter a program's
+  output goes through, the readers of its commands, and the writers of
+  every reply and event. A change to how hotty reads or writes goes there,
+  where hotty-rs's gate checks it against the SDK vectors, and comes back
+  here with this suite.
+- **A body is typed** (SPEC §3.3): an event's detail is a `Detail` in
+  `src/body.rs`, written by `hotty::host::encode_event` as one msgpack map,
+  each field as the spec's tables type it, holding nothing §3.3 has no
+  host send (nil, a key that is not a str or is given twice, an int past
+  2^53 − 1). Tests read bodies back with `tests/common`, which keeps `2.0`
+  a float and fails such a body; `hotty dump` shows a captured stream's,
+  and flags it.
 - **The C ABI** (`include/hotty_blitz.h`, `src/ffi.rs`) is what terminals
   link. Change both together, and say so in the commit message: forks
   pinned to an older ABI break.

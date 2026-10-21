@@ -1069,7 +1069,7 @@ fn wire_vectors() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The keys section (SPEC §10.4): what hotty-wire reads from the terminal,
+/// The keys section (SPEC §10.4): what hotty::keys reads from the terminal,
 /// and the names it reads from documents.
 #[test]
 fn keys_vectors() {

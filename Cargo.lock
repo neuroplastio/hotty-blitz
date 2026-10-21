@@ -785,7 +785,6 @@ dependencies = [
  "blitz-paint",
  "blitz-traits",
  "hotty",
- "hotty-wire",
  "image",
  "keyboard-types",
  "kurbo",
@@ -811,7 +810,6 @@ dependencies = [
  "flate2",
  "hotty",
  "hotty-blitz",
- "hotty-wire",
  "libc",
  "nix",
  "png 0.17.16",
@@ -819,15 +817,6 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "vt100",
-]
-
-[[package]]
-name = "hotty-wire"
-version = "0.4.0"
-dependencies = [
- "base64 0.22.1",
- "flate2",
- "unicode-segmentation",
 ]
 
 [[package]]

@@ -9,7 +9,6 @@ license.workspace = true
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
-hotty-wire.workspace = true
 hotty.workspace = true
 unicode-segmentation.workspace = true
 blitz-dom.workspace = true
@@ -29,9 +28,6 @@ anyrender_vello_cpu.workspace = true
 # is added here; the version is the one anyrender_vello_cpu already brings.
 vello_cpu = { version = "0.1", default-features = false, features = ["png"] }
 base64.workspace = true
-serde.workspace = true
-# The bodies a host sends are msgpack (SPEC §3.3, body.rs).
-rmp-serde.workspace = true
 # `Host::inspect`, a debugging view of an element: not a hotty body.
 serde_json.workspace = true
 keyboard-types = "0.7"
@@ -49,5 +45,8 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] 
 phase-times = ["blitz-dom/log-phase-times"]
 
 [dev-dependencies]
+# Bodies a test writes by hand, as a program would send them.
+rmp-serde.workspace = true
+serde.workspace = true
 # An APNG for the tests (`image` writes their GIFs).
 png.workspace = true

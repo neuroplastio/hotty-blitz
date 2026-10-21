@@ -7,7 +7,6 @@
 
 use crate::Effect;
 use crate::body::{self, Detail};
-use hotty::Control;
 use hotty::keys;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,15 +295,8 @@ pub struct Event {
 
 impl Event {
     pub fn encode(&self, surface: &str) -> Vec<u8> {
-        let mut c = Control::default();
-        c.set("a", "ev");
-        c.set("s", surface);
-        c.set("e", self.kind);
         // `t` names an element, and is absent where none is meant (SPEC §9).
-        if !self.target.is_empty() {
-            c.set("t", self.target.as_str());
-        }
-        let body = self.detail.as_ref().map(body::encode).unwrap_or_default();
-        hotty::encode_plain(&c, &body).into_bytes()
+        let e = body::event(self.kind, Some(surface), &self.target, self.detail.as_ref());
+        hotty::host::encode_event(&e).into_bytes()
     }
 }

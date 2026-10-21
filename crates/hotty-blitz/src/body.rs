@@ -1,40 +1,16 @@
-//! The bodies of hotty (SPEC §3.3) that a host sends: the capabilities
-//! (§4), an error (§3.6) and an event's detail (§9). A program's (a delta,
-//! a menu, touch areas) are read by the hotty crate's host side
-//! (`hotty::host`). Each is one msgpack map, and each
-//! of its fields has a type, as the spec's tables give it: an int goes out
-//! as an int, a float as a float even when it is whole (`scale: 2.0`), and
-//! a field the host has nothing for is left out, never sent as nil.
-//!
-//! Nothing here writes what a body may not hold (§3.3), which would fail
-//! the whole body for its reader: no nil (an `Option` is skipped when
-//! `None`), no key but a str (fields by name, and maps from `String` or a
-//! directive's name), no key twice in one map (a struct's fields have
-//! names of their own, none flattened or renamed into another's, and a
-//! map's keys are a `BTreeMap`'s, each directive's name its own), no str
-//! but UTF-8 (Rust's), and no int further than [`MAX_INT`] from zero: an
-//! int is narrow enough to stay within it, or is held there, as `area` is
-//! where it is measured, a step by its count (`data-steps`, §9.1), and
-//! `limits` here.
+//! The details of the events a host sends (SPEC §9), as hotty-blitz has
+//! them: one type for each kind's. The hotty crate's host side writes them
+//! (`hotty::host::encode_event`), and the capabilities and errors too
+//! (`caps_body`, `reply_err`), each body one msgpack map with each field of
+//! the type the spec's tables give it, nothing in it that a body may not
+//! hold (SPEC §3.3); it reads what a program sends (`delta_of`, `menu_of`,
+//! `touch_of`).
 
-use crate::policy::Policy;
-use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// The largest int a body carries, either way from zero (SPEC §3.3), so
 /// that a reader whose numbers are doubles holds it exactly.
 pub const MAX_INT: i64 = (1 << 53) - 1;
-
-/// `value` as msgpack: a struct as a map of its fields by name (rmp-serde
-/// writes one as an array unless told), ints in their smallest form, and
-/// floats in 64 bits.
-pub fn encode(value: &impl Serialize) -> Vec<u8> {
-    let mut out = Vec::new();
-    value
-        .serialize(&mut rmp_serde::Serializer::new(&mut out).with_struct_map())
-        .expect("a body has no map or array of unknown length");
-    out
-}
 
 /// An `f32` as the `f64` it reads as: a scale of 1.6 is sent as 1.6, not
 /// as 1.600000023841858.
@@ -42,91 +18,12 @@ pub fn float(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(f64::from(v))
 }
 
-/// The capabilities (SPEC §4): the body of the reply to `a=q`.
-#[derive(Clone, Debug, Serialize)]
-pub struct Caps {
-    /// The version the host answers in, which the query listed (§4).
-    pub v: &'static str,
-    /// One cell, in CSS pixels.
-    pub cellcss: CellCss,
-    pub scale: f64,
-    pub scheme: &'static str,
-    /// The modifier `Mod` stands for in bindings (SPEC §10.4).
-    #[serde(rename = "mod")]
-    pub modifier: &'static str,
-    /// The optional features the host has (§4); absent: none.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub features: Vec<&'static str>,
-    pub limits: Limits,
-    /// The host's half of the network policy (§7.2): directive to
-    /// sources, empty unless its user granted something.
-    pub net: Policy,
-    /// The edit shortcuts (SPEC §10.2), where the terminal takes edit
-    /// commands from a program in the cells (§10.6).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub edit: Option<Edit>,
-    pub host: &'static str,
-    pub version: &'static str,
-}
-
 /// The edit shortcuts (SPEC §4, §10.2): each edit action, with its keys.
 pub type Edit = BTreeMap<String, Vec<String>>;
 
-/// What a `caps` event carries (SPEC §9): the fields of the capabilities
-/// that changed since the program last heard them, as the capabilities
-/// have them. One that became absent comes as its type's empty value.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct Changed {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cellcss: Option<CellCss>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scale: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scheme: Option<&'static str>,
-    #[serde(rename = "mod", skip_serializing_if = "Option::is_none")]
-    pub modifier: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub features: Option<Vec<&'static str>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub net: Option<Policy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub edit: Option<Edit>,
-}
-
-/// One cell's size in CSS pixels (SPEC §4: `cellcss`).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct CellCss {
-    pub w: f64,
-    pub h: f64,
-}
-
-/// The host's limits (SPEC §13).
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct Limits {
-    /// The resource store's size, in bytes: at most [`MAX_INT`] as it is
-    /// sent, however large the store.
-    #[serde(serialize_with = "capped")]
-    pub resources: u64,
-    /// The most bytes one message decodes to (SPEC §3.4, §13):
-    /// [`crate::MAX_COMMAND_BYTES`].
-    pub message: u64,
-}
-
-/// An int as a body carries it: at most [`MAX_INT`].
-fn capped<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_u64((*v).min(MAX_INT as u64))
-}
-
-/// The body of `a=err` (SPEC §3.6).
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct Error<'a> {
-    pub code: &'a str,
-    pub detail: &'a str,
-}
-
 /// The cells an element covers (SPEC §9: `area`), counted from the
 /// surface's top left cell.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Area {
     pub c: i64,
     pub r: i64,
@@ -136,40 +33,30 @@ pub struct Area {
 
 /// An event's detail (SPEC §9), as its kind has it. An event with nothing
 /// to say has none: [`crate::Event::detail`] is `None`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(untagged)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Detail {
     /// `click`: where the element is, the modifier keys held, a link's
     /// `href` and `url`, and the element's `value` attribute.
     Click {
-        #[serde(skip_serializing_if = "Option::is_none")]
         area: Option<Area>,
         /// The modifier bits (§9), left out when none is held.
-        #[serde(skip_serializing_if = "Option::is_none")]
         mods: Option<u8>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         href: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         url: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<String>,
         /// Its place in its run of clicks, from 2 (SPEC §9).
-        #[serde(skip_serializing_if = "Option::is_none")]
         count: Option<u32>,
     },
     /// `press`: where the element `t` names is, and the modifier keys
     /// held; each is left out when the press has none.
     Press {
-        #[serde(skip_serializing_if = "Option::is_none")]
         area: Option<Area>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         mods: Option<u8>,
     },
     /// `change` of a checkbox or a radio button: whether it is checked,
     /// and its `value` attribute.
     Checked {
         checked: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<String>,
     },
     /// `change` of any other control, and `input`.
@@ -183,15 +70,10 @@ pub enum Detail {
     Drag {
         c: i32,
         r: i32,
-        #[serde(skip_serializing_if = "Option::is_none")]
         mods: Option<u8>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         x: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         y: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         tx: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         ty: Option<u64>,
     },
     /// `fit`: the rows `r=auto` would choose now.
@@ -206,55 +88,172 @@ pub enum Detail {
     /// `command` (§10.6): the edit command, its key, and a paste's text.
     Command {
         name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         key: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
-    /// `caps` (§9): the capabilities that changed.
-    Caps(Changed),
+    /// `caps` (§9): the capabilities that changed, as the capabilities
+    /// have them; one that became absent as its type's empty value.
+    Caps(hotty::Caps),
 }
 
 /// What a `view` carries (SPEC §9.5): each element in view by its id, with
 /// its cells, the whole of it however little is shown; and `end`, whether
 /// the document's root is scrolled as far down as it goes. Its own name,
 /// `in`, is a keyword here.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct View {
-    #[serde(rename = "in")]
     pub inside: BTreeMap<String, Area>,
     pub end: bool,
+}
+
+
+fn area(a: &Area) -> hotty::Area {
+    hotty::Area {
+        c: a.c,
+        r: a.r,
+        w: a.w,
+        h: a.h,
+    }
+}
+
+/// The event a program hears, for the hotty crate to write
+/// (`hotty::host::encode_event`): its kind, the surface it is of (none for
+/// `command` and `caps`), the element it names (empty for none), and what
+/// its detail carries.
+pub fn event(kind: &str, surface: Option<&str>, target: &str, detail: Option<&Detail>) -> hotty::Event {
+    let mut e = hotty::Event {
+        kind: kind.to_string(),
+        surface: surface.map(str::to_string),
+        target: target.to_string(),
+        ..hotty::Event::default()
+    };
+    let Some(d) = detail else {
+        return e;
+    };
+    let mods = |m: &Option<u8>| m.map_or(0, u32::from);
+    match d {
+        Detail::Click {
+            area: a,
+            mods: m,
+            href,
+            url,
+            value,
+            count,
+        } => {
+            e.area = a.as_ref().map(area);
+            e.mods = mods(m);
+            e.link = href.clone().map(|href| hotty::Link {
+                href,
+                url: url.clone(),
+            });
+            e.value = value.clone();
+            e.count = *count;
+        }
+        Detail::Press { area: a, mods: m } => {
+            e.area = a.as_ref().map(area);
+            e.mods = mods(m);
+        }
+        Detail::Checked { checked, value } => {
+            e.checked = Some(*checked);
+            e.value = value.clone();
+        }
+        Detail::Value { value } => e.value = Some(value.clone()),
+        Detail::Fields { fields } => e.fields = Some(fields.clone()),
+        Detail::Drag {
+            c,
+            r,
+            mods: m,
+            x,
+            y,
+            tx,
+            ty,
+        } => {
+            let step = |v: &Option<u64>| v.map(|v| v.min(MAX_INT as u64) as i64);
+            e.mods = mods(m);
+            e.drag = Some(hotty::Drag {
+                c: i64::from(*c),
+                r: i64::from(*r),
+                x: step(x),
+                y: step(y),
+                tx: step(tx),
+                ty: step(ty),
+            });
+        }
+        Detail::Fit { r } => e.fit_rows = Some(u32::from(*r)),
+        Detail::Hover { c, r } => {
+            e.hover = Some(hotty::Hover {
+                c: Some(i64::from(*c)),
+                r: Some(i64::from(*r)),
+                out: false,
+            })
+        }
+        Detail::Out { .. } => {
+            e.hover = Some(hotty::Hover {
+                c: None,
+                r: None,
+                out: true,
+            })
+        }
+        Detail::View(v) => {
+            e.view = Some(hotty::View {
+                areas: v.inside.iter().map(|(id, a)| (id.clone(), area(a))).collect(),
+                at_end: v.end,
+            })
+        }
+        Detail::Command { name, key, text } => {
+            e.command = Some(hotty::Command {
+                name: name.clone(),
+                key: key.clone().unwrap_or_default(),
+                text: text.clone().unwrap_or_default(),
+                has_text: text.is_some(),
+            })
+        }
+        Detail::Caps(c) => e.changed = Some(c.clone()),
+    }
+    e
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // The detail of an event as the hotty crate writes it.
+    fn detail(kind: &str, d: &Detail) -> Vec<u8> {
+        let out = hotty::host::encode_event(&event(kind, Some("s"), "", Some(d)));
+        match hotty::Decoder::new().feed(out.as_bytes()) {
+            hotty::Fed::Complete(m) => m.payload,
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn a_body_is_a_map_by_name_and_a_whole_float_stays_a_float() {
-        // {"w": 720.0, "h": 2.5}: float 64 for both.
+        // {"cellcss": {"w": 720.0, "h": 2.5}}: float 64 for both.
+        let caps = hotty::Caps {
+            cell_css: Some(hotty::CellCss { w: 720.0, h: 2.5 }),
+            ..hotty::Caps::default()
+        };
         assert_eq!(
-            encode(&CellCss { w: 720.0, h: 2.5 }),
-            b"\x82\xa1w\xcb\x40\x86\x80\0\0\0\0\0\xa1h\xcb\x40\x04\0\0\0\0\0\0"
+            hotty::host::caps_body(&caps),
+            b"\x81\xa7cellcss\x82\xa1w\xcb\x40\x86\x80\0\0\0\0\0\xa1h\xcb\x40\x04\0\0\0\0\0\0"
         );
         // {"c": -1, "r": 300}: ints in their smallest form, no mods, x or y.
-        assert_eq!(
-            encode(&Detail::Drag {
-                c: -1,
-                r: 300,
-                mods: None,
-                x: None,
-                y: None,
-                tx: None,
-                ty: None
-            }),
-            b"\x82\xa1c\xff\xa1r\xcd\x01\x2c"
-        );
+        let drag = Detail::Drag {
+            c: -1,
+            r: 300,
+            mods: None,
+            x: None,
+            y: None,
+            tx: None,
+            ty: None,
+        };
+        assert_eq!(detail("drag", &drag), b"\x82\xa1c\xff\xa1r\xcd\x01\x2c");
         // {"fields": [["a", "1"], ["a", "2"]]}: pairs, a name twice.
+        let fields = Detail::Fields {
+            fields: vec![("a".into(), "1".into()), ("a".into(), "2".into())],
+        };
         assert_eq!(
-            encode(&Detail::Fields {
-                fields: vec![("a".into(), "1".into()), ("a".into(), "2".into())]
-            }),
+            detail("submit", &fields),
             b"\x81\xa6fields\x92\x92\xa1a\xa11\x92\xa1a\xa12"
         );
         assert_eq!(float(1.6), 1.6);
@@ -274,24 +273,21 @@ mod tests {
             end: false,
         };
         assert_eq!(
-            encode(&Detail::View(view)),
+            detail("view", &Detail::View(view)),
             b"\x82\xa2in\x81\xa1a\x84\xa1c\x00\xa1r\xfe\xa1w\x04\xa1h\x01\xa3end\xc2"
         );
     }
 
     #[test]
     fn a_limit_past_the_ints_a_body_carries_is_the_most_it_carries() {
-        // {"resources": 2^53 - 1, "message": 1 MiB}, resources as uint 64.
-        let most = b"\x82\xa9resources\xcf\x00\x1f\xff\xff\xff\xff\xff\xff\xa7message\xce\x00\x10\0\0";
-        for resources in [MAX_INT as u64, MAX_INT as u64 + 1, u64::MAX] {
-            assert_eq!(encode(&Limits { resources, message: 1 << 20 }), most, "{resources}");
+        // {"limits": {"resources": 2^53 - 1}}, as uint 64.
+        let most = b"\x81\xa6limits\x81\xa9resources\xcf\x00\x1f\xff\xff\xff\xff\xff\xff";
+        for resources in [MAX_INT, MAX_INT + 1, i64::MAX] {
+            let caps = hotty::Caps {
+                limits: Some([("resources".to_string(), resources)].into()),
+                ..hotty::Caps::default()
+            };
+            assert_eq!(hotty::host::caps_body(&caps), most, "{resources}");
         }
-        assert_eq!(
-            encode(&Limits {
-                resources: 64 << 20,
-                message: 1 << 20
-            }),
-            b"\x82\xa9resources\xce\x04\0\0\0\xa7message\xce\x00\x10\0\0"
-        );
     }
 }

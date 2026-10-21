@@ -138,14 +138,14 @@ impl Policy {
     }
 }
 
-/// As the capabilities report it (`net`, SPEC §4): `{str: [str]}`,
-/// directive to sources.
-impl serde::Serialize for Policy {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_map(self.0.iter().map(|(d, srcs)| {
-            let srcs: Vec<String> = srcs.iter().map(|src| src.serialize()).collect();
-            (d.name(), srcs)
-        }))
+impl Policy {
+    /// As the capabilities report it (`net`, SPEC §4): directive to
+    /// sources.
+    pub fn to_map(&self) -> BTreeMap<String, Vec<String>> {
+        self.0
+            .iter()
+            .map(|(d, srcs)| (d.name().to_string(), srcs.iter().map(Source::serialize).collect()))
+            .collect()
     }
 }
 
@@ -165,7 +165,7 @@ mod tests {
              font-src; nope-src https:; IMG-SRC https://e.com:443",
         );
         assert_eq!(
-            serde_json::to_value(&p).unwrap(),
+            serde_json::to_value(p.to_map()).unwrap(),
             serde_json::json!({
                 "img-src": ["https://example.com", "http://localhost:8080", "https:", "https://e.com"]
             })
@@ -192,7 +192,7 @@ mod tests {
         for csp in ["", ";;", "img-src", "img-src 'none'"] {
             let p = Policy::parse(csp);
             assert!(p.is_empty(), "{csp}");
-            assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({}));
+            assert_eq!(serde_json::to_value(p.to_map()).unwrap(), serde_json::json!({}));
             assert!(!p.allows(Directive::Img, &url("https://example.com/x.png")));
         }
     }
