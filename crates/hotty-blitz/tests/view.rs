@@ -6,7 +6,8 @@ mod common;
 
 use common::{body, delta_cmd};
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -21,18 +22,18 @@ fn host() -> Host {
     })
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
 /// Every hotty event in the effects, as (`e`, `t`, detail).
 fn events(effects: &[Effect]) -> Vec<(String, String, Value)> {
     let mut out = Vec::new();
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     for e in effects {
         if let Effect::Reply(b) = e {
             s.feed(b, &mut |ev| {
-                if let Event::Command(c) = ev
+                if let Output::Command(c) = ev
                     && c.get("a") == Some("ev")
                 {
                     out.push((

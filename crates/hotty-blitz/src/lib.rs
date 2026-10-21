@@ -22,8 +22,8 @@ mod surface;
 
 use blitz_dom::FontContext;
 use body::Detail;
-use hotty_wire::keys::{self, Platform};
-use hotty_wire::{Command, Control};
+use hotty::keys::{self, Platform};
+use hotty::{Control, Message};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -37,6 +37,11 @@ pub use surface::{Damage, Frame, Timings};
 /// The hotty version this host speaks, its only one (SPEC §4): a query
 /// that does not list it is answered with `EVERSION`.
 pub const VERSION: &str = "0.4";
+
+/// The most bytes one command's payload decodes to, after base64 and zlib
+/// (SPEC §3.4): what the capabilities report as `limits.message` (§13). A
+/// larger one is dropped.
+pub const MAX_COMMAND_BYTES: usize = 64 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -266,7 +271,7 @@ pub struct Host {
     cells_finger: Option<CellsFinger>,
     /// The touch areas of the main screen and the alternate screen
     /// (`a=touch`, SPEC §9.6), on the screen `menu.on_alt` says.
-    areas: [Vec<body::TouchArea>; 2],
+    areas: [Vec<hotty::TouchArea>; 2],
     frame_log: Option<FrameLog>,
     /// The surface whose document the host is working in (empty: none),
     /// so that a panic there costs that surface alone ([`Host::recover`]).
@@ -306,8 +311,8 @@ struct Heard {
 struct MenuState {
     /// The menus of the main screen and the alternate screen (`a=menu`,
     /// SPEC §10.7), kept while the terminal shows menus.
-    main: Option<body::Menu>,
-    alt: Option<body::Menu>,
+    main: Option<hotty::MenuTree>,
+    alt: Option<hotty::MenuTree>,
     /// The terminal is on the alternate screen.
     on_alt: bool,
     /// The keys of the level shown (`a=menu:show=1`).
@@ -320,11 +325,11 @@ struct MenuState {
 
 impl MenuState {
     /// The menu of the screen the terminal is on.
-    fn current(&self) -> Option<&body::Menu> {
+    fn current(&self) -> Option<&hotty::MenuTree> {
         if self.on_alt { &self.alt } else { &self.main }.as_ref()
     }
 
-    fn current_mut(&mut self) -> &mut Option<body::Menu> {
+    fn current_mut(&mut self) -> &mut Option<hotty::MenuTree> {
         if self.on_alt { &mut self.alt } else { &mut self.main }
     }
 }
@@ -525,7 +530,7 @@ impl Host {
             cellcss: cellcss(&self.config.metrics),
             scale: body::float(self.config.metrics.scale),
             scheme: if self.config.theme.dark { "dark" } else { "light" },
-            modifier: self.keys.platform.mod_name(),
+            modifier: self.keys.platform.modifier.name(),
             features: features.into_iter().filter(|f| f.1).map(|f| f.0).collect(),
             net: self.store.host_policy(),
             edit: edit_of(&self.keys),
@@ -672,7 +677,7 @@ impl Host {
 
     /// Sets the current screen's menu; the level shown refreshes with the
     /// keys it has (SPEC §10.7).
-    fn set_menu(&mut self, menu: Option<body::Menu>) {
+    fn set_menu(&mut self, menu: Option<hotty::MenuTree>) {
         *self.menu.current_mut() = menu;
         self.menu.stale = true;
     }
@@ -1192,7 +1197,7 @@ impl Host {
             .unwrap_or_default()
     }
 
-    pub fn handle(&mut self, cmd: &Command) -> Vec<Effect> {
+    pub fn handle(&mut self, cmd: &Message) -> Vec<Effect> {
         let start = self.frame_log.is_some().then(std::time::Instant::now);
         self.menu.stale = true;
         enter(&mut self.working, cmd.get("s").unwrap_or_default());
@@ -1210,7 +1215,7 @@ impl Host {
         effects
     }
 
-    fn handle_command(&mut self, cmd: &Command) -> Vec<Effect> {
+    fn handle_command(&mut self, cmd: &Message) -> Vec<Effect> {
         let mut effects = Vec::new();
         let mut failed = None;
         let result = self.dispatch(cmd, &mut effects, &mut failed);
@@ -1246,7 +1251,7 @@ impl Host {
     /// that an error names (SPEC §6.1).
     fn dispatch(
         &mut self,
-        cmd: &Command,
+        cmd: &Message,
         effects: &mut Vec<Effect>,
         failed: &mut Option<usize>,
     ) -> Result<ReplyExtra, (&'static str, String)> {
@@ -1288,7 +1293,7 @@ impl Host {
                     features: now.features,
                     limits: body::Limits {
                         resources: self.store.quota as u64,
-                        message: hotty_wire::MAX_COMMAND_BYTES as u64,
+                        message: MAX_COMMAND_BYTES as u64,
                     },
                     // The host's half of the network policy (SPEC §7.2):
                     // empty unless its user granted something.
@@ -1309,7 +1314,8 @@ impl Host {
             }
             "doc" => {
                 let name = surface_name()?.to_string();
-                let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
+                let html = std::str::from_utf8(&cmd.payload)
+                    .map_err(|_| ("EINVAL", "payload is not UTF-8".to_string()))?;
                 let detached = cmd.get("d") == Some("1");
                 // A gesture latched to the old document's boxes ends with it.
                 if self.gesture.as_ref().is_some_and(|g| g.surface == name) {
@@ -1463,9 +1469,9 @@ impl Host {
                     .ok_or(("ENOENT", format!("no surface {name}")))?;
                 // The whole delta is checked before any op applies (SPEC
                 // §6.1).
-                let ops = body::decode_delta(&cmd.payload).map_err(|f| {
-                    *failed = f.index;
-                    ("EINVAL", f.detail)
+                let ops = hotty::host::delta_of(cmd).map_err(|e| {
+                    *failed = e.op.map(|i| i as usize);
+                    ("EINVAL", e.detail)
                 })?;
                 s.apply(&ops, &self.config.metrics).map_err(|(i, e)| {
                     *failed = Some(i);
@@ -1594,16 +1600,13 @@ impl Host {
             "menu" if self.keys.menus => {
                 match cmd.get("show") {
                     None => {
-                        let m = if cmd.payload.is_empty() {
-                            None
-                        } else {
-                            Some(body::decode_menu(&cmd.payload).map_err(|e| ("EINVAL", format!("bad menu: {e}")))?)
-                        };
+                        let m = hotty::host::menu_of(cmd)
+                            .map_err(|e| ("EINVAL", format!("bad menu: {}", e.detail)))?;
                         self.set_menu(m);
                     }
                     Some("1") => {
                         self.menu.seq = Some(
-                            body::decode_seq(&cmd.payload).map_err(|e| ("EINVAL", format!("bad seq: {e}")))?,
+                            hotty::host::menu_show_of(cmd).map_err(|e| ("EINVAL", format!("bad seq: {}", e.detail)))?,
                         );
                     }
                     Some("0") => self.menu.seq = None,
@@ -1617,8 +1620,8 @@ impl Host {
             // before; no body, or an empty list, leaves none. Taken
             // whether or not the terminal takes touch.
             "touch" => {
-                let areas = body::decode_touch(&cmd.payload)
-                    .map_err(|e| ("EINVAL", format!("bad touch areas: {e}")))?;
+                let areas = hotty::host::touch_of(cmd)
+                    .map_err(|e| ("EINVAL", format!("bad touch areas: {}", e.detail)))?;
                 self.areas[usize::from(self.menu.on_alt)] = areas;
                 Ok((Vec::new(), None))
             }
@@ -1991,7 +1994,11 @@ impl Host {
                     self.area_at(x, y)
                 };
                 // An area that drags one way leaves the other to pan.
-                let pans = area.map(|a| (!a.x, !a.y));
+                // A finger drags the way the area does, and pans the other.
+                let pans = area.map(|a| {
+                    use hotty::TouchDrag::{X, Xy, Y};
+                    (!matches!(a.drag, X | Xy), !matches!(a.drag, Y | Xy))
+                });
                 out.touch = if pans.is_some() {
                     CellsTouch::Undecided
                 } else {
@@ -2111,12 +2118,18 @@ impl Host {
 
     /// The touch area of the current screen at device pixel (`x`, `y`) of
     /// the cells: where areas overlap, the last listed (SPEC §9.6).
-    fn area_at(&self, x: f32, y: f32) -> Option<body::TouchArea> {
+    fn area_at(&self, x: f32, y: f32) -> Option<hotty::TouchArea> {
         let (c, r) = self.screen_cell(x, y);
+        let covers = |a: &&hotty::TouchArea| {
+            let inside = |at: i64, from: u32, len: u32| {
+                u64::try_from(at).is_ok_and(|at| at >= u64::from(from) && at - u64::from(from) < u64::from(len))
+            };
+            inside(c, a.c, a.w) && inside(r, a.r, a.h)
+        };
         self.areas[usize::from(self.menu.on_alt)]
             .iter()
             .rev()
-            .find(|a| a.covers(c, r))
+            .find(covers)
             .copied()
     }
 
@@ -2391,7 +2404,7 @@ impl Host {
         }
         let mut out = Vec::new();
         let mut consumed = false;
-        for (span, name) in hotty_wire::keys::decode_key_spans(bytes) {
+        for (span, name) in hotty::keys::decode_key_spans(bytes) {
             let used = match name.as_deref().and_then(Key::from_spec_name) {
                 Some(key) => {
                     let o = self.key(surface, &key);
@@ -2550,20 +2563,20 @@ fn terminal_event(kind: &str, detail: &Detail) -> Vec<u8> {
     let mut c = Control::default();
     c.set("a", "ev");
     c.set("e", kind);
-    hotty_wire::encode_plain(&c, &body::encode(detail))
+    hotty::encode_plain(&c, &body::encode(detail)).into_bytes()
 }
 
 /// The edit shortcuts the capabilities report (SPEC §4): only where the
 /// terminal takes edit commands.
 fn edit_of(k: &KeySettings) -> Option<body::Edit> {
-    k.commands.then(|| k.platform.edit().into_iter().collect())
+    k.commands.then(|| k.platform.edit_shortcuts().into_iter().collect())
 }
 
 type ReplyExtra = (Vec<(String, String)>, Option<Vec<u8>>);
 
 fn reply(
     kind: &str,
-    cmd: &Command,
+    cmd: &Message,
     extra: Vec<(String, String)>,
     body: Option<Vec<u8>>,
 ) -> Vec<u8> {
@@ -2578,13 +2591,13 @@ fn reply(
     for (k, v) in extra {
         control.set(&k, v);
     }
-    hotty_wire::encode_plain(&control, body.as_deref().unwrap_or_default())
+    hotty::encode_plain(&control, body.as_deref().unwrap_or_default()).into_bytes()
 }
 
 /// A place command's window (SPEC §5.2): `x`, `y`, `w`, `h` in cells, by
 /// default the whole surface. One that leaves the surface, or has no cells,
 /// is EINVAL.
-fn window(cmd: &Command, cols: u16, rows: u16) -> Result<Window, (&'static str, String)> {
+fn window(cmd: &Message, cols: u16, rows: u16) -> Result<Window, (&'static str, String)> {
     let get = |k: &str, default: u16| -> Result<u16, (&'static str, String)> {
         cmd.get(k)
             .map(|v| v.parse::<u16>().map_err(|_| ("EINVAL", format!("bad {k}"))))

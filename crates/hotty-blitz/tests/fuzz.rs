@@ -28,7 +28,7 @@ mod common;
 
 use common::delta_cmd;
 use hotty_blitz::{Config, Host, Metrics};
-use hotty_wire::Command;
+use hotty::Message;
 use std::sync::Mutex;
 
 /// Seeds each mode runs in the gate.
@@ -214,7 +214,7 @@ fn run(steps: &[Step]) -> Option<String> {
         let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match step {
             Step::Command(pairs, payload) => {
                 let pairs = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()));
-                host.handle(&Command::new(pairs.collect(), payload.as_bytes().to_vec()));
+                host.handle(&Message::new(pairs.collect(), payload.as_bytes().to_vec()));
             }
             Step::Delta(op, t, k, v) => {
                 host.handle(&delta_cmd(&[("s", "f"), ("q", "2")], op, Some(t), k.as_deref(), v));

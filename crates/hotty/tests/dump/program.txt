@@ -4,4 +4,4 @@ a=place:s=form:c=40:r=auto:n=2:f=1:v=1:p=1
 a=delta:s=form:q=2  {"ops": [{"op": "text", "t": "status", "v": "saved ✓\n"}, {"op": "var", "t": "level", "k": "p", "v": "42"}]}
 a=delta:s=form:q=2  {"ops": [{"op": "var", "t": "level", "k": "p", "v": "7"}]}
 a=res:id=noise:type=image/png  h'89504e470d0a1a0a193e3ab51f37d0bf39b8eeb4d33cb85f8ade7d3fbfded8a2…' (4000 bytes)
-(invalid)  bad base64: Invalid symbol 33, offset 0.
+(invalid)  a payload that is not base64

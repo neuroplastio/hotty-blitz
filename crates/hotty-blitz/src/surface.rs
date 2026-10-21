@@ -1,12 +1,13 @@
 //! One surface: a Blitz document, its placement size, its last frame, and the
 //! glue that turns host input into DOM events and DOM events into hotty ones.
 
-use crate::body::{Detail, MAX_INT, Op, View};
+use crate::body::{Detail, MAX_INT, View};
+use hotty::Op;
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
 use crate::{Config, Metrics, Rect, anim, delta, edit, net, paint};
-use hotty_wire::keys;
+use hotty::keys;
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
@@ -1257,7 +1258,7 @@ impl Surface {
     }
 
     /// Applies a delta's ops in order (SPEC §6.1), the whole delta having
-    /// been checked ([`crate::body::decode_delta`]). An op whose target is
+    /// been checked ([`hotty::host::delta_of`]). An op whose target is
     /// missing changes nothing, and the ops after it still apply; the
     /// first that failed is returned, with its index.
     pub fn apply(
@@ -1267,11 +1268,12 @@ impl Surface {
     ) -> Result<(), (usize, delta::DeltaError)> {
         let mut first = None;
         for (i, op) in ops.iter().enumerate() {
-            let (t, v) = (op.t.as_deref(), op.v.as_deref().unwrap_or_default());
+            let t = (!op.target.is_empty()).then_some(op.target.as_str());
+            let v = op.value.as_deref().unwrap_or_default();
             let res = match op.op.as_str() {
                 // `reveal` changes no node: it scrolls (SPEC §6.1).
                 "reveal" => self.reveal(t, v, m),
-                name => self.delta(name, t, op.k.as_deref(), v),
+                name => self.delta(name, t, (!op.key.is_empty()).then_some(op.key.as_str()), v),
             };
             if let Err(e) = res {
                 first.get_or_insert((i, e));
@@ -2418,7 +2420,7 @@ impl Surface {
     fn scroll_action_key(&mut self, id: NodeId, key: &Key) -> Option<(bool, Vec<Event>)> {
         let names = key.names();
         let values = self.keymap_values(id);
-        let keymap = keys::element_keymap(&self.settings.platform, values.iter().map(String::as_str));
+        let keymap = keys::parse_keymap(&self.settings.platform, &values.join(" "));
         let action = keymap.scroll(keymap.press(&names)?)?.to_string();
         let k = scroll::action_scroll(&action)?;
         if self.scroll_axes & k.axis.bit() == 0 {
@@ -2461,11 +2463,12 @@ impl Surface {
     fn gives(&self, id: NodeId, key: &Key, kind: Control) -> Gives {
         let names = key.names();
         let values = self.keymap_values(id);
-        let values = values.iter().map(String::as_str);
         let m = match kind {
-            Control::Text => keys::resolve(&self.settings.platform, false, values),
-            Control::TextArea => keys::resolve(&self.settings.platform, true, values),
-            _ => keys::element_keymap(&self.settings.platform, values),
+            Control::Text => keys::resolve(&self.settings.platform, false, values.iter().map(String::as_str)),
+            Control::TextArea => keys::resolve(&self.settings.platform, true, values.iter().map(String::as_str)),
+            // An element's keymap: its values joined, with no default
+            // keymap (SDK.md §3.10).
+            _ => keys::parse_keymap(&self.settings.platform, &values.join(" ")),
         };
         let Some(name) = m.press(&names) else {
             return Gives::No;

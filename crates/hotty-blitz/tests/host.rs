@@ -4,7 +4,8 @@ mod common;
 
 use common::{body, delta_cmd};
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 
 fn host() -> Host {
     Host::new(Config {
@@ -17,18 +18,18 @@ fn host() -> Host {
     })
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
 /// Decodes every hotty message in the effects' replies.
-fn replies(effects: &[Effect]) -> Vec<Command> {
+fn replies(effects: &[Effect]) -> Vec<Message> {
     let mut out = Vec::new();
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     for e in effects {
         if let Effect::Reply(b) = e {
             s.feed(b, &mut |ev| {
-                if let Event::Command(c) = ev {
+                if let Output::Command(c) = ev {
                     out.push(c);
                 }
             });
@@ -838,7 +839,7 @@ fn sent(fields: &serde_json::Value, name: &str) -> serde_json::Value {
 }
 
 /// A single-op delta to surface `x` from `(op, t, k)` pairs and a value.
-fn op_cmd(ctl: &[(&str, &str)], payload: &str) -> Command {
+fn op_cmd(ctl: &[(&str, &str)], payload: &str) -> Message {
     let get = |name: &str| ctl.iter().find(|(n, _)| *n == name).map(|(_, v)| *v);
     delta_cmd(
         &[("s", "x"), ("n", "1")],
@@ -1147,14 +1148,14 @@ fn incremental_layout_matches_a_fresh_document() {
 }
 
 /// A click (press and release) at `(x, y)`: every hotty message it produced.
-fn click(h: &mut Host, s: &str, x: f32, y: f32) -> Vec<Command> {
+fn click(h: &mut Host, s: &str, x: f32, y: f32) -> Vec<Message> {
     let mut fx = h.pointer(s, PointerKind::Down, x, y, Mods::default());
     fx.extend(h.pointer(s, PointerKind::Up, x, y, Mods::default()));
     replies(&fx)
 }
 
 /// `(e, t)` of each event.
-fn kinds(ev: &[Command]) -> Vec<(String, String)> {
+fn kinds(ev: &[Message]) -> Vec<(String, String)> {
     ev.iter()
         .filter(|c| c.get("a") == Some("ev"))
         .map(|c| {
@@ -1814,7 +1815,7 @@ fn on_a_detached_surface_focus_is_edetached_and_blur_does_nothing() {
             body(&r[0].payload)["code"],
             "EDETACHED",
             "{t:?}: {:?}",
-            r[0].control.encode()
+            r[0].control.to_string()
         );
     }
     let r = replies(&h.handle(&cmd(&[("a", "blur"), ("s", "x"), ("n", "1")], "")));
@@ -2059,7 +2060,7 @@ fn a_press_with_alt_is_the_programs_and_gives_the_keyboard_back() {
 }
 
 /// A drag's events with their detail: `(e, t, detail)`.
-fn drags(ev: &[Command]) -> Vec<(String, String, serde_json::Value)> {
+fn drags(ev: &[Message]) -> Vec<(String, String, serde_json::Value)> {
     ev.iter()
         .filter(|c| c.get("a") == Some("ev"))
         .map(|c| {
@@ -2405,7 +2406,7 @@ const S: u32 = 5000;
 
 fn res(h: &mut Host, id: &str, mime: &str, bytes: Vec<u8>) {
     let r = replies(
-        &h.handle(&Command::new(
+        &h.handle(&Message::new(
             [("a", "res"), ("id", id), ("type", mime), ("n", "1")]
                 .into_iter()
                 .collect(),
@@ -3303,7 +3304,7 @@ fn passed(effects: &[Effect]) -> Vec<u8> {
 }
 
 /// A key offered as the user pressed it (SPEC §10.4), before the terminal's
-/// shortcuts and translations: Command+Left is `super+arrow_left`, the
+/// shortcuts and translations: Message+Left is `super+arrow_left`, the
 /// line's start, not the 0x01 (`ctrl+a`, select all) a macOS terminal
 /// sends for it; `ctrl+backspace` deletes a word, not what 0x08
 /// (`ctrl+h`) would do. A key the surface does not use does nothing, and
@@ -3328,10 +3329,7 @@ fn key_pressed_is_offered_before_the_terminal_translates_it() {
     // Where `mod` is `super`, as on macOS (SPEC §10.2, §10.4).
     assert!(!h.key_pressed("f", "super+arrow_left", "").consumed);
     h.set_keys(hotty_blitz::KeySettings {
-        platform: hotty_wire::keys::Platform {
-            mod_super: true,
-            edit: None,
-        },
+        platform: hotty::keys::Platform::new(hotty::keys::Mod::Super),
         ..Default::default()
     });
     assert!(h.key_pressed("f", "super+arrow_left", "").consumed);
@@ -3371,7 +3369,7 @@ fn key_bytes_name_keys_from_what_the_program_would_read() {
         &[("a", "doc"), ("s", "f")],
         &format!(
             "<body data-keys='{}'><input id=f value='one two three'>",
-            hotty_wire::keys::TERMINAL_KEYS
+            hotty::keys::TERMINAL_KEYS
         ),
     ));
     h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], ""));

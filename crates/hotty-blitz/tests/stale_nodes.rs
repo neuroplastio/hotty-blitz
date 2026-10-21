@@ -8,7 +8,7 @@ mod common;
 
 use common::delta_cmd;
 use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
-use hotty_wire::Command;
+use hotty::Message;
 
 enum Step<'a> {
     Delta(&'a str, &'a str, Option<&'a str>, &'a str),
@@ -28,7 +28,7 @@ fn run(doc: &str, steps: &[Step]) {
         ..Config::default()
     });
     let cmd = |pairs: &[(&str, &str)], payload: &str| {
-        Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+        Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
     };
     host.handle(&cmd(&[("a", "doc"), ("s", "f"), ("q", "2")], doc));
     host.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "40"), ("r", "10"), ("q", "2")], ""));

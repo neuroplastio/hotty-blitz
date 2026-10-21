@@ -769,17 +769,8 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 name = "hotty"
 version = "0.4.0"
 dependencies = [
- "base64 0.22.1",
  "flate2",
- "hotty-blitz",
- "hotty-wire",
- "libc",
- "nix",
- "png 0.17.16",
- "rmp-serde",
- "serde_json",
- "signal-hook",
- "vt100",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -793,6 +784,7 @@ dependencies = [
  "blitz-html",
  "blitz-paint",
  "blitz-traits",
+ "hotty",
  "hotty-wire",
  "image",
  "keyboard-types",
@@ -809,6 +801,24 @@ dependencies = [
  "ureq",
  "url",
  "vello_cpu",
+]
+
+[[package]]
+name = "hotty-cli"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "hotty",
+ "hotty-blitz",
+ "hotty-wire",
+ "libc",
+ "nix",
+ "png 0.17.16",
+ "rmp-serde",
+ "serde_json",
+ "signal-hook",
+ "vt100",
 ]
 
 [[package]]

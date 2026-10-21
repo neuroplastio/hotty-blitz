@@ -1,5 +1,7 @@
 [package]
-name = "hotty"
+# The package is hotty-cli: `hotty` is the protocol's crate, which this one
+# uses. The command it builds is still `hotty`.
+name = "hotty-cli"
 description = "hotty: render and show hotty surfaces, and `hotty run`, the kitty graphics polyfill"
 version.workspace = true
 edition.workspace = true
@@ -7,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 hotty-wire.workspace = true
+hotty.workspace = true
 hotty-blitz.workspace = true
 base64.workspace = true
 flate2.workspace = true
@@ -17,6 +20,10 @@ nix = { version = "0.30", features = ["term", "process", "signal", "fs", "mman",
 libc = "0.2"
 signal-hook = "0.3"
 vt100 = "0.16"
+
+[[bin]]
+name = "hotty"
+path = "src/main.rs"
 
 [features]
 phase-times = ["hotty-blitz/phase-times"]

@@ -1,8 +1,8 @@
 //! The menu a program keeps with `a=menu` (hotty SPEC §10.7), drawn as a
 //! surface of the host's own: myelin's which-key level, as a document.
 
-use crate::body::{Menu, MenuItem};
-use hotty_wire::keys::{self, Platform};
+use hotty::{MenuItem, MenuTree as Menu};
+use hotty::keys::{self, Platform};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// The surface the host draws the level shown in. A program's surface name
@@ -43,7 +43,7 @@ pub(crate) fn level(menu: &Menu, seq: &[String], p: &Platform) -> Option<Level> 
         let typed = keys::read_key(p, typed)?;
         let group = items
             .iter()
-            .find(|i| i.group() && keys::read_key(p, &i.key).as_ref() == Some(&typed))?;
+            .find(|i| !i.items.is_empty() && keys::read_key(p, &i.key).as_ref() == Some(&typed))?;
         label = &group.label;
         items = &group.items;
     }
@@ -53,7 +53,7 @@ pub(crate) fn level(menu: &Menu, seq: &[String], p: &Platform) -> Option<Level> 
         .map(|i| Shown {
             key: i.key.clone(),
             label: i.label.clone(),
-            group: i.group(),
+            group: !i.items.is_empty(),
             enabled: i.enabled,
         })
         .collect();
@@ -187,10 +187,7 @@ mod tests {
     #[test]
     fn keys_are_shown_as_myelin_key_names_display_them() {
         let ctrl = Platform::default();
-        let sup = Platform {
-            mod_super: true,
-            edit: None,
-        };
+        let sup = Platform::new(hotty::keys::Mod::Super);
         for (key, p, want) in [
             ("g", &ctrl, "g"),
             ("Space", &ctrl, "space"),

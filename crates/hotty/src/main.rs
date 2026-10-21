@@ -8,7 +8,8 @@ mod run;
 mod term;
 
 use hotty_blitz::{Config, Effect, Host, Metrics};
-use hotty_wire::{Command, Control, Event, Scanner};
+use hotty::host::{Output, Splitter};
+use hotty::{Control, Message};
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
@@ -190,7 +191,7 @@ fn cmd_render(args: &[String], show: bool) -> i32 {
     let t0 = Instant::now();
     let mut host = Host::new(config);
     let t_host = t0.elapsed();
-    let mut effects = host.handle(&Command::new(
+    let mut effects = host.handle(&Message::new(
         [("a", "doc"), ("s", "main"), ("q", "1")]
             .into_iter()
             .collect(),
@@ -198,7 +199,7 @@ fn cmd_render(args: &[String], show: bool) -> i32 {
     ));
     let t_doc = t0.elapsed();
     effects.extend(
-        host.handle(&Command::new(
+        host.handle(&Message::new(
             [
                 ("a", "place"),
                 ("s", "main"),
@@ -281,9 +282,9 @@ fn ms(d: Duration) -> f64 {
 }
 
 fn report_reply(bytes: &[u8]) {
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     s.feed(bytes, &mut |e| {
-        if let Event::Command(c) = e
+        if let Output::Command(c) = e
             && c.action() == "err"
         {
             eprintln!("hotty: error: {}", String::from_utf8_lossy(&c.payload));
@@ -367,7 +368,7 @@ fn cmd_send(args: &[String]) -> i32 {
         }
     });
     let mut o = std::io::stdout().lock();
-    let _ = o.write_all(&hotty_wire::encode(&control, &payload));
+    let _ = o.write_all(hotty::encode(&control, &payload).as_bytes());
     let _ = o.flush();
     0
 }
@@ -405,7 +406,7 @@ fn cmd_replay(args: &[String]) -> i32 {
             ..Config::default()
         };
         let mut host = Host::new(config);
-        let mut scanner = Scanner::new();
+        let mut scanner = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
         let mut frames: Vec<[f64; 6]> = Vec::new(); // handle, resolve, paint, post, diff, bytes
         let mut t_handle = Duration::ZERO;
         let mut bytes = 0usize;
@@ -445,11 +446,11 @@ fn cmd_replay(args: &[String]) -> i32 {
             *t_handle = Duration::ZERO;
             *bytes = 0;
         };
-        let mut pending: Vec<Command> = Vec::new();
+        let mut pending: Vec<Message> = Vec::new();
         let mut boundary = Vec::new();
         scanner.feed(&stream, &mut |e| match e {
-            Event::Command(c) => pending.push(c),
-            Event::Seq(hotty_wire::Seq::PrivateMode { set: false, modes }, _)
+            Output::Command(c) => pending.push(c),
+            Output::Seq(hotty::host::Seq::PrivateMode { set: false, modes }, _)
                 if modes.contains(&2026) =>
             {
                 boundary.push(pending.len())
@@ -463,7 +464,7 @@ fn cmd_replay(args: &[String]) -> i32 {
         ends.push(pending.len());
         for end in ends {
             for c in &pending[start..end] {
-                bytes += c.encode().len();
+                bytes += hotty::encode(&c.control, &c.payload).len();
                 let t = Instant::now();
                 host.handle(c);
                 t_handle += t.elapsed();
@@ -590,7 +591,7 @@ fn cmd_bench(args: &[String]) -> i32 {
                 "ops": [{"op": "text", "t": format!("c{c}"), "v": format!("{}", (c * 7 + tick) % 1000)}]
             }))
             .unwrap();
-            let cmd = Command::new(
+            let cmd = Message::new(
                 [("a", "delta"), ("s", "b"), ("q", "2")].into_iter().collect(),
                 body,
             );
@@ -609,11 +610,11 @@ fn cmd_bench(args: &[String]) -> i32 {
     };
     let setup_doc = |doc: String| {
         let mut host = make_host();
-        host.handle(&Command::new(
+        host.handle(&Message::new(
             [("a", "doc"), ("s", "b"), ("q", "2")].into_iter().collect(),
             doc.into_bytes(),
         ));
-        host.handle(&Command::new(
+        host.handle(&Message::new(
             [
                 ("a", "place"),
                 ("s", "b"),

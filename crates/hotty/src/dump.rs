@@ -23,7 +23,8 @@
 //! The renderer is this tool's own, from msgpack's spec, so it shows a
 //! body however it was written, wrong or not.
 
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -64,13 +65,13 @@ pub fn lines(input: &[u8], all: bool) -> Vec<String> {
         }
         other.clear();
     };
-    Scanner::new().feed(input, &mut |e| match e {
-        Event::Bytes(b) | Event::Seq(_, b) => other.extend_from_slice(b),
-        Event::Command(c) => {
+    Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES).feed(input, &mut |e| match e {
+        Output::Bytes(b) | Output::Seq(_, b) => other.extend_from_slice(b),
+        Output::Command(c) => {
             flush(&mut other, &mut lines);
             lines.push(message(&c));
         }
-        Event::Invalid(why) => {
+        Output::Invalid(why) => {
             flush(&mut other, &mut lines);
             lines.push(format!("(invalid)  {why}"));
         }
@@ -80,8 +81,8 @@ pub fn lines(input: &[u8], all: bool) -> Vec<String> {
 }
 
 /// One message: its control, and its payload after two spaces.
-fn message(c: &Command) -> String {
-    let mut line = c.control.encode();
+fn message(c: &Message) -> String {
+    let mut line = c.control.to_string();
     if !c.payload.is_empty() {
         line.push_str("  ");
         line.push_str(&match c.action() {
@@ -597,13 +598,13 @@ mod tests {
 
     #[test]
     fn a_program_payload_is_its_text() {
-        let c = Command::new(
+        let c = Message::new(
             [("a", "doc"), ("s", "x")].into_iter().collect(),
             "1\\2\n\x1b\u{7f}é".as_bytes().to_vec(),
         );
         assert_eq!(message(&c), r"a=doc:s=x  1\\2\n\e\u{7f}é");
         // A delta is msgpack: {"ops": [{"op": "text", "t": "a", "v": "x"}]}.
-        let delta = Command::new(
+        let delta = Message::new(
             [("a", "delta"), ("s", "x")].into_iter().collect(),
             b"\x81\xa3ops\x91\x83\xa2op\xa4text\xa1t\xa1a\xa1v\xa1x".to_vec(),
         );
@@ -647,7 +648,7 @@ mod tests {
                 continue;
             };
             let name = d["name"].as_str().unwrap();
-            let mut s = Scanner::new();
+            let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
             // The sequence that started the message being collected.
             let mut start = 0;
             for (i, seq) in d["seqs"].as_array().unwrap().iter().enumerate() {
@@ -656,7 +657,7 @@ mod tests {
                     start = i;
                 }
                 s.feed(seq.as_bytes(), &mut |e| {
-                    let Event::Command(c) = e else { return };
+                    let Output::Command(c) = e else { return };
                     let twin = &twins[start];
                     if c.payload.is_empty() || twin.get("hex").is_some() || twin.is_null() {
                         return;

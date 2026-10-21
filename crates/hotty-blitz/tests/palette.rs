@@ -3,10 +3,10 @@
 //! one, and the document's own rules over them. The shared vectors check
 //! the wire, not computed styles, so the host checks them here.
 use hotty_blitz::{Config, Host, Metrics, Rgb, Theme};
-use hotty_wire::Command;
+use hotty::Message;
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
 /// A palette whose ansi-4 and ansi-12 differ, so the accent shows which.

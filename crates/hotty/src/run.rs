@@ -8,7 +8,7 @@ use crate::input::InputRouter;
 use crate::kitty::{self, Kitty, Transport};
 use crate::term;
 use hotty_blitz::{Damage, Effect, Host};
-use hotty_wire::{Event, Scanner, Seq};
+use hotty::host::{Output, Seq, Splitter};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
 use std::collections::HashMap;
 use std::fs::File;
@@ -84,19 +84,19 @@ impl Shim {
     pub fn on_output(
         &mut self,
         input: &[u8],
-        scanner: &mut Scanner,
+        scanner: &mut Splitter,
         out: &mut Vec<u8>,
         replies: &mut Vec<u8>,
     ) {
         scanner.feed(input, &mut |ev| match ev {
-            Event::Bytes(b) => out.extend_from_slice(b),
-            Event::Seq(seq, raw) => self.on_seq(&seq, raw, out),
-            Event::Command(cmd) => {
+            Output::Bytes(b) => out.extend_from_slice(b),
+            Output::Seq(seq, raw) => self.on_seq(&seq, raw, out),
+            Output::Command(cmd) => {
                 self.stats.commands += 1;
                 self.stats.command_bytes += cmd.payload.len() as u64;
                 self.on_command(&cmd, out, replies);
             }
-            Event::Invalid(e) => {
+            Output::Invalid(e) => {
                 self.stats.invalid += 1;
                 crate::log(&format!("invalid hotty command: {e}"));
             }
@@ -174,7 +174,7 @@ impl Shim {
         }
     }
 
-    fn on_command(&mut self, cmd: &hotty_wire::Command, out: &mut Vec<u8>, replies: &mut Vec<u8>) {
+    fn on_command(&mut self, cmd: &hotty::Message, out: &mut Vec<u8>, replies: &mut Vec<u8>) {
         let effects = self.host.handle(cmd);
         for e in effects {
             match e {
@@ -409,7 +409,7 @@ pub fn run(opts: Options) -> i32 {
     let _ = signal_hook::low_level::pipe::register(signal_hook::consts::SIGWINCH, sig_w);
 
     let stdin_fd = stdin.as_fd();
-    let mut scanner = Scanner::new();
+    let mut scanner = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     let mut buf = vec![0u8; 1 << 16];
     'outer: loop {
         let mut fds = [

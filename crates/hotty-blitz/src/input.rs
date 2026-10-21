@@ -7,7 +7,8 @@
 
 use crate::Effect;
 use crate::body::{self, Detail};
-use hotty_wire::{Control, keys};
+use hotty::Control;
+use hotty::keys;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerKind {
@@ -304,6 +305,6 @@ impl Event {
             c.set("t", self.target.as_str());
         }
         let body = self.detail.as_ref().map(body::encode).unwrap_or_default();
-        hotty_wire::encode_plain(&c, &body)
+        hotty::encode_plain(&c, &body).into_bytes()
     }
 }

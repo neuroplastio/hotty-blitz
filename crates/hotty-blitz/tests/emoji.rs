@@ -5,7 +5,7 @@
 //! text.
 
 use hotty_blitz::{Config, Host, Metrics};
-use hotty_wire::Command;
+use hotty::Message;
 
 fn host() -> Host {
     Host::new(Config {
@@ -18,8 +18,8 @@ fn host() -> Host {
     })
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
 /// Whether the text, drawn grey at 40px in `family`, puts any strongly

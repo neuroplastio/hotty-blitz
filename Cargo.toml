@@ -10,6 +10,10 @@ repository = "https://github.com/neuroplastio/hotty-blitz"
 
 [workspace.dependencies]
 hotty-wire = { path = "crates/hotty-wire" }
+# The hotty protocol: the Rust SDK's wire layer and its host side, from a
+# checkout of neuroplastio/hotty-rs next to this one (gov P-5: a commit pin
+# until it is published). Without its terminal, which only programs need.
+hotty = { path = "../hotty-rs/crates/hotty", default-features = false, features = ["zlib"] }
 hotty-blitz = { path = "crates/hotty-blitz" }
 
 # Blitz is pinned by commit. Upgrade in a leg of its own.
