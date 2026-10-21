@@ -768,6 +768,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 [[package]]
 name = "hotty"
 version = "0.4.0"
+source = "git+https://github.com/neuroplastio/hotty-rs?rev=ada94e7ed6a0cc93391ccf0ea6658fa3e6daac5b#ada94e7ed6a0cc93391ccf0ea6658fa3e6daac5b"
 dependencies = [
  "flate2",
  "unicode-segmentation",

@@ -25,12 +25,14 @@ for the hotty repository.
   export, `scripts/mods.py relink <set> <dir>` points each `.md` at its
   renumbered patch. `make mods` checks the sets and that each applies on
   its base; `make canary` tries them on upstream's latest.
-- **The protocol is hotty-rs's `hotty` crate**, at `../hotty-rs` (a path
-  dependency, until it is published, gov P-5): the splitter a program's
+- **The protocol is hotty-rs's `hotty` crate**, pinned by commit in
+  `Cargo.toml` until it is published (gov P-5): the splitter a program's
   output goes through, the readers of its commands, and the writers of
   every reply and event. A change to how hotty reads or writes goes there,
   where hotty-rs's gate checks it against the SDK vectors, and comes back
-  here with this suite.
+  here as a new pin, with this suite. To try one before it is pushed,
+  build against a checkout beside this one with Cargo's `patch` (the
+  command is in `Cargo.toml`).
 - **A body is typed** (SPEC §3.3): an event's detail is a `Detail` in
   `src/body.rs`, written by `hotty::host::encode_event` as one msgpack map,
   each field as the spec's tables type it, holding nothing §3.3 has no
