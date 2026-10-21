@@ -3,7 +3,8 @@
 //! common path; these the corners.
 
 use hotty_blitz::{Config, Effect, Host, Metrics, Mods, Touch, TouchPhase};
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 
 fn host() -> Host {
     Host::new(Config {
@@ -16,8 +17,8 @@ fn host() -> Host {
     })
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
 /// A document with `scroll` (or none), placed 30×4 with presses reported,
@@ -46,11 +47,11 @@ fn place(h: &mut Host, scroll: Option<&str>, body: &str) {
 /// The events among effects, as `kind target`.
 fn events(effects: &[Effect]) -> Vec<String> {
     let mut out = Vec::new();
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     for e in effects {
         if let Effect::Reply(b) = e {
             s.feed(b, &mut |ev| {
-                if let Event::Command(c) = ev
+                if let Output::Command(c) = ev
                     && c.get("a") == Some("ev")
                 {
                     out.push(format!(

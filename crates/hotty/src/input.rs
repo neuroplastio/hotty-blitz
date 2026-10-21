@@ -163,7 +163,7 @@ impl InputRouter {
         };
         // The key as the program reads these bytes (SPEC §10.4), which is
         // the name a text field's keymap knows it by.
-        let key = match hotty_wire::keys::decode_keys(raw).as_slice() {
+        let key = match hotty::keys::decode_keys(raw).as_slice() {
             [Some(name)] => Key::from_spec_name(name).unwrap_or(key),
             _ => key,
         };

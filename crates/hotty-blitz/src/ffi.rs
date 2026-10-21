@@ -7,7 +7,7 @@ use crate::{
     CellsTouch, Config, CopyKey, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme, Touch,
     TouchPhase,
 };
-use hotty_wire::{Event, Scanner};
+use hotty::{Decoder, Fed};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
 #[repr(C)]
@@ -108,7 +108,8 @@ pub struct HottyHost {
     /// it stops doing anything rather than risk running on broken state
     /// inside the terminal.
     dead: bool,
-    scanner: Scanner,
+    /// Decodes what `hotty_host_osc` is handed, joining chunks.
+    decoder: Decoder,
     /// The name returned by `hotty_host_focused`, kept alive here.
     focused: Option<CString>,
     /// The name returned by `hotty_host_cursor`.
@@ -248,7 +249,7 @@ pub unsafe extern "C" fn hotty_host_new(cfg: *const HottyConfig) -> *mut HottyHo
     Box::into_raw(Box::new(HottyHost {
         host,
         dead: false,
-        scanner: Scanner::new(),
+        decoder: Decoder::with_max(crate::MAX_COMMAND_BYTES),
         focused: None,
         cursor: None,
         hyperlink: None,
@@ -306,17 +307,11 @@ pub unsafe extern "C" fn hotty_host_osc(
     guard(h, (), |h| {
         let mut framed = Vec::with_capacity(len + 12);
         framed.extend_from_slice(b"\x1b]");
-        framed.extend_from_slice(hotty_wire::OSC_NUMBER.as_bytes());
+        framed.extend_from_slice(hotty::NUMBER.as_bytes());
         framed.push(b';');
         framed.extend_from_slice(body);
         framed.extend_from_slice(b"\x1b\\");
-        let mut commands = Vec::new();
-        h.scanner.feed(&framed, &mut |e| {
-            if let Event::Command(c) = e {
-                commands.push(c);
-            }
-        });
-        for c in commands {
+        if let Fed::Complete(c) = h.decoder.feed(&framed) {
             let effects = h.host.handle(&c);
             run_effects(effects, fx);
         }
@@ -1074,8 +1069,8 @@ pub unsafe extern "C" fn hotty_host_set_keys(
     let fx = unsafe { fx.as_ref() };
     let edit = (!edit.is_null()).then(|| unsafe { CStr::from_ptr(edit) }.to_string_lossy().into_owned());
     let k = crate::KeySettings {
-        platform: hotty_wire::keys::Platform {
-            mod_super,
+        platform: hotty::keys::Platform {
+            modifier: if mod_super { hotty::keys::Mod::Super } else { hotty::keys::Mod::Ctrl },
             edit: edit.map(|e| edit_shortcuts(&e)),
         },
         commands,
@@ -1091,7 +1086,7 @@ pub unsafe extern "C" fn hotty_host_set_keys(
 /// bound to it, canonical, in SPEC §10.2's order. Other bindings, and keys
 /// that do not parse, are left out.
 fn edit_shortcuts(value: &str) -> Vec<(String, Vec<String>)> {
-    let mut out: Vec<(String, Vec<String>)> = hotty_wire::keys::EDIT_ACTIONS
+    let mut out: Vec<(String, Vec<String>)> = hotty::keys::EDIT_ACTIONS
         .iter()
         .map(|a| (a.to_string(), Vec::new()))
         .collect();
@@ -1099,7 +1094,7 @@ fn edit_shortcuts(value: &str) -> Vec<(String, Vec<String>)> {
         let Some((k, a)) = b.rsplit_once('=') else {
             continue;
         };
-        let (Some(k), Some(slot)) = (hotty_wire::keys::parse_key(k), out.iter_mut().find(|(x, _)| x == a)) else {
+        let (Some(k), Some(slot)) = (hotty::keys::parse_key(k), out.iter_mut().find(|(x, _)| x == a)) else {
             continue;
         };
         if !slot.1.contains(&k) {
@@ -1264,7 +1259,7 @@ mod tests {
         let host = unsafe { &mut (*h).host };
         for s in ["a", "b"] {
             let cmd = |pairs: &[(&str, &str)], payload: &str| {
-                hotty_wire::Command::new(
+                hotty::Message::new(
                     pairs.iter().copied().collect(),
                     payload.as_bytes().to_vec(),
                 )
@@ -1297,7 +1292,7 @@ mod tests {
         assert!(!host.host.has_dirty());
         // The other surface still takes commands.
         let ok = guard(h, false, |h| {
-            h.host.handle(&hotty_wire::Command::new(
+            h.host.handle(&hotty::Message::new(
                 [("a", "delta"), ("s", "b"), ("q", "2")].into_iter().collect(),
                 // {"ops": [{"op": "text", "t": "p", "v": "y"}]}
                 b"\x81\xa3ops\x91\x83\xa2op\xa4text\xa1t\xa1p\xa1v\xa1y".to_vec(),
@@ -1316,7 +1311,7 @@ mod tests {
             "areas": [{"c": 1, "r": 0, "w": 10, "h": 1, "drag": "x"}]
         }))
         .unwrap();
-        unsafe { &mut (*h).host }.handle(&hotty_wire::Command::new(
+        unsafe { &mut (*h).host }.handle(&hotty::Message::new(
             [("a", "touch"), ("q", "2")].into_iter().collect(),
             body,
         ));

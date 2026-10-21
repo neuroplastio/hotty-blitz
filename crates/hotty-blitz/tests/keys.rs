@@ -5,8 +5,9 @@ mod common;
 
 use common::body;
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, KeySettings, MENU, Metrics, Mods};
-use hotty_wire::keys::Platform;
-use hotty_wire::{Command, Event, Scanner};
+use hotty::keys::Platform;
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 
 fn host(keys: KeySettings) -> Host {
     let mut h = Host::new(Config {
@@ -21,18 +22,18 @@ fn host(keys: KeySettings) -> Host {
     h
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &[u8]) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &[u8]) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.to_vec())
 }
 
 /// The hotty messages in the effects' replies.
-fn replies(effects: &[Effect]) -> Vec<Command> {
+fn replies(effects: &[Effect]) -> Vec<Message> {
     let mut out = Vec::new();
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     for e in effects {
         if let Effect::Reply(b) = e {
             s.feed(b, &mut |ev| {
-                if let Event::Command(c) = ev {
+                if let Output::Command(c) = ev {
                     out.push(c);
                 }
             });
@@ -246,10 +247,7 @@ fn caps_report_the_settings_and_their_changes() {
     });
     h.set_passthrough(true);
     // Not asked yet: nothing to tell.
-    let mac = Platform {
-        mod_super: true,
-        edit: None,
-    };
+    let mac = Platform::new(hotty::keys::Mod::Super);
     assert!(
         h.set_keys(KeySettings {
             commands: true,
@@ -362,7 +360,7 @@ fn a_press_with_two_names_is_the_surfaces_by_either() {
 fn an_edit_command_is_found_by_either_name() {
     let h = host(KeySettings {
         platform: Platform {
-            mod_super: false,
+            modifier: hotty::keys::Mod::Ctrl,
             edit: Some(vec![
                 ("copy".into(), vec!["ctrl+key_c".into()]),
                 ("paste".into(), vec!["ctrl+v".into()]),

@@ -2,13 +2,16 @@
 
 [hotty](https://github.com/neuroplastio/hotty) on Blitz. Blitz assembles
 Firefox's style engine (Stylo), html5ever, Taffy for layout and Parley for
-text, and renders on the CPU. This repository holds:
+text, and renders on the CPU. This repository holds the following; the protocol itself, the envelope a
+program's output is split by, a program's commands read and checked, and
+the replies and events written, is the `hotty` crate of
+[hotty-rs](https://github.com/neuroplastio/hotty-rs), which every Rust
+host and program shares:
 
 | crate | what |
 | --- | --- |
 | `crates/hotty-blitz` | the host of hotty 0.4: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
-| `crates/hotty-wire` | the envelope: a stream scanner that passes terminal bytes through untouched and yields hotty commands, plus the encoder |
-| `crates/hotty` | the `hotty` CLI: `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
+| `crates/hotty` | the `hotty` CLI (package `hotty-cli`): `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout) and vello_cpu (its renderer), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
 The host speaks hotty 0.4 and no other version. It answers a query that
@@ -208,7 +211,7 @@ Command+Left is `super+arrow_left` and not the `ctrl+a` a macOS terminal
 sends for it, and the physical name is looked up first; then, if the surface did not
 use it, as the bytes its key encoding or a binding would write
 (`hotty_host_key_bytes`), named by what the program would read
-(`hotty_wire::keys`), so a remapped key is the key it sends. The keys a
+(`hotty::keys`), so a remapped key is the key it sends. The keys a
 field does not use go on to the program as they came. Any other focused
 element's `data-keys` gives keys to the program, or, in a document that
 scrolls, scrolls with them (`scroll-down`, `scroll-end`, …), after the keys

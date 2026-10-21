@@ -6,7 +6,8 @@ mod common;
 
 use common::{body, delta_cmd};
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 
 fn host() -> Host {
     Host::new(Config {
@@ -19,17 +20,17 @@ fn host() -> Host {
     })
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
-fn replies(effects: &[Effect]) -> Vec<Command> {
+fn replies(effects: &[Effect]) -> Vec<Message> {
     let mut out = Vec::new();
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     for e in effects {
         if let Effect::Reply(b) = e {
             s.feed(b, &mut |ev| {
-                if let Event::Command(c) = ev {
+                if let Output::Command(c) = ev {
                     out.push(c);
                 }
             });

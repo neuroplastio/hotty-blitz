@@ -8,7 +8,8 @@ use hotty_blitz::{
     CellsTouch, Config, Effect, Host, Key, KeyName, KeySettings, Mods, MouseReport, PointerKind,
     Touch, TouchPhase,
 };
-use hotty_wire::{Command, Control, Event, Scanner};
+use hotty::host::{Output, Splitter};
+use hotty::{Control, Message};
 use serde_json::Value;
 
 /// Where the vectors' mouse is (pointer steps): on a surface, at a pixel
@@ -69,13 +70,13 @@ fn vectors() -> Value {
         .unwrap()
 }
 
-fn decode(bytes: &[u8]) -> (Vec<Command>, usize) {
+fn decode(bytes: &[u8]) -> (Vec<Message>, usize) {
     let mut commands = Vec::new();
     let mut invalid = 0;
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     s.feed(bytes, &mut |ev| match ev {
-        Event::Command(c) => commands.push(c),
-        Event::Invalid(_) => invalid += 1,
+        Output::Command(c) => commands.push(c),
+        Output::Invalid(_) => invalid += 1,
         _ => {}
     });
     (commands, invalid)
@@ -84,7 +85,7 @@ fn decode(bytes: &[u8]) -> (Vec<Command>, usize) {
 /// What the host sent, decoded. A host sends nothing malformed, never
 /// compresses, and each body it sends is one msgpack map (SPEC §3.3): no
 /// sequence it sends carries `o`.
-fn from_host(bytes: &[u8]) -> Result<Vec<Command>, String> {
+fn from_host(bytes: &[u8]) -> Result<Vec<Message>, String> {
     let head = b"\x1b]7279;";
     let mut rest = bytes;
     while let Some(i) = rest.windows(head.len()).position(|w| w == head) {
@@ -93,15 +94,18 @@ fn from_host(bytes: &[u8]) -> Result<Vec<Command>, String> {
             .iter()
             .position(|&b| b == b';' || b == 0x1b)
             .unwrap_or(rest.len());
-        let control = Control::parse(&rest[..end])?;
-        if control.get("o").is_some() {
-            return Err(format!("the host compressed: {}", control.encode()));
+        let control = &rest[..end];
+        if control.split(|&b| b == b':').any(|kv| kv.starts_with(b"o=")) {
+            return Err(format!(
+                "the host compressed: {}",
+                String::from_utf8_lossy(control)
+            ));
         }
     }
     match decode(bytes) {
         (msgs, 0) => {
             for m in &msgs {
-                read_body(&m.payload).map_err(|e| format!("{}: {e}", m.control.encode()))?;
+                read_body(&m.payload).map_err(|e| format!("{}: {e}", m.control.to_string()))?;
             }
             Ok(msgs)
         }
@@ -110,20 +114,20 @@ fn from_host(bytes: &[u8]) -> Result<Vec<Command>, String> {
 }
 
 /// The events among decoded messages.
-fn events(msgs: &[Command]) -> Vec<&Command> {
+fn events(msgs: &[Message]) -> Vec<&Message> {
     msgs.iter().filter(|c| c.get("a") == Some("ev")).collect()
 }
 
 /// Every event a step sent, against its `events`, in order (absent: not
 /// checked).
-fn check_events(step: &Value, got: &[&Command]) -> Result<(), String> {
+fn check_events(step: &Value, got: &[&Message]) -> Result<(), String> {
     let Some(want) = step.get("events") else {
         return Ok(());
     };
     let want = want.as_array().unwrap();
-    let show = |c: &&Command| {
+    let show = |c: &&Message| {
         let body = read_body(&c.payload).map_or_else(|e| e, |b| b.to_string());
-        format!("{} {body}", c.control.encode())
+        format!("{} {body}", c.control.to_string())
     };
     if got.len() != want.len() {
         return Err(format!(
@@ -599,10 +603,10 @@ fn offered(host: &mut Host, surface: &str, key: &Key) -> hotty_blitz::KeyOutcome
     let m = key.mods;
     let types_text = matches!(key.name, KeyName::Char(_)) && !m.ctrl && !m.super_;
     if !types_text {
-        let bits = hotty_wire::keys::KeyParts::new(m.super_, m.ctrl, m.alt, m.shift, "").mods;
+        let bits = hotty::keys::KeyParts::new(m.super_, m.ctrl, m.alt, m.shift, "").mods;
         let (physical, other) = match &key.name {
             KeyName::Char(c) => (
-                us_physical(c).map(|p| hotty_wire::keys::KeyParts { mods: bits, value: p }.name()),
+                us_physical(c).map(|p| hotty::keys::KeyParts { mods: bits, value: p }.name()),
                 key.spec_name(),
             ),
             _ => (key.spec_name(), None),
@@ -737,7 +741,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                 .to_vec(),
         };
         // Through the wire, as a program sends it.
-        let (cmds, _) = decode(&hotty_wire::encode(&control, &payload));
+        let (cmds, _) = decode(hotty::encode(&control, &payload).as_bytes());
         let mut sent = Vec::new();
         for cmd in &cmds {
             for e in host.handle(cmd) {
@@ -764,13 +768,13 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         }
         let msgs = from_host(&sent)?;
         check_events(step, &events(&msgs))?;
-        let replies: Vec<&Command> = msgs.iter().filter(|c| c.get("a") != Some("ev")).collect();
+        let replies: Vec<&Message> = msgs.iter().filter(|c| c.get("a") != Some("ev")).collect();
         match step.get("reply") {
             None => Ok(()),
             Some(Value::Null) if replies.is_empty() => Ok(()),
             Some(Value::Null) => Err(format!(
                 "expected no reply, got {:?}",
-                replies[0].control.encode()
+                replies[0].control.to_string()
             )),
             Some(want) => {
                 let got = replies.first().ok_or("expected a reply, got none")?;
@@ -778,7 +782,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                 for (k, v) in want.as_object().unwrap() {
                     if k == "types" {
                         check_type(&body, v, "body")
-                            .map_err(|e| format!("reply types: {e} ({})", got.control.encode()))?;
+                            .map_err(|e| format!("reply types: {e} ({})", got.control.to_string()))?;
                         continue;
                     }
                     if k == "body" {
@@ -789,7 +793,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                         if got.get("a") != Some("ok") {
                             return Err(format!(
                                 "reply body: want the body of an a=ok, got {}",
-                                got.control.encode()
+                                got.control.to_string()
                             ));
                         }
                         for (f, want) in v.as_object().unwrap() {
@@ -797,7 +801,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                             if have != want {
                                 return Err(format!(
                                     "reply body {f}: want {want}, got {have} ({})",
-                                    got.control.encode()
+                                    got.control.to_string()
                                 ));
                             }
                         }
@@ -813,7 +817,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                     if have.as_deref() != v.as_str() {
                         return Err(format!(
                             "reply {k}: want {v}, got {have:?} ({})",
-                            got.control.encode()
+                            got.control.to_string()
                         ));
                     }
                 }
@@ -1054,7 +1058,7 @@ fn wire_vectors() {
             if c.get("m").is_some() || c.get("o").is_some() {
                 failures.push(format!("{name}: m or o survived decoding"));
             }
-            if c.payload_str().ok() != want["payload"].as_str() {
+            if std::str::from_utf8(&c.payload).ok() != want["payload"].as_str() {
                 failures.push(format!(
                     "{name}: payload {:?}",
                     String::from_utf8_lossy(&c.payload)
@@ -1065,7 +1069,7 @@ fn wire_vectors() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The keys section (SPEC §10.4): what hotty-wire reads from the terminal,
+/// The keys section (SPEC §10.4): what hotty::keys reads from the terminal,
 /// and the names it reads from documents.
 #[test]
 fn keys_vectors() {
@@ -1074,7 +1078,7 @@ fn keys_vectors() {
     for k in v["keys"].as_array().unwrap() {
         let name = k["name"].as_str().unwrap();
         if let Some(input) = k.get("input") {
-            let got = hotty_wire::keys::decode_keys(input.as_str().unwrap().as_bytes());
+            let got = hotty::keys::decode_keys(input.as_str().unwrap().as_bytes());
             let want: Vec<Option<String>> = k["keys"]
                 .as_array()
                 .unwrap()
@@ -1085,7 +1089,7 @@ fn keys_vectors() {
                 failures.push(format!("{name}: {got:?}, want {want:?}"));
             }
         } else if k.get("text").is_some() {
-            let got = hotty_wire::keys::key_text(k["key"].as_str().unwrap());
+            let got = hotty::keys::key_text(k["key"].as_str().unwrap());
             let want = k["text"].as_str().map(str::to_string);
             if got != want {
                 failures.push(format!("{name}: {got:?}, want {want:?}"));
@@ -1095,13 +1099,14 @@ fn keys_vectors() {
             // a platform whose `mod` is the one named.
             let got = match k.get("mod").and_then(Value::as_str) {
                 Some(m) => {
-                    let p = hotty_wire::keys::Platform {
-                        mod_super: m == "super",
-                        edit: None,
-                    };
-                    hotty_wire::keys::read_key(&p, k["key"].as_str().unwrap())
+                    let p = hotty::keys::Platform::new(if m == "super" {
+                        hotty::keys::Mod::Super
+                    } else {
+                        hotty::keys::Mod::Ctrl
+                    });
+                    hotty::keys::read_key(&p, k["key"].as_str().unwrap())
                 }
-                None => hotty_wire::keys::parse_key(k["key"].as_str().unwrap()),
+                None => hotty::keys::parse_key(k["key"].as_str().unwrap()),
             };
             let want = k["canon"].as_str().map(str::to_string);
             if got != want {
@@ -1115,7 +1120,7 @@ fn keys_vectors() {
 /// The keymap section (SPEC §10.2).
 #[test]
 fn keymap_vectors() {
-    use hotty_wire::keys;
+    use hotty::keys;
     let v = vectors();
     let mut failures = Vec::new();
     for k in v["keymap"].as_array().unwrap() {
@@ -1125,7 +1130,11 @@ fn keymap_vectors() {
         // edit shortcuts, where absent.
         let p = k.get("platform");
         let platform = keys::Platform {
-            mod_super: p.and_then(|p| p.get("mod")).and_then(Value::as_str) == Some("super"),
+            modifier: if p.and_then(|p| p.get("mod")).and_then(Value::as_str) == Some("super") {
+                keys::Mod::Super
+            } else {
+                keys::Mod::Ctrl
+            },
             edit: p.and_then(|p| p.get("edit")).and_then(Value::as_object).map(|e| {
                 keys::EDIT_ACTIONS
                     .iter()
@@ -1138,8 +1147,8 @@ fn keymap_vectors() {
         };
         if k.get("program").is_some() || k.get("prefix").is_some() || k.get("scroll").is_some() {
             // An element's keymap outside a text field: no default (§10.2).
-            let values = k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap());
-            let m = keys::element_keymap(&platform, values);
+            let values: Vec<&str> = k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            let m = keys::parse_keymap(&platform, &values.join(" "));
             for (key, want) in k.get("program").and_then(Value::as_object).into_iter().flatten() {
                 let got = m.program(key);
                 if Some(got) != want.as_bool() {
@@ -1222,7 +1231,7 @@ fn edit_vectors() {
             for &(k, v) in pairs {
                 c.set(k, v);
             }
-            let (cmds, _) = decode(&hotty_wire::encode(&c, payload.as_bytes()));
+            let (cmds, _) = decode(hotty::encode(&c, payload.as_bytes()).as_bytes());
             for cmd in &cmds {
                 host.handle(cmd);
             }

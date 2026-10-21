@@ -5,7 +5,8 @@
 use hotty_blitz::{
     CellsTouch, Config, Effect, Host, Metrics, Mods, MouseReport, PointerKind, TouchPhase,
 };
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 use serde_json::{Value, json};
 
 /// Cells 10×20 device pixels, at `scale` device pixels per CSS pixel.
@@ -32,7 +33,7 @@ fn send(h: &mut Host, body: &Value) -> Option<String> {
     } else {
         rmp_serde::to_vec_named(body).unwrap()
     };
-    let effects = h.handle(&Command::new(
+    let effects = h.handle(&Message::new(
         [("a", "touch"), ("n", "1")].into_iter().collect(),
         payload,
     ));
@@ -53,11 +54,11 @@ fn areas(h: &mut Host, areas: Value) {
 /// event).
 fn messages(effects: &[Effect]) -> Vec<(String, Value)> {
     let mut out = Vec::new();
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     for e in effects {
         if let Effect::Reply(b) = e {
             s.feed(b, &mut |ev| {
-                if let Event::Command(c) = ev {
+                if let Output::Command(c) = ev {
                     let a = c.get("a").unwrap_or("").to_string();
                     let body = if a == "ev" {
                         json!(c.get("e"))
@@ -443,7 +444,7 @@ fn each_screen_keeps_its_areas_and_a_full_reset_drops_both() {
         (CellsTouch::Terminal, CellsTouch::Undecided)
     );
     // `a=del` deletes surfaces, not the cells' areas.
-    h.handle(&Command::new(
+    h.handle(&Message::new(
         [("a", "del"), ("q", "2")].into_iter().collect(),
         Vec::new(),
     ));
@@ -470,7 +471,7 @@ fn each_screen_keeps_its_areas_and_a_full_reset_drops_both() {
 fn the_press_gives_the_keyboard_back() {
     let mut h = host();
     let cmd = |pairs: &[(&str, &str)], payload: &str| {
-        Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+        Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
     };
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x"), ("q", "2")],

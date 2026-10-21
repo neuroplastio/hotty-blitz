@@ -22,8 +22,8 @@ mod surface;
 
 use blitz_dom::FontContext;
 use body::Detail;
-use hotty_wire::keys::{self, Platform};
-use hotty_wire::{Command, Control};
+use hotty::keys::{self, Platform};
+use hotty::Message;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -37,6 +37,11 @@ pub use surface::{Damage, Frame, Timings};
 /// The hotty version this host speaks, its only one (SPEC §4): a query
 /// that does not list it is answered with `EVERSION`.
 pub const VERSION: &str = "0.4";
+
+/// The most bytes one command's payload decodes to, after base64 and zlib
+/// (SPEC §3.4): what the capabilities report as `limits.message` (§13). A
+/// larger one is dropped.
+pub const MAX_COMMAND_BYTES: usize = 64 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -266,7 +271,7 @@ pub struct Host {
     cells_finger: Option<CellsFinger>,
     /// The touch areas of the main screen and the alternate screen
     /// (`a=touch`, SPEC §9.6), on the screen `menu.on_alt` says.
-    areas: [Vec<body::TouchArea>; 2],
+    areas: [Vec<hotty::TouchArea>; 2],
     frame_log: Option<FrameLog>,
     /// The surface whose document the host is working in (empty: none),
     /// so that a panic there costs that surface alone ([`Host::recover`]).
@@ -290,7 +295,7 @@ pub struct Host {
 /// difference of.
 #[derive(Clone, Debug, PartialEq)]
 struct Heard {
-    cellcss: body::CellCss,
+    cellcss: hotty::CellCss,
     scale: f64,
     scheme: &'static str,
     modifier: &'static str,
@@ -306,8 +311,8 @@ struct Heard {
 struct MenuState {
     /// The menus of the main screen and the alternate screen (`a=menu`,
     /// SPEC §10.7), kept while the terminal shows menus.
-    main: Option<body::Menu>,
-    alt: Option<body::Menu>,
+    main: Option<hotty::MenuTree>,
+    alt: Option<hotty::MenuTree>,
     /// The terminal is on the alternate screen.
     on_alt: bool,
     /// The keys of the level shown (`a=menu:show=1`).
@@ -320,11 +325,11 @@ struct MenuState {
 
 impl MenuState {
     /// The menu of the screen the terminal is on.
-    fn current(&self) -> Option<&body::Menu> {
+    fn current(&self) -> Option<&hotty::MenuTree> {
         if self.on_alt { &self.alt } else { &self.main }.as_ref()
     }
 
-    fn current_mut(&mut self) -> &mut Option<body::Menu> {
+    fn current_mut(&mut self) -> &mut Option<hotty::MenuTree> {
         if self.on_alt { &mut self.alt } else { &mut self.main }
     }
 }
@@ -525,7 +530,7 @@ impl Host {
             cellcss: cellcss(&self.config.metrics),
             scale: body::float(self.config.metrics.scale),
             scheme: if self.config.theme.dark { "dark" } else { "light" },
-            modifier: self.keys.platform.mod_name(),
+            modifier: self.keys.platform.modifier.name(),
             features: features.into_iter().filter(|f| f.1).map(|f| f.0).collect(),
             net: self.store.host_policy(),
             edit: edit_of(&self.keys),
@@ -544,22 +549,22 @@ impl Host {
             return Vec::new();
         };
         let now = self.snapshot();
-        let mut c = body::Changed {
-            cellcss: (cell && old.cellcss != now.cellcss).then_some(now.cellcss),
-            scheme: (old.scheme != now.scheme).then_some(now.scheme),
-            modifier: (old.modifier != now.modifier).then_some(now.modifier),
-            features: (old.features != now.features).then(|| now.features.clone()),
-            net: (old.net != now.net).then(|| now.net.clone()),
-            edit: (old.edit != now.edit).then(|| now.edit.clone().unwrap_or_default()),
-            scale: None,
+        let mut c = hotty::Caps {
+            cell_css: (cell && old.cellcss != now.cellcss).then_some(now.cellcss),
+            scheme: (old.scheme != now.scheme).then(|| now.scheme.to_string()),
+            modifier: (old.modifier != now.modifier).then(|| now.modifier.to_string()),
+            features: (old.features != now.features).then(|| strings(&now.features)),
+            net: (old.net != now.net).then(|| now.net.to_map()),
+            edit: (old.edit != now.edit).then(|| now.edit.clone().unwrap_or_default().into_iter().collect()),
+            ..hotty::Caps::default()
         };
-        if c == body::Changed::default() {
+        if c == hotty::Caps::default() {
             return Vec::new();
         }
         c.scale = (old.scale != now.scale).then_some(now.scale);
         // What the program heard now: the fields sent, and the rest as they were.
         let mut next = now;
-        if c.cellcss.is_none() {
+        if c.cell_css.is_none() {
             next.cellcss = old.cellcss;
         }
         if c.scale.is_none() {
@@ -672,7 +677,7 @@ impl Host {
 
     /// Sets the current screen's menu; the level shown refreshes with the
     /// keys it has (SPEC §10.7).
-    fn set_menu(&mut self, menu: Option<body::Menu>) {
+    fn set_menu(&mut self, menu: Option<hotty::MenuTree>) {
         *self.menu.current_mut() = menu;
         self.menu.stale = true;
     }
@@ -1192,7 +1197,7 @@ impl Host {
             .unwrap_or_default()
     }
 
-    pub fn handle(&mut self, cmd: &Command) -> Vec<Effect> {
+    pub fn handle(&mut self, cmd: &Message) -> Vec<Effect> {
         let start = self.frame_log.is_some().then(std::time::Instant::now);
         self.menu.stale = true;
         enter(&mut self.working, cmd.get("s").unwrap_or_default());
@@ -1210,32 +1215,31 @@ impl Host {
         effects
     }
 
-    fn handle_command(&mut self, cmd: &Command) -> Vec<Effect> {
+    fn handle_command(&mut self, cmd: &Message) -> Vec<Effect> {
         let mut effects = Vec::new();
         let mut failed = None;
         let result = self.dispatch(cmd, &mut effects, &mut failed);
         // Without `q`, a command is answered only with an error, unless it
         // has `n` or is a query (SPEC §3.5, §3.6).
-        let quiet: u8 = cmd
-            .get("q")
-            .and_then(|q| q.parse().ok())
-            .filter(|&q| q <= 2)
-            .unwrap_or(if cmd.action() == "q" || cmd.get("n").is_some() { 0 } else { 1 });
+        let quiet = hotty::host::quiet_of(cmd);
         match result {
-            Ok(extra) => {
-                if quiet == 0 && cmd.action() != "ev" {
-                    effects.push(Effect::Reply(reply("ok", cmd, extra.0, extra.1)));
+            Ok((extra, body)) => {
+                if quiet == hotty::Quiet::ReplyAlways && cmd.action() != "ev" {
+                    let extra: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                    let r = hotty::host::reply_ok(cmd, &extra, body.as_deref().unwrap_or_default());
+                    effects.push(Effect::Reply(r.into_bytes()));
                 }
             }
             Err((code, detail)) => {
-                if quiet < 2 {
-                    let err = body::encode(&body::Error {
-                        code,
-                        detail: &detail,
-                    });
+                if quiet != hotty::Quiet::NoReply {
                     // A delta's error names the op that failed (SPEC §3.6).
-                    let at = failed.map(|i| ("i".to_string(), i.to_string()));
-                    effects.push(Effect::Reply(reply("err", cmd, at.into_iter().collect(), Some(err))));
+                    let err = hotty::Error {
+                        code: code.to_string(),
+                        detail,
+                        op: failed.and_then(|i| u32::try_from(i).ok()),
+                        ..hotty::Error::default()
+                    };
+                    effects.push(Effect::Reply(hotty::host::reply_err(cmd, &err).into_bytes()));
                 }
             }
         }
@@ -1246,7 +1250,7 @@ impl Host {
     /// that an error names (SPEC §6.1).
     fn dispatch(
         &mut self,
-        cmd: &Command,
+        cmd: &Message,
         effects: &mut Vec<Effect>,
         failed: &mut Option<usize>,
     ) -> Result<ReplyExtra, (&'static str, String)> {
@@ -1271,30 +1275,34 @@ impl Host {
                 // 0.4 when an entry is exactly that, whatever the others and
                 // their order. Otherwise, a query with no `v` too, EVERSION,
                 // its detail the versions this host speaks.
-                if !cmd
-                    .get("v")
-                    .is_some_and(|v| v.split(',').any(|v| v == VERSION))
-                {
+                if !hotty::host::speaks(cmd) {
                     return Err(("EVERSION", VERSION.to_string()));
                 }
                 let now = self.snapshot();
                 self.heard = Some(now.clone());
-                let caps = body::Caps {
-                    v: VERSION,
-                    cellcss: now.cellcss,
-                    scale: now.scale,
-                    scheme: now.scheme,
-                    modifier: now.modifier,
-                    features: now.features,
-                    limits: body::Limits {
-                        resources: self.store.quota as u64,
-                        message: hotty_wire::MAX_COMMAND_BYTES as u64,
-                    },
+                let caps = hotty::Caps {
+                    v: Some(VERSION.to_string()),
+                    cell_css: Some(now.cellcss),
+                    scale: Some(now.scale),
+                    scheme: Some(now.scheme.to_string()),
+                    modifier: Some(now.modifier.to_string()),
+                    // The optional features the host has; none: absent.
+                    features: (!now.features.is_empty()).then(|| strings(&now.features)),
+                    // The resource store's size, held within what a body
+                    // carries however large, and the most one message
+                    // decodes to (SPEC §13).
+                    limits: Some(
+                        [
+                            ("resources".to_string(), i64::try_from(self.store.quota).unwrap_or(i64::MAX)),
+                            ("message".to_string(), MAX_COMMAND_BYTES as i64),
+                        ]
+                        .into(),
+                    ),
                     // The host's half of the network policy (SPEC §7.2):
                     // empty unless its user granted something.
-                    net: now.net,
-                    edit: now.edit,
-                    host: "hotty-blitz",
+                    net: Some(now.net.to_map()),
+                    edit: now.edit.map(|e| e.into_iter().collect()),
+                    host: Some("hotty-blitz".to_string()),
                     // The package's version. From 0.4.0, the first under gov
                     // P-5 rule 6, its MAJOR.MINOR is the hotty version the
                     // host speaks (VERSION), and its PATCH is raised with a
@@ -1303,13 +1311,14 @@ impl Host {
                     // paints a box resized through a var delta (Blitz fork
                     // 0005); 0.0.3 takes `a=delta`, which was `a=patch`, and
                     // no longer the old name.
-                    version: env!("CARGO_PKG_VERSION"),
+                    version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 };
-                Ok((Vec::new(), Some(body::encode(&caps))))
+                Ok((Vec::new(), Some(hotty::host::caps_body(&caps))))
             }
             "doc" => {
                 let name = surface_name()?.to_string();
-                let html = cmd.payload_str().map_err(|e| ("EINVAL", e))?;
+                let html = std::str::from_utf8(&cmd.payload)
+                    .map_err(|_| ("EINVAL", "payload is not UTF-8".to_string()))?;
                 let detached = cmd.get("d") == Some("1");
                 // A gesture latched to the old document's boxes ends with it.
                 if self.gesture.as_ref().is_some_and(|g| g.surface == name) {
@@ -1463,9 +1472,9 @@ impl Host {
                     .ok_or(("ENOENT", format!("no surface {name}")))?;
                 // The whole delta is checked before any op applies (SPEC
                 // §6.1).
-                let ops = body::decode_delta(&cmd.payload).map_err(|f| {
-                    *failed = f.index;
-                    ("EINVAL", f.detail)
+                let ops = hotty::host::delta_of(cmd).map_err(|e| {
+                    *failed = e.op.map(|i| i as usize);
+                    ("EINVAL", e.detail)
                 })?;
                 s.apply(&ops, &self.config.metrics).map_err(|(i, e)| {
                     *failed = Some(i);
@@ -1594,16 +1603,13 @@ impl Host {
             "menu" if self.keys.menus => {
                 match cmd.get("show") {
                     None => {
-                        let m = if cmd.payload.is_empty() {
-                            None
-                        } else {
-                            Some(body::decode_menu(&cmd.payload).map_err(|e| ("EINVAL", format!("bad menu: {e}")))?)
-                        };
+                        let m = hotty::host::menu_of(cmd)
+                            .map_err(|e| ("EINVAL", format!("bad menu: {}", e.detail)))?;
                         self.set_menu(m);
                     }
                     Some("1") => {
                         self.menu.seq = Some(
-                            body::decode_seq(&cmd.payload).map_err(|e| ("EINVAL", format!("bad seq: {e}")))?,
+                            hotty::host::menu_show_of(cmd).map_err(|e| ("EINVAL", format!("bad seq: {}", e.detail)))?,
                         );
                     }
                     Some("0") => self.menu.seq = None,
@@ -1617,8 +1623,8 @@ impl Host {
             // before; no body, or an empty list, leaves none. Taken
             // whether or not the terminal takes touch.
             "touch" => {
-                let areas = body::decode_touch(&cmd.payload)
-                    .map_err(|e| ("EINVAL", format!("bad touch areas: {e}")))?;
+                let areas = hotty::host::touch_of(cmd)
+                    .map_err(|e| ("EINVAL", format!("bad touch areas: {}", e.detail)))?;
                 self.areas[usize::from(self.menu.on_alt)] = areas;
                 Ok((Vec::new(), None))
             }
@@ -1991,7 +1997,11 @@ impl Host {
                     self.area_at(x, y)
                 };
                 // An area that drags one way leaves the other to pan.
-                let pans = area.map(|a| (!a.x, !a.y));
+                // A finger drags the way the area does, and pans the other.
+                let pans = area.map(|a| {
+                    use hotty::TouchDrag::{X, Xy, Y};
+                    (!matches!(a.drag, X | Xy), !matches!(a.drag, Y | Xy))
+                });
                 out.touch = if pans.is_some() {
                     CellsTouch::Undecided
                 } else {
@@ -2111,12 +2121,18 @@ impl Host {
 
     /// The touch area of the current screen at device pixel (`x`, `y`) of
     /// the cells: where areas overlap, the last listed (SPEC §9.6).
-    fn area_at(&self, x: f32, y: f32) -> Option<body::TouchArea> {
+    fn area_at(&self, x: f32, y: f32) -> Option<hotty::TouchArea> {
         let (c, r) = self.screen_cell(x, y);
+        let covers = |a: &&hotty::TouchArea| {
+            let inside = |at: i64, from: u32, len: u32| {
+                u64::try_from(at).is_ok_and(|at| at >= u64::from(from) && at - u64::from(from) < u64::from(len))
+            };
+            inside(c, a.c, a.w) && inside(r, a.r, a.h)
+        };
         self.areas[usize::from(self.menu.on_alt)]
             .iter()
             .rev()
-            .find(|a| a.covers(c, r))
+            .find(covers)
             .copied()
     }
 
@@ -2391,7 +2407,7 @@ impl Host {
         }
         let mut out = Vec::new();
         let mut consumed = false;
-        for (span, name) in hotty_wire::keys::decode_key_spans(bytes) {
+        for (span, name) in hotty::keys::decode_key_spans(bytes) {
             let used = match name.as_deref().and_then(Key::from_spec_name) {
                 Some(key) => {
                     let o = self.key(surface, &key);
@@ -2547,44 +2563,27 @@ fn press_names(physical: &str, other: &str) -> Vec<String> {
 /// An event of the terminal's, of no surface (SPEC §9): `command` and
 /// `caps`, with neither `s` nor `t`.
 fn terminal_event(kind: &str, detail: &Detail) -> Vec<u8> {
-    let mut c = Control::default();
-    c.set("a", "ev");
-    c.set("e", kind);
-    hotty_wire::encode_plain(&c, &body::encode(detail))
+    hotty::host::encode_event(&body::event(kind, None, "", Some(detail))).into_bytes()
+}
+
+/// Names as the capabilities list them.
+fn strings(names: &[&str]) -> Vec<String> {
+    names.iter().map(|n| n.to_string()).collect()
 }
 
 /// The edit shortcuts the capabilities report (SPEC §4): only where the
 /// terminal takes edit commands.
 fn edit_of(k: &KeySettings) -> Option<body::Edit> {
-    k.commands.then(|| k.platform.edit().into_iter().collect())
+    k.commands.then(|| k.platform.edit_shortcuts().into_iter().collect())
 }
 
 type ReplyExtra = (Vec<(String, String)>, Option<Vec<u8>>);
 
-fn reply(
-    kind: &str,
-    cmd: &Command,
-    extra: Vec<(String, String)>,
-    body: Option<Vec<u8>>,
-) -> Vec<u8> {
-    let mut control = Control::default();
-    control.set("a", kind);
-    for key in ["n", "s"] {
-        if let Some(v) = cmd.get(key) {
-            control.set(key, v);
-        }
-    }
-    control.set("re", cmd.action());
-    for (k, v) in extra {
-        control.set(&k, v);
-    }
-    hotty_wire::encode_plain(&control, body.as_deref().unwrap_or_default())
-}
 
 /// A place command's window (SPEC §5.2): `x`, `y`, `w`, `h` in cells, by
 /// default the whole surface. One that leaves the surface, or has no cells,
 /// is EINVAL.
-fn window(cmd: &Command, cols: u16, rows: u16) -> Result<Window, (&'static str, String)> {
+fn window(cmd: &Message, cols: u16, rows: u16) -> Result<Window, (&'static str, String)> {
     let get = |k: &str, default: u16| -> Result<u16, (&'static str, String)> {
         cmd.get(k)
             .map(|v| v.parse::<u16>().map_err(|_| ("EINVAL", format!("bad {k}"))))
@@ -2607,10 +2606,10 @@ fn css_cell(m: &Metrics) -> (f32, f32) {
 
 /// A cell's size in CSS pixels as the capabilities report it (SPEC §4), to
 /// a thousandth: no f32 noise on the wire.
-fn cellcss(m: &Metrics) -> body::CellCss {
+fn cellcss(m: &Metrics) -> hotty::CellCss {
     let scale = if m.scale > 0.0 { body::float(m.scale) } else { 1.0 };
     let px = |device: u32| (f64::from(device) / scale * 1000.0).round() / 1000.0;
-    body::CellCss {
+    hotty::CellCss {
         w: px(m.cell_w),
         h: px(m.cell_h),
     }

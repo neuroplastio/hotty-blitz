@@ -5,7 +5,8 @@ mod common;
 
 use common::body;
 use hotty_blitz::{Config, Host, Metrics};
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -155,17 +156,17 @@ fn waking_host(policy: &str) -> (Host, Receiver<()>) {
     (h, rx)
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
-fn replies(effects: &[hotty_blitz::Effect]) -> Vec<Command> {
+fn replies(effects: &[hotty_blitz::Effect]) -> Vec<Message> {
     let mut out = Vec::new();
-    let mut s = Scanner::new();
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     for e in effects {
         if let hotty_blitz::Effect::Reply(b) = e {
             s.feed(b, &mut |ev| {
-                if let Event::Command(c) = ev {
+                if let Output::Command(c) = ev {
                     out.push(c);
                 }
             });

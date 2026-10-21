@@ -7,7 +7,7 @@
 
 use crate::Effect;
 use crate::body::{self, Detail};
-use hotty_wire::{Control, keys};
+use hotty::keys;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerKind {
@@ -295,15 +295,8 @@ pub struct Event {
 
 impl Event {
     pub fn encode(&self, surface: &str) -> Vec<u8> {
-        let mut c = Control::default();
-        c.set("a", "ev");
-        c.set("s", surface);
-        c.set("e", self.kind);
         // `t` names an element, and is absent where none is meant (SPEC §9).
-        if !self.target.is_empty() {
-            c.set("t", self.target.as_str());
-        }
-        let body = self.detail.as_ref().map(body::encode).unwrap_or_default();
-        hotty_wire::encode_plain(&c, &body)
+        let e = body::event(self.kind, Some(surface), &self.target, self.detail.as_ref());
+        hotty::host::encode_event(&e).into_bytes()
     }
 }

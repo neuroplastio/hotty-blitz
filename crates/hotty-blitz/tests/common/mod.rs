@@ -1,7 +1,7 @@
 //! What the tests share: reading the bodies the host sends.
 #![allow(dead_code)]
 
-use hotty_wire::Command;
+use hotty::Message;
 use serde_json::{Map, Number, Value};
 
 /// The largest int a body carries, either way from zero (SPEC §3.3).
@@ -231,7 +231,7 @@ pub fn delta_cmd(
     t: Option<&str>,
     k: Option<&str>,
     v: &str,
-) -> Command {
+) -> Message {
     let mut o = Map::new();
     o.insert("op".into(), op.into());
     for (name, value) in [("t", t), ("k", k)] {
@@ -246,5 +246,5 @@ pub fn delta_cmd(
     let body = rmp_serde::to_vec_named(&serde_json::json!({ "ops": [o] })).unwrap();
     let mut c = vec![("a", "delta")];
     c.extend(control.iter().copied());
-    Command::new(c.into_iter().collect(), body)
+    Message::new(c.into_iter().collect(), body)
 }

@@ -10,7 +10,7 @@ mod common;
 
 use common::delta_cmd;
 use hotty_blitz::{Config, Host, Metrics};
-use hotty_wire::Command;
+use hotty::Message;
 use std::time::{Duration, Instant};
 
 fn host() -> Host {
@@ -24,8 +24,8 @@ fn host() -> Host {
     })
 }
 
-fn cmd(pairs: &[(&str, &str)], payload: &str) -> Command {
-    Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
+    Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
 }
 
 fn threads() -> usize {

@@ -9,7 +9,7 @@
 //! ```
 
 use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
-use hotty_wire::Command;
+use hotty::Message;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command as Process, Stdio};
@@ -225,7 +225,7 @@ fn what_no_host_sends_is_flagged() {
             .split(':')
             .map(|kv| kv.split_once('=').unwrap())
             .collect();
-        stream.extend(hotty_wire::encode(&control, &unhex(hex)));
+        stream.extend(hotty::encode(&control, &unhex(hex)).into_bytes());
     }
     let out = dump(&[], &stream);
     let lines: Vec<&str> = out.lines().collect();
@@ -240,7 +240,7 @@ fn what_no_host_sends_is_flagged() {
 fn program() -> Vec<u8> {
     let mut s = Vec::new();
     let cmd = |pairs: &[(&str, &str)], payload: &[u8]| {
-        hotty_wire::encode(&pairs.iter().copied().collect(), payload)
+        hotty::encode(&pairs.iter().copied().collect(), payload).into_bytes()
     };
     s.extend(b"$ python3 form.py\r\n");
     s.extend(cmd(&[("a", "q"), ("n", "1"), ("v", "0.4")], b""));
@@ -334,7 +334,7 @@ fn terminal() -> Vec<u8> {
         }
     };
     let cmd = |pairs: &[(&str, &str)], payload: &str| {
-        Command::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+        Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
     };
     let frame = |h: &mut Host, s: &mut Vec<u8>| {
         h.render_dirty(&mut |_, _, _| {});
@@ -360,7 +360,7 @@ fn terminal() -> Vec<u8> {
     let no_surface = [("a", "delta"), ("s", "nope"), ("n", "3")];
     let body = delta_body(&[("text", "x", None, "x")]);
     keep(
-        h.handle(&Command::new(no_surface.into_iter().collect(), body)),
+        h.handle(&Message::new(no_surface.into_iter().collect(), body)),
         &mut s,
     );
     // The user: hovers and ticks the box, types a name, drags the level

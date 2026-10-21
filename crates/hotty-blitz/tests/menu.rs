@@ -5,7 +5,8 @@ mod common;
 
 use common::body;
 use hotty_blitz::{Config, Effect, Host, KeySettings, Metrics, MENU};
-use hotty_wire::{Command, Event, Scanner};
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 use serde_json::{Value, json};
 
 fn host() -> Host {
@@ -30,13 +31,13 @@ fn send(h: &mut Host, show: Option<&str>, body: &Value) -> Option<String> {
     let mut pairs = vec![("a", "menu")];
     pairs.extend(show.map(|s| ("show", s)));
     let payload = if body.is_null() { Vec::new() } else { rmp_serde::to_vec_named(body).unwrap() };
-    let effects = h.handle(&Command::new(pairs.into_iter().collect(), payload));
-    let mut s = Scanner::new();
+    let effects = h.handle(&Message::new(pairs.into_iter().collect(), payload));
+    let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     let mut code = None;
     for e in effects {
         if let Effect::Reply(b) = e {
             s.feed(&b, &mut |ev| {
-                if let Event::Command(c) = ev
+                if let Output::Command(c) = ev
                     && c.get("a") == Some("err")
                 {
                     code = body_code(&c);
@@ -47,7 +48,7 @@ fn send(h: &mut Host, show: Option<&str>, body: &Value) -> Option<String> {
     code
 }
 
-fn body_code(c: &Command) -> Option<String> {
+fn body_code(c: &Message) -> Option<String> {
     body(&c.payload)["code"].as_str().map(str::to_string)
 }
 
@@ -184,8 +185,8 @@ fn a_pick_sends_the_name_alone() {
     let sent = |h: &Host, name: &str| {
         h.menu_pick(name).map(|b| {
             let mut out = Vec::new();
-            Scanner::new().feed(&b, &mut |ev| {
-                if let Event::Command(c) = ev {
+            Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES).feed(&b, &mut |ev| {
+                if let Output::Command(c) = ev {
                     out.push((c.get("e").map(str::to_string), c.get("s").map(str::to_string), body(&c.payload)));
                 }
             });
