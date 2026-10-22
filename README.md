@@ -217,6 +217,20 @@ element's `data-keys` gives keys to the program, or, in a document that
 scrolls, scrolls with them (`scroll-down`, `scroll-end`, …), after the keys
 the element uses itself; a field leaves those scroll actions out.
 
+A program changes a control as the user would with `a=field` (SPEC §6.4),
+only while the user has not changed it since: each control counts the
+user's edits, undos, toggles, checks and picks as its `rev` (a radio
+group, one name in one form, counts together), and `input` and `change`
+carry it. Positions are bytes of the UTF-8 value, and a selection's ends
+snap to the start of a grapheme cluster. An `a=field` sends nothing, is
+one edit of the field's history and ends a run of typing; a field that
+only `a=field` changed sends no `change` when focus leaves it. A field's
+caret starts at the end of its value (`mods/blitz/caret-at-end.md`), and
+it keeps its selection while not focused. A field with `data-on~=caret`
+hears `caret` when the user moves its selection, at most one a frame (a
+second in one frame waits for the next), and its `input` carries the
+selection. This host has no input method yet, so a field never composes.
+
 ## Performance
 
 Measured 2026-09-29, release build:
