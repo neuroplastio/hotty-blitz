@@ -3903,6 +3903,62 @@ fn a_caret_goes_at_most_once_a_frame() {
 /// A radio button the user checks again changes nothing (SPEC §6.4, §9):
 /// no `change`, and its group's rev stays.
 #[test]
+fn a_radio_group_is_one_name_in_one_form() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        "<form><input type=radio name=g id=a value=1 checked></form>\
+         <form id=two><input type=radio name=g id=b value=2></form>\
+         <input type=radio name=g id=c value=3 form=two>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "4")],
+        "",
+    ));
+    // Checking b leaves a, of another form, checked, and unchecks c,
+    // which the form attribute puts in b's form.
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "c")], ""));
+    let out = named(&mut h, "f", KeyName::Space);
+    assert_eq!(
+        events(&out.effects),
+        vec![(
+            "change".into(),
+            "c".into(),
+            r#"{"checked":true,"rev":1,"value":"3"}"#.into()
+        )]
+    );
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "b")], ""));
+    let out = named(&mut h, "f", KeyName::Space);
+    assert_eq!(
+        events(&out.effects),
+        vec![(
+            "change".into(),
+            "b".into(),
+            r#"{"checked":true,"rev":2,"value":"2"}"#.into()
+        )]
+    );
+    // a is still checked, so Space on it changes nothing.
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "a")], ""));
+    let out = named(&mut h, "f", KeyName::Space);
+    assert!(
+        events(&out.effects).is_empty(),
+        "{:?}",
+        events(&out.effects)
+    );
+    // c is unchecked, so Space on it checks it again.
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "c")], ""));
+    let out = named(&mut h, "f", KeyName::Space);
+    assert_eq!(
+        events(&out.effects),
+        vec![(
+            "change".into(),
+            "c".into(),
+            r#"{"checked":true,"rev":3,"value":"3"}"#.into()
+        )]
+    );
+}
+
+#[test]
 fn a_checked_radio_checked_again_sends_nothing() {
     let mut h = host();
     h.handle(&cmd(

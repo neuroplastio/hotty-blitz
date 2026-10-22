@@ -405,18 +405,28 @@ pub(super) fn radio_group(doc: &BaseDocument, id: NodeId) -> Vec<NodeId> {
     ids
 }
 
-/// The form element `id` is in, if any.
+/// `id`'s form owner, HTML's, as Blitz finds it: the form its `form`
+/// attribute names, or else the form it is in, if any.
 fn form_of(doc: &BaseDocument, id: NodeId) -> Option<NodeId> {
+    let is_form = |n: NodeId| {
+        doc.get_node(n)
+            .and_then(|n| n.element_data())
+            .is_some_and(|e| e.name.local.as_ref() == "form")
+    };
+    let named = doc
+        .get_node(id)?
+        .attr(local_name!("form"))
+        .and_then(|f| doc.get_element_by_id(f))
+        .filter(|&f| is_form(f));
+    if named.is_some() {
+        return named;
+    }
     let mut n = doc.get_node(id)?.parent;
     while let Some(p) = n {
-        let node = doc.get_node(p)?;
-        if node
-            .element_data()
-            .is_some_and(|e| e.name.local.as_ref() == "form")
-        {
+        if is_form(p) {
             return Some(p);
         }
-        n = node.parent;
+        n = doc.get_node(p)?.parent;
     }
     None
 }
