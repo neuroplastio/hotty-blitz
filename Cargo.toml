@@ -13,7 +13,7 @@ repository = "https://github.com/neuroplastio/hotty-blitz"
 # by commit until it is published (gov P-5). Without its terminal, which
 # only programs need. To build against a checkout of hotty-rs beside this
 # one: `cargo build --config 'patch."https://github.com/neuroplastio/hotty-rs".hotty.path="../hotty-rs/crates/hotty"'`.
-hotty = { git = "https://github.com/neuroplastio/hotty-rs", rev = "ada94e7ed6a0cc93391ccf0ea6658fa3e6daac5b", default-features = false, features = ["zlib"] }
+hotty = { git = "https://github.com/neuroplastio/hotty-rs", rev = "995115dd7c6809321d7c14834c684630a60de4c1", default-features = false, features = ["zlib"] }
 hotty-blitz = { path = "crates/hotty-blitz" }
 
 # Blitz is pinned by commit. Upgrade in a leg of its own.
