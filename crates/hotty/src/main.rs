@@ -7,9 +7,9 @@ mod kitty;
 mod run;
 mod term;
 
-use hotty_blitz::{Config, Effect, Host, Metrics};
 use hotty::host::{Output, Splitter};
 use hotty::{Control, Message};
+use hotty_blitz::{Config, Effect, Host, Metrics};
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
@@ -592,7 +592,9 @@ fn cmd_bench(args: &[String]) -> i32 {
             }))
             .unwrap();
             let cmd = Message::new(
-                [("a", "delta"), ("s", "b"), ("q", "2")].into_iter().collect(),
+                [("a", "delta"), ("s", "b"), ("q", "2")]
+                    .into_iter()
+                    .collect(),
                 body,
             );
             host.handle(&cmd);

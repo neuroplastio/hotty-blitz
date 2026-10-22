@@ -5,9 +5,9 @@
 mod common;
 
 use common::{body, delta_cmd};
-use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty::Message;
 use hotty::host::{Output, Splitter};
+use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -98,7 +98,13 @@ fn place(h: &mut Host, scroll: bool, html: &str) -> Vec<Value> {
 }
 
 fn delta(h: &mut Host, op: &str, t: &str, payload: &str) -> Vec<Effect> {
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], op, Some(t), None, payload))
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        op,
+        Some(t),
+        None,
+        payload,
+    ))
 }
 
 #[test]
@@ -284,7 +290,13 @@ fn reveal_moves_no_focus_and_scrolls_only_what_scrolls() {
         [rows(&[("a", 0), ("b", 1), ("c", 2), ("d", 3)], false)]
     );
     // An element with no box moves nothing.
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "attr", Some("e"), Some("hidden"), ""));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "attr",
+        Some("e"),
+        Some("hidden"),
+        "",
+    ));
     assert_eq!(views(&mut h), Vec::<Value>::new());
     delta(&mut h, "reveal", "e", "start");
     assert_eq!(views(&mut h), Vec::<Value>::new(), "e is not rendered");

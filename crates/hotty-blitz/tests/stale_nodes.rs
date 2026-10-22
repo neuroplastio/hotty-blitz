@@ -7,8 +7,8 @@
 mod common;
 
 use common::delta_cmd;
-use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
 use hotty::Message;
+use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
 
 enum Step<'a> {
     Delta(&'a str, &'a str, Option<&'a str>, &'a str),
@@ -31,12 +31,27 @@ fn run(doc: &str, steps: &[Step]) {
         Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
     };
     host.handle(&cmd(&[("a", "doc"), ("s", "f"), ("q", "2")], doc));
-    host.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "40"), ("r", "10"), ("q", "2")], ""));
+    host.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "f"),
+            ("c", "40"),
+            ("r", "10"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     host.render_dirty(&mut |_, _, _| {});
     for step in steps {
         match step {
             Delta(op, t, k, payload) => {
-                host.handle(&delta_cmd(&[("s", "f"), ("q", "2")], op, Some(t), *k, payload));
+                host.handle(&delta_cmd(
+                    &[("s", "f"), ("q", "2")],
+                    op,
+                    Some(t),
+                    *k,
+                    payload,
+                ));
             }
             Render => host.render_dirty(&mut |_, _, _| {}),
             Move(x, y) => {
@@ -65,7 +80,12 @@ fn an_id_moved_to_another_tag() {
 fn a_control_built_and_freed_by_one_delta() {
     run(
         "<section id=s><span id=x></span> </section>",
-        &[Delta("prepend", "s", None, "<button id=x></button><a id=x> </a>")],
+        &[Delta(
+            "prepend",
+            "s",
+            None,
+            "<button id=x></button><a id=x> </a>",
+        )],
     );
 }
 
@@ -76,7 +96,12 @@ fn a_table_emptied() {
     run(
         "<label id=l></label>",
         &[
-            Delta("replace", "l", None, r#"<b id=t style="display:table"><ul style="display:table-row">x</ul></b>"#),
+            Delta(
+                "replace",
+                "l",
+                None,
+                r#"<b id=t style="display:table"><ul style="display:table-row">x</ul></b>"#,
+            ),
             Render,
             Delta("inner", "t", None, ""),
         ],
@@ -105,8 +130,18 @@ fn a_fixed_box_hidden_and_emptied() {
     run(
         "<b id=f> </b> <p></p>",
         &[
-            Delta("morph", "f", None, r#"<section id=f style="position:fixed"><div id=d> </div></section>"#),
-            Delta("inner", "d", None, r#"<ul style="position:absolute"></ul>x"#),
+            Delta(
+                "morph",
+                "f",
+                None,
+                r#"<section id=f style="position:fixed"><div id=d> </div></section>"#,
+            ),
+            Delta(
+                "inner",
+                "d",
+                None,
+                r#"<ul style="position:absolute"></ul>x"#,
+            ),
             Render,
             Delta("attr", "f", Some("hidden"), ""),
             Delta("inner", "f", None, ""),
@@ -142,7 +177,12 @@ fn a_box_hidden_as_its_inline_child_goes() {
             Delta("attr", "h", Some("style"), "display:none"),
             Delta("replace", "gone", None, ""),
             Render,
-            Delta("before", "first", None, r#"<a style="display:table-cell"></a> "#),
+            Delta(
+                "before",
+                "first",
+                None,
+                r#"<a style="display:table-cell"></a> "#,
+            ),
         ],
     );
 }
@@ -155,7 +195,12 @@ fn a_flex_item_gone_display_contents() {
     run(
         "<button id=b></button> ",
         &[
-            Delta("append", "b", None, r#"<section><div> </div><p id=p style="display:inline-flex"></p></section>"#),
+            Delta(
+                "append",
+                "b",
+                None,
+                r#"<section><div> </div><p id=p style="display:inline-flex"></p></section>"#,
+            ),
             Render,
             Delta("attr", "p", Some("style"), "display:contents"),
             Delta("prepend", "p", None, ""),

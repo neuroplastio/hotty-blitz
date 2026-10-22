@@ -4,9 +4,10 @@ hotty-blitz implements hotty (`SPEC.md` in neuroplastio/hotty) on Blitz. It
 must not grow the protocol: a behaviour the spec does not state is a question
 for the hotty repository.
 
-- **`make check` is the gate:** the mods, build, tests (including the shared
-  conformance vectors from the hotty checkout), clippy with `-D warnings`,
-  and the pty test. It needs a hotty checkout (`HOTTY_DIR`, or next to this
+- **`make check` is the gate:** rustfmt (`cargo fmt --all` fixes what it
+  finds), the mods, build, tests (including the shared conformance vectors
+  from the hotty checkout), clippy with `-D warnings`, the pty test and the
+  fuzz test. It needs a hotty checkout (`HOTTY_DIR`, or next to this
   repository) and sets up the forks at `../blitz`, `../parley` and
   `../vello_cpu` when missing.
 - **Release builds only for numbers.** A debug build of Stylo is orders of

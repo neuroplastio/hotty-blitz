@@ -8,7 +8,7 @@ export HOTTY_DIR
 
 .PHONY: check mods canary build release test fuzz clippy fmt corpus bench oracle blitz hotty
 
-check: mods build test clippy test-pty fuzz   ## the gate
+check: fmt mods build test clippy test-pty fuzz   ## the gate
 
 hotty:
 	@test -n "$(HOTTY_DIR)" || { echo "no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository"; exit 1; }
@@ -48,8 +48,8 @@ fuzz: blitz   ## random deltas, rendered, in a release build: no panic (tests/fu
 clippy: blitz
 	$(CARGO) clippy --workspace -q -- -D warnings
 
-fmt:
-	$(CARGO) fmt --all
+fmt:   ## fails when rustfmt would change files
+	$(CARGO) fmt --all --check
 
 corpus: release hotty   ## render every corpus page to corpus-out/*.png
 	@mkdir -p corpus-out

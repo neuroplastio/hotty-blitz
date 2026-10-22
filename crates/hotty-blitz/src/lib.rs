@@ -12,24 +12,24 @@ mod edit;
 pub mod fetch;
 pub mod ffi;
 pub mod input;
+mod menu;
 pub mod net;
 pub mod paint;
 pub mod policy;
-mod menu;
 mod scroll;
 pub mod style;
 mod surface;
 
 use blitz_dom::FontContext;
 use body::Detail;
-use hotty::keys::{self, Platform};
 use hotty::Message;
+use hotty::keys::{self, Platform};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use input::{
-    CellsTouch, CellsTouchOutcome, Event, Key, KeyName, KeyOutcome, Mods, MouseReport,
-    PointerKind, Touch, TouchOutcome, TouchPhase, WheelOutcome,
+    CellsTouch, CellsTouchOutcome, Event, Key, KeyName, KeyOutcome, Mods, MouseReport, PointerKind,
+    Touch, TouchOutcome, TouchPhase, WheelOutcome,
 };
 pub use menu::{MENU, Shown};
 pub use surface::{Damage, Frame, Timings};
@@ -195,7 +195,11 @@ pub enum Effect {
     /// surface [`MENU`], `cols`×`rows` cells, at the bottom right of the
     /// terminal's viewport, above everything (SPEC §10.7). Its pixels come
     /// from [`Host::render_dirty`]; [`Effect::Delete`] hides it.
-    Menu { surface: String, cols: u16, rows: u16 },
+    Menu {
+        surface: String,
+        cols: u16,
+        rows: u16,
+    },
 }
 
 /// What [`Host::copy_key`] makes of a key.
@@ -332,7 +336,11 @@ impl MenuState {
     }
 
     fn current_mut(&mut self) -> &mut Option<hotty::MenuTree> {
-        if self.on_alt { &mut self.alt } else { &mut self.main }
+        if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.main
+        }
     }
 }
 
@@ -532,7 +540,11 @@ impl Host {
         Heard {
             cellcss: cellcss(&self.config.metrics),
             scale: body::float(self.config.metrics.scale),
-            scheme: if self.config.theme.dark { "dark" } else { "light" },
+            scheme: if self.config.theme.dark {
+                "dark"
+            } else {
+                "light"
+            },
             modifier: self.keys.platform.modifier.name(),
             features: features.into_iter().filter(|f| f.1).map(|f| f.0).collect(),
             net: self.store.host_policy(),
@@ -558,7 +570,8 @@ impl Host {
             modifier: (old.modifier != now.modifier).then(|| now.modifier.to_string()),
             features: (old.features != now.features).then(|| strings(&now.features)),
             net: (old.net != now.net).then(|| now.net.to_map()),
-            edit: (old.edit != now.edit).then(|| now.edit.clone().unwrap_or_default().into_iter().collect()),
+            edit: (old.edit != now.edit)
+                .then(|| now.edit.clone().unwrap_or_default().into_iter().collect()),
             ..hotty::Caps::default()
         };
         if c == hotty::Caps::default() {
@@ -726,7 +739,11 @@ impl Host {
         let mut s = self.menu_surface(&menu::menu_html(&l, &self.keys.platform));
         let (w, h) = css_cell(&self.config.metrics);
         let (mw, mh) = s.element_size("m").unwrap_or_default();
-        let cells = |px: f64, cell: f32| ((px - 0.5) / f64::from(cell.max(1.0))).ceil().clamp(1.0, 500.0) as u16;
+        let cells = |px: f64, cell: f32| {
+            ((px - 0.5) / f64::from(cell.max(1.0)))
+                .ceil()
+                .clamp(1.0, 500.0) as u16
+        };
         let (cols, rows) = (cells(mw, w), cells(mh, h));
         s.set_size(cols, rows);
         s.placed = true;
@@ -1234,7 +1251,10 @@ impl Host {
         match result {
             Ok((extra, body)) => {
                 if quiet == hotty::Quiet::ReplyAlways && cmd.action() != "ev" {
-                    let extra: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                    let extra: Vec<(&str, &str)> = extra
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect();
                     let r = hotty::host::reply_ok(cmd, &extra, body.as_deref().unwrap_or_default());
                     effects.push(Effect::Reply(r.into_bytes()));
                 }
@@ -1248,7 +1268,9 @@ impl Host {
                         op: failed.and_then(|i| u32::try_from(i).ok()),
                         ..hotty::Error::default()
                     };
-                    effects.push(Effect::Reply(hotty::host::reply_err(cmd, &err).into_bytes()));
+                    effects.push(Effect::Reply(
+                        hotty::host::reply_err(cmd, &err).into_bytes(),
+                    ));
                 }
             }
         }
@@ -1302,7 +1324,10 @@ impl Host {
                     // decodes to (SPEC §13).
                     limits: Some(
                         [
-                            ("resources".to_string(), i64::try_from(self.store.quota).unwrap_or(i64::MAX)),
+                            (
+                                "resources".to_string(),
+                                i64::try_from(self.store.quota).unwrap_or(i64::MAX),
+                            ),
                             ("message".to_string(), MAX_COMMAND_BYTES as i64),
                         ]
                         .into(),
@@ -1637,7 +1662,8 @@ impl Host {
                     }
                     Some("1") => {
                         self.menu.seq = Some(
-                            hotty::host::menu_show_of(cmd).map_err(|e| ("EINVAL", format!("bad seq: {}", e.detail)))?,
+                            hotty::host::menu_show_of(cmd)
+                                .map_err(|e| ("EINVAL", format!("bad seq: {}", e.detail)))?,
                         );
                     }
                     Some("0") => self.menu.seq = None,
@@ -1907,7 +1933,8 @@ impl Host {
                     Touch::Surface => {
                         let s = f.surface.clone();
                         out.touch = Touch::Surface;
-                        out.effects = self.pointer_with(&s, PointerKind::Move, x, y, mods, false, 0);
+                        out.effects =
+                            self.pointer_with(&s, PointerKind::Move, x, y, mods, false, 0);
                     }
                     Touch::Undecided if f.tap => out.touch = Touch::Undecided,
                     Touch::Undecided => {
@@ -1928,7 +1955,8 @@ impl Host {
                 };
                 if f.touch == Touch::Surface {
                     out.touch = Touch::Surface;
-                    out.effects = self.pointer_with(&f.surface, PointerKind::Up, x, y, mods, false, 0);
+                    out.effects =
+                        self.pointer_with(&f.surface, PointerKind::Up, x, y, mods, false, 0);
                 } else if f.tap && self.surfaces.get(&f.surface).is_some_and(|s| s.placed) {
                     out.touch = Touch::Surface;
                     out.effects = self.tap(&f.surface, x, y, f.mods);
@@ -2153,7 +2181,8 @@ impl Host {
         let (c, r) = self.screen_cell(x, y);
         let covers = |a: &&hotty::TouchArea| {
             let inside = |at: i64, from: u32, len: u32| {
-                u64::try_from(at).is_ok_and(|at| at >= u64::from(from) && at - u64::from(from) < u64::from(len))
+                u64::try_from(at)
+                    .is_ok_and(|at| at >= u64::from(from) && at - u64::from(from) < u64::from(len))
             };
             inside(c, a.c, a.w) && inside(r, a.r, a.h)
         };
@@ -2530,7 +2559,11 @@ impl Host {
         let focused = self.focused_surface().and_then(|n| self.surfaces.get(n));
         focused
             .and_then(surface::Surface::selected_text)
-            .or_else(|| self.surfaces.values().find_map(surface::Surface::selected_text))
+            .or_else(|| {
+                self.surfaces
+                    .values()
+                    .find_map(surface::Surface::selected_text)
+            })
     }
 
     /// A key as pressed, with its names (SPEC §10.4, each possibly empty,
@@ -2602,11 +2635,11 @@ fn strings(names: &[&str]) -> Vec<String> {
 /// The edit shortcuts the capabilities report (SPEC §4): only where the
 /// terminal takes edit commands.
 fn edit_of(k: &KeySettings) -> Option<body::Edit> {
-    k.commands.then(|| k.platform.edit_shortcuts().into_iter().collect())
+    k.commands
+        .then(|| k.platform.edit_shortcuts().into_iter().collect())
 }
 
 type ReplyExtra = (Vec<(String, String)>, Option<Vec<u8>>);
-
 
 /// A place command's window (SPEC §5.2): `x`, `y`, `w`, `h` in cells, by
 /// default the whole surface. One that leaves the surface, or has no cells,
@@ -2635,7 +2668,11 @@ fn css_cell(m: &Metrics) -> (f32, f32) {
 /// A cell's size in CSS pixels as the capabilities report it (SPEC §4), to
 /// a thousandth: no f32 noise on the wire.
 fn cellcss(m: &Metrics) -> hotty::CellCss {
-    let scale = if m.scale > 0.0 { body::float(m.scale) } else { 1.0 };
+    let scale = if m.scale > 0.0 {
+        body::float(m.scale)
+    } else {
+        1.0
+    };
     let px = |device: u32| (f64::from(device) / scale * 1000.0).round() / 1000.0;
     hotty::CellCss {
         w: px(m.cell_w),

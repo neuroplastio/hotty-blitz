@@ -8,8 +8,8 @@
 //! cargo test -p hotty --test dump -- --ignored record
 //! ```
 
-use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty::Message;
+use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command as Process, Stdio};
@@ -27,7 +27,12 @@ fn delta_body(ops: &[(&str, &str, Option<&str>, &str)]) -> Vec<u8> {
     b.push(0x90 | ops.len() as u8);
     for (op, t, k, v) in ops {
         b.push(0x80 | (3 + u8::from(k.is_some())));
-        for (name, value) in [("op", Some(op)), ("t", Some(t)), ("k", k.as_ref()), ("v", Some(v))] {
+        for (name, value) in [
+            ("op", Some(op)),
+            ("t", Some(t)),
+            ("k", k.as_ref()),
+            ("v", Some(v)),
+        ] {
             if let Some(value) = value {
                 str(&mut b, name);
                 str(&mut b, value);
@@ -273,7 +278,11 @@ fn program() -> Vec<u8> {
         use base64::Engine as _;
         let body = delta_body(&[("var", "level", Some("p"), "7")]);
         s.extend(b"\x1b]7279;a=delta:s=form:q=2;");
-        s.extend(base64::engine::general_purpose::STANDARD.encode(body).as_bytes());
+        s.extend(
+            base64::engine::general_purpose::STANDARD
+                .encode(body)
+                .as_bytes(),
+        );
         s.extend(b"\x07");
     }
     // Bytes, not text, in two chunks.

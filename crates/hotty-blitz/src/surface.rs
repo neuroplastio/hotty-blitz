@@ -2,12 +2,10 @@
 //! glue that turns host input into DOM events and DOM events into hotty ones.
 
 use crate::body::{Detail, MAX_INT, View};
-use hotty::Op;
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
 use crate::{Config, Metrics, Rect, anim, delta, edit, net, paint};
-use hotty::keys;
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
@@ -17,12 +15,15 @@ use blitz_dom::{
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_paint::paint_scene;
 use blitz_traits::events::{
-    BlitzInputEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, KeyState,
-    MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
+    BlitzInputEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData,
+    EventState, KeyState, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails,
+    UiEvent,
 };
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::Body;
 use blitz_traits::shell::{ColorScheme, Viewport};
+use hotty::Op;
+use hotty::keys;
 use keyboard_types::{Code, Key as KbKey, Location, Modifiers};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -1276,11 +1277,7 @@ impl Surface {
     /// been checked ([`hotty::host::delta_of`]). An op whose target is
     /// missing changes nothing, and the ops after it still apply; the
     /// first that failed is returned, with its index.
-    pub fn apply(
-        &mut self,
-        ops: &[Op],
-        m: &Metrics,
-    ) -> Result<(), (usize, delta::DeltaError)> {
+    pub fn apply(&mut self, ops: &[Op], m: &Metrics) -> Result<(), (usize, delta::DeltaError)> {
         let mut first = None;
         for (i, op) in ops.iter().enumerate() {
             let t = (!op.target.is_empty()).then_some(op.target.as_str());
@@ -1568,7 +1565,11 @@ impl Surface {
             .find(|&(n, _, _)| !self.unselectable(Some(n)))?;
         let text = self.selected_text()?;
         let values = self.keymap_values(first);
-        let keymap = keys::resolve(&self.settings.platform, false, values.iter().map(String::as_str));
+        let keymap = keys::resolve(
+            &self.settings.platform,
+            false,
+            values.iter().map(String::as_str),
+        );
         let copies = keymap.press(names).and_then(|n| keymap.lookup(n)) == Some("copy");
         Some(copies.then_some(text))
     }
@@ -1982,7 +1983,14 @@ impl Surface {
                         let counts = self.counts_of(&start);
                         let steps = self.steps_at(&start, counts, x, y).unwrap_or_default();
                         let none = Steps::default();
-                        lead.push(drag_event("dragstart", start.clone(), cell, mods, steps, none));
+                        lead.push(drag_event(
+                            "dragstart",
+                            start.clone(),
+                            cell,
+                            mods,
+                            steps,
+                            none,
+                        ));
                         self.drag = Some(Drag {
                             start: start.clone(),
                             counts,
@@ -2049,7 +2057,14 @@ impl Surface {
             keys
         };
         let none = Steps::default();
-        Some(drag_event("dragend", String::new(), d.cell, keys, d.steps, none))
+        Some(drag_event(
+            "dragend",
+            String::new(),
+            d.cell,
+            keys,
+            d.steps,
+            none,
+        ))
     }
 
     /// The counts of the `data-steps` of the element with id `id`, (0, 0)
@@ -2091,11 +2106,15 @@ impl Surface {
     /// it has now. None for any other.
     fn target_steps(&self, target: &str, x: f32, y: f32) -> Steps {
         let drops = !target.is_empty()
-            && self.doc.get_element_by_id(target).is_some_and(|n| self.listens(n, "drop"));
+            && self
+                .doc
+                .get_element_by_id(target)
+                .is_some_and(|n| self.listens(n, "drop"));
         if !drops {
             return Steps::default();
         }
-        self.steps_at(target, self.counts_of(target), x, y).unwrap_or_default()
+        self.steps_at(target, self.counts_of(target), x, y)
+            .unwrap_or_default()
     }
 
     /// The pans a touch at CSS pixel (`x`, `y`) of the surface, in its cell
@@ -2541,8 +2560,16 @@ impl Surface {
         let names = key.names();
         let values = self.keymap_values(id);
         let m = match kind {
-            Control::Text => keys::resolve(&self.settings.platform, false, values.iter().map(String::as_str)),
-            Control::TextArea => keys::resolve(&self.settings.platform, true, values.iter().map(String::as_str)),
+            Control::Text => keys::resolve(
+                &self.settings.platform,
+                false,
+                values.iter().map(String::as_str),
+            ),
+            Control::TextArea => keys::resolve(
+                &self.settings.platform,
+                true,
+                values.iter().map(String::as_str),
+            ),
             // An element's keymap: its values joined, with no default
             // keymap (SDK.md §3.10).
             _ => keys::parse_keymap(&self.settings.platform, &values.join(" ")),
@@ -2640,7 +2667,11 @@ impl Surface {
         };
         match node.attr(local_name!("label")) {
             Some(label) => label.to_string(),
-            None => node.text_content().split_whitespace().collect::<Vec<_>>().join(" "),
+            None => node
+                .text_content()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
         }
     }
 
@@ -2651,7 +2682,11 @@ impl Surface {
     fn field_key(&mut self, id: NodeId, key: &Key, multiline: bool) -> Option<Vec<Event>> {
         let names = key.names();
         let values = self.keymap_values(id);
-        let keymap = keys::resolve(&self.settings.platform, multiline, values.iter().map(String::as_str));
+        let keymap = keys::resolve(
+            &self.settings.platform,
+            multiline,
+            values.iter().map(String::as_str),
+        );
         // A press is the field's by either name, by the physical one first.
         let name = keymap.press(&names)?;
         let action = keymap.lookup(name)?.to_string();
@@ -2660,7 +2695,9 @@ impl Surface {
         // password field, and no paste where the host cannot read the
         // clipboard: the key reaches the program.
         let has = match action.as_str() {
-            "copy" | "cut" => self.field_state(id).is_some_and(|f| f.anchor != f.focus) && !self.password(id),
+            "copy" | "cut" => {
+                self.field_state(id).is_some_and(|f| f.anchor != f.focus) && !self.password(id)
+            }
             "paste" => self.can_paste,
             _ => true,
         };
@@ -2682,7 +2719,11 @@ impl Surface {
     /// Text field `id`'s value and selection.
     fn field_state(&self, id: NodeId) -> Option<FieldState> {
         let (value, anchor, focus) = self.doc.text_input_selection(id)?;
-        Some(FieldState { value, anchor, focus })
+        Some(FieldState {
+            value,
+            anchor,
+            focus,
+        })
     }
 
     /// After an action in text field `id`, which found it `before`: an
@@ -2876,7 +2917,11 @@ impl Surface {
                     "line-previous" | "line-next" => 1,
                     _ => self.doc.text_input_rows_shown(id) as isize,
                 };
-                let sign = if matches!(action, "line-previous" | "page-up") { -1 } else { 1 };
+                let sign = if matches!(action, "line-previous" | "page-up") {
+                    -1
+                } else {
+                    1
+                };
                 self.doc.move_text_input_rows(id, sign * rows, extend);
                 self.damage.touch(&self.doc, id, self.viewport.2 as f64);
                 Vec::new()

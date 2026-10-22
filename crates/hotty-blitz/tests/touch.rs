@@ -2,9 +2,9 @@
 //! that drags reports, and what ends one. The shared vectors cover the
 //! common path; these the corners.
 
-use hotty_blitz::{Config, Effect, Host, Metrics, Mods, Touch, TouchPhase};
 use hotty::Message;
 use hotty::host::{Output, Splitter};
+use hotty_blitz::{Config, Effect, Host, Metrics, Mods, Touch, TouchPhase};
 
 fn host() -> Host {
     Host::new(Config {

@@ -1,8 +1,8 @@
 //! The menu a program keeps with `a=menu` (hotty SPEC §10.7), drawn as a
 //! surface of the host's own: myelin's which-key level, as a document.
 
-use hotty::{MenuItem, MenuTree as Menu};
 use hotty::keys::{self, Platform};
+use hotty::{MenuItem, MenuTree as Menu};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// The surface the host draws the level shown in. A program's surface name
@@ -93,7 +93,11 @@ fn shown_key(p: &Platform, key: &str) -> String {
         v => (v, true),
     };
     let mods = if shift { k.mods } else { k.mods & !keys::SHIFT };
-    let mut out = keys::KeyParts { mods, value: String::new() }.name();
+    let mut out = keys::KeyParts {
+        mods,
+        value: String::new(),
+    }
+    .name();
     out.push_str(value);
     out
 }
@@ -149,7 +153,11 @@ pub(crate) fn menu_html(m: &Level, p: &Platform) -> String {
     html.push_str(&format!(
         "<div id=m><div class=i><span class=s>{}</span>{}{}</div><div class=l>",
         escape(&title[0]),
-        if title[0].is_empty() || title[1].is_empty() { "" } else { " " },
+        if title[0].is_empty() || title[1].is_empty() {
+            ""
+        } else {
+            " "
+        },
         escape(&title[1]),
     ));
     for col in m.items.chunks(per) {

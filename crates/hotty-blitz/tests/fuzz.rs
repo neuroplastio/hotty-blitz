@@ -27,8 +27,8 @@
 mod common;
 
 use common::delta_cmd;
-use hotty_blitz::{Config, Host, Metrics};
 use hotty::Message;
+use hotty_blitz::{Config, Host, Metrics};
 use std::sync::Mutex;
 
 /// Seeds each mode runs in the gate.
@@ -97,7 +97,11 @@ impl Ids {
     }
 
     fn target(&self, r: &mut Rng) -> usize {
-        r.below(if self.repeat { Self::FEW } else { self.next.max(1) })
+        r.below(if self.repeat {
+            Self::FEW
+        } else {
+            self.next.max(1)
+        })
     }
 }
 
@@ -112,8 +116,14 @@ fn markup(r: &mut Rng, depth: u32, ids: &mut Ids) -> String {
         let id = ids.new_id(r);
         let style = r.pick(STYLES);
         let inner = markup(r, depth - 1, ids);
-        let view = if ids.view && id.is_multiple_of(2) { " data-on=view" } else { "" };
-        s.push_str(&format!("<{tag} id=e{id}{view} style=\"{style}\">{inner}</{tag}>"));
+        let view = if ids.view && id.is_multiple_of(2) {
+            " data-on=view"
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "<{tag} id=e{id}{view} style=\"{style}\">{inner}</{tag}>"
+        ));
     }
     s
 }
@@ -135,7 +145,10 @@ fn steps(seed: u64, repeat: bool, view: bool) -> Vec<Step> {
     };
     let command = |pairs: &[(&str, &str)], payload: String| {
         Step::Command(
-            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             payload,
         )
     };
@@ -146,7 +159,16 @@ fn steps(seed: u64, repeat: bool, view: bool) -> Vec<Step> {
     }
     let mut steps = vec![
         command(&doc_pairs, doc),
-        command(&[("a", "place"), ("s", "f"), ("c", "40"), ("r", "10"), ("q", "2")], String::new()),
+        command(
+            &[
+                ("a", "place"),
+                ("s", "f"),
+                ("c", "40"),
+                ("r", "10"),
+                ("q", "2"),
+            ],
+            String::new(),
+        ),
         Step::Render,
     ];
     for i in 0..40 {
@@ -166,7 +188,10 @@ fn steps(seed: u64, repeat: bool, view: bool) -> Vec<Step> {
                 let tag = r.pick(TAGS);
                 let style = r.pick(STYLES);
                 let inner = markup(&mut r, 2, &mut ids);
-                (None, format!("<{tag} id={t} style=\"{style}\">{inner}</{tag}>"))
+                (
+                    None,
+                    format!("<{tag} id={t} style=\"{style}\">{inner}</{tag}>"),
+                )
             }
             _ => (None, markup(&mut r, 2, &mut ids)),
         };
@@ -195,8 +220,9 @@ static PANICKED_AT: Mutex<Option<String>> = Mutex::new(None);
 
 fn record_panics() {
     std::panic::set_hook(Box::new(|info| {
-        *PANICKED_AT.lock().unwrap() =
-            info.location().map(|l| format!("{}:{}", l.file(), l.line()));
+        *PANICKED_AT.lock().unwrap() = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()));
     }));
 }
 
@@ -217,13 +243,23 @@ fn run(steps: &[Step]) -> Option<String> {
                 host.handle(&Message::new(pairs.collect(), payload.as_bytes().to_vec()));
             }
             Step::Delta(op, t, k, v) => {
-                host.handle(&delta_cmd(&[("s", "f"), ("q", "2")], op, Some(t), k.as_deref(), v));
+                host.handle(&delta_cmd(
+                    &[("s", "f"), ("q", "2")],
+                    op,
+                    Some(t),
+                    k.as_deref(),
+                    v,
+                ));
             }
             Step::Render => host.render_dirty(&mut |_, _, _| {}),
         }));
         if done.is_err() {
             let at = PANICKED_AT.lock().unwrap().take().unwrap_or_default();
-            let when = if matches!(step, Step::Render) { "render" } else { "delta" };
+            let when = if matches!(step, Step::Render) {
+                "render"
+            } else {
+                "delta"
+            };
             return Some(format!("{at} (at a {when})"));
         }
     }
@@ -312,7 +348,11 @@ fn shrink() {
         return;
     };
     record_panics();
-    let mut steps = steps(seed, env("FUZZ_REPEAT").is_some(), env("FUZZ_VIEW").is_some());
+    let mut steps = steps(
+        seed,
+        env("FUZZ_REPEAT").is_some(),
+        env("FUZZ_VIEW").is_some(),
+    );
     let want = run(&steps);
     drop(std::panic::take_hook());
     let want = want.expect("that seed does not panic");

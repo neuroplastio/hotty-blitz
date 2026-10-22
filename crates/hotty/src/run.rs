@@ -7,8 +7,8 @@
 use crate::input::InputRouter;
 use crate::kitty::{self, Kitty, Transport};
 use crate::term;
-use hotty_blitz::{Damage, Effect, Host};
 use hotty::host::{Output, Seq, Splitter};
+use hotty_blitz::{Damage, Effect, Host};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
 use std::collections::HashMap;
 use std::fs::File;
@@ -440,7 +440,9 @@ pub fn run(opts: Options) -> i32 {
                     let _ = stdout_lock.flush();
                 }
                 if !shim.to_program.is_empty()
-                    && master.write_all(&std::mem::take(&mut shim.to_program)).is_err()
+                    && master
+                        .write_all(&std::mem::take(&mut shim.to_program))
+                        .is_err()
                 {
                     break 'outer;
                 }
@@ -470,7 +472,9 @@ pub fn run(opts: Options) -> i32 {
                 let _ = stdout_lock.flush();
             }
             if !shim.to_program.is_empty()
-                && master.write_all(&std::mem::take(&mut shim.to_program)).is_err()
+                && master
+                    .write_all(&std::mem::take(&mut shim.to_program))
+                    .is_err()
             {
                 break 'outer;
             }
@@ -527,7 +531,9 @@ pub fn run(opts: Options) -> i32 {
         // What renders found for the program (`fit`), after the replies to
         // the commands that caused them.
         if !shim.to_program.is_empty()
-            && master.write_all(&std::mem::take(&mut shim.to_program)).is_err()
+            && master
+                .write_all(&std::mem::take(&mut shim.to_program))
+                .is_err()
         {
             break;
         }

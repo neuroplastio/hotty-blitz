@@ -115,7 +115,6 @@ pub struct View {
     pub end: bool,
 }
 
-
 fn area(a: &Area) -> hotty::Area {
     hotty::Area {
         c: a.c,
@@ -129,7 +128,12 @@ fn area(a: &Area) -> hotty::Area {
 /// (`hotty::host::encode_event`): its kind, the surface it is of (none for
 /// `command` and `caps`), the element it names (empty for none), and what
 /// its detail carries.
-pub fn event(kind: &str, surface: Option<&str>, target: &str, detail: Option<&Detail>) -> hotty::Event {
+pub fn event(
+    kind: &str,
+    surface: Option<&str>,
+    target: &str,
+    detail: Option<&Detail>,
+) -> hotty::Event {
     let mut e = hotty::Event {
         kind: kind.to_string(),
         surface: surface.map(str::to_string),
@@ -218,7 +222,11 @@ pub fn event(kind: &str, surface: Option<&str>, target: &str, detail: Option<&De
         }
         Detail::View(v) => {
             e.view = Some(hotty::View {
-                areas: v.inside.iter().map(|(id, a)| (id.clone(), area(a))).collect(),
+                areas: v
+                    .inside
+                    .iter()
+                    .map(|(id, a)| (id.clone(), area(a)))
+                    .collect(),
                 at_end: v.end,
             })
         }

@@ -4,12 +4,12 @@
 mod common;
 
 use common::read_body;
+use hotty::host::{Output, Splitter};
+use hotty::{Control, Message};
 use hotty_blitz::{
     CellsTouch, Config, Effect, Host, Key, KeyName, KeySettings, Mods, MouseReport, PointerKind,
     Touch, TouchPhase,
 };
-use hotty::host::{Output, Splitter};
-use hotty::{Control, Message};
 use serde_json::Value;
 
 /// Where the vectors' mouse is (pointer steps): on a surface, at a pixel
@@ -95,7 +95,10 @@ fn from_host(bytes: &[u8]) -> Result<Vec<Message>, String> {
             .position(|&b| b == b';' || b == 0x1b)
             .unwrap_or(rest.len());
         let control = &rest[..end];
-        if control.split(|&b| b == b':').any(|kv| kv.starts_with(b"o=")) {
+        if control
+            .split(|&b| b == b':')
+            .any(|kv| kv.starts_with(b"o="))
+        {
             return Err(format!(
                 "the host compressed: {}",
                 String::from_utf8_lossy(control)
@@ -240,7 +243,11 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
         _ => {}
     }
     // Through, the pointer is over what is below: the surface is left.
-    let kind = if through && kind == PointerKind::Move { PointerKind::Leave } else { kind };
+    let kind = if through && kind == PointerKind::Move {
+        PointerKind::Leave
+    } else {
+        kind
+    };
     if placed && (!through || kind == PointerKind::Leave) {
         let (s, x, y) = (mouse.surface.clone(), mouse.x, mouse.y);
         send(host, &s, kind, x, y, &mut sent);
@@ -499,7 +506,9 @@ fn menu_step(host: &mut Host, step: &Value) -> Result<(), String> {
             }
         }
         "pick" => {
-            let sent = host.menu_pick(step["name"].as_str().unwrap()).unwrap_or_default();
+            let sent = host
+                .menu_pick(step["name"].as_str().unwrap())
+                .unwrap_or_default();
             check_events(step, &events(&from_host(&sent)?))
         }
         other => Err(format!("unknown menu step {other}")),
@@ -593,7 +602,11 @@ fn legacy_bytes(key: &Key) -> Option<Vec<u8>> {
         KeyName::Char(c) => c.as_bytes().to_vec(),
         KeyName::Other => return None,
     };
-    Some(if m.alt { [&[0x1b][..], &plain].concat() } else { plain })
+    Some(if m.alt {
+        [&[0x1b][..], &plain].concat()
+    } else {
+        plain
+    })
 }
 
 /// A key offered as a terminal that sees the key pressed offers it (SPEC
@@ -606,7 +619,13 @@ fn offered(host: &mut Host, surface: &str, key: &Key) -> hotty_blitz::KeyOutcome
         let bits = hotty::keys::KeyParts::new(m.super_, m.ctrl, m.alt, m.shift, "").mods;
         let (physical, other) = match &key.name {
             KeyName::Char(c) => (
-                us_physical(c).map(|p| hotty::keys::KeyParts { mods: bits, value: p }.name()),
+                us_physical(c).map(|p| {
+                    hotty::keys::KeyParts {
+                        mods: bits,
+                        value: p,
+                    }
+                    .name()
+                }),
                 key.spec_name(),
             ),
             _ => (key.spec_name(), None),
@@ -781,8 +800,9 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
                 let body = read_body(&got.payload)?;
                 for (k, v) in want.as_object().unwrap() {
                     if k == "types" {
-                        check_type(&body, v, "body")
-                            .map_err(|e| format!("reply types: {e} ({})", got.control.to_string()))?;
+                        check_type(&body, v, "body").map_err(|e| {
+                            format!("reply types: {e} ({})", got.control.to_string())
+                        })?;
                         continue;
                     }
                     if k == "body" {
@@ -1135,33 +1155,59 @@ fn keymap_vectors() {
             } else {
                 keys::Mod::Ctrl
             },
-            edit: p.and_then(|p| p.get("edit")).and_then(Value::as_object).map(|e| {
-                keys::EDIT_ACTIONS
-                    .iter()
-                    .map(|a| {
-                        let ks = e.get(*a).and_then(Value::as_array).into_iter().flatten();
-                        (a.to_string(), ks.map(|k| k.as_str().unwrap().to_string()).collect())
-                    })
-                    .collect()
-            }),
+            edit: p
+                .and_then(|p| p.get("edit"))
+                .and_then(Value::as_object)
+                .map(|e| {
+                    keys::EDIT_ACTIONS
+                        .iter()
+                        .map(|a| {
+                            let ks = e.get(*a).and_then(Value::as_array).into_iter().flatten();
+                            (
+                                a.to_string(),
+                                ks.map(|k| k.as_str().unwrap().to_string()).collect(),
+                            )
+                        })
+                        .collect()
+                }),
         };
         if k.get("program").is_some() || k.get("prefix").is_some() || k.get("scroll").is_some() {
             // An element's keymap outside a text field: no default (§10.2).
-            let values: Vec<&str> = k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            let values: Vec<&str> = k["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
             let m = keys::parse_keymap(&platform, &values.join(" "));
-            for (key, want) in k.get("program").and_then(Value::as_object).into_iter().flatten() {
+            for (key, want) in k
+                .get("program")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
                 let got = m.program(key);
                 if Some(got) != want.as_bool() {
                     failures.push(format!("{name}: {key}: program {got}, want {want}"));
                 }
             }
-            for (key, want) in k.get("prefix").and_then(Value::as_object).into_iter().flatten() {
+            for (key, want) in k
+                .get("prefix")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
                 let got = m.prefix(key);
                 if Some(got) != want.as_bool() {
                     failures.push(format!("{name}: {key}: prefix {got}, want {want}"));
                 }
             }
-            for (key, want) in k.get("scroll").and_then(Value::as_object).into_iter().flatten() {
+            for (key, want) in k
+                .get("scroll")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
                 let got = m.scroll(key);
                 if got != want.as_str() {
                     failures.push(format!("{name}: {key}: scroll {got:?}, want {want:?}"));
@@ -1170,15 +1216,28 @@ fn keymap_vectors() {
             continue;
         }
         let Some(lookup) = k.get("lookup") else {
-            let value = k.get("parse").and_then(Value::as_str).unwrap_or(keys::TERMINAL_KEYS);
+            let value = k
+                .get("parse")
+                .and_then(Value::as_str)
+                .unwrap_or(keys::TERMINAL_KEYS);
             let got = keys::parse_keymap(&platform, value).format();
             if got != k["format"].as_str().unwrap() {
                 failures.push(format!("{name}: {got:?}"));
             }
             continue;
         };
-        let mut values: Vec<&str> = if terminal { vec![keys::TERMINAL_KEYS] } else { vec![] };
-        values.extend(k["keys"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()));
+        let mut values: Vec<&str> = if terminal {
+            vec![keys::TERMINAL_KEYS]
+        } else {
+            vec![]
+        };
+        values.extend(
+            k["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap()),
+        );
         let m = keys::resolve(&platform, k["multiline"].as_bool().unwrap(), values);
         for (key, want) in lookup.as_object().unwrap() {
             let got = m.lookup(key);
@@ -1186,13 +1245,23 @@ fn keymap_vectors() {
                 failures.push(format!("{name}: {key}: {got:?}, want {want:?}"));
             }
         }
-        for (key, want) in k.get("binds").and_then(Value::as_object).into_iter().flatten() {
+        for (key, want) in k
+            .get("binds")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
             let got = m.binds(key);
             if Some(got) != want.as_bool() {
                 failures.push(format!("{name}: {key}: binds {got}, want {want}"));
             }
         }
-        for (key, want) in k.get("selects").and_then(Value::as_object).into_iter().flatten() {
+        for (key, want) in k
+            .get("selects")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
             let got = m.selects(key);
             if Some(got) != want.as_bool() {
                 failures.push(format!("{name}: {key}: selects {got}, want {want}"));
@@ -1238,17 +1307,41 @@ fn edit_vectors() {
             host.render_dirty(&mut |_, _, _| {});
         };
         send(&mut host, &[("a", "doc"), ("s", "x"), ("q", "2")], &html);
-        send(&mut host, &[("a", "place"), ("s", "x"), ("c", "80"), ("r", "10"), ("q", "2")], "");
-        send(&mut host, &[("a", "focus"), ("s", "x"), ("t", "f"), ("q", "2")], "");
+        send(
+            &mut host,
+            &[
+                ("a", "place"),
+                ("s", "x"),
+                ("c", "80"),
+                ("r", "10"),
+                ("q", "2"),
+            ],
+            "",
+        );
+        send(
+            &mut host,
+            &[("a", "focus"), ("s", "x"), ("t", "f"), ("q", "2")],
+            "",
+        );
         let caret = f["caret"].as_u64().unwrap() as usize;
-        let anchor = f.get("anchor").and_then(Value::as_u64).map_or(caret, |a| a as usize);
+        let anchor = f
+            .get("anchor")
+            .and_then(Value::as_u64)
+            .map_or(caret, |a| a as usize);
         host.set_text_field("x", "f", f["value"].as_str().unwrap(), anchor, caret);
         host.render_dirty(&mut |_, _, _| {});
         let (mut value, _) = host.text_field("x", "f").unwrap();
         for (i, st) in e["steps"].as_array().unwrap().iter().enumerate() {
             let what = match st.get("select").and_then(Value::as_array) {
                 Some(s) => format!("select {s:?}"),
-                None => st.get("do").or(st.get("extend")).or(st.get("type")).unwrap().as_str().unwrap().to_string(),
+                None => st
+                    .get("do")
+                    .or(st.get("extend"))
+                    .or(st.get("type"))
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
             };
             if let Some(a) = st.get("do").and_then(Value::as_str) {
                 host.text_action("x", a, false);
@@ -1296,12 +1389,21 @@ fn edit_vectors() {
                 bad.push(format!("changed {changed}, want {w}"));
             }
             if !bad.is_empty() {
-                failures.push(format!("{name} (step {}, {what}): {}", i + 1, bad.join(", ")));
+                failures.push(format!(
+                    "{name} (step {}, {what}): {}",
+                    i + 1,
+                    bad.join(", ")
+                ));
                 break;
             }
         }
     }
-    assert!(failures.is_empty(), "{} failed:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// Text as the keys that type it: a grapheme cluster each.

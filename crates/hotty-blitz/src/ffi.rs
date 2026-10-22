@@ -4,8 +4,8 @@
 //! finishes them. Everything the host must do comes back through callbacks.
 
 use crate::{
-    CellsTouch, Config, CopyKey, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme, Touch,
-    TouchPhase,
+    CellsTouch, Config, CopyKey, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme,
+    Touch, TouchPhase,
 };
 use hotty::{Decoder, Fed};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -200,7 +200,19 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                 move_cursor,
             } => {
                 if let (Some(f), Ok(name)) = (fx.place, CString::new(surface)) {
-                    f(fx.ctx, name.as_ptr(), cols, rows, w.x, w.y, w.w, w.h, z as i32, created, move_cursor);
+                    f(
+                        fx.ctx,
+                        name.as_ptr(),
+                        cols,
+                        rows,
+                        w.x,
+                        w.y,
+                        w.w,
+                        w.h,
+                        z as i32,
+                        created,
+                        move_cursor,
+                    );
                 }
             }
             Effect::Delete { surface } => {
@@ -229,7 +241,11 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                     f(fx.ctx, names.as_ptr(), names.len());
                 }
             }
-            Effect::Menu { surface, cols, rows } => {
+            Effect::Menu {
+                surface,
+                cols,
+                rows,
+            } => {
                 if let (Some(f), Ok(name)) = (fx.menu, CString::new(surface)) {
                     f(fx.ctx, name.as_ptr(), cols, rows);
                 }
@@ -483,7 +499,11 @@ pub unsafe extern "C" fn hotty_host_pointer(
         _ => PointerKind::Move,
     };
     guard(h, (), |h| {
-        run_effects(h.host.pointer_counted(surface, kind, x, y, mods(mod_bits), count), fx)
+        run_effects(
+            h.host
+                .pointer_counted(surface, kind, x, y, mods(mod_bits), count),
+            fx,
+        )
     })
 }
 
@@ -646,7 +666,9 @@ pub unsafe extern "C" fn hotty_host_cells_touch(
         _ => return 0,
     };
     guard(h, 0, |h| {
-        let out = h.host.cells_touch(phase, x, y, mods(mod_bits_in), reports, at_screen);
+        let out = h
+            .host
+            .cells_touch(phase, x, y, mods(mod_bits_in), reports, at_screen);
         run_effects(out.effects, fx);
         if !mouse.is_null() {
             let to = unsafe { std::slice::from_raw_parts_mut(mouse, HOTTY_MOUSE_MAX) };
@@ -728,7 +750,8 @@ pub unsafe extern "C" fn hotty_host_key_pressed(
         }
         std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, n) }).ok()
     };
-    let (Some(physical), Some(other)) = (text(physical, physical_len), text(other, other_len)) else {
+    let (Some(physical), Some(other)) = (text(physical, physical_len), text(other, other_len))
+    else {
         return false;
     };
     if physical.is_empty() && other.is_empty() {
@@ -814,7 +837,10 @@ pub unsafe extern "C" fn hotty_host_focused(h: *mut HottyHost) -> *const c_char 
 /// # Safety
 /// `h` must be valid, `surface` NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_cursor(h: *mut HottyHost, surface: *const c_char) -> *const c_char {
+pub unsafe extern "C" fn hotty_host_cursor(
+    h: *mut HottyHost,
+    surface: *const c_char,
+) -> *const c_char {
     let Some(surface) = (unsafe { name(surface) }) else {
         return std::ptr::null();
     };
@@ -832,13 +858,18 @@ pub unsafe extern "C" fn hotty_host_cursor(h: *mut HottyHost, surface: *const c_
 /// # Safety
 /// `h` must be valid, `surface` NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_hyperlink(h: *mut HottyHost, surface: *const c_char) -> *const c_char {
+pub unsafe extern "C" fn hotty_host_hyperlink(
+    h: *mut HottyHost,
+    surface: *const c_char,
+) -> *const c_char {
     let Some(surface) = (unsafe { name(surface) }) else {
         return std::ptr::null();
     };
     guard(h, std::ptr::null(), |h| {
         h.hyperlink = h.host.hyperlink(surface).and_then(|u| CString::new(u).ok());
-        h.hyperlink.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
+        h.hyperlink
+            .as_ref()
+            .map_or(std::ptr::null(), |c| c.as_ptr())
     })
 }
 
@@ -863,7 +894,12 @@ pub unsafe extern "C" fn hotty_host_selected_text(h: *mut HottyHost) -> *const c
 
 /// A press's two names from the C ABI (SPEC §10.4), each possibly empty;
 /// `None` when both are or either is not UTF-8.
-unsafe fn press<'a>(p: *const u8, pn: usize, o: *const u8, on: usize) -> Option<(&'a str, &'a str)> {
+unsafe fn press<'a>(
+    p: *const u8,
+    pn: usize,
+    o: *const u8,
+    on: usize,
+) -> Option<(&'a str, &'a str)> {
     let text = |p: *const u8, n: usize| -> Option<&'a str> {
         if p.is_null() || n == 0 {
             return Some("");
@@ -898,7 +934,8 @@ pub unsafe extern "C" fn hotty_host_copy_key(
     other_len: usize,
     text: *mut *const c_char,
 ) -> c_int {
-    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) }) else {
+    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) })
+    else {
         return 0;
     };
     guard(h, 0, |h| match h.host.copy_key(physical, other) {
@@ -967,7 +1004,9 @@ pub unsafe extern "C" fn hotty_host_set_network(h: *mut HottyHost, policy: *cons
     let policy = if policy.is_null() {
         String::new()
     } else {
-        unsafe { CStr::from_ptr(policy) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(policy) }
+            .to_string_lossy()
+            .into_owned()
     };
     guard(h, (), |h| h.host.set_network(&policy))
 }
@@ -1039,7 +1078,12 @@ pub unsafe extern "C" fn hotty_host_set_counts(h: *mut HottyHost, on: bool) {
 /// # Safety
 /// `h` must be valid, `surface` NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_takes_pointer(h: *mut HottyHost, surface: *const c_char, x: f32, y: f32) -> bool {
+pub unsafe extern "C" fn hotty_host_takes_pointer(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    x: f32,
+    y: f32,
+) -> bool {
     let Some(surface) = (unsafe { name(surface) }) else {
         return false;
     };
@@ -1068,10 +1112,18 @@ pub unsafe extern "C" fn hotty_host_set_keys(
     fx: *const HottyEffects,
 ) {
     let fx = unsafe { fx.as_ref() };
-    let edit = (!edit.is_null()).then(|| unsafe { CStr::from_ptr(edit) }.to_string_lossy().into_owned());
+    let edit = (!edit.is_null()).then(|| {
+        unsafe { CStr::from_ptr(edit) }
+            .to_string_lossy()
+            .into_owned()
+    });
     let k = crate::KeySettings {
         platform: hotty::keys::Platform {
-            modifier: if mod_super { hotty::keys::Mod::Super } else { hotty::keys::Mod::Ctrl },
+            modifier: if mod_super {
+                hotty::keys::Mod::Super
+            } else {
+                hotty::keys::Mod::Ctrl
+            },
             edit: edit.map(|e| edit_shortcuts(&e)),
         },
         commands,
@@ -1095,7 +1147,10 @@ fn edit_shortcuts(value: &str) -> Vec<(String, Vec<String>)> {
         let Some((k, a)) = b.rsplit_once('=') else {
             continue;
         };
-        let (Some(k), Some(slot)) = (hotty::keys::parse_key(k), out.iter_mut().find(|(x, _)| x == a)) else {
+        let (Some(k), Some(slot)) = (
+            hotty::keys::parse_key(k),
+            out.iter_mut().find(|(x, _)| x == a),
+        ) else {
             continue;
         };
         if !slot.1.contains(&k) {
@@ -1122,7 +1177,8 @@ pub unsafe extern "C" fn hotty_host_edit_command(
     other_len: usize,
 ) -> *const c_char {
     const NAMES: [&CStr; 6] = [c"select-all", c"copy", c"cut", c"paste", c"undo", c"redo"];
-    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) }) else {
+    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) })
+    else {
         return std::ptr::null();
     };
     guard(h, std::ptr::null(), |h| {
@@ -1155,7 +1211,9 @@ pub unsafe extern "C" fn hotty_host_command(
         return;
     };
     let bytes = |p: *const u8, n: usize| {
-        (!p.is_null()).then(|| String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, n) }).into_owned())
+        (!p.is_null()).then(|| {
+            String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, n) }).into_owned()
+        })
     };
     let (key, text) = (bytes(key, key_len), bytes(text, text_len));
     let event = Host::command_event(name, key.as_deref(), text.as_deref());
@@ -1179,7 +1237,8 @@ pub unsafe extern "C" fn hotty_host_cells_key(
     other: *const u8,
     other_len: usize,
 ) {
-    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) }) else {
+    let Some((physical, other)) = (unsafe { press(physical, physical_len, other, other_len) })
+    else {
         return;
     };
     guard(h, (), |h| h.host.cells_key(physical, other))
@@ -1208,7 +1267,12 @@ pub unsafe extern "C" fn hotty_host_set_screen(h: *mut HottyHost, alt: bool) {
 /// # Safety
 /// `h` must be valid; `name` must hold `len` bytes; `fx` may be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_pick(h: *mut HottyHost, name: *const u8, len: usize, fx: *const HottyEffects) -> bool {
+pub unsafe extern "C" fn hotty_host_pick(
+    h: *mut HottyHost,
+    name: *const u8,
+    len: usize,
+    fx: *const HottyEffects,
+) -> bool {
     let fx = unsafe { fx.as_ref() };
     if name.is_null() {
         return false;
@@ -1224,7 +1288,6 @@ pub unsafe extern "C" fn hotty_host_pick(h: *mut HottyHost, name: *const u8, len
         None => false,
     })
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1260,20 +1323,23 @@ mod tests {
         let host = unsafe { &mut (*h).host };
         for s in ["a", "b"] {
             let cmd = |pairs: &[(&str, &str)], payload: &str| {
-                hotty::Message::new(
-                    pairs.iter().copied().collect(),
-                    payload.as_bytes().to_vec(),
-                )
+                hotty::Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
             };
             host.handle(&cmd(&[("a", "doc"), ("s", s), ("q", "2")], "<p>x</p>"));
-            host.handle(&cmd(&[("a", "place"), ("s", s), ("c", "4"), ("r", "1"), ("q", "2")], ""));
+            host.handle(&cmd(
+                &[("a", "place"), ("s", s), ("c", "4"), ("r", "1"), ("q", "2")],
+                "",
+            ));
         }
         host.render_dirty(&mut |_, _, _| {});
         h
     }
 
     fn names(h: *mut HottyHost) -> Vec<String> {
-        unsafe { &(*h).host }.surface_names().map(String::from).collect()
+        unsafe { &(*h).host }
+            .surface_names()
+            .map(String::from)
+            .collect()
     }
 
     #[test]
@@ -1294,7 +1360,9 @@ mod tests {
         // The other surface still takes commands.
         let ok = guard(h, false, |h| {
             h.host.handle(&hotty::Message::new(
-                [("a", "delta"), ("s", "b"), ("q", "2")].into_iter().collect(),
+                [("a", "delta"), ("s", "b"), ("q", "2")]
+                    .into_iter()
+                    .collect(),
                 // {"ops": [{"op": "text", "t": "p", "v": "y"}]}
                 b"\x81\xa3ops\x91\x83\xa2op\xa4text\xa1t\xa1p\xa1v\xa1y".to_vec(),
             ));
@@ -1319,7 +1387,18 @@ mod tests {
         let mut mouse = [HottyMouse::default(); HOTTY_MOUSE_MAX];
         let mut n = 9;
         let mut touch = |phase: u32, x: f32, mods: u32, reports: bool| unsafe {
-            let r = hotty_host_cells_touch(h, phase, x, 17.0, mods, reports, true, mouse.as_mut_ptr(), &mut n, std::ptr::null());
+            let r = hotty_host_cells_touch(
+                h,
+                phase,
+                x,
+                17.0,
+                mods,
+                reports,
+                true,
+                mouse.as_mut_ptr(),
+                &mut n,
+                std::ptr::null(),
+            );
             (r, mouse[..n].to_vec())
         };
         // Outside the area, and in it while the program reads no mouse: the
@@ -1330,7 +1409,14 @@ mod tests {
         assert_eq!(touch(0, 24.0, 1, true), (1, vec![]));
         let (r, got) = touch(1, 64.0, 2, true);
         assert_eq!(r, 2);
-        let m = |kind, x, c, mods| HottyMouse { kind, x, y: 17.0, c, r: 0, mods };
+        let m = |kind, x, c, mods| HottyMouse {
+            kind,
+            x,
+            y: 17.0,
+            c,
+            r: 0,
+            mods,
+        };
         assert_eq!(got, [m(1, 24.0, 1, 1), m(0, 64.0, 4, 2)]);
         assert_eq!(touch(2, -40.0, 8, true), (2, vec![m(2, -40.0, -3, 8)]));
         // A phase there is no such: nothing.

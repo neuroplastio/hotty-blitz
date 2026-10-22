@@ -2,11 +2,11 @@
 //! `a=touch`, which screen keeps them, and what a touch in one reports of
 //! the mouse. The shared vectors cover the common path; these the corners.
 
+use hotty::Message;
+use hotty::host::{Output, Splitter};
 use hotty_blitz::{
     CellsTouch, Config, Effect, Host, Metrics, Mods, MouseReport, PointerKind, TouchPhase,
 };
-use hotty::Message;
-use hotty::host::{Output, Splitter};
 use serde_json::{Value, json};
 
 /// Cells 10×20 device pixels, at `scale` device pixels per CSS pixel.

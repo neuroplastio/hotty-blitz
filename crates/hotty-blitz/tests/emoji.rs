@@ -4,8 +4,8 @@
 //! mods/parley/colour-emoji-first.md). A text-presentation cluster stays
 //! text.
 
-use hotty_blitz::{Config, Host, Metrics};
 use hotty::Message;
+use hotty_blitz::{Config, Host, Metrics};
 
 fn host() -> Host {
     Host::new(Config {
@@ -31,7 +31,16 @@ fn coloured(text: &str, family: &str) -> bool {
          <div style=\"font: 40px/48px {family}; color: #888\">{text}</div>"
     );
     h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "20"), ("r", "3"), ("q", "2")], ""));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "3"),
+            ("q", "2"),
+        ],
+        "",
+    ));
     h.render_dirty(&mut |_, _, _| {});
     let f = h.frame("x").unwrap();
     f.rgba.chunks_exact(4).any(|p| {

@@ -144,7 +144,12 @@ impl Policy {
     pub fn to_map(&self) -> BTreeMap<String, Vec<String>> {
         self.0
             .iter()
-            .map(|(d, srcs)| (d.name().to_string(), srcs.iter().map(Source::serialize).collect()))
+            .map(|(d, srcs)| {
+                (
+                    d.name().to_string(),
+                    srcs.iter().map(Source::serialize).collect(),
+                )
+            })
             .collect()
     }
 }
@@ -192,7 +197,10 @@ mod tests {
         for csp in ["", ";;", "img-src", "img-src 'none'"] {
             let p = Policy::parse(csp);
             assert!(p.is_empty(), "{csp}");
-            assert_eq!(serde_json::to_value(p.to_map()).unwrap(), serde_json::json!({}));
+            assert_eq!(
+                serde_json::to_value(p.to_map()).unwrap(),
+                serde_json::json!({})
+            );
             assert!(!p.allows(Directive::Img, &url("https://example.com/x.png")));
         }
     }

@@ -4,9 +4,9 @@
 mod common;
 
 use common::body;
-use hotty_blitz::{Config, Host, Metrics};
 use hotty::Message;
 use hotty::host::{Output, Splitter};
+use hotty_blitz::{Config, Host, Metrics};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -610,7 +610,13 @@ fn a_fetched_image_that_changes_the_height_is_heard_with_fit() {
         ),
     ));
     let r = replies(&h.handle(&cmd(
-        &[("a", "place"), ("s", "a"), ("c", "10"), ("f", "1"), ("n", "1")],
+        &[
+            ("a", "place"),
+            ("s", "a"),
+            ("c", "10"),
+            ("f", "1"),
+            ("n", "1"),
+        ],
         "",
     )));
     assert_eq!(r[0].get("r"), Some("1"), "nothing to hold yet");
@@ -711,7 +717,16 @@ fn srcset_and_picture_choose_what_is_fetched() {
     let mut paths = srv.paths();
     paths.sort();
     paths.dedup();
-    assert_eq!(paths, ["/1x.png", "/2x.png", "/dark.png", "/light.png", "/small.png"]);
+    assert_eq!(
+        paths,
+        [
+            "/1x.png",
+            "/2x.png",
+            "/dark.png",
+            "/light.png",
+            "/small.png"
+        ]
+    );
 }
 
 #[test]

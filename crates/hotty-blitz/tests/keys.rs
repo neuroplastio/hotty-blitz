@@ -4,10 +4,10 @@
 mod common;
 
 use common::body;
-use hotty_blitz::{Config, Effect, Host, Key, KeyName, KeySettings, MENU, Metrics, Mods};
-use hotty::keys::Platform;
 use hotty::Message;
 use hotty::host::{Output, Splitter};
+use hotty::keys::Platform;
+use hotty_blitz::{Config, Effect, Host, Key, KeyName, KeySettings, MENU, Metrics, Mods};
 
 fn host(keys: KeySettings) -> Host {
     let mut h = Host::new(Config {
@@ -69,7 +69,10 @@ fn a_prefix_gives_the_program_every_key_after_it() {
     let o = h.key_pressed("x", "tab", "");
     assert!(o.consumed);
     assert_eq!(replies(&o.effects)[0].get("t"), Some("c"));
-    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")], b""));
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")],
+        b"",
+    ));
     // As bytes, it starts it: Tab, Escape and Space reach the program.
     for keys in [&b"g"[..], b"\t", b"\x1b", b" ", b"\x1b[Z"] {
         let o = h.key_bytes("x", keys);
@@ -88,7 +91,10 @@ fn a_prefix_gives_the_program_every_key_after_it() {
     // A prefix ends with a=blur, and when the user focuses with a press.
     assert!(!h.key_bytes("x", b"g").consumed);
     h.handle(&cmd(&[("a", "blur"), ("s", "x"), ("q", "2")], b""));
-    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")], b""));
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")],
+        b"",
+    ));
     assert!(h.key_bytes("x", b" ").consumed);
 }
 
@@ -100,7 +106,10 @@ fn a_prefix_ends_with_the_keyboard() {
     surface(&mut h, DOC);
     assert!(!h.key_bytes("x", b"g").consumed);
     h.blur("x");
-    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")], b""));
+    h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "k"), ("q", "2")],
+        b"",
+    ));
     assert!(h.key_bytes("x", b" ").consumed);
 }
 
@@ -122,7 +131,9 @@ fn a_level_of_the_programs_menu() {
         h.render_dirty(&mut |_, _, _| {});
         h.take_events()
     };
-    let hidden = vec![Effect::Delete { surface: MENU.into() }];
+    let hidden = vec![Effect::Delete {
+        surface: MENU.into(),
+    }];
     let level = |h: &mut Host| {
         h.handle(&cmd(&[("a", "menu"), ("q", "2"), ("show", "1")], show));
     };
@@ -133,8 +144,14 @@ fn a_level_of_the_programs_menu() {
     assert!(h.has_dirty());
     // A title row, then the key that can follow.
     let fx = shown(&mut h);
-    assert!(matches!(fx.as_slice(), [Effect::Menu { rows: 2, .. }]), "{fx:?}");
-    assert!(h.text_rows(MENU).is_empty(), "the menu is no program's surface");
+    assert!(
+        matches!(fx.as_slice(), [Effect::Menu { rows: 2, .. }]),
+        "{fx:?}"
+    );
+    assert!(
+        h.text_rows(MENU).is_empty(),
+        "the menu is no program's surface"
+    );
     // Listed keys leave it, to the cells and to a surface.
     h.cells_key("n", "");
     assert!(shown(&mut h).is_empty(), "n is listed");
@@ -166,11 +183,18 @@ fn a_level_of_the_programs_menu() {
     assert_eq!(shown(&mut h), hidden);
     // Not a msgpack map: EINVAL, and so is a field of another type, and a
     // seq that is not strs.
-    for bad in [&b"\x91\x01"[..], b"\x81\xa5items\x91\x01", b"\x81\xa5label\x01"] {
+    for bad in [
+        &b"\x91\x01"[..],
+        b"\x81\xa5items\x91\x01",
+        b"\x81\xa5label\x01",
+    ] {
         let r = replies(&h.handle(&cmd(&[("a", "menu")], bad)));
         assert_eq!(r[0].get("a"), Some("err"), "{bad:02x?}");
     }
-    let r = replies(&h.handle(&cmd(&[("a", "menu"), ("show", "1")], b"\x81\xa3seq\x91\x01")));
+    let r = replies(&h.handle(&cmd(
+        &[("a", "menu"), ("show", "1")],
+        b"\x81\xa3seq\x91\x01",
+    )));
     assert_eq!(r[0].get("a"), Some("err"));
     // A host whose terminal shows none knows no `a=menu`.
     let mut h = host(KeySettings::default());
@@ -198,7 +222,12 @@ fn a_key_of_a_surface_without_a_name_hides_the_level_too() {
     };
     h.key("x", &other);
     h.render_dirty(&mut |_, _, _| {});
-    assert_eq!(h.take_events(), vec![Effect::Delete { surface: MENU.into() }]);
+    assert_eq!(
+        h.take_events(),
+        vec![Effect::Delete {
+            surface: MENU.into()
+        }]
+    );
 }
 
 /// `a=edit` names the commands the program takes, for the terminal to keep
@@ -263,8 +292,13 @@ fn caps_report_the_settings_and_their_changes() {
         caps["edit"]["redo"],
         serde_json::json!(["ctrl+shift+z", "ctrl+y"])
     );
-    assert_eq!(caps["features"], serde_json::json!(["passthrough", "hover", "menu"]));
-    for gone in ["keys", "menu", "events", "ops", "cell", "scroll", "steps", "drop"] {
+    assert_eq!(
+        caps["features"],
+        serde_json::json!(["passthrough", "hover", "menu"])
+    );
+    for gone in [
+        "keys", "menu", "events", "ops", "cell", "scroll", "steps", "drop",
+    ] {
         assert!(caps.get(gone).is_none(), "{gone}");
     }
     let fx = h.set_keys(KeySettings {
@@ -296,7 +330,11 @@ fn caps_report_the_settings_and_their_changes() {
 #[test]
 fn a_new_font_tells_caps_and_a_zoom_does_not() {
     let config = |cell_w, cell_h, scale, font_size| Config {
-        metrics: Metrics { cell_w, cell_h, scale },
+        metrics: Metrics {
+            cell_w,
+            cell_h,
+            scale,
+        },
         font_size: Some(font_size),
         ..Config::default()
     };
@@ -340,7 +378,10 @@ fn a_press_with_two_names_is_the_surfaces_by_either() {
         &[("a", "doc"), ("s", "f")],
         b"<input id=f data-on=input value='one two' data-keys='ctrl+key_w=program ctrl+w=line-start ctrl+key_k=line-end'>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], b""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")],
+        b"",
+    ));
     h.render_dirty(&mut |_, _, _| {});
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], b""));
     // Both names are bound: the physical `program` wins, and the key is the program's.
@@ -372,12 +413,21 @@ fn an_edit_command_is_found_by_either_name() {
         ..KeySettings::default()
     });
     // A physical binding, a character binding.
-    assert_eq!(h.edit_command("ctrl+key_c", "ctrl+c").as_deref(), Some("copy"));
-    assert_eq!(h.edit_command("ctrl+key_v", "ctrl+v").as_deref(), Some("paste"));
+    assert_eq!(
+        h.edit_command("ctrl+key_c", "ctrl+c").as_deref(),
+        Some("copy")
+    );
+    assert_eq!(
+        h.edit_command("ctrl+key_v", "ctrl+v").as_deref(),
+        Some("paste")
+    );
     assert_eq!(h.edit_command("", "ctrl+v").as_deref(), Some("paste"));
     assert_eq!(h.edit_command("ctrl+key_v", ""), None);
     // Both bound: the physical one wins.
-    assert_eq!(h.edit_command("ctrl+key_x", "ctrl+x").as_deref(), Some("cut"));
+    assert_eq!(
+        h.edit_command("ctrl+key_x", "ctrl+x").as_deref(),
+        Some("cut")
+    );
     assert_eq!(h.edit_command("", "ctrl+x").as_deref(), Some("undo"));
     assert_eq!(h.edit_command("", ""), None);
 }
@@ -392,7 +442,10 @@ fn a_press_given_to_the_program_stays_its_as_bytes() {
         &[("a", "doc"), ("s", "f")],
         b"<input id=a data-keys='ctrl+key_a=program'><input id=b data-keys='ctrl+key_a=prefix'>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], b""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")],
+        b"",
+    ));
     h.render_dirty(&mut |_, _, _| {});
     let focus = |h: &mut Host, t: &str| {
         h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", t)], b""));

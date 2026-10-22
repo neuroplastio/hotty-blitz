@@ -6,9 +6,9 @@
 mod common;
 
 use common::{body, delta_cmd};
-use hotty_blitz::{Config, Effect, Host, Metrics, Mods, PointerKind, TouchPhase};
 use hotty::Message;
 use hotty::host::{Output, Splitter};
+use hotty_blitz::{Config, Effect, Host, Metrics, Mods, PointerKind, TouchPhase};
 
 fn host() -> Host {
     Host::new(Config {
@@ -31,7 +31,13 @@ fn place(h: &mut Host, body: &str) {
     let html = format!("<style>body{{margin:0}}div{{height:20px;width:200px}}</style>{body}");
     h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html));
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "4"), ("q", "2")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "4"),
+            ("q", "2"),
+        ],
         "",
     ));
     h.render_dirty(&mut |_, _, _| {});
@@ -94,9 +100,16 @@ fn data_steps_is_one_or_two_whole_numbers() {
         ("9007199254740992", (None, None)),
     ] {
         let mut h = host();
-        place(&mut h, &format!("<div id=t data-on=drag data-steps=\"{value}\">t</div>"));
+        place(
+            &mut h,
+            &format!("<div id=t data-on=drag data-steps=\"{value}\">t</div>"),
+        );
         let got = at(&mut h, PointerKind::Down, 100.0, 10.0);
-        assert_eq!(got, [ev("dragstart", "t", want.0, want.1)], "data-steps={value:?}");
+        assert_eq!(
+            got,
+            [ev("dragstart", "t", want.0, want.1)],
+            "data-steps={value:?}"
+        );
         at(&mut h, PointerKind::Up, 100.0, 10.0);
     }
 }
@@ -132,7 +145,13 @@ fn steps_are_measured_against_the_dragged_element_wherever_the_pointer_goes() {
         "<div id=t data-on=drag data-steps=\"4 2\">t</div><div id=o data-on=drag>o</div>",
     );
     let mut got = at(&mut h, PointerKind::Down, 100.0, 10.0);
-    for (x, y) in [(100.0, 30.0), (-50.0, 10.0), (500.0, 10.0), (500.0, 300.0), (150.0, 200.0)] {
+    for (x, y) in [
+        (100.0, 30.0),
+        (-50.0, 10.0),
+        (500.0, 10.0),
+        (500.0, 300.0),
+        (150.0, 200.0),
+    ] {
         got.extend(at(&mut h, PointerKind::Move, x, y));
     }
     got.extend(at(&mut h, PointerKind::Up, 150.0, 200.0));
@@ -163,10 +182,16 @@ fn a_touch_starts_at_the_step_where_it_began() {
     let none = Mods::default();
     let mut got = drags(&h.touch("x", TouchPhase::Down, 14.0, 10.0, none).effects);
     for x in [75.0, 76.0, 300.0] {
-        got.extend(drags(&h.touch("x", TouchPhase::Move, x, 10.0, none).effects));
+        got.extend(drags(
+            &h.touch("x", TouchPhase::Move, x, 10.0, none).effects,
+        ));
     }
-    got.extend(drags(&h.touch("x", TouchPhase::Move, 300.0, 60.0, none).effects));
-    got.extend(drags(&h.touch("x", TouchPhase::Up, 300.0, 60.0, none).effects));
+    got.extend(drags(
+        &h.touch("x", TouchPhase::Move, 300.0, 60.0, none).effects,
+    ));
+    got.extend(drags(
+        &h.touch("x", TouchPhase::Up, 300.0, 60.0, none).effects,
+    ));
     assert_eq!(
         got,
         [
@@ -186,7 +211,13 @@ fn an_element_that_leaves_keeps_its_last_steps_and_counts_are_read_at_the_start(
     place(&mut h, "<div id=t data-on=drag data-steps=4>t</div>");
     let mut got = at(&mut h, PointerKind::Down, 100.0, 10.0);
     got.extend(at(&mut h, PointerKind::Move, 150.0, 10.0));
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "remove", Some("t"), None, ""));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "remove",
+        Some("t"),
+        None,
+        "",
+    ));
     got.extend(at(&mut h, PointerKind::Move, 50.0, 10.0));
     got.extend(at(&mut h, PointerKind::Move, 10.0, 10.0));
     got.extend(at(&mut h, PointerKind::Up, 10.0, 10.0));
@@ -211,7 +242,13 @@ fn an_element_that_leaves_keeps_its_last_steps_and_counts_are_read_at_the_start(
     // Counts changed during a drag change nothing until the next one.
     place(&mut h, "<div id=t data-on=drag data-steps=4>t</div>");
     at(&mut h, PointerKind::Down, 100.0, 10.0);
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "attr", Some("t"), Some("data-steps"), "8"));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "attr",
+        Some("t"),
+        Some("data-steps"),
+        "8",
+    ));
     assert_eq!(
         at(&mut h, PointerKind::Move, 150.0, 10.0),
         [ev("drag", "t", Some(3), None)]

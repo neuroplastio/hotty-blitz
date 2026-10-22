@@ -7,8 +7,8 @@
 mod common;
 
 use common::delta_cmd;
-use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
 use hotty::Message;
+use hotty_blitz::{Config, Host, Metrics, Mods, PointerKind};
 
 fn host() -> Host {
     Host::new(Config {
@@ -37,7 +37,13 @@ fn pixel(h: &Host, s: &str, x: u32, y: u32) -> [u8; 3] {
 }
 
 fn delta(h: &mut Host, op: &str, t: &str, k: Option<&str>, payload: &str) {
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], op, Some(t), k, payload));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        op,
+        Some(t),
+        k,
+        payload,
+    ));
     render(h);
 }
 

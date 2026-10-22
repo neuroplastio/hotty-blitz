@@ -104,7 +104,13 @@ impl Key {
             KeyName::PageDown => "page_down",
             KeyName::Other => return None,
         };
-        Some(keys::KeyParts { mods: bits, value: value.into() }.name())
+        Some(
+            keys::KeyParts {
+                mods: bits,
+                value: value.into(),
+            }
+            .name(),
+        )
     }
 
     /// The names a keymap looks up for the press (SPEC §10.4), the physical

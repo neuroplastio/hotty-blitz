@@ -4,9 +4,9 @@
 mod common;
 
 use common::body;
-use hotty_blitz::{Config, Effect, Host, KeySettings, Metrics, MENU};
 use hotty::Message;
 use hotty::host::{Output, Splitter};
+use hotty_blitz::{Config, Effect, Host, KeySettings, MENU, Metrics};
 use serde_json::{Value, json};
 
 fn host() -> Host {
@@ -30,7 +30,11 @@ fn host() -> Host {
 fn send(h: &mut Host, show: Option<&str>, body: &Value) -> Option<String> {
     let mut pairs = vec![("a", "menu")];
     pairs.extend(show.map(|s| ("show", s)));
-    let payload = if body.is_null() { Vec::new() } else { rmp_serde::to_vec_named(body).unwrap() };
+    let payload = if body.is_null() {
+        Vec::new()
+    } else {
+        rmp_serde::to_vec_named(body).unwrap()
+    };
     let effects = h.handle(&Message::new(pairs.into_iter().collect(), payload));
     let mut s = Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES);
     let mut code = None;
@@ -66,7 +70,8 @@ fn flush(h: &mut Host) -> Vec<Effect> {
 }
 
 fn keys(h: &Host) -> Option<Vec<String>> {
-    h.menu_shown().map(|i| i.into_iter().map(|i| i.key).collect())
+    h.menu_shown()
+        .map(|i| i.into_iter().map(|i| i.key).collect())
 }
 
 /// The menu of the vectors, near enough.
@@ -109,18 +114,27 @@ fn the_walk_reads_keys_as_a_binding_is_read() {
     show(&mut h, &["x"]);
     assert_eq!(keys(&h), None);
     // Mod is the host's mod, in either order of modifiers.
-    set(&mut h, &json!({"items": [{"key": "shift+mod+k", "label": "G", "enabled": true,
-        "items": [{"key": "mod+x", "label": "X", "enabled": true}]}]}));
+    set(
+        &mut h,
+        &json!({"items": [{"key": "shift+mod+k", "label": "G", "enabled": true,
+        "items": [{"key": "mod+x", "label": "X", "enabled": true}]}]}),
+    );
     show(&mut h, &["ctrl+shift+k"]);
     assert_eq!(keys(&h), Some(vec!["mod+x".into()]));
     // A level shows only the keyed items.
-    set(&mut h, &json!({"items": [{"key": "a", "label": "G", "enabled": true, "items": [
+    set(
+        &mut h,
+        &json!({"items": [{"key": "a", "label": "G", "enabled": true, "items": [
         {"label": "Keyless", "name": "k", "enabled": true},
-        {"key": "b", "label": "B", "enabled": false}]}]}));
+        {"key": "b", "label": "B", "enabled": false}]}]}),
+    );
     show(&mut h, &["a"]);
     assert_eq!(h.menu_shown().unwrap().len(), 1);
-    set(&mut h, &json!({"items": [{"key": "a", "label": "G", "enabled": true, "items": [
-        {"label": "Keyless", "name": "k"}]}]}));
+    set(
+        &mut h,
+        &json!({"items": [{"key": "a", "label": "G", "enabled": true, "items": [
+        {"label": "Keyless", "name": "k"}]}]}),
+    );
     assert_eq!(keys(&h), None, "none has a key");
 }
 
@@ -142,7 +156,12 @@ fn a_new_menu_shows_the_same_keys_level_of_it() {
     // it; a key then hides it, since a level that shows nothing lists none.
     set(&mut h, &json!({"items": []}));
     assert_eq!(keys(&h), None);
-    assert_eq!(flush(&mut h), vec![Effect::Delete { surface: MENU.into() }]);
+    assert_eq!(
+        flush(&mut h),
+        vec![Effect::Delete {
+            surface: MENU.into()
+        }]
+    );
     set(&mut h, &files());
     assert_eq!(keys(&h), Some(vec!["f".into(), "q".into()]));
     set(&mut h, &json!({"items": []}));
@@ -157,10 +176,16 @@ fn a_body_that_is_no_menu_is_einval() {
     let einval = Some("EINVAL".to_string());
     assert_eq!(send(&mut h, None, &json!(["Space"])), einval);
     assert_eq!(send(&mut h, None, &json!({"items": [{"key": 5}]})), einval);
-    assert_eq!(send(&mut h, None, &json!({"items": [{"enabled": "no"}]})), einval);
+    assert_eq!(
+        send(&mut h, None, &json!({"items": [{"enabled": "no"}]})),
+        einval
+    );
     assert_eq!(send(&mut h, None, &json!({"items": {}})), einval);
     assert_eq!(send(&mut h, None, &json!({"label": 1})), einval);
-    assert_eq!(send(&mut h, None, &json!({"items": [{"items": [1]}]})), einval);
+    assert_eq!(
+        send(&mut h, None, &json!({"items": [{"items": [1]}]})),
+        einval
+    );
     assert_eq!(send(&mut h, Some("1"), &json!({"seq": "Space"})), einval);
     assert_eq!(send(&mut h, Some("1"), &json!({"seq": [1]})), einval);
     assert_eq!(send(&mut h, Some("2"), &json!(null)), einval);
@@ -187,7 +212,11 @@ fn a_pick_sends_the_name_alone() {
             let mut out = Vec::new();
             Splitter::with_max(hotty_blitz::MAX_COMMAND_BYTES).feed(&b, &mut |ev| {
                 if let Output::Command(c) = ev {
-                    out.push((c.get("e").map(str::to_string), c.get("s").map(str::to_string), body(&c.payload)));
+                    out.push((
+                        c.get("e").map(str::to_string),
+                        c.get("s").map(str::to_string),
+                        body(&c.payload),
+                    ));
                 }
             });
             out
@@ -199,16 +228,25 @@ fn a_pick_sends_the_name_alone() {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0.as_deref(), Some("command"));
         assert_eq!(got[0].1, None);
-        assert_eq!(got[0].2, json!({"e": "command"}).get("x").cloned().unwrap_or(json!({"name": name})));
+        assert_eq!(
+            got[0].2,
+            json!({"e": "command"})
+                .get("x")
+                .cloned()
+                .unwrap_or(json!({"name": name}))
+        );
     }
     // A disabled item, an unknown name, a group with no name send nothing.
     assert_eq!(sent(&h, "file-rename"), None);
     assert_eq!(sent(&h, "nothing"), None);
     assert_eq!(sent(&h, ""), None);
     // The first of a name decides, enabled or not.
-    set(&mut h, &json!({"items": [
+    set(
+        &mut h,
+        &json!({"items": [
         {"label": "A", "name": "x", "enabled": false},
-        {"label": "B", "name": "x", "enabled": true}]}));
+        {"label": "B", "name": "x", "enabled": true}]}),
+    );
     assert_eq!(sent(&h, "x"), None);
     // A menu left none.
     send(&mut h, None, &Value::Null);
@@ -218,10 +256,16 @@ fn a_pick_sends_the_name_alone() {
 #[test]
 fn each_screen_keeps_its_menu() {
     let mut h = host();
-    set(&mut h, &json!({"items": [{"label": "Main", "name": "main", "enabled": true}]}));
+    set(
+        &mut h,
+        &json!({"items": [{"label": "Main", "name": "main", "enabled": true}]}),
+    );
     h.set_screen(true);
     assert!(h.menu_pick("main").is_none(), "the alternate has none yet");
-    set(&mut h, &json!({"items": [{"label": "Alt", "name": "alt", "enabled": true}]}));
+    set(
+        &mut h,
+        &json!({"items": [{"label": "Alt", "name": "alt", "enabled": true}]}),
+    );
     assert!(h.menu_pick("alt").is_some());
     // Back: the alternate's drops, the main's stays.
     h.set_screen(false);
@@ -231,7 +275,10 @@ fn each_screen_keeps_its_menu() {
     assert!(h.menu_pick("alt").is_none(), "gone for good");
     assert!(h.menu_pick("main").is_none());
     // A full reset drops both.
-    set(&mut h, &json!({"items": [{"label": "Alt", "name": "alt", "enabled": true}]}));
+    set(
+        &mut h,
+        &json!({"items": [{"label": "Alt", "name": "alt", "enabled": true}]}),
+    );
     h.set_screen(false);
     h.reset();
     assert!(h.menu_pick("main").is_none());
@@ -246,16 +293,30 @@ fn a_screen_change_hides_the_level() {
     show(&mut h, &["Space"]);
     assert_eq!(flush(&mut h).len(), 1);
     h.set_screen(false);
-    assert_eq!(keys(&h), Some(vec!["f".into(), "q".into()]), "the same screen changes nothing");
+    assert_eq!(
+        keys(&h),
+        Some(vec!["f".into(), "q".into()]),
+        "the same screen changes nothing"
+    );
     h.set_screen(true);
     assert_eq!(keys(&h), None);
-    assert_eq!(flush(&mut h), vec![Effect::Delete { surface: MENU.into() }]);
+    assert_eq!(
+        flush(&mut h),
+        vec![Effect::Delete {
+            surface: MENU.into()
+        }]
+    );
     // A reset hides it too.
     h.set_screen(false);
     set(&mut h, &files());
     show(&mut h, &[]);
     flush(&mut h);
-    assert_eq!(h.reset(), vec![Effect::Delete { surface: MENU.into() }]);
+    assert_eq!(
+        h.reset(),
+        vec![Effect::Delete {
+            surface: MENU.into()
+        }]
+    );
 }
 
 /// A key to the cells has up to two names, and the level lists it if it

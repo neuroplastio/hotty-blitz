@@ -119,7 +119,10 @@ impl Kitty {
 
     /// A virtual placement: where the placeholder cells get their pixels.
     pub fn place_virtual(&self, out: &mut Vec<u8>, id: u32, cols: u16, rows: u16, z: i16) {
-        let _ = write!(out, "\x1b_Ga=p,U=1,i={id},p=1,c={cols},r={rows},z={z},q=2\x1b\\");
+        let _ = write!(
+            out,
+            "\x1b_Ga=p,U=1,i={id},p=1,c={cols},r={rows},z={z},q=2\x1b\\"
+        );
     }
 
     /// Transmits and places directly at the cursor (for `hotty show`).
@@ -178,7 +181,11 @@ pub fn placeholders(out: &mut Vec<u8>, id: u32, window: Window, move_cursor: boo
         }
         let _ = write!(out, "\x1b[38;2;{r};{g};{b}m");
         out.extend_from_slice('\u{10EEEE}'.encode_utf8(&mut cell).as_bytes());
-        out.extend_from_slice(DIACRITICS[(y + row) as usize].encode_utf8(&mut cell).as_bytes());
+        out.extend_from_slice(
+            DIACRITICS[(y + row) as usize]
+                .encode_utf8(&mut cell)
+                .as_bytes(),
+        );
         out.extend_from_slice(DIACRITICS[x as usize].encode_utf8(&mut cell).as_bytes());
         for _ in 1..cols {
             // Row and column are inferred from the cell to the left.

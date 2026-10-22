@@ -625,13 +625,7 @@ fn parse_csi(d: &[u8]) -> Parsed {
                 .collect()
         })
         .collect();
-    let field = |i: usize, j: usize| {
-        fields
-            .get(i)
-            .and_then(|p| p.get(j))
-            .copied()
-            .unwrap_or(0)
-    };
+    let field = |i: usize, j: usize| fields.get(i).and_then(|p| p.get(j)).copied().unwrap_or(0);
     // 1 + a mask: Shift 1, Alt 2, Ctrl 4, Super 8, Hyper 16, Meta 32,
     // Caps Lock 64, Num Lock 128.
     let bits = field(1, 0).saturating_sub(1);

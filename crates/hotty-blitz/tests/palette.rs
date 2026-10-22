@@ -2,8 +2,8 @@
 //! selected text in the terminal's colours, on a dark scheme and a light
 //! one, and the document's own rules over them. The shared vectors check
 //! the wire, not computed styles, so the host checks them here.
-use hotty_blitz::{Config, Host, Metrics, Rgb, Theme};
 use hotty::Message;
+use hotty_blitz::{Config, Host, Metrics, Rgb, Theme};
 
 fn cmd(pairs: &[(&str, &str)], payload: &str) -> Message {
     Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())

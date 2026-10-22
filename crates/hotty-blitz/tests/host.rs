@@ -3,9 +3,9 @@
 mod common;
 
 use common::{body, delta_cmd};
-use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 use hotty::Message;
 use hotty::host::{Output, Splitter};
+use hotty_blitz::{Config, Effect, Host, Key, KeyName, Metrics, Mods, PointerKind};
 
 fn host() -> Host {
     Host::new(Config {
@@ -256,7 +256,13 @@ fn hide_removes_the_placement_and_keeps_the_document() {
     assert!(replies(&fx).iter().any(|r| r.get("e") == Some("blur")));
     assert_eq!(h.placement("x"), None);
     // Hidden: deltas apply, nothing renders.
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "text", Some("p"), None, "two"));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "text",
+        Some("p"),
+        None,
+        "two",
+    ));
     assert!(render(&mut h).is_empty());
     assert_eq!(h.inspect("x", "p").unwrap()["text"], "two");
     // Hiding again does nothing; placing again shows it as it is now.
@@ -294,7 +300,13 @@ fn a_delta_to_an_element_whose_layout_box_is_gone_repaints_instead_of_panicking(
     render(&mut h);
     h.pointer("x", PointerKind::Leave, 0.0, 0.0, Mods::default());
     render(&mut h);
-    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "text", Some("t"), None, "12:01")));
+    let r = replies(&h.handle(&delta_cmd(
+        &[("s", "x"), ("n", "1")],
+        "text",
+        Some("t"),
+        None,
+        "12:01",
+    )));
     assert_eq!(r[0].get("a"), Some("ok"));
     assert_eq!(render(&mut h).len(), 1);
 }
@@ -311,7 +323,13 @@ fn a_text_delta_damages_only_part_of_the_frame() {
         "",
     ));
     render(&mut h);
-    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "text", Some("a"), None, "ONE")));
+    let r = replies(&h.handle(&delta_cmd(
+        &[("s", "x"), ("n", "1")],
+        "text",
+        Some("a"),
+        None,
+        "ONE",
+    )));
     assert_eq!(r[0].get("a"), Some("ok"));
     let frames = render(&mut h);
     let hotty_blitz::Damage::Rects(rects) = &frames[0].3 else {
@@ -330,7 +348,13 @@ fn a_missing_target_is_an_error_and_quiet_suppresses_ok() {
     let r = replies(&h.handle(&delta_cmd(&[("s", "x")], "text", Some("nope"), None, "2")));
     assert_eq!(r[0].get("a"), Some("err"));
     assert_eq!(body(&r[0].payload)["code"], "ENOTARGET");
-    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("q", "1")], "text", Some("a"), None, "2")));
+    let r = replies(&h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "1")],
+        "text",
+        Some("a"),
+        None,
+        "2",
+    )));
     assert!(r.is_empty());
 }
 
@@ -540,7 +564,12 @@ fn a_stylesheet_resource_arrives_after_the_document() {
         "painting waits for the stylesheet"
     );
     let r = replies(&h.handle(&cmd(
-        &[("a", "res"), ("id", "theme"), ("type", "text/css"), ("n", "1")],
+        &[
+            ("a", "res"),
+            ("id", "theme"),
+            ("type", "text/css"),
+            ("n", "1"),
+        ],
         "p.t{color:red}",
     )));
     assert_eq!(r[0].get("a"), Some("ok"));
@@ -824,7 +853,10 @@ fn submitting_a_form_reports_its_fields() {
     assert_eq!(submit.get("t"), Some("settings"));
     let fields = body(&submit.payload);
     assert_eq!(sent(&fields, "ok"), "yes");
-    assert!(sent(&fields, "name").as_str().unwrap().contains("yz"), "{fields}");
+    assert!(
+        sent(&fields, "name").as_str().unwrap().contains("yz"),
+        "{fields}"
+    );
 }
 
 /// What a `submit` event reports for the field `name` (SPEC §9: pairs in
@@ -1105,7 +1137,13 @@ fn incremental_layout_matches_a_fresh_document() {
     place(&mut inc);
     render(&mut inc);
     for step in 1..23 {
-        let r = replies(&inc.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "morph", Some("m"), None, &busy_page(step))));
+        let r = replies(&inc.handle(&delta_cmd(
+            &[("s", "x"), ("n", "1")],
+            "morph",
+            Some("m"),
+            None,
+            &busy_page(step),
+        )));
         assert_eq!(r[0].get("a"), Some("ok"));
         render(&mut inc);
         let partial = inc.frame("x").unwrap().rgba.clone();
@@ -1391,9 +1429,21 @@ fn a_detached_surfaces_controls_are_disabled() {
 
     // A control a delta adds is disabled too, and so is one a delta takes
     // `disabled` from.
-    let r = replies(&h.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "append", Some("box"), None, "<input type=checkbox id=cb2 disabled><div class=m id=m3></div>")));
+    let r = replies(&h.handle(&delta_cmd(
+        &[("s", "x"), ("n", "1")],
+        "append",
+        Some("box"),
+        None,
+        "<input type=checkbox id=cb2 disabled><div class=m id=m3></div>",
+    )));
     assert_eq!(r[0].get("a"), Some("ok"));
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "unattr", Some("cb2"), Some("disabled"), ""));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "unattr",
+        Some("cb2"),
+        Some("disabled"),
+        "",
+    ));
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 110), BLUE);
     click(&mut h, "x", 10.0, 90.0);
@@ -1503,7 +1553,13 @@ fn form_controls_follow_the_used_color_scheme() {
 fn a_new_color_scheme_repaints_controls_like_a_fresh_document() {
     let mut inc = host();
     doc_at(&mut inc, "x", &[], &controls(""), "2");
-    let r = replies(&inc.handle(&delta_cmd(&[("s", "x"), ("n", "1")], "attr", Some("box"), Some("style"), "color-scheme: light")));
+    let r = replies(&inc.handle(&delta_cmd(
+        &[("s", "x"), ("n", "1")],
+        "attr",
+        Some("box"),
+        Some("style"),
+        "color-scheme: light",
+    )));
     assert_eq!(r[0].get("a"), Some("ok"));
     let frames = render(&mut inc);
     assert!(
@@ -1641,7 +1697,10 @@ fn a_document_without_d_gives_the_surface_back() {
         kinds(&click(&mut h, "x", 10.0, 25.0)),
         vec![ev("focus", "b"), ev("click", "b")]
     );
-    let r = replies(&h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "i"), ("n", "1")], "")));
+    let r = replies(&h.handle(&cmd(
+        &[("a", "focus"), ("s", "x"), ("t", "i"), ("n", "1")],
+        "",
+    )));
     assert_eq!(r[0].get("a"), Some("ok"));
     assert!(key(&mut h, "x", "q").consumed);
 }
@@ -1955,7 +2014,13 @@ fn a_press_is_reported_wherever_it_lands_when_the_placement_asks() {
     place_form_presses(&mut h, true);
     h.handle(&cmd(&[("a", "hide"), ("s", "f"), ("q", "2")], ""));
     h.handle(&cmd(
-        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "5"), ("q", "2")],
+        &[
+            ("a", "place"),
+            ("s", "f"),
+            ("c", "30"),
+            ("r", "5"),
+            ("q", "2"),
+        ],
         "",
     ));
     render(&mut h);
@@ -2139,10 +2204,7 @@ fn a_drag_comes_after_its_press_and_before_the_blur_it_causes() {
         .map(|(s, e, t)| (s, e, if e == "change" { "name" } else { t }))
         .collect::<Vec<_>>()
     );
-    assert_eq!(
-        drags(&got[1..2]),
-        vec![drag("dragstart", "a", 1, 1, 1)]
-    );
+    assert_eq!(drags(&got[1..2]), vec![drag("dragstart", "a", 1, 1, 1)]);
 }
 
 #[test]
@@ -2358,7 +2420,13 @@ fn a_var_delta_lays_out_like_a_fresh_document() {
         "",
     ));
     render(&mut inc);
-    inc.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "var", Some("root"), Some("h"), "6"));
+    inc.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "var",
+        Some("root"),
+        Some("h"),
+        "6",
+    ));
     render(&mut inc);
     let mut fresh = host();
     fresh.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html(6)));
@@ -2633,13 +2701,25 @@ fn a_delta_that_adds_an_animated_image_plays_it() {
     place_image(&mut h, "<div id=box></div>");
     render(&mut h);
     assert_eq!(h.next_frame(), None);
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "inner", Some("box"), None, IMG));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "inner",
+        Some("box"),
+        None,
+        IMG,
+    ));
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), RED);
     next_frame(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), GREEN);
     // Removed, it stops asking for time.
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "inner", Some("box"), None, ""));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "inner",
+        Some("box"),
+        None,
+        "",
+    ));
     render(&mut h);
     assert_eq!(h.next_frame(), None);
 }
@@ -2681,7 +2761,13 @@ fn fit_doc(h: &mut Host, n: u32, extra: &[(&str, &str)]) {
 }
 
 fn set_n(h: &mut Host, n: &str) {
-    h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "var", Some("d"), Some("n"), n));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "var",
+        Some("d"),
+        Some("n"),
+        n,
+    ));
 }
 
 /// The rows `r=auto` chooses for a document 30 columns wide.
@@ -2893,14 +2979,24 @@ fn fit_starts_from_the_placement_rows_and_needs_f_1() {
     assert_eq!(fits(&mut h), vec![("x".to_string(), 2)]);
     // f=0 turns it off, and f=1 is not needed again to keep it on.
     let place = |h: &mut Host, f: Option<&str>| {
-        let mut pairs = vec![("a", "place"), ("s", "x"), ("c", "20"), ("r", "1"), ("q", "2")];
+        let mut pairs = vec![
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "1"),
+            ("q", "2"),
+        ];
         pairs.extend(f.map(|f| ("f", f)));
         h.handle(&cmd(&pairs, ""));
     };
     let mut h = host();
     fit_doc(&mut h, 2, &[("r", "1")]);
     place(&mut h, None);
-    assert_eq!(fits(&mut h), vec![("x".to_string(), 2)], "absent leaves it on");
+    assert_eq!(
+        fits(&mut h),
+        vec![("x".to_string(), 2)],
+        "absent leaves it on"
+    );
     place(&mut h, Some("0"));
     assert_eq!(fits(&mut h), vec![]);
     // Another value leaves it as it is: here still off.
@@ -2942,8 +3038,18 @@ fn fit_takes_a_root_the_viewport_sizes_at_a_fractional_scale_as_placed() {
             "",
         ));
         assert_eq!(fits(&mut h), vec![], "{at}");
-        h.handle(&delta_cmd(&[("s", "x"), ("q", "2")], "attr", Some("d"), Some("style"), &format!("height: calc({rows} * var(--hotty-cell-h) + 1px)")));
-        assert_eq!(fits(&mut h), vec![("x".to_string(), rows as u64 + 1)], "{at}");
+        h.handle(&delta_cmd(
+            &[("s", "x"), ("q", "2")],
+            "attr",
+            Some("d"),
+            Some("style"),
+            &format!("height: calc({rows} * var(--hotty-cell-h) + 1px)"),
+        ));
+        assert_eq!(
+            fits(&mut h),
+            vec![("x".to_string(), rows as u64 + 1)],
+            "{at}"
+        );
     }
 }
 
@@ -3279,17 +3385,20 @@ fn a_password_field_shows_bullets_and_reports_its_value() {
 
     // A reveal toggle: the program makes it a text field, and back.
     let set_type = |h: &mut Host, ty: &str| {
-        let r = replies(&h.handle(&delta_cmd(&[("s", "f"), ("n", "1")], "attr", Some("pw"), Some("type"), ty)));
+        let r = replies(&h.handle(&delta_cmd(
+            &[("s", "f"), ("n", "1")],
+            "attr",
+            Some("pw"),
+            Some("type"),
+            ty,
+        )));
         assert_eq!(r[0].get("a"), Some("ok"));
         render(h);
     };
     set_type(&mut h, "text");
     assert_eq!(frame(&h), frame(&field("text", "abZ")));
     set_type(&mut h, "password");
-    assert_eq!(
-        frame(&h),
-        frame(&field("text", "\u{2022}\u{2022}\u{2022}"))
-    );
+    assert_eq!(frame(&h), frame(&field("text", "\u{2022}\u{2022}\u{2022}")));
 }
 
 /// What `key_bytes` sent the program as keys, apart from hotty events.
@@ -3373,7 +3482,10 @@ fn key_bytes_name_keys_from_what_the_program_would_read() {
             hotty::keys::TERMINAL_KEYS
         ),
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "3")],
+        "",
+    ));
     render(&mut h);
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "f")], ""));
     h.set_text_field("f", "f", "one two three", 13, 13);
@@ -3520,7 +3632,10 @@ fn a_select_picks_by_its_labels_first_letters_going_round() {
         &[("a", "doc"), ("s", "f")],
         "<select id=s><option>apple<option>banana<option label=Cherry>c<option>avocado</select>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "2")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "2")],
+        "",
+    ));
     h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "s")], ""));
     let mut picks = Vec::new();
     for c in ["a", "A", "c", "z", "b"] {
@@ -3543,7 +3658,10 @@ fn a_select_picks_by_its_labels_first_letters_going_round() {
 fn a_program_sets_a_selects_option_except_while_it_is_focused() {
     let mut h = host();
     h.handle(&cmd(&[("a", "doc"), ("s", "f")], SELECT));
-    h.handle(&cmd(&[("a", "place"), ("s", "f"), ("c", "30"), ("r", "4")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "4")],
+        "",
+    ));
     let selected = |h: &mut Host| {
         h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "go")], ""));
         let out = named(h, "f", KeyName::Enter);
@@ -3694,9 +3812,13 @@ fn a_double_click_in_a_password_field_selects_all_of_it() {
     let m = Mods::default();
     for (kind, word) in [("text", (4, 9)), ("password", (0, 9))] {
         let mut h = host();
-        let html = format!("<style>body{{margin:0}}</style><input id=f type={kind} value='two words'>");
+        let html =
+            format!("<style>body{{margin:0}}</style><input id=f type={kind} value='two words'>");
         h.handle(&cmd(&[("a", "doc"), ("s", "x")], &html));
-        h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")], ""));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")],
+            "",
+        ));
         render(&mut h);
         let selected = |h: &Host| {
             let caret = h.text_field("x", "f").unwrap().1;
@@ -3725,7 +3847,10 @@ fn a_field_cuts_and_pastes_on_the_terminals_clipboard() {
         &[("a", "doc"), ("s", "x")],
         "<input id=f data-on=input value='one two'><button id=b>b</button>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "4")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "4")],
+        "",
+    ));
     render(&mut h);
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
     let ctrl = |c: &str| Key {
@@ -3741,7 +3866,11 @@ fn a_field_cuts_and_pastes_on_the_terminals_clipboard() {
     h.key("x", &ctrl("a"));
     let o = h.key("x", &ctrl("x"));
     assert!(o.consumed);
-    assert!(o.effects.contains(&Effect::Clipboard("one two".into())), "{:?}", o.effects);
+    assert!(
+        o.effects.contains(&Effect::Clipboard("one two".into())),
+        "{:?}",
+        o.effects
+    );
     assert_eq!(value(&h), "");
     // Nothing selected: the key is the program's.
     assert!(!h.key("x", &ctrl("x")).consumed);
@@ -3750,7 +3879,11 @@ fn a_field_cuts_and_pastes_on_the_terminals_clipboard() {
     assert!(!h.key("x", &ctrl("v")).consumed);
     h.set_paste(true);
     let o = h.key("x", &ctrl("v"));
-    assert!(o.consumed && o.effects.contains(&Effect::Paste), "{:?}", o.effects);
+    assert!(
+        o.consumed && o.effects.contains(&Effect::Paste),
+        "{:?}",
+        o.effects
+    );
     assert!(h.paste("a\r\nb").is_some());
     assert_eq!(value(&h), "ab", "an input drops line breaks");
 
@@ -3779,7 +3912,10 @@ fn copying_follows_the_keymap() {
          <p id=a>copy me</p><p id=b data-keys='ctrl+c=program ctrl+k=copy'>not me</p>\
          <input id=f value='one two'>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")],
+        "",
+    ));
     render(&mut h);
     let m = Mods::default();
     assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::None);
@@ -3815,7 +3951,11 @@ fn copying_follows_the_keymap() {
     assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::None);
     let o = h.key("x", &ctrl("c"));
     assert!(o.consumed);
-    assert!(o.effects.contains(&Effect::Clipboard("one two".into())), "{:?}", o.effects);
+    assert!(
+        o.effects.contains(&Effect::Clipboard("one two".into())),
+        "{:?}",
+        o.effects
+    );
     assert_eq!(h.text_field("x", "f").unwrap().0, "one two");
 }
 
@@ -3830,7 +3970,10 @@ fn copying_goes_by_either_name() {
         "<style>body{margin:0;font:16px monospace}</style>\
          <p id=a data-keys='ctrl+key_c=program ctrl+c=copy ctrl+key_k=copy ctrl+j=copy'>copy me</p>",
     ));
-    h.handle(&cmd(&[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")], ""));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")],
+        "",
+    ));
     render(&mut h);
     let m = Mods::default();
     for n in 1..=2 {
@@ -4007,7 +4150,10 @@ fn a_checked_radio_checked_again_sends_nothing() {
 #[test]
 fn a_field_puts_the_caret_after_the_text_it_puts_in() {
     let mut h = host();
-    h.handle(&cmd(&[("a", "doc"), ("s", "f")], "<input id=q data-on=input>"));
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        "<input id=q data-on=input>",
+    ));
     h.handle(&cmd(
         &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "2")],
         "",
@@ -4019,12 +4165,14 @@ fn a_field_puts_the_caret_after_the_text_it_puts_in() {
         &serde_json::json!({"rev": 2, "from": 0, "to": 2, "text": "Split"}),
     )
     .unwrap();
-    let r = replies(&h.handle(&Message::new(
-        [("a", "field"), ("s", "f"), ("t", "q"), ("q", "0")]
-            .into_iter()
-            .collect(),
-        body,
-    )));
+    let r = replies(
+        &h.handle(&Message::new(
+            [("a", "field"), ("s", "f"), ("t", "q"), ("q", "0")]
+                .into_iter()
+                .collect(),
+            body,
+        )),
+    );
     assert_eq!(r[0].get("a"), Some("ok"), "{r:?}");
     assert_eq!(h.text_field("f", "q"), Some(("Split".into(), 5)));
     type_text(&mut h, " ");

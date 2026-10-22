@@ -9,8 +9,8 @@
 mod common;
 
 use common::delta_cmd;
-use hotty_blitz::{Config, Host, Metrics};
 use hotty::Message;
+use hotty_blitz::{Config, Host, Metrics};
 use std::time::{Duration, Instant};
 
 fn host() -> Host {
@@ -70,7 +70,13 @@ fn many_surfaces_of_many_sizes_keep_a_few_painting_threads() {
             "",
         ));
         h.render_dirty(&mut |_, _, _| {});
-        h.handle(&delta_cmd(&[("s", &s), ("q", "2")], "text", Some("p"), None, &format!("changed {i}")));
+        h.handle(&delta_cmd(
+            &[("s", &s), ("q", "2")],
+            "text",
+            Some("p"),
+            None,
+            &format!("changed {i}"),
+        ));
         h.render_dirty(&mut |_, _, _| {});
     }
     let kept = settled().saturating_sub(before);
