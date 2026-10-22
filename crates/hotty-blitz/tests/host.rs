@@ -3999,3 +3999,34 @@ fn a_checked_radio_checked_again_sends_nothing() {
     let r = replies(&h.handle(&field(1)));
     assert_eq!(r[0].get("a"), Some("ok"), "{r:?}");
 }
+
+/// A picker's Tab completion (the kit's HottyPicker): a=field replaces what
+/// the user typed, against the rev their keys made, and without `sel` the
+/// caret goes after the text put in, so what they type next follows it
+/// (SPEC §6.4).
+#[test]
+fn a_field_puts_the_caret_after_the_text_it_puts_in() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "f")], "<input id=q data-on=input>"));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "2")],
+        "",
+    ));
+    render(&mut h);
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "q")], ""));
+    type_text(&mut h, "sp");
+    let body = rmp_serde::to_vec_named(
+        &serde_json::json!({"rev": 2, "from": 0, "to": 2, "text": "Split"}),
+    )
+    .unwrap();
+    let r = replies(&h.handle(&Message::new(
+        [("a", "field"), ("s", "f"), ("t", "q"), ("q", "0")]
+            .into_iter()
+            .collect(),
+        body,
+    )));
+    assert_eq!(r[0].get("a"), Some("ok"), "{r:?}");
+    assert_eq!(h.text_field("f", "q"), Some(("Split".into(), 5)));
+    type_text(&mut h, " ");
+    assert_eq!(h.text_field("f", "q"), Some(("Split ".into(), 6)));
+}
