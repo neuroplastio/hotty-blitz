@@ -1,0 +1,378 @@
+From c60e07143e6c1884cecf88b599e106b89102a782 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 22 Oct 2026 10:46:13 +0200
+Subject: [PATCH] blitz-dom: an inline box's margin, border and padding take
+ their space
+
+A non-atomic inline box (a span in a line of text) went into its inline
+root's parley layout as a style span only, so its inline-start and
+inline-end margin, border and padding took no space:
+`A<i style="margin-left:2ch">x</i>` drew "Ax".
+
+Construction now puts a zero-height parley inline box at the start and
+the end of the element's style span for each edge that has a margin,
+border or padding; its id is the element's node id with a flag bit set.
+Inline layout sizes it, resolving percentages against the inline root's
+content width, and puts it in flow, so parley breaks, aligns and
+reorders it as it does an atomic inline. It is built out-of-flow, since
+parley's builder flushes collapsible white space before an in-flow box,
+and an edge of no width stays out-of-flow, adding no break opportunity.
+A restyle that adds or removes an edge rebuilds the inline layout; one
+that only resizes it lays it out again. Client rects count the
+element's border and padding but not its margin.
+
+This is the spacing only: blitz-paint still draws an inline box's
+background behind its glyph runs, and draws no inline borders. And as
+parley takes an edge for an atomic inline, a line can break at an edge
+inside a word, an edge takes the bidi level of the run before it, and a
+negative margin cancels the edge's space but overlaps nothing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs         |  38 ++++--
+ packages/blitz-dom/src/layout/construct.rs |  29 +++++
+ packages/blitz-dom/src/layout/damage.rs    |  10 ++
+ packages/blitz-dom/src/layout/inline.rs    | 141 ++++++++++++++++++++-
+ 4 files changed, 208 insertions(+), 10 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index d7d05a80..2d0f489f 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -2,6 +2,7 @@ use crate::NodeTree;
+ use crate::events::{DragMode, handle_dom_event};
+ use crate::layout::construct::ConstructionTask;
+ use crate::layout::damage::ALL_DAMAGE;
++use crate::layout::inline::{InlineBoxId, inline_edge_size};
+ use crate::mutator::ViewportMut;
+ use crate::net::{
+     Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler, StylesheetLoader,
+@@ -2552,17 +2553,36 @@ impl BaseDocument {
+                         add(x0, y0, x1, y1);
+                     }
+                     PositionedLayoutItem::InlineBox(inline_box) => {
+-                        if !is_in_target(NodeId::from_u64(inline_box.id)) {
++                        let id = InlineBoxId::from_u64(inline_box.id);
++                        if !is_in_target(id.node_id()) {
+                             continue;
+                         }
+-                        let x0 = inline_box.x as f64;
+-                        let y0 = inline_box.y as f64;
+-                        add(
+-                            x0,
+-                            y0,
+-                            x0 + inline_box.width as f64,
+-                            y0 + inline_box.height as f64,
+-                        );
++                        let mut x0 = inline_box.x as f64;
++                        let mut x1 = x0 + inline_box.width as f64;
++                        let (InlineBoxId::Start(edge_of) | InlineBoxId::End(edge_of)) = id else {
++                            let y0 = inline_box.y as f64;
++                            add(x0, y0, x1, y0 + inline_box.height as f64);
++                            continue;
++                        };
++                        // The target's own margin lies outside its border box, on the edge
++                        // box's outer side.
++                        if edge_of == node_id {
++                            let cb_width = root_layout.content_box_width();
++                            let (_, border_padding) = inline_edge_size(node, id, Some(cb_width));
++                            let border_padding = (border_padding as f64 * scale).min(x1 - x0);
++                            let rtl = node.primary_styles().is_some_and(|s| {
++                                s.clone_direction() == style::computed_values::direction::T::Rtl
++                            });
++                            if matches!(id, InlineBoxId::Start(_)) != rtl {
++                                x0 = x1 - border_padding;
++                            } else {
++                                x1 = x0 + border_padding;
++                            }
++                        }
++                        // An edge box has no height: like a glyph run, it spans the line box.
++                        let y0 = line_metrics.block_min_coord as f64;
++                        let y1 = line_metrics.block_max_coord as f64;
++                        add(x0, y0, x1, y1);
+                     }
+                 }
+             }
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index 55add4e9..dae21a15 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -33,6 +33,7 @@ use crate::{
+ 
+ use super::{
+     damage::ALL_DAMAGE,
++    inline::{InlineBoxId, inline_edges},
+     list::{BULLET_FONT_FAMILY, collect_list_item_children},
+     replaced::is_replaced_element,
+     table::build_table_context,
+@@ -1131,6 +1132,23 @@ pub(crate) fn build_inline_layout_into(
+     text_layout.text = builder.build_into(&mut text_layout.layout);
+     return;
+ 
++    /// A box for the margin, border and padding at the start or end of a non-atomic inline
++    /// box, sized during layout (see `InlineBoxId`). It is built out-of-flow, so that white
++    /// space collapses across it as across the element's own boundaries, and layout makes it
++    /// in-flow once it has a width.
++    fn inline_edge_box(id: InlineBoxId) -> InlineBox {
++        InlineBox {
++            id: id.as_u64(),
++            kind: InlineBoxKind::OutOfFlow,
++            // Overridden by push_inline_box method
++            index: 0,
++            width: 0.0,
++            height: 0.0,
++            baseline: None,
++            vertical_align: Default::default(),
++        }
++    }
++
+     fn build_inline_layout_recursive(
+         builder: &mut TreeBuilder<TextBrush>,
+         nodes: &crate::NodeTree,
+@@ -1237,8 +1255,16 @@ pub(crate) fn build_inline_layout_into(
+                                     white_space_collapse: WhiteSpaceCollapse::Collapse,
+                                     ..Default::default()
+                                 });
++                            let (start_edge, end_edge) = node
++                                .primary_styles()
++                                .map(|s| inline_edges(&s))
++                                .unwrap_or_default();
+ 
+                             builder.push_style_span(style);
++                            if start_edge {
++                                builder
++                                    .push_inline_box(inline_edge_box(InlineBoxId::Start(node_id)));
++                            }
+ 
+                             if let Some(before_id) = node.before() {
+                                 build_inline_layout_recursive(
+@@ -1266,6 +1292,9 @@ pub(crate) fn build_inline_layout_into(
+                                 );
+                             }
+ 
++                            if end_edge {
++                                builder.push_inline_box(inline_edge_box(InlineBoxId::End(node_id)));
++                            }
+                             builder.pop_style_span();
+                         }
+                     }
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index 029ffcd8..3421cf2c 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -1,6 +1,7 @@
+ use blitz_traits::node_id::NodeId;
+ use markup5ever::local_name;
+ 
++use crate::layout::inline::inline_edges;
+ use crate::net::ResourceHandler;
+ use crate::node::NodeFlags;
+ use crate::tree::NodeTree;
+@@ -472,6 +473,15 @@ pub(crate) fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues)
+             return true;
+         }
+ 
++        // A non-atomic inline box's inline-start and inline-end edges are inline boxes in its
++        // inline formatting context, which exist only while the edge has any width.
++        if new.get_box().display.outside() == DisplayOutside::Inline
++            && new.get_box().display.inside() == DisplayInside::Flow
++            && inline_edges(old) != inline_edges(new)
++        {
++            return true;
++        }
++
+         false
+     };
+ 
+diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
+index 8fbf8930..37c9748d 100644
+--- a/packages/blitz-dom/src/layout/inline.rs
++++ b/packages/blitz-dom/src/layout/inline.rs
+@@ -1,5 +1,5 @@
+ use blitz_traits::node_id::NodeId;
+-use parley::{AlignmentOptions, BreakReason, IndentOptions};
++use parley::{AlignmentOptions, BreakReason, IndentOptions, InlineBoxKind};
+ use style::values::specified::box_::{DisplayInside, DisplayOutside};
+ use style::values::{
+     computed::{CSSPixelLength, Contain},
+@@ -18,6 +18,13 @@ use parley::YieldData;
+ #[cfg(feature = "floats")]
+ use taffy::{BlockItemStyle as _, Clear, Float, prelude::TaffyMaxContent};
+ 
++use style::Zero as _;
++use style::properties::ComputedValues;
++use style::properties::longhands::direction::computed_value::T as StyloDirection;
++use style::values::computed::{BorderSideWidth, LengthPercentage};
++use style::values::generics::length::GenericMargin;
++use style::values::specified::border::BorderStyle;
++
+ use super::resolve_calc_value;
+ use crate::BaseDocument;
+ use crate::stylo_to_parley;
+@@ -307,6 +314,23 @@ impl BaseDocument {
+ 
+         // Update inline boxes
+         for ibox in inline_layout.layout.inline_boxes_mut() {
++            if let edge @ (InlineBoxId::Start(id) | InlineBoxId::End(id)) =
++                InlineBoxId::from_u64(ibox.id)
++            {
++                let (margin, border_padding) =
++                    inline_edge_size(&self.nodes[id], edge, child_inputs.parent_size.width);
++                // A negative margin may cancel the edge's space but not pull the box's content
++                // back over its neighbours.
++                ibox.width = (margin + border_padding).max(0.0) * scale;
++                // An edge with no width stays out-of-flow, which adds no break opportunity.
++                ibox.kind = if ibox.width > 0.0 {
++                    InlineBoxKind::InFlow
++                } else {
++                    InlineBoxKind::OutOfFlow
++                };
++                continue;
++            }
++
+             let style = self.nodes[NodeId::from_u64(ibox.id)].layout_style();
+             let margin = style
+                 .margin()
+@@ -416,6 +440,9 @@ impl BaseDocument {
+                     AvailableSpace::MinContent => {
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) {
++                                continue;
++                            }
+                             let (is_floated, margin) = {
+                                 let style = self.nodes[NodeId::from_u64(ibox.id)].layout_style();
+                                 (
+@@ -450,6 +477,9 @@ impl BaseDocument {
+                         let mut right_band: f32 = 0.0;
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes_mut() {
++                            if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) {
++                                continue;
++                            }
+                             let (float, clear, margin) = {
+                                 let style = self.nodes[NodeId::from_u64(ibox.id)].layout_style();
+                                 (
+@@ -780,6 +810,9 @@ impl BaseDocument {
+         for line in inline_layout.layout.lines() {
+             for item in line.items() {
+                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
++                    if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) {
++                        continue;
++                    }
+                     let order = ibox_order;
+                     ibox_order += 1;
+                     let node = &self.nodes[NodeId::from_u64(ibox.id)];
+@@ -994,3 +1027,109 @@ impl BaseDocument {
+ fn f32_max(a: f32, b: f32) -> f32 {
+     a.max(b)
+ }
++
++// The inline-start and inline-end margin, border and padding of a non-atomic inline box (a
++// `<span>`, say) take space in the line, but parley knows only the box's text style. So
++// construction places a zero-height inline box at the start and the end of the element's
++// style span for each edge that has any, and layout sizes it and puts it in flow like an
++// atomic inline, leaving line breaking, alignment, bidi reordering and hit testing to parley.
++//
++// An edge box's id is the element's node id with `INLINE_EDGE` set, and `INLINE_EDGE_END` too
++// for the end edge. Node ids keep their slot's version in the high bits, which reach these
++// only once a slot has been reused about 2^29 times.
++const INLINE_EDGE: u64 = 1 << 63;
++const INLINE_EDGE_END: u64 = 1 << 62;
++
++/// What an inline box in an inline root's parley layout stands for.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum InlineBoxId {
++    /// An atomic inline, or an out-of-flow box placed in the line.
++    Node(NodeId),
++    /// The inline-start edge of a non-atomic inline box.
++    Start(NodeId),
++    /// The inline-end edge of a non-atomic inline box.
++    End(NodeId),
++}
++
++impl InlineBoxId {
++    pub(crate) fn node_id(self) -> NodeId {
++        match self {
++            Self::Node(id) | Self::Start(id) | Self::End(id) => id,
++        }
++    }
++
++    pub(crate) fn from_u64(id: u64) -> Self {
++        let node_id = NodeId::from_u64(id & !(INLINE_EDGE | INLINE_EDGE_END));
++        if id & INLINE_EDGE == 0 {
++            Self::Node(NodeId::from_u64(id))
++        } else if id & INLINE_EDGE_END == 0 {
++            Self::Start(node_id)
++        } else {
++            Self::End(node_id)
++        }
++    }
++
++    pub(crate) fn as_u64(self) -> u64 {
++        match self {
++            Self::Node(id) => id.as_u64(),
++            Self::Start(id) => id.as_u64() | INLINE_EDGE,
++            Self::End(id) => id.as_u64() | INLINE_EDGE | INLINE_EDGE_END,
++        }
++    }
++}
++
++/// Whether the inline-start and inline-end edges of a non-atomic inline box with this style
++/// have margin, border or padding. A percentage or `calc()` counts, as its size is only known
++/// at layout.
++pub(crate) fn inline_edges(style: &ComputedValues) -> (bool, bool) {
++    let margin = style.get_margin();
++    let padding = style.get_padding();
++    let border = style.get_border();
++    let side = |margin: &GenericMargin<LengthPercentage>,
++                padding: &LengthPercentage,
++                width: &BorderSideWidth,
++                border_style: BorderStyle| {
++        matches!(margin, GenericMargin::LengthPercentage(m) if !m.is_zero())
++            || !padding.is_zero()
++            || (!border_style.none_or_hidden() && width.0.to_f32_px() != 0.0)
++    };
++    let left = side(
++        &margin.margin_left,
++        &padding.padding_left.0,
++        &border.border_left_width,
++        border.border_left_style,
++    );
++    let right = side(
++        &margin.margin_right,
++        &padding.padding_right.0,
++        &border.border_right_width,
++        border.border_right_style,
++    );
++    match style.clone_direction() {
++        StyloDirection::Ltr => (left, right),
++        StyloDirection::Rtl => (right, left),
++    }
++}
++
++/// The margin, and the border and padding, on the side of a non-atomic inline box that
++/// `edge` (an `InlineBoxId::Start` or `End`) stands for, in CSS px. Percentages resolve
++/// against `cb_width`, the inline size of the containing block.
++pub(crate) fn inline_edge_size(
++    node: &crate::Node,
++    edge: InlineBoxId,
++    cb_width: Option<f32>,
++) -> (f32, f32) {
++    let style = node.layout_style();
++    let rtl = style.direction() == Direction::Rtl;
++    let left = matches!(edge, InlineBoxId::Start(_)) != rtl;
++    let margin = style.margin().resolve_or_zero(cb_width, resolve_calc_value);
++    let border = style.border().resolve_or_zero(cb_width, resolve_calc_value);
++    let padding = style
++        .padding()
++        .resolve_or_zero(cb_width, resolve_calc_value);
++    if left {
++        (margin.left, border.left + padding.left)
++    } else {
++        (margin.right, border.right + padding.right)
++    }
++}
+-- 
+2.56.0
+
