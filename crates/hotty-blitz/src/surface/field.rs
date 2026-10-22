@@ -328,14 +328,17 @@ fn caret_event(target: String, (sel, rev): Caret) -> Event {
     }
 }
 
-/// Position `p` in `value`: `EINVAL` when it is past the end, or inside
-/// a code point (SPEC §6.4).
+/// Position `p` in `value`: `EINVAL` when it is negative, past the end,
+/// or inside a code point (SPEC §6.4). Checked only once the command is
+/// known not to be stale.
 fn position(value: &str, p: i64) -> Result<usize, Error> {
     usize::try_from(p)
         .ok()
         .filter(|&b| value.is_char_boundary(b))
         .ok_or_else(|| {
-            let why = if p as u64 > value.len() as u64 {
+            let why = if p < 0 {
+                "negative, not a place in"
+            } else if p as u64 > value.len() as u64 {
                 "past the end of"
             } else {
                 "inside a code point of"
@@ -626,5 +629,6 @@ mod tests {
         assert!(position("héllo", 2).is_err());
         assert!(position("ab", 3).is_err());
         assert_eq!(position("ab", 2), Ok(2));
+        assert!(position("ab", -1).is_err());
     }
 }
