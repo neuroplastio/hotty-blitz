@@ -21,6 +21,8 @@ blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585b
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
 blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg", "scrollbars"] }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
+# The revision Blitz pins (its workspace), for the fonts a host ships (fonts.rs).
+parley = { git = "https://github.com/linebender/parley", rev = "332c1c7d9758839577e7979d211d1e3bbf4818af", default-features = false, features = ["std"] }
 anyrender = "0.13.0"
 anyrender_vello_cpu = { version = "0.17.0", default-features = false, features = ["filters", "multithreading"] }
 

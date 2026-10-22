@@ -11,6 +11,7 @@ pub mod delta;
 mod edit;
 pub mod fetch;
 pub mod ffi;
+pub mod fonts;
 pub mod input;
 mod menu;
 pub mod net;
@@ -20,7 +21,6 @@ mod scroll;
 pub mod style;
 mod surface;
 
-use blitz_dom::FontContext;
 use body::Detail;
 use hotty::Message;
 use hotty::keys::{self, Platform};
@@ -237,7 +237,6 @@ pub struct Host {
     config: Config,
     css: String,
     store: Arc<net::Store>,
-    font_ctx: FontContext,
     surfaces: BTreeMap<String, surface::Surface>,
     /// Render contexts the surfaces share (surface.rs).
     renderers: surface::Renderers,
@@ -477,11 +476,11 @@ impl Host {
         // Stylo ships `:has()` behind a pref that Blitz leaves off.
         stylo_static_prefs::set_pref!("layout.css.has-selector.enabled", true);
         let css = style::host_css(&config);
+        fonts::warm();
         Host {
             store: net::Store::new(config.resource_quota),
             config,
             css,
-            font_ctx: FontContext::default(),
             surfaces: BTreeMap::new(),
             renderers: surface::Renderers::default(),
             created: 0,
@@ -717,7 +716,7 @@ impl Host {
             &self.config,
             &self.css,
             self.store.clone(),
-            self.font_ctx.clone(),
+            fonts::context(),
             (500, 100),
             0,
         )
@@ -1391,7 +1390,7 @@ impl Host {
                     &self.config,
                     &self.css,
                     self.store.clone(),
-                    self.font_ctx.clone(),
+                    fonts::context(),
                     (cols, rows),
                     // Like `d`, the document's: without it, it does not
                     // scroll (SPEC §5.1).

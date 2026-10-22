@@ -15,6 +15,8 @@ blitz-dom.workspace = true
 blitz-html.workspace = true
 blitz-paint.workspace = true
 blitz-traits.workspace = true
+# Registers the fonts a host ships (fonts.rs): the parley Blitz brings.
+parley.workspace = true
 # A link's url in click events (SPEC §9): the version Blitz already brings.
 url = "2.5"
 # Every frame of an animated GIF, APNG or WebP (anim.rs): Blitz decodes the
