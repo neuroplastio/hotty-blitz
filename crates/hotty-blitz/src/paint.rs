@@ -341,6 +341,15 @@ pub fn extent(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) 
     Some(d)
 }
 
+/// A single-line text input's line: its height and baseline, which its
+/// own baseline follows.
+fn line_metrics(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId) -> Option<(f32, f32)> {
+    doc.get_node(id)?
+        .element_data()?
+        .text_input_data()?
+        .line_metrics()
+}
+
 /// The box whose layout places a node: its layout parent, which is not
 /// always its DOM parent (a table cell's is the table, not the row), or the
 /// DOM parent for inline content, which has no layout parent.
@@ -358,6 +367,11 @@ fn container(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId) -> Option<bli
 /// well, and so on up only as far as boxes keep changing. The cost is the
 /// size of the change times the depth of the tree, never the size of the
 /// surface.
+///
+/// A text input's baseline is its text's: an edit that makes its line
+/// taller (a fallback font) moves what is aligned with it, and not its own
+/// box. So a touched input whose line changed counts as moved; an input is
+/// touched before its text changes.
 #[derive(Default)]
 pub struct Tracker {
     /// Repaint everything (first frame, resize, new stylesheet, clicks).
@@ -366,6 +380,8 @@ pub struct Tracker {
     /// Rectangles damaged whatever the layout: the root's scrollbars.
     rects: Vec<DevRect>,
     old: std::collections::HashMap<blitz_dom::NodeId, (Option<DevRect>, Option<blitz_dom::NodeId>)>,
+    /// A touched text input's line as it was (`line_metrics`).
+    lines: std::collections::HashMap<blitz_dom::NodeId, (f32, f32)>,
 }
 
 impl Tracker {
@@ -382,6 +398,9 @@ impl Tracker {
             return;
         }
         self.touched.push(id);
+        if let Some(line) = line_metrics(doc, id) {
+            self.lines.entry(id).or_insert(line);
+        }
         let mut cur = Some(id);
         while let Some(n) = cur {
             if self.old.contains_key(&n) {
@@ -451,12 +470,17 @@ impl Tracker {
                 // A node without a box of its own (a table row, which Blitz
                 // lays out as part of the table's grid) bounds nothing.
                 let boxless = new.is_some_and(|r| r.x1 - r.x0 < 0.5 || r.y1 - r.y0 < 0.5);
+                let relined = first
+                    && self
+                        .lines
+                        .get(&n)
+                        .is_some_and(|line| line_metrics(doc, n) != Some(*line));
                 // An absolutely positioned box moves nothing else: its old and
                 // new extents are all the damage (a game's sprites).
                 let out_of_flow = doc.get_node(n).is_some_and(|x| x.is_out_of_flow());
                 first = false;
                 match (
-                    (moved && !out_of_flow) || boxless,
+                    (moved && !out_of_flow) || boxless || relined,
                     parent.or_else(|| container(doc, n)),
                 ) {
                     (true, Some(p)) => n = p,
@@ -465,6 +489,7 @@ impl Tracker {
             }
         }
         self.old.clear();
+        self.lines.clear();
         self.full = false;
         merge(out, 16, 64)
     }
@@ -473,6 +498,7 @@ impl Tracker {
         self.touched.clear();
         self.rects.clear();
         self.old.clear();
+        self.lines.clear();
         self.full = false;
     }
 }

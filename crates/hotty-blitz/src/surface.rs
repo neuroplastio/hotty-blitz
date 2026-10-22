@@ -2651,9 +2651,9 @@ impl Surface {
         };
         to.push(std::mem::replace(&mut h.after, to_state.clone()));
         h.run = None;
+        self.damage.touch(&self.doc, id, self.viewport.2 as f64);
         self.doc
             .set_text_input(id, &to_state.value, to_state.anchor, to_state.focus);
-        self.damage.touch(&self.doc, id, self.viewport.2 as f64);
         self.drive_input(Input::Dom(DomEvent::new(
             id,
             DomEventData::Input(BlitzInputEvent {
@@ -2670,8 +2670,8 @@ impl Surface {
         let (lo, hi) = (f.anchor.min(f.focus), f.anchor.max(f.focus));
         let new = format!("{}{text}{}", &f.value[..lo], &f.value[hi..]);
         let caret = lo + text.len();
-        self.doc.set_text_input(id, &new, caret, caret);
         self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+        self.doc.set_text_input(id, &new, caret, caret);
         if new == f.value {
             return Vec::new();
         }
@@ -2805,8 +2805,8 @@ impl Surface {
                     return Vec::new();
                 };
                 let new = done.value.unwrap_or_else(|| value.clone());
-                self.doc.set_text_input(id, &new, done.anchor, done.caret);
                 self.damage.touch(&self.doc, id, self.viewport.2 as f64);
+                self.doc.set_text_input(id, &new, done.anchor, done.caret);
                 if new == value {
                     return Vec::new();
                 }
@@ -3186,6 +3186,11 @@ impl Surface {
             self.doc.get_hover_node_id(),
             self.doc.get_focussed_node_id(),
         );
+        // A key or IME edits the focused field: touched before the edit
+        // (`paint::Tracker`).
+        if is_key && let Some(f) = self.focused() {
+            self.damage.touch(&self.doc, f, self.viewport.2 as f64);
+        }
         let mut rec = Recorder {
             base: self.base.clone(),
             cell: self.cell,
