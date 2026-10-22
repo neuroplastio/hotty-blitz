@@ -851,7 +851,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
 
 /// The version is the spec's (gov P-5 rule 6): the package's MAJOR.MINOR,
 /// which the capabilities send in `version`, is the hotty version the host
-/// speaks and the one the vectors are for. hotty 0.4 is hotty-blitz 0.4.x.
+/// speaks and the one the vectors are for. hotty 0.5 is hotty-blitz 0.5.x.
 #[test]
 fn the_version_is_the_specs() {
     let pkg = env!("CARGO_PKG_VERSION");

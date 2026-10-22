@@ -256,7 +256,7 @@ fn caps_report_the_settings_and_their_changes() {
         })
         .is_empty()
     );
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.4")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["mod"], "ctrl");
     assert_eq!(
@@ -304,7 +304,7 @@ fn a_new_font_tells_caps_and_a_zoom_does_not() {
     // Before a query: nothing is owed.
     h.set_config(config(12, 24, 1.0, 19.0));
     assert!(h.take_events().is_empty());
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.4")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["cellcss"], serde_json::json!({"w": 12.0, "h": 24.0}));
     assert_eq!(caps["scale"], serde_json::json!(1.0));
