@@ -395,7 +395,8 @@ pub unsafe extern "C" fn hotty_host_render(h: *mut HottyHost, ctx: *mut c_void, 
 /// `hotty_host_set_network`, `hotty_host_set_passthrough` or
 /// `hotty_host_set_counts` changed what the capabilities say, `fit` events
 /// (SPEC §5.2), with the rows of the last frame drawn, and `view` events
-/// (§9.5), with what it shows, at most one of each per surface. Call after
+/// (§9.5), with what it shows, at most one of each per surface, and a
+/// `caret` event (§9) held back to this frame. Call after
 /// `hotty_host_render`.
 ///
 /// # Safety

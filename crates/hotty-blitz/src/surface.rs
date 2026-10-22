@@ -30,6 +30,8 @@ use std::time::Instant;
 use style::values::computed::UserSelect;
 use stylo_dom::ElementState;
 
+mod field;
+
 /// A surface's pixels: **premultiplied** RGBA8, `width`×`height`, row-major,
 /// no padding. GPU hosts can upload it as is; [`Frame::straight`] converts
 /// the part a host sends when it needs straight alpha (kitty graphics does).
@@ -236,6 +238,16 @@ pub(crate) struct Surface {
     caret_phase: u32,
     /// Each text field's history of edits (SPEC §10.2, undo).
     histories: BTreeMap<NodeId, History>,
+    /// Each control's rev (SPEC §6.4): the user's changes to it since it
+    /// entered the document; none for 0. A radio button's group shares the
+    /// highest of its buttons'.
+    revs: BTreeMap<NodeId, i64>,
+    /// A `caret` held back to one a frame (SPEC §9): the field it is owed
+    /// for and what the program last heard of it, sent with the next frame
+    /// (Surface::new_frame).
+    caret_owed: Option<(NodeId, field::Caret)>,
+    /// Whether a `caret` went out in this frame.
+    caret_sent: bool,
     /// The host reads the clipboard for `paste` (Host::set_paste): without
     /// it, a field has no `paste`, and the key reaches the program.
     pub can_paste: bool,
@@ -692,6 +704,9 @@ impl Surface {
             caret_at: Instant::now(),
             caret_phase: 0,
             histories: BTreeMap::new(),
+            revs: BTreeMap::new(),
+            caret_owed: None,
+            caret_sent: false,
             can_paste: false,
             clipboard: None,
             paste_wanted: false,
@@ -1304,9 +1319,26 @@ impl Surface {
             damage,
             ..
         } = self;
-        let res = delta::apply(doc, parse_doc, op, t, k, payload, &mut |d, id| {
-            damage.touch(d, id, scale)
-        });
+        let mut gone = Vec::new();
+        let res = delta::apply(
+            doc,
+            parse_doc,
+            op,
+            t,
+            k,
+            payload,
+            &mut |d, id| damage.touch(d, id, scale),
+            &mut gone,
+        );
+        // A dropped control's rev and history go with it: Blitz may give
+        // its id to another element, whose rev starts at 0 (SPEC §6.4).
+        for id in gone {
+            self.revs.remove(&id);
+            self.histories.remove(&id);
+            if self.caret_owed.is_some_and(|(n, _)| n == id) {
+                self.caret_owed = None;
+            }
+        }
         if let Some((select, option)) = kept
             && self.doc.option_select(option) == Some(select)
             && self.doc.pick_option(select, option)
@@ -1610,6 +1642,8 @@ impl Surface {
         // `change`); focusing the control again commits nothing.
         if want.is_some() && want != was {
             self.finish_change(&mut events);
+            // A `caret` held back goes before it.
+            self.carets(Vec::new(), &mut events);
         }
         match want {
             Some(node) => {
@@ -1698,6 +1732,8 @@ impl Surface {
     pub fn blur(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
         self.finish_change(&mut events);
+        // A `caret` held back goes before it.
+        self.carets(Vec::new(), &mut events);
         self.move_focus(None);
         let had = std::mem::replace(&mut self.keyboard, false);
         // A prefix ends with the keyboard (SPEC §10.5).
@@ -1874,6 +1910,44 @@ impl Surface {
     /// that lead, a drag's (SPEC §9.1: after `press`, before what the press
     /// causes; on the release, before its click), and the rest.
     pub fn pointer_input(
+        &mut self,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        cell: (i32, i32),
+        mods: Mods,
+    ) -> (Vec<Event>, Vec<Event>) {
+        // A press moves the caret of the field it is on, and a drag or a
+        // release the focused one's (SPEC §9, `caret`).
+        let also = match kind {
+            PointerKind::Down => self.text_field_at(x, y),
+            _ => None,
+        };
+        let watched = self.watch(also);
+        let (lead, mut events) = self.pointer_inner(kind, x, y, cell, mods);
+        self.carets(watched, &mut events);
+        (lead, events)
+    }
+
+    /// The text field at CSS pixel (`x`, `y`) of the surface, if any.
+    fn text_field_at(&mut self, x: f32, y: f32) -> Option<NodeId> {
+        self.resolve();
+        let (x, y) = self.page(x, y);
+        let mut n = Some(self.doc.hit(x, y)?.node_id);
+        while let Some(id) = n {
+            let node = self.doc.get_node(id)?;
+            if node
+                .element_data()
+                .is_some_and(|e| e.text_input_data().is_some())
+            {
+                return Some(id);
+            }
+            n = node.parent;
+        }
+        None
+    }
+
+    fn pointer_inner(
         &mut self,
         kind: PointerKind,
         x: f32,
@@ -2297,7 +2371,10 @@ impl Surface {
         if !self.keyboard || self.prefix {
             return (false, Vec::new());
         }
-        self.plain_key(key, offer)
+        let watched = self.watch(None);
+        let (used, mut events) = self.plain_key(key, offer);
+        self.carets(watched, &mut events);
+        (used, events)
     }
 
     /// A key for the focused element (SPEC §10.2): the element's use of it
@@ -2491,26 +2568,32 @@ impl Surface {
         if key.mods.ctrl || key.mods.alt || key.mods.super_ {
             return None;
         }
-        let options: Vec<NodeId> = self
-            .doc
-            .select_options(id)
-            .into_iter()
-            .filter(|&o| !self.doc.option_disabled(o))
+        // Every option, a disabled one picked by `a=field` included: the
+        // keys go from it to the enabled ones before or after it.
+        let options = self.doc.select_options(id);
+        let enabled: Vec<usize> = (0..options.len())
+            .filter(|&i| !self.doc.option_disabled(options[i]))
             .collect();
         let at = options.iter().position(|&o| self.doc.option_selected(o));
-        let last = options.len().checked_sub(1);
+        let first = enabled.first().copied();
         let pick = match &key.name {
-            KeyName::Down => last.map(|l| at.map_or(0, |i| (i + 1).min(l))),
-            KeyName::Up => last.map(|_| at.map_or(0, |i| i.saturating_sub(1))),
-            KeyName::Home | KeyName::PageUp => last.map(|_| 0),
-            KeyName::End | KeyName::PageDown => last,
+            KeyName::Down => match at {
+                Some(a) => enabled.iter().copied().find(|&i| i > a).or(Some(a)),
+                None => first,
+            },
+            KeyName::Up => match at {
+                Some(a) => enabled.iter().rev().copied().find(|&i| i < a).or(Some(a)),
+                None => first,
+            },
+            KeyName::Home | KeyName::PageUp => first,
+            KeyName::End | KeyName::PageDown => enabled.last().copied(),
             KeyName::Space | KeyName::Enter => None,
             KeyName::Char(c) => {
                 let c = c.to_lowercase();
-                let n = options.len();
-                let start = at.map_or(0, |i| i + 1);
+                let n = enabled.len();
+                let start = at.map_or(0, |a| enabled.iter().position(|&i| i > a).unwrap_or(n));
                 (0..n)
-                    .map(|k| (start + k) % n)
+                    .map(|k| enabled[(start + k) % n])
                     .find(|&j| self.option_label(options[j]).to_lowercase().starts_with(&c))
             }
             _ => return None,
@@ -2521,6 +2604,7 @@ impl Surface {
         self.doc.pick_option(id, options[pick]);
         self.damage.touch(&self.doc, id, self.viewport.2 as f64);
         self.dirty = true;
+        let rev = field::bump(&mut self.revs, &self.doc, id);
         let mut events = Vec::new();
         if let Some(target) = self.id_of(id) {
             let value = self.doc.select_value(id).unwrap_or_default();
@@ -2530,13 +2614,19 @@ impl Surface {
                     target: target.clone(),
                     detail: Some(Detail::Value {
                         value: value.clone(),
+                        rev,
+                        sel: None,
                     }),
                 });
             }
             events.push(Event {
                 kind: "change",
                 target,
-                detail: Some(Detail::Value { value }),
+                detail: Some(Detail::Value {
+                    value,
+                    rev,
+                    sel: None,
+                }),
             });
         }
         Some(events)
@@ -2702,11 +2792,13 @@ impl Surface {
             text.replace(['\r', '\n'], "")
         };
         self.wake_caret(Instant::now());
+        let watched = self.watch(None);
         let before = self.field_state(id)?;
-        let events = self.replace_selection(id, &text);
+        let mut events = self.replace_selection(id, &text);
         self.edited(id, before, None);
         self.bring_into_view(id);
         self.dirty = true;
+        self.carets(watched, &mut events);
         Some(events)
     }
 
@@ -2864,8 +2956,10 @@ impl Surface {
             return Vec::new();
         }
         let key = Key::new(KeyName::Other, Mods::default());
-        let events = self.field_action(id, &key, action, kind == Control::TextArea, extend);
+        let watched = self.watch(None);
+        let mut events = self.field_action(id, &key, action, kind == Control::TextArea, extend);
         self.dirty = true;
+        self.carets(watched, &mut events);
         events
     }
 
@@ -3110,6 +3204,8 @@ impl Surface {
     /// the element may be scrolled out of view, and the pointer stays where
     /// it is.
     fn activate(&mut self, id: NodeId) -> Vec<Event> {
+        // Blitz makes a checkbox's state at layout.
+        self.resolve();
         if !paint::intact(&self.doc, id) {
             return Vec::new();
         }
@@ -3196,6 +3292,7 @@ impl Surface {
             cell: self.cell,
             slack: self.slack(),
             mods: self.held.bits(),
+            revs: std::mem::take(&mut self.revs),
             ..Recorder::default()
         };
         {
@@ -3214,6 +3311,7 @@ impl Surface {
                 .handle_dom_event(DomEvent::new(control, DomEventData::Click(click)));
             rec.label = None;
         }
+        self.revs = std::mem::take(&mut rec.revs);
         let mut events = std::mem::take(&mut rec.events);
         // What Blitz scrolled itself (an element's thumb dragged) is
         // painted again; an element's scrollbars show while the pointer is
@@ -3326,10 +3424,15 @@ impl Surface {
             && new != old
             && let Some(target) = self.id_of(id)
         {
+            let rev = self.rev(id);
             events.push(Event {
                 kind: "change",
                 target,
-                detail: Some(Detail::Value { value: new }),
+                detail: Some(Detail::Value {
+                    value: new,
+                    rev,
+                    sel: None,
+                }),
             });
         }
     }
@@ -3425,6 +3528,11 @@ struct Recorder {
     base: Option<url::Url>,
     /// A click on a label: its control, and the click to give it.
     label: Option<(NodeId, BlitzPointerEvent)>,
+    /// The controls' revs (Surface::revs), lent while Blitz runs.
+    revs: BTreeMap<NodeId, i64>,
+    /// Radio buttons clicked while checked already: Blitz checks them
+    /// again, which changes nothing the program hears of.
+    was_checked: Vec<NodeId>,
 }
 
 impl EventHandler for &mut Recorder {
@@ -3470,6 +3578,19 @@ impl EventHandler for &mut Recorder {
                 }
                 if !matches!(event.data, DomEventData::Click(_)) {
                     return;
+                }
+                let radio = |id: NodeId| {
+                    tag(id) == "input"
+                        && attr(id, "type").is_some_and(|t| t.eq_ignore_ascii_case("radio"))
+                };
+                let checked = |id: NodeId| {
+                    doc.get_node(id)
+                        .and_then(|n| n.element_data())
+                        .and_then(|e| e.checkbox_input_checked())
+                        == Some(true)
+                };
+                if radio(event.target) && checked(event.target) {
+                    self.was_checked.push(event.target);
                 }
                 for &id in chain {
                     let t = tag(id);
@@ -3527,8 +3648,14 @@ impl EventHandler for &mut Recorder {
             DomEventData::Scroll(_) => self.scrolled.push(event.target),
             DomEventData::Input(input) => {
                 let id = event.target;
+                if self.was_checked.contains(&id) {
+                    return;
+                }
+                // Each change the user makes is one more of the control's
+                // rev, a radio button's group's (SPEC §6.4).
+                let rev = field::bump(&mut self.revs, &doc, id);
                 let Some(target) = attr(id, "id") else { return };
-                let ty = attr(id, "type");
+                let ty = attr(id, "type").map(|t| t.to_ascii_lowercase());
                 match ty.as_deref() {
                     Some("checkbox") | Some("radio") => {
                         let checked = doc
@@ -3541,17 +3668,28 @@ impl EventHandler for &mut Recorder {
                             target,
                             detail: Some(Detail::Checked {
                                 checked,
-                                value: attr(id, "value"),
+                                value: Some(attr(id, "value").unwrap_or_else(|| "on".to_string())),
+                                rev,
                             }),
                         });
                     }
-                    _ if wants(id, "input") => self.events.push(Event {
-                        kind: "input",
-                        target,
-                        detail: Some(Detail::Value {
-                            value: input.value.clone(),
-                        }),
-                    }),
+                    _ if wants(id, "input") => {
+                        // With `data-on~=caret`, where the edit left the
+                        // selection (SPEC §9).
+                        let sel = wants(id, "caret")
+                            .then(|| doc.text_input_selection(id))
+                            .flatten()
+                            .map(|(_, a, f)| (a as i64, f as i64));
+                        self.events.push(Event {
+                            kind: "input",
+                            target,
+                            detail: Some(Detail::Value {
+                                value: input.value.clone(),
+                                rev,
+                                sel,
+                            }),
+                        });
+                    }
                     _ => {}
                 }
             }

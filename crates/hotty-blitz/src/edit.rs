@@ -167,3 +167,17 @@ pub(crate) fn chars(s: &str) -> usize {
 pub(crate) fn byte_at(s: &str, i: usize) -> usize {
     s.grapheme_indices(true).nth(i).map_or(s.len(), |(b, _)| b)
 }
+
+/// Byte `b` of `s`, a code point's start, moved back to the start of the
+/// character it falls in (SPEC §6.4: a selection's end inside a grapheme
+/// cluster moves to its start); the end of `s` stays.
+pub(crate) fn cluster_start(s: &str, b: usize) -> usize {
+    if b >= s.len() {
+        return s.len();
+    }
+    s.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= b)
+        .last()
+        .unwrap_or(0)
+}

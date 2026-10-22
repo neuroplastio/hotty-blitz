@@ -3173,11 +3173,12 @@ fn a_text_fields_caret_blinks_then_stays_on() {
     h.animate(due);
     render(&mut h);
     assert_ne!(h.frame("f").unwrap().rgba, typed, "off");
-    // A key while it is off shows it at once.
+    // A key while it is off shows it at once. The caret is at the end,
+    // where it started (SPEC §10.2) and typing left it.
     let out = h.key(
         "f",
         &Key {
-            name: KeyName::Right,
+            name: KeyName::Left,
             names: Vec::new(),
             mods: Mods::default(),
         },
@@ -3186,7 +3187,7 @@ fn a_text_fields_caret_blinks_then_stays_on() {
     h.key(
         "f",
         &Key {
-            name: KeyName::Left,
+            name: KeyName::Right,
             names: Vec::new(),
             mods: Mods::default(),
         },
@@ -3443,10 +3444,11 @@ fn a_select_picks_with_keys_repaints_as_a_full_paint_and_submits_its_pick() {
     render(&mut inc);
     inc.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "env")], ""));
     render(&mut inc);
-    // Down passes over the disabled option; the pick is heard at once.
+    // Down passes over the disabled option; the pick is heard at once, one
+    // more of the select's rev (SPEC §6.4).
     let out = named(&mut inc, "f", KeyName::Down);
     assert!(out.consumed);
-    let value = r#"{"value":"dev"}"#.to_string();
+    let value = r#"{"rev":1,"value":"dev"}"#.to_string();
     assert_eq!(
         events(&out.effects),
         vec![
@@ -3529,10 +3531,10 @@ fn a_select_picks_by_its_labels_first_letters_going_round() {
     assert_eq!(
         picks,
         [
-            r#"{"value":"avocado"}"#,
-            r#"{"value":"apple"}"#,
-            r#"{"value":"c"}"#,
-            r#"{"value":"banana"}"#,
+            r#"{"rev":1,"value":"avocado"}"#,
+            r#"{"rev":2,"value":"apple"}"#,
+            r#"{"rev":3,"value":"c"}"#,
+            r#"{"rev":4,"value":"banana"}"#,
         ]
     );
 }
@@ -3846,4 +3848,98 @@ fn copying_goes_by_either_name() {
     assert_eq!(h.copy_key("ctrl+key_c", "ctrl+c"), CopyKey::Other);
     assert_eq!(h.copy_key("", "ctrl+c"), copy);
     assert_eq!(h.copy_key("", ""), CopyKey::None);
+}
+
+/// A `caret` goes at most once a frame (SPEC §9): a second move in one
+/// frame waits for the next, which tells where the selection is then, and
+/// one that comes back to where the program last heard sends none.
+#[test]
+fn a_caret_goes_at_most_once_a_frame() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        "<input id=q value=abc data-on=caret>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "2")],
+        "",
+    ));
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "q")], ""));
+    render(&mut h);
+    h.take_events();
+    let caret = |sel: &str| {
+        vec![(
+            "caret".to_string(),
+            "q".to_string(),
+            format!(r#"{{"rev":0,"sel":{sel}}}"#),
+        )]
+    };
+    let out = named(&mut h, "f", KeyName::Left);
+    assert_eq!(events(&out.effects), caret("[2,2]"));
+    let out = named(&mut h, "f", KeyName::Left);
+    assert!(
+        events(&out.effects).is_empty(),
+        "{:?}",
+        events(&out.effects)
+    );
+    assert!(h.has_dirty(), "the caret held back asks for a frame");
+    render(&mut h);
+    assert_eq!(events(&h.take_events()), caret("[1,1]"));
+    render(&mut h);
+    assert!(events(&h.take_events()).is_empty());
+    let out = named(&mut h, "f", KeyName::Left);
+    assert_eq!(events(&out.effects), caret("[0,0]"));
+    for name in [KeyName::Right, KeyName::Left] {
+        let out = named(&mut h, "f", name);
+        assert!(events(&out.effects).is_empty());
+    }
+    render(&mut h);
+    assert!(
+        events(&h.take_events()).is_empty(),
+        "back where the program heard"
+    );
+}
+
+/// A radio button the user checks again changes nothing (SPEC §6.4, §9):
+/// no `change`, and its group's rev stays.
+#[test]
+fn a_checked_radio_checked_again_sends_nothing() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "f")],
+        "<input type=radio name=g id=a value=1><input type=radio name=g id=b value=2>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "2")],
+        "",
+    ));
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "b")], ""));
+    let out = named(&mut h, "f", KeyName::Space);
+    assert_eq!(
+        events(&out.effects),
+        vec![(
+            "change".into(),
+            "b".into(),
+            r#"{"checked":true,"rev":1,"value":"2"}"#.into()
+        )]
+    );
+    let out = named(&mut h, "f", KeyName::Space);
+    assert!(
+        events(&out.effects).is_empty(),
+        "{:?}",
+        events(&out.effects)
+    );
+    // The rev is still 1: a=field made against it checks the other.
+    let field = |rev: i64| {
+        let body =
+            rmp_serde::to_vec_named(&serde_json::json!({"rev": rev, "checked": true})).unwrap();
+        Message::new(
+            [("a", "field"), ("s", "f"), ("t", "a"), ("q", "0")]
+                .into_iter()
+                .collect(),
+            body,
+        )
+    };
+    let r = replies(&h.handle(&field(1)));
+    assert_eq!(r[0].get("a"), Some("ok"), "{r:?}");
 }

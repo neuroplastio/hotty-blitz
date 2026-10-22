@@ -29,7 +29,9 @@ impl DeltaError {
 
 /// Applies one delta. `touch` is called with the document as it was before
 /// the change, for every node whose painted area the delta may change, so
-/// the caller can repaint only those (see paint.rs).
+/// the caller can repaint only those (see paint.rs). `gone` gets every node
+/// the delta drops: Blitz may give its id to a node the delta makes, which
+/// is another element (SPEC §6.4: a control's `rev` starts again).
 #[allow(clippy::too_many_arguments)]
 pub fn apply(
     doc: &mut BaseDocument,
@@ -39,6 +41,7 @@ pub fn apply(
     key: Option<&str>,
     payload: &str,
     touch: &mut dyn FnMut(&BaseDocument, NodeId),
+    gone: &mut Vec<NodeId>,
 ) -> Result<(), DeltaError> {
     let parent = |doc: &BaseDocument, id: NodeId| doc.get_node(id).and_then(|n| n.parent);
     let find = |doc: &BaseDocument, id: Option<&str>| -> Result<NodeId, DeltaError> {
@@ -83,12 +86,12 @@ pub fn apply(
                 let mut m = doc.mutate();
                 if elements.len() == 1 {
                     // The morph touches exactly what it changes.
-                    morph_node(&mut m, t, scratch, elements[0], touch);
+                    morph_node(&mut m, t, scratch, elements[0], touch, gone);
                 } else {
                     let built: Vec<NodeId> =
                         frag.iter().map(|&k| build(&mut m, scratch, k)).collect();
                     m.insert_nodes_before(t, &built);
-                    m.remove_and_drop_node(t);
+                    drop_node(&mut m, t, gone);
                 }
                 Ok(())
             }
@@ -104,7 +107,7 @@ pub fn apply(
                     };
                     match m.doc.get_element_by_id(&id) {
                         Some(old) => {
-                            morph_node(&mut m, old, scratch, k, touch);
+                            morph_node(&mut m, old, scratch, k, touch, gone);
                         }
                         None => missing.push(id),
                     }
@@ -121,7 +124,7 @@ pub fn apply(
             let t = find(doc, target)?;
             let frag = parse(scratch, payload, &context(doc, t, true));
             let mut m = doc.mutate();
-            morph_children(&mut m, t, scratch, &frag, touch);
+            morph_children(&mut m, t, scratch, &frag, touch, gone);
             Ok(())
         }
         "replace" => {
@@ -134,7 +137,7 @@ pub fn apply(
             let mut m = doc.mutate();
             let built: Vec<NodeId> = frag.iter().map(|&k| build(&mut m, scratch, k)).collect();
             m.insert_nodes_before(t, &built);
-            m.remove_and_drop_node(t);
+            drop_node(&mut m, t, gone);
             Ok(())
         }
         "append" | "prepend" => {
@@ -150,7 +153,7 @@ pub fn apply(
                     .filter(|&old| m.parent_id(old) == Some(t));
                 match existing {
                     Some(old) => {
-                        morph_node(&mut m, old, scratch, k, touch);
+                        morph_node(&mut m, old, scratch, k, touch, gone);
                     }
                     None => fresh.push(build(&mut m, scratch, k)),
                 }
@@ -183,7 +186,7 @@ pub fn apply(
             if let Some(p) = parent(doc, t) {
                 touch(doc, p);
             }
-            doc.mutate().remove_and_drop_node(t);
+            drop_node(&mut doc.mutate(), t, gone);
             Ok(())
         }
         "attr" => {
@@ -214,6 +217,9 @@ pub fn apply(
             if kids.len() == 1 && m.doc.get_node(kids[0]).is_some_and(|n| n.is_text_node()) {
                 m.set_node_text(kids[0], payload);
             } else {
+                for &k in &kids {
+                    gone.extend(subtree(m.doc, k));
+                }
                 m.remove_and_drop_all_children(t);
                 let text = m.create_text_node(payload);
                 m.append_children(t, &[text]);
@@ -234,6 +240,24 @@ pub fn apply(
         }
         other => Err(DeltaError::new("EINVAL", format!("unknown op={other}"))),
     }
+}
+
+/// Removes and drops `id` and what it holds, each of them in `gone`.
+fn drop_node(m: &mut DocumentMutator<'_>, id: NodeId, gone: &mut Vec<NodeId>) {
+    m.remove_and_drop_node_with(id, &mut |n| gone.push(n));
+}
+
+/// `id` and every node under it.
+fn subtree(doc: &BaseDocument, id: NodeId) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    let mut stack = vec![id];
+    while let Some(n) = stack.pop() {
+        out.push(n);
+        if let Some(node) = doc.get_node(n) {
+            stack.extend(node.children.iter().copied());
+        }
+    }
+    out
 }
 
 pub fn qual(name: &str) -> QualName {
@@ -348,6 +372,7 @@ pub fn morph_node(
     scratch: &BaseDocument,
     new: NodeId,
     touch: &mut dyn FnMut(&BaseDocument, NodeId),
+    gone: &mut Vec<NodeId>,
 ) -> NodeId {
     match (shape(m.doc, old), shape(scratch, new)) {
         (Shape::Text(a), Shape::Text(b)) => {
@@ -366,7 +391,7 @@ pub fn morph_node(
                 .get_node(new)
                 .map(|n| n.children.to_vec())
                 .unwrap_or_default();
-            morph_children(m, old, scratch, &kids, touch);
+            morph_children(m, old, scratch, &kids, touch, gone);
             old
         }
         _ => {
@@ -376,7 +401,7 @@ pub fn morph_node(
             }
             let built = build(m, scratch, new);
             m.insert_nodes_before(old, &[built]);
-            m.remove_and_drop_node(old);
+            drop_node(m, old, gone);
             built
         }
     }
@@ -436,6 +461,7 @@ pub fn morph_children(
     scratch: &BaseDocument,
     new_kids: &[NodeId],
     touch: &mut dyn FnMut(&BaseDocument, NodeId),
+    gone: &mut Vec<NodeId>,
 ) {
     let old_kids = m.child_ids(old_parent).to_vec();
     let new_ids: HashSet<String> = new_kids
@@ -490,7 +516,7 @@ pub fn morph_children(
     }
     for &ok in &old_kids {
         if !used.contains(&ok) {
-            m.remove_and_drop_node(ok);
+            drop_node(m, ok, gone);
         }
     }
     // Morph the kept nodes, build the new ones, and put everything in order
@@ -499,7 +525,7 @@ pub fn morph_children(
         // A kept node of another kind (an id moved to another tag) is
         // replaced, and its replacement is what goes in order.
         let want = match keep {
-            Some(ok) => morph_node(m, ok, scratch, nk, touch),
+            Some(ok) => morph_node(m, ok, scratch, nk, touch, gone),
             None => build(m, scratch, nk),
         };
         let current = m.child_ids(old_parent);

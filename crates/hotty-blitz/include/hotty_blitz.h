@@ -91,8 +91,9 @@ void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
  * changed what the capabilities say; fit events (SPEC 5.2: a surface with
  * f=1 hears the rows its document needs), with the rows of the last frame
  * drawn, and view events (SPEC 9.5: which elements with data-on~=view are in
- * view), with what it shows, at most one of each per surface; and, through
- * fx->remove, the surfaces a panic cost (above). Call after
+ * view), with what it shows, at most one of each per surface; a caret
+ * event (SPEC 9) held back to this frame, as a field hears one at most a
+ * frame; and, through fx->remove, the surfaces a panic cost (above). Call after
  * hotty_host_render. */
 void hotty_host_events(hotty_host *h, const hotty_effects *fx);
 /* Full reset (RIS): every surface goes, with the program's menus and the

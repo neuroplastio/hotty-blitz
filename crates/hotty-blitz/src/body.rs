@@ -54,13 +54,22 @@ pub enum Detail {
         mods: Option<u8>,
     },
     /// `change` of a checkbox or a radio button: whether it is checked,
-    /// and its `value` attribute.
+    /// its `value` attribute, and the control's rev (SPEC §6.4).
     Checked {
         checked: bool,
         value: Option<String>,
+        rev: i64,
     },
-    /// `change` of any other control, and `input`.
-    Value { value: String },
+    /// `change` of any other control, and `input`: the value, the
+    /// control's rev, and an `input`'s selection with data-on~=caret, as
+    /// UTF-8 byte offsets [anchor, caret].
+    Value {
+        value: String,
+        rev: i64,
+        sel: Option<(i64, i64)>,
+    },
+    /// `caret` (§9): the selection the user moved, and the field's rev.
+    Caret { sel: (i64, i64), rev: i64 },
     /// `submit`: the form's fields, each its name and its value, in tree
     /// order.
     Fields { fields: Vec<(String, String)> },
@@ -153,11 +162,24 @@ pub fn event(kind: &str, surface: Option<&str>, target: &str, detail: Option<&De
             e.area = a.as_ref().map(area);
             e.mods = mods(m);
         }
-        Detail::Checked { checked, value } => {
+        Detail::Checked {
+            checked,
+            value,
+            rev,
+        } => {
             e.checked = Some(*checked);
             e.value = value.clone();
+            e.rev = Some(*rev);
         }
-        Detail::Value { value } => e.value = Some(value.clone()),
+        Detail::Value { value, rev, sel } => {
+            e.value = Some(value.clone());
+            e.rev = Some(*rev);
+            e.sel = *sel;
+        }
+        Detail::Caret { sel, rev } => {
+            e.sel = Some(*sel);
+            e.rev = Some(*rev);
+        }
         Detail::Fields { fields } => e.fields = Some(fields.clone()),
         Detail::Drag {
             c,

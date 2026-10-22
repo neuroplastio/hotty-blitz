@@ -262,6 +262,8 @@ pub struct Host {
     /// `view` events renders found (SPEC §9.5), at most one per surface:
     /// what the last frame drawn shows.
     views: Vec<(String, body::View)>,
+    /// `caret` events held back to the next frame (SPEC §9), now sent.
+    carets: Vec<Effect>,
     /// The wheel gesture under way (SPEC §5.3): where its first wheel sent
     /// it, which the rest of it follows.
     gesture: Option<Gesture>,
@@ -482,6 +484,7 @@ impl Host {
             click_run: None,
             fits: Vec::new(),
             views: Vec::new(),
+            carets: Vec::new(),
             gesture: None,
             finger: None,
             cells_finger: None,
@@ -1055,6 +1058,10 @@ impl Host {
         let dark = self.config.theme.dark;
         let now = std::time::Instant::now();
         for (name, s) in self.surfaces.iter_mut() {
+            // A new frame: a `caret` held back to one a frame (SPEC §9).
+            if let Some(e) = s.new_frame() {
+                self.carets.push(Effect::Reply(e.encode(name)));
+            }
             // A scroll came to rest: the `view` it held back (SPEC §9.5).
             if view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
                 s.dirty = true;
@@ -1119,9 +1126,9 @@ impl Host {
     /// The events rendering and the terminal's settings produced, for the
     /// program: `caps` (SPEC §4, §9) after the terminal's font, theme or
     /// other settings changed what its capabilities say, `fit` (SPEC §5.2),
-    /// with the rows of the last frame drawn, and `view` (§9.5), with what
-    /// it shows, at most one each per surface. Take them after
-    /// [`Host::render_dirty`].
+    /// with the rows of the last frame drawn, `view` (§9.5), with what it
+    /// shows, at most one each per surface, and a `caret` (§9) held back
+    /// to this frame. Take them after [`Host::render_dirty`].
     pub fn take_events(&mut self) -> Vec<Effect> {
         let lost = std::mem::take(&mut self.lost);
         let owed = std::mem::take(&mut self.owed);
@@ -1156,9 +1163,11 @@ impl Host {
                 Effect::Reply(e.encode(&name))
             });
         let menu = std::mem::take(&mut self.menu.effects);
+        let carets = std::mem::take(&mut self.carets);
         lost.into_iter()
             .chain(menu)
             .chain(owed)
+            .chain(carets)
             .chain(fits)
             .chain(views)
             .collect()
@@ -1584,6 +1593,25 @@ impl Host {
                     }
                     s.dirty = true;
                 }
+                Ok((Vec::new(), None))
+            }
+            // The program changes a control as the user would, unless the
+            // user changed it since (SPEC §6.4). Nothing is heard of it.
+            "field" => {
+                let name = surface_name()?.to_string();
+                let s = self
+                    .surfaces
+                    .get_mut(&name)
+                    .ok_or(("ENOENT", format!("no surface {name}")))?;
+                if s.is_detached() {
+                    return Err(("EDETACHED", format!("surface {name} is detached")));
+                }
+                let t = cmd.get("t").unwrap_or_default();
+                if !t.is_empty() && !s.has_element(t) {
+                    return Err(("ENOTARGET", t.to_string()));
+                }
+                let change = hotty::host::field_of(cmd).map_err(|e| ("EINVAL", e.detail))?;
+                s.field(t, &change, cmd)?;
                 Ok((Vec::new(), None))
             }
             // The edit commands the program takes (SPEC §10.6), where the
