@@ -159,9 +159,11 @@ def main():
                 return e.get("detail") or {}
         return None
 
-    expect(detail("change", "name") == {"value": "hello"}, f"change name=hello, got {detail('change', 'name')}")
-    expect(detail("change", "email") == {"value": "a@b.c"}, f"change email, got {detail('change', 'email')}")
-    expect((detail("change", "notify") or {}).get("checked") is True, f"notify checked, got {detail('change', 'notify')}")
+    # Each typed character is one edit, so five make rev 5 (SPEC §6.4).
+    expect(detail("change", "name") == {"value": "hello", "rev": 5}, f"change name=hello, got {detail('change', 'name')}")
+    expect(detail("change", "email") == {"value": "a@b.c", "rev": 5}, f"change email, got {detail('change', 'email')}")
+    notify = detail("change", "notify") or {}
+    expect(notify.get("checked") is True and notify.get("rev") == 1, f"notify checked at rev 1, got {notify}")
     toggles = [e for e in ev if e.get("e") == "change" and e.get("t") == "notify"]
     expect(len(toggles) == 1, f"only the left click toggles notify, got {toggles}")
     expect(alt_events == [], f"an Alt click reached the surface: {alt_events}")
