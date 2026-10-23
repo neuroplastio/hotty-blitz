@@ -3,6 +3,8 @@
 
 mod common;
 
+use base64::Engine as _;
+use base64::prelude::BASE64_STANDARD;
 use common::read_body;
 use hotty::host::{Output, Splitter};
 use hotty::{Control, Message};
@@ -749,10 +751,12 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         for (k, v) in ctl.as_object().unwrap() {
             control.set(k, v.as_str().unwrap());
         }
-        // Text, or a msgpack body written from its JSON, its floats floats.
-        let payload = match step.get("body") {
-            Some(body) => rmp_serde::to_vec_named(body).unwrap(),
-            None => step
+        // Text, bytes that are not UTF-8, or a msgpack body written from
+        // its JSON, its floats floats.
+        let payload = match (step.get("body"), step.get("payload_b64")) {
+            (Some(body), _) => rmp_serde::to_vec_named(body).unwrap(),
+            (None, Some(b64)) => BASE64_STANDARD.decode(b64.as_str().unwrap()).unwrap(),
+            (None, None) => step
                 .get("payload")
                 .and_then(Value::as_str)
                 .unwrap_or("")
