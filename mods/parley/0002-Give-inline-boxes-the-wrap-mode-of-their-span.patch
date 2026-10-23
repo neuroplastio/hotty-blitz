@@ -1,0 +1,276 @@
+From bf88fc8e6603f21a4df6f54e93d42630826c1329 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 23 Oct 2026 21:45:09 +0200
+Subject: [PATCH] Give inline boxes the wrap mode of their span
+
+The line breaker and the content widths measurer track `text_wrap_mode`
+from text clusters only, so an inline box took the mode of whatever text
+came before it, or `Wrap` when none did. Boxes in a `nowrap` span could
+be broken between, a `nowrap` paragraph of boxes had the min-content
+width of its widest box, and boxes in a span that wraps, inside a
+`nowrap` paragraph, never wrapped.
+
+A box now takes the mode of the span containing it, from its
+`parent_style_index`. As with text, the content before a box decides
+whether the line may break before it, and the box's own span whether it
+may break after it. When a box overflows and the content before it
+doesn't allow a break, the line falls back to an earlier opportunity, as
+text does, and a box placed after wrapping content marks the opportunity
+before it, so a `nowrap` run of boxes moves to the next line whole.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ parley/src/layout/data.rs            | 22 ++++++--
+ parley/src/layout/line_break.rs      | 79 ++++++++++++++++++++-------
+ parley_tests/tests/content_widths.rs | 82 +++++++++++++++++++++++++++-
+ 3 files changed, 157 insertions(+), 26 deletions(-)
+
+diff --git a/parley/src/layout/data.rs b/parley/src/layout/data.rs
+index 9a015c6..22091af 100644
+--- a/parley/src/layout/data.rs
++++ b/parley/src/layout/data.rs
+@@ -397,7 +397,12 @@ impl ContentWidthsMeasurer {
+                     }
+                 }
+                 LayoutItemKind::InlineBox => {
+-                    self.measure_inline_box(&layout_data.inline_boxes[item.index].inline_box);
++                    let layout_box = &layout_data.inline_boxes[item.index];
++                    let text_wrap_mode = layout_data
++                        .styles
++                        .get(usize::from(layout_box.parent_style_index))
++                        .map_or(TextWrapMode::Wrap, |style| style.text_wrap_mode);
++                    self.measure_inline_box(&layout_box.inline_box, text_wrap_mode);
+                 }
+             }
+         }
+@@ -528,17 +533,24 @@ impl ContentWidthsMeasurer {
+         }
+     }
+ 
+-    fn measure_inline_box(&mut self, inline_box: &InlineBox) {
++    /// `text_wrap_mode` is the mode of the span containing the box. As with text, the content
++    /// before the box decides whether the line may break before it, and the box's own span
++    /// whether it may break after it: boxes in a `nowrap` span stay together, wherever the
++    /// paragraph's text sets the mode.
++    fn measure_inline_box(&mut self, inline_box: &InlineBox, text_wrap_mode: TextWrapMode) {
+         if inline_box.kind == InlineBoxKind::InFlow {
+             self.running_max_width += inline_box.width;
+             if self.text_wrap_mode == TextWrapMode::Wrap {
+                 self.min_width = self
+                     .min_width
+                     .max(self.running_min_width - self.running_hanging_whitespace);
+-                self.min_width = self.min_width.max(inline_box.width);
+                 self.running_min_width = 0.0;
+-            } else {
+-                self.running_min_width += inline_box.width;
++            }
++            self.running_min_width += inline_box.width;
++            self.text_wrap_mode = text_wrap_mode;
++            if text_wrap_mode == TextWrapMode::Wrap {
++                self.min_width = self.min_width.max(self.running_min_width);
++                self.running_min_width = 0.0;
+             }
+             // Inline boxes don't hang.
+             self.running_hanging_whitespace = 0.0;
+diff --git a/parley/src/layout/line_break.rs b/parley/src/layout/line_break.rs
+index b012107..5b71163 100644
+--- a/parley/src/layout/line_break.rs
++++ b/parley/src/layout/line_break.rs
+@@ -944,7 +944,15 @@ impl<'a, B: Brush> BreakLines<'a, B> {
+ 
+             match item.kind {
+                 LayoutItemKind::InlineBox => {
+-                    let inline_box = &self.layout.data.inline_boxes[item.index].inline_box;
++                    let layout_box = &self.layout.data.inline_boxes[item.index];
++                    let inline_box = &layout_box.inline_box;
++                    // The mode of the span containing the box, which has no style of its own.
++                    let text_wrap_mode = self
++                        .layout
++                        .data
++                        .styles
++                        .get(usize::from(layout_box.parent_style_index))
++                        .map_or(TextWrapMode::Wrap, |style| style.text_wrap_mode);
+ 
+                     // In-flow boxes are aligned relative to their containing style's span box
+                     // (see `append_aligned_inline_box_to_line`). Out-of-flow boxes are not in-flow
+@@ -978,30 +986,61 @@ impl<'a, B: Brush> BreakLines<'a, B> {
+                         return self.max_height_break_data(height_contribution);
+                     }
+ 
+-                    // If the box fits on the current line (or we are at the start of the current line)
+-                    // then simply move on to the next item
+-                    if next_x <= max_advance || self.state.line.text_wrap_mode != TextWrapMode::Wrap
+-                    {
++                    // There is a soft wrap opportunity on each side of an inline box. As with
++                    // text, the content before the box decides whether the line may break
++                    // before it, and the box's own span whether it may break after it, so the
++                    // boxes of a `nowrap` span stay together.
++                    let wrap_before = self.state.line.text_wrap_mode == TextWrapMode::Wrap;
++                    let wrap_after = text_wrap_mode == TextWrapMode::Wrap;
++
++                    // If the box fits on the current line then simply move on to the next item
++                    if next_x <= max_advance {
+                         // println!("BOX FITS");
+ 
++                        if wrap_before && self.state.line.x != 0.0 {
++                            self.state.mark_line_break_opportunity();
++                        }
+                         self.append_layout_inline_box(item.index, next_x);
+-
+-                        // There is a soft wrap opportunity after an inline box, unless wrapping
+-                        // is disabled
+-                        if self.state.line.text_wrap_mode == TextWrapMode::Wrap {
++                        self.state.line.text_wrap_mode = text_wrap_mode;
++                        if wrap_after {
++                            self.state.mark_line_break_opportunity();
++                        }
++                    }
++                    // If we're at the start of the line, this box will never fit, so consume it and accept the overflow.
++                    else if self.state.line.x == 0.0 {
++                        // println!("BOX EMERGENCY BREAK");
++                        self.append_layout_inline_box(item.index, next_x);
++                        self.state.line.text_wrap_mode = text_wrap_mode;
++                        if wrap_after {
++                            return self.start_new_line(
++                                BreakReason::Emergency,
++                                max_advance,
++                                line_indent,
++                            );
++                        }
++                    } else if wrap_before {
++                        // println!("BOX BREAK");
++                        return self.start_new_line(BreakReason::Regular, max_advance, line_indent);
++                    }
++                    // Otherwise take an opportunity marked earlier in the line, as text does
++                    else if let Some(prev) = self.state.prev_boundary.take() {
++                        self.state.reset_to(prev);
++                        return self.start_new_line(BreakReason::Regular, max_advance, line_indent);
++                    } else if let Some(prev_emergency) = self.state.emergency_boundary.take() {
++                        self.state.reset_to(prev_emergency);
++                        return self.start_new_line(
++                            BreakReason::Emergency,
++                            max_advance,
++                            line_indent,
++                        );
++                    }
++                    // or, with none, accept the overflow
++                    else {
++                        self.append_layout_inline_box(item.index, next_x);
++                        self.state.line.text_wrap_mode = text_wrap_mode;
++                        if wrap_after {
+                             self.state.mark_line_break_opportunity();
+                         }
+-                    } else {
+-                        // If we're at the start of the line, this box will never fit, so consume it and accept the overflow.
+-                        let reason = if self.state.line.x == 0.0 {
+-                            // println!("BOX EMERGENCY BREAK");
+-                            self.append_layout_inline_box(item.index, next_x);
+-                            BreakReason::Emergency
+-                        } else {
+-                            // println!("BOX BREAK");
+-                            BreakReason::Regular
+-                        };
+-                        return self.start_new_line(reason, max_advance, line_indent);
+                     }
+                 }
+                 LayoutItemKind::TextRun => {
+diff --git a/parley_tests/tests/content_widths.rs b/parley_tests/tests/content_widths.rs
+index 034cc8a..b810e23 100644
+--- a/parley_tests/tests/content_widths.rs
++++ b/parley_tests/tests/content_widths.rs
+@@ -7,7 +7,8 @@ use crate::util::TestEnv;
+ use crate::{test_name, util::ColorBrush};
+ use parley::{
+     Alignment, AlignmentOptions, ContentWidths, InlineBox, InlineBoxKind, Layout, LineBreak,
+-    StyleProperty, TextWrapMode, VerticalAlign, WhiteSpaceCollapse,
++    PositionedLayoutItem, StyleProperty, TextWrapMode, TreeBuilder, VerticalAlign,
++    WhiteSpaceCollapse,
+ };
+ 
+ /// Checks that calculated content widths agree with actual line breaking.
+@@ -347,3 +348,82 @@ fn content_widths_trailing_whitespace_by_collapse_mode() {
+         widths.max,
+     );
+ }
++
++/// Pushes three in-flow boxes, 10 wide.
++fn push_three_boxes(builder: &mut TreeBuilder<'_, ColorBrush>) {
++    for id in 0..3 {
++        builder.push_inline_box(InlineBox {
++            id,
++            kind: InlineBoxKind::InFlow,
++            index: 0,
++            width: 10.0,
++            height: 10.0,
++            baseline: None,
++            vertical_align: VerticalAlign::BASELINE,
++        });
++    }
++}
++
++#[test]
++fn content_widths_inline_boxes_follow_their_span_wrap_mode() {
++    let mut env = TestEnv::new(test_name!(), None);
++
++    // Boxes in a `nowrap` span stay together, though no text has set the mode.
++    let mut builder = env.tree_builder();
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::NoWrap)]);
++    push_three_boxes(&mut builder);
++    builder.pop_style_span();
++    let (mut layout, _) = builder.build();
++    let widths = assert_content_widths_match_layout(&mut layout);
++    assert!(
++        (widths.min - 30.0).abs() < 1e-3,
++        "Min content width {} should be the three boxes' width",
++        widths.min
++    );
++    assert_eq!(layout.len(), 1, "the boxes stay on one line");
++
++    // Boxes in a span that wraps, in a paragraph that doesn't, may be broken between.
++    let mut builder = env.tree_builder();
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::NoWrap)]);
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::Wrap)]);
++    push_three_boxes(&mut builder);
++    builder.pop_style_span();
++    builder.pop_style_span();
++    let (mut layout, _) = builder.build();
++    let widths = assert_content_widths_match_layout(&mut layout);
++    assert!(
++        (widths.min - 10.0).abs() < 1e-3,
++        "Min content width {} should be one box's width",
++        widths.min
++    );
++    assert_eq!(layout.len(), 3, "one box per line");
++}
++
++#[test]
++fn inline_boxes_in_a_nowrap_span_move_to_the_next_line_together() {
++    let mut env = TestEnv::new(test_name!(), None);
++
++    let mut builder = env.tree_builder();
++    builder.push_text("A ");
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::NoWrap)]);
++    push_three_boxes(&mut builder);
++    builder.pop_style_span();
++    let (mut layout, text) = builder.build();
++    layout.break_all_lines(Some(35.0));
++
++    assert_eq!(layout.len(), 2, "the line breaks before the span");
++    assert_eq!(&text[layout.get(0).unwrap().text_range()], "A ");
++    let boxes = |line: usize| {
++        layout
++            .get(line)
++            .unwrap()
++            .items()
++            .filter(|item| matches!(item, PositionedLayoutItem::InlineBox(_)))
++            .count()
++    };
++    assert_eq!(
++        (boxes(0), boxes(1)),
++        (0, 3),
++        "all three boxes on the second line"
++    );
++}
+-- 
+2.56.0
+

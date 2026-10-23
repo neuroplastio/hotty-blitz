@@ -10,9 +10,10 @@ public: true
 Blitz lays out text with Parley, at the revision Blitz pins, which is our
 `base`. hotty-blitz draws hotty surfaces, often with a terminal's
 monospace font stack, and Parley chose a font for emoji in a way that drew
-them in monochrome there. We mod Parley rather than fork it so that the
-fix stays one change on the revision Blitz builds with, until Parley has
-its own.
+them in monochrome there. It also broke lines between inline boxes that
+`white-space: nowrap` keeps together. We mod Parley rather than fork it so
+that each fix stays one change on the revision Blitz builds with, until
+Parley has its own.
 
 In hotty-blitz, `make blitz`, which every build runs, sets up `../parley`:
 Parley at `base`, branch `hotty`, with the set applied. `Cargo.toml`'s `[patch]`
