@@ -1028,6 +1028,61 @@ fn the_pointer_shape_follows_the_document() {
     assert_eq!(h.cursor("nothing"), None);
 }
 
+/// `tr:hover` matches the row of the cell under the pointer, though Blitz
+/// lays a table's cells out as the table's own children (the patch in
+/// mods/blitz/hover-dom-ancestors.md), and the row repaints as a full paint
+/// draws it.
+#[test]
+fn a_table_row_is_hovered_with_the_cell_under_the_pointer() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        "<style>body{margin:0}table{border-spacing:0}td{width:100px;height:20px;padding:0}
+         tr:hover{background:#f00}</style>
+         <table><tr><td></td><td></td></tr><tr><td></td><td></td></tr></table>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "4")],
+        "",
+    ));
+    render(&mut h);
+    let page = pixel(&h, "x", 150, 10);
+    let red = [255, 0, 0];
+    assert_ne!(page, red);
+    let as_a_full_paint = |h: &mut Host| {
+        let partial = h.frame("x").unwrap().rgba.clone();
+        h.repaint();
+        render(h);
+        let differing = partial
+            .chunks(4)
+            .zip(h.frame("x").unwrap().rgba.chunks(4))
+            .filter(|(p, q)| p != q)
+            .count();
+        assert_eq!(differing, 0, "{differing} pixels differ from a full paint");
+    };
+
+    // Over the first row's first cell: the whole row, its other cell too.
+    h.pointer("x", PointerKind::Move, 50.0, 10.0, Mods::default());
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 50, 10), red, "the cell under the pointer");
+    assert_eq!(pixel(&h, "x", 150, 10), red, "the row's other cell");
+    assert_eq!(pixel(&h, "x", 150, 30), page, "the second row");
+    as_a_full_paint(&mut h);
+
+    // Down to the second row.
+    h.pointer("x", PointerKind::Move, 50.0, 30.0, Mods::default());
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 150, 10), page, "the first row, left");
+    assert_eq!(pixel(&h, "x", 150, 30), red, "the second row");
+    as_a_full_paint(&mut h);
+
+    // Off the table.
+    h.pointer("x", PointerKind::Leave, 0.0, 0.0, Mods::default());
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 150, 30), page, "no row");
+    as_a_full_paint(&mut h);
+}
+
 /// A page with the layout modes an incremental relayout has to get right:
 /// nested content-sized flex-wrap (measured many ways per pass), fractional
 /// widths (rounding), grid, a float, a table and absolutely positioned boxes.
