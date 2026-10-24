@@ -271,7 +271,7 @@ The spec doesn't name the font: a document can't count on it on another host.
 Chromium. The known gaps:
 - forms (`type=password` shows its text);
 - tables (captions, `colspan`);
-- `text-overflow: ellipsis`;
+- `text-overflow` on right-to-left lines (they clip);
 - container queries;
 - colour emoji;
 - 3D transforms.
