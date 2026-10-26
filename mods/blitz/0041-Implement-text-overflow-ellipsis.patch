@@ -1,4 +1,4 @@
-From d0dc419a38d368e7d0e448896ce9d06275e255bd Mon Sep 17 00:00:00 2001
+From afe2c653d01e70ad1ea84c7a56133f6069e9e935 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 24 Oct 2026 22:10:45 +0200
 Subject: [PATCH] Implement `text-overflow: ellipsis`
@@ -16,15 +16,19 @@ line's band at its last whole cluster or inline box, and the ellipsis
 is drawn right after it on the line's baseline. Each band runs from the
 previous line's bottom to its own, so tall glyphs are not cut.
 
+Rounding the layout to whole pixels can leave a box that was sized to
+its line up to a pixel short of it. A line overflows only when it runs
+past the unrounded edge as well, so rounding alone draws no ellipsis.
+
 Right-to-left lines still clip without an ellipsis.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  packages/blitz-dom/src/layout/construct.rs | 18 +++++
  packages/blitz-dom/src/node/text.rs        |  4 +
- packages/blitz-paint/src/render.rs         | 73 +++++++++++++++++-
- packages/blitz-paint/src/text.rs           | 86 +++++++++++++++++++++-
- 4 files changed, 179 insertions(+), 2 deletions(-)
+ packages/blitz-paint/src/render.rs         | 83 +++++++++++++++++++-
+ packages/blitz-paint/src/text.rs           | 89 +++++++++++++++++++++-
+ 4 files changed, 192 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
 index b35c95a3..53874e4e 100644
@@ -78,7 +82,7 @@ index e5b68e02..eb9c4c7b 100644
  
  impl TextLayout {
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 7d5cc3f9..d54df1a8 100644
+index 7d5cc3f9..542a2386 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
 @@ -16,7 +16,7 @@ use crate::filters::convert_filters;
@@ -102,7 +106,7 @@ index 7d5cc3f9..d54df1a8 100644
                              },
                          );
  
-@@ -907,6 +909,75 @@ impl ElementCx<'_, '_> {
+@@ -907,6 +909,85 @@ impl ElementCx<'_, '_> {
          }
      }
  
@@ -124,6 +128,10 @@ index 7d5cc3f9..d54df1a8 100644
 +        let layout = self.node.final_layout();
 +        let scroll = self.node.scroll_offset();
 +        let end = layout.content_box_width() * self.scale as f32;
++        // Rounding moves the box's edges to whole pixels, which can leave it
++        // short of the line it was sized to hold: a line overflows only past
++        // the unrounded edge too.
++        let unrounded = self.node.unrounded_layout().content_box_width() * self.scale as f32;
 +        let far = self.scale
 +            * (layout.size.width as f64
 +                + layout.size.height as f64
@@ -131,7 +139,13 @@ index 7d5cc3f9..d54df1a8 100644
 +                + scroll.y.abs())
 +            + (text_layout.layout.full_width() + text_layout.layout.height()) as f64
 +            + 1.0;
-+        let cuts = crate::text::text_overflow_cuts(&text_layout.layout, ellipsis, end, far)?;
++        let cuts = crate::text::text_overflow_cuts(
++            &text_layout.layout,
++            ellipsis,
++            end,
++            end.max(unrounded),
++            far,
++        )?;
 +        let transform =
 +            self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
 +        scene.push_clip_layer(transform, &cuts.visible);
@@ -179,7 +193,7 @@ index 7d5cc3f9..d54df1a8 100644
      /// `::selection` background or the default one, and whether a
      /// `::selection` style colours the text itself. A `::selection` that
 diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
-index 0cc895b7..80faebe3 100644
+index 0cc895b7..47410f57 100644
 --- a/packages/blitz-paint/src/text.rs
 +++ b/packages/blitz-paint/src/text.rs
 @@ -1,6 +1,6 @@
@@ -190,7 +204,7 @@ index 0cc895b7..80faebe3 100644
  use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
  use peniko::Fill;
  use std::collections::HashMap;
-@@ -562,6 +562,90 @@ fn flush_line_decorations(
+@@ -562,6 +562,93 @@ fn flush_line_decorations(
      }
  }
  
@@ -206,10 +220,13 @@ index 0cc895b7..80faebe3 100644
 +    pub(crate) ellipses: Vec<Vec2>,
 +}
 +
++/// A line overflows when it runs past `overflow`, and its ellipsis ends by
++/// `end`.
 +pub(crate) fn text_overflow_cuts(
 +    layout: &Layout<TextBrush>,
 +    ellipsis: &Layout<TextBrush>,
 +    end: f32,
++    overflow: f32,
 +    far: f64,
 +) -> Option<TextOverflowCuts> {
 +    if layout.is_rtl() {
@@ -233,7 +250,7 @@ index 0cc895b7..80faebe3 100644
 +            metrics.block_max_coord as f64
 +        };
 +        let line_end = metrics.offset + metrics.advance - metrics.hanging_advance;
-+        let right = if line_end > end + 0.5 {
++        let right = if line_end > overflow + 0.5 {
 +            let cut = cut_point(&line, limit);
 +            ellipses.push(Vec2::new(
 +                cut as f64,

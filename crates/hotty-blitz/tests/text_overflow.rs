@@ -2,7 +2,8 @@
 //! that runs past the end edge stops after its last whole cluster or
 //! inline-block that leaves room for the ellipsis, and the ellipsis follows
 //! it, inside the content box. Blitz had no ellipsis, so such a line was
-//! cut mid-glyph at the edge.
+//! cut mid-glyph at the edge. A line that fits its box until the box is
+//! rounded to whole pixels shows none.
 
 use hotty::Message;
 use hotty_blitz::{Config, Host, Metrics};
@@ -133,4 +134,26 @@ fn only_the_line_that_overflows_gets_an_ellipsis() {
         y0 >= top && y1 <= baseline + 1.0,
         "one ellipsis, on the second line's baseline ({top}..{baseline}px), not {y0}..{y1}px"
     );
+}
+
+#[test]
+fn a_line_that_fits_its_box_before_rounding_shows_no_ellipsis() {
+    // The flex item is as wide as its cap, 40.4px, ceiled to a device
+    // pixel. Its left edge at 10.55px rounds up and its right edge down,
+    // so its rounded box is 40px: short of the cap, but only by rounding.
+    for scale in [1.6, 2.0] {
+        let h = show(
+            scale,
+            &format!(
+                "<div style='display:flex'><i style='flex:none;width:10.55px'></i>\
+                   <span style='{ELLIPSIS};min-width:0'><b style='width:40.4px'></b></span></div>"
+            ),
+        );
+        assert_eq!(drawn(&h, scale, GREEN), None, "no ellipsis at {scale}x");
+        let (x0, _, x1, _) = drawn(&h, scale, RED).expect("the cap");
+        assert!(
+            x1 - x0 >= 39.0,
+            "the cap is drawn whole up to the clip at {scale}x, not {x0}..{x1}px"
+        );
+    }
 }

@@ -11,7 +11,9 @@ up to the last one that leaves room for the ellipsis, and the ellipsis
 sits right after it on the line's baseline. Inline layout shapes the
 ellipsis in the root's style, and painting draws the line under a clip
 that ends there. Stylo already computed the property, but nothing drew
-it, so such a line was cut mid-glyph at the edge. Right-to-left lines
+it, so such a line was cut mid-glyph at the edge. A line overflows only
+past the box's unrounded edge too, since rounding to whole pixels can
+leave a box sized to its line a pixel short of it. Right-to-left lines
 still clip without one.
 
 **Why we carry it:** the UI kit keeps one-line labels with `nowrap`,
