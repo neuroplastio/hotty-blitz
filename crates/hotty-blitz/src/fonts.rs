@@ -1,11 +1,13 @@
-//! The font a host ships: AdwaitaMono Nerd Font Propo, Regular and Bold
-//! (fonts/, OFL-1.1, its icon sets' licences in fonts/NOTICE.txt). It is the
-//! first `monospace` font, so a document draws alike on every system, and the
-//! second of every other text family: after the system's choice, before the
-//! fonts fontconfig lists after it. A symbol the system's font lacks, and
-//! every Nerd Font icon, draws from it, and not from whichever Nerd Font the
-//! system has next (a plain one draws an icon past its cell, over the next
-//! letter). The Propo faces keep an icon at its own width.
+//! The font a host ships: AdwaitaMono Nerd Font Propo, Regular, Bold, Italic
+//! and Bold Italic (fonts/, OFL-1.1, its icon sets' licences in
+//! fonts/NOTICE.txt). It is the first `monospace` font, so a document draws
+//! alike on every system, and the second of every other text family: after
+//! the system's choice, before the fonts fontconfig lists after it. A symbol
+//! the system's font lacks, and every Nerd Font icon, draws from it, and not
+//! from whichever Nerd Font the system has next (a plain one draws an icon
+//! past its cell, over the next letter). The Propo faces keep an icon at its
+//! own width. Italic is the font's own, as in hottyterm's cells, not Regular
+//! slanted.
 //!
 //! Not in the spec: a document can't count on it on another host.
 
@@ -17,9 +19,11 @@ use std::sync::{Arc, OnceLock};
 /// The family's name, as a document names it.
 pub const FAMILY: &str = "AdwaitaMono Nerd Font Propo";
 
-const FACES: [&[u8]; 2] = [
+const FACES: [&[u8]; 4] = [
     include_bytes!("../fonts/AdwaitaMonoNerdFontPropo-Regular.woff2"),
     include_bytes!("../fonts/AdwaitaMonoNerdFontPropo-Bold.woff2"),
+    include_bytes!("../fonts/AdwaitaMonoNerdFontPropo-Italic.woff2"),
+    include_bytes!("../fonts/AdwaitaMonoNerdFontPropo-BoldItalic.woff2"),
 ];
 
 /// The families that take it first.
@@ -44,7 +48,7 @@ pub fn context() -> FontContext {
 }
 
 /// Builds the process's font context on a thread of its own, so the first
-/// surface seldom waits for it: decompressing the faces takes about 60 ms.
+/// surface seldom waits for it: decompressing the faces takes about 85 ms.
 pub fn warm() {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if !STARTED.swap(true, Ordering::Relaxed) {
@@ -96,7 +100,9 @@ fn build() -> FontContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parley::fontique::{QueryFamily, QueryStatus};
+    use parley::fontique::{
+        Attributes, FontStyle, FontWeight, FontWidth, QueryFamily, QueryStatus,
+    };
 
     /// The family of the first font in `generic` that maps `ch`.
     fn first_with(ctx: &mut FontContext, generic: GenericFamily, ch: char) -> Option<FamilyId> {
@@ -129,6 +135,34 @@ mod tests {
             first_with(&mut ctx, GenericFamily::Monospace, 'a'),
             Some(ours)
         );
+    }
+
+    #[test]
+    fn italic_and_bold_italic_are_faces_of_their_own() {
+        let mut ctx = context();
+        let FontContext {
+            collection,
+            source_cache,
+        } = &mut ctx;
+        for weight in [FontWeight::NORMAL, FontWeight::BOLD] {
+            let mut q = collection.query(source_cache);
+            q.set_families([QueryFamily::Named(FAMILY)]);
+            q.set_attributes(Attributes::new(
+                FontWidth::NORMAL,
+                FontStyle::Italic,
+                weight,
+            ));
+            let mut synthesis = None;
+            q.matches_with(|f| {
+                synthesis = Some(f.synthesis);
+                QueryStatus::Stop
+            });
+            let s = synthesis.expect("the family answers");
+            assert!(
+                s.skew().is_none() && !s.embolden(),
+                "italic at {weight:?} is a face of its own, not synthesized"
+            );
+        }
     }
 
     #[test]

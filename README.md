@@ -254,14 +254,16 @@ Not done yet:
 
 ## Fonts
 
-A host ships one font, AdwaitaMono Nerd Font Propo (Regular and Bold, in
-`crates/hotty-blitz/fonts/`), so a document looks the same on every system
-and its Nerd Font icons draw without an installed font. It is the first
+A host ships one font, AdwaitaMono Nerd Font Propo (Regular, Bold, Italic
+and Bold Italic, in `crates/hotty-blitz/fonts/`), so a document looks the
+same on every system and its Nerd Font icons draw without an installed font.
+Italic is the font's own, as in hottyterm's cells, not Regular slanted. It
+is the first
 `monospace` font. In every other generic family it comes second: after the
 system's choice for that family and before the fonts fontconfig lists after
 it. So a symbol or icon the system's font lacks draws from it, at its own
 width. The faces are decompressed on a thread of their own when a host
-starts (about 60 ms).
+starts (about 85 ms).
 
 The spec doesn't name the font: a document can't count on it on another host.
 
