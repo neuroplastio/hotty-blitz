@@ -33,6 +33,9 @@ base64.workspace = true
 # `Host::inspect`, a debugging view of an element: not a hotty body.
 serde_json.workspace = true
 keyboard-types = "0.7"
+# The shared monotonic clock and thread ids of trace.rs's stamps (gov R-22):
+# the version the lockfile already holds.
+libc = "0.2"
 stylo_static_prefs = "0.21"
 # Element states (focus, disabled), as Blitz keeps them: the version Blitz brings.
 stylo_dom = "0.21"

@@ -5,7 +5,7 @@ use crate::body::{Detail, MAX_INT, View};
 use crate::input::{Event, Key, KeyName, Mods, PointerKind};
 use crate::policy::Policy;
 use crate::scroll::{self, Route, Scroller};
-use crate::{Config, Metrics, Rect, anim, delta, edit, net, paint};
+use crate::{Config, Metrics, Rect, anim, delta, edit, net, paint, trace};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
@@ -1013,6 +1013,7 @@ impl Surface {
             return None;
         }
         let t0 = std::time::Instant::now();
+        let s0 = trace::now();
         self.ensure_viewport(m, w, h, dark);
         self.resolve();
         if self.doc.has_pending_critical_resources() {
@@ -1041,6 +1042,8 @@ impl Surface {
         self.adopt_animations(t0);
         self.show_animations(m);
         let t1 = std::time::Instant::now();
+        let s1 = trace::now();
+        trace::span_to("blitz.resolve", s0, s1, &[]);
         self.dirty = false;
         let redeliver = std::mem::take(&mut self.redeliver);
         let full = self.damage.full || self.frame.width != w || self.frame.height != h;
@@ -1077,6 +1080,8 @@ impl Surface {
             }
         };
         let t2 = std::time::Instant::now();
+        let s2 = trace::now();
+        trace::span_to("blitz.damage", s1, s2, &[]);
         if rects.is_empty() {
             return redeliver.then_some(Damage::Full);
         }
@@ -1090,6 +1095,19 @@ impl Surface {
             self.paint_rect(*r, scale, w, h, renderers);
         }
         let t3 = std::time::Instant::now();
+        if trace::on() {
+            let px: u64 = rects.iter().map(|r| r.w as u64 * r.h as u64).sum();
+            trace::span(
+                "blitz.paint",
+                s2,
+                &[
+                    ("rects", trace::Arg::U(rects.len() as u64)),
+                    ("px", trace::Arg::U(px)),
+                    ("w", trace::Arg::U(w as u64)),
+                    ("h", trace::Arg::U(h as u64)),
+                ],
+            );
+        }
         self.frame.timings = Timings {
             resolve_us: (t1 - t0).as_micros() as u32,
             paint_us: (t3 - t2).as_micros() as u32,
@@ -1222,6 +1240,8 @@ impl Surface {
         self.scratch
             .resize((r_render.w * r_render.h * 4) as usize, 0);
         renderer.reset();
+        let p0 = trace::now();
+        let mut scened = 0;
         let doc: &mut BaseDocument = &mut self.doc;
         // The root's scrollbars, over everything (Blitz draws elements').
         let bars = paint::RootBars::new(
@@ -1240,6 +1260,7 @@ impl Surface {
                     let mut window = paint::Window::new(scene, r.x, r.y, r_render.w, r_render.h);
                     paint_scene(&mut window, doc, scale, w, h, 0, 0);
                     bars.paint(&mut window, kurbo::Affine::IDENTITY);
+                    scened = trace::now();
                 },
                 &mut self.scratch,
             );
@@ -1258,10 +1279,18 @@ impl Surface {
                     paint_scene(scene, doc, scale, r_render.w, r_render.h, 0, 0);
                     let shift = kurbo::Affine::translate((-(r.x as f64), -(r.y as f64)));
                     bars.paint(scene, shift);
+                    scened = trace::now();
                 },
                 &mut self.scratch,
             );
             doc.set_viewport_scroll(saved);
+        }
+        if trace::on() {
+            // The closure builds the scene; vello_cpu's workers raster it
+            // after (gov R-22).
+            let px = trace::Arg::U(r.w as u64 * r.h as u64);
+            trace::span_to("blitz.scene", p0, scened, &[]);
+            trace::span("blitz.raster", scened, &[("px", px)]);
         }
         let stride = (w * 4) as usize;
         let row = (r.w * 4) as usize;

@@ -20,6 +20,7 @@ pub mod policy;
 mod scroll;
 pub mod style;
 mod surface;
+pub mod trace;
 
 use body::Detail;
 use hotty::Message;
@@ -1102,7 +1103,23 @@ impl Host {
             }
             if let Some(damage) = damage {
                 let t = std::time::Instant::now();
+                let t0 = trace::now();
                 out(name, &s.frame, &damage);
+                if trace::on() {
+                    let (full, px) = match &damage {
+                        Damage::Full => (1, s.frame.width as u64 * s.frame.height as u64),
+                        Damage::Rects(rs) => (0, rs.iter().map(|r| r.w as u64 * r.h as u64).sum()),
+                    };
+                    trace::span(
+                        "blitz.deliver",
+                        t0,
+                        &[
+                            ("s", trace::Arg::S(name)),
+                            ("full", trace::Arg::U(full)),
+                            ("px", trace::Arg::U(px)),
+                        ],
+                    );
+                }
                 if let Some(log) = &mut self.frame_log {
                     use std::io::Write;
                     let deliver = t.elapsed();
@@ -1137,6 +1154,7 @@ impl Host {
                 out(MENU, &s.frame, &damage);
             }
         }
+        trace::flush();
     }
 
     /// The events rendering and the terminal's settings produced, for the
@@ -1224,6 +1242,7 @@ impl Host {
 
     pub fn handle(&mut self, cmd: &Message) -> Vec<Effect> {
         let start = self.frame_log.is_some().then(std::time::Instant::now);
+        let t0 = trace::now();
         self.menu.stale = true;
         enter(&mut self.working, cmd.get("s").unwrap_or_default());
         let effects = self.handle_command(cmd);
@@ -1237,6 +1256,15 @@ impl Host {
             log.commands += 1;
             log.handle += start.elapsed();
         }
+        trace::span(
+            "blitz.handle",
+            t0,
+            &[
+                ("a", trace::Arg::S(cmd.action())),
+                ("s", trace::Arg::S(cmd.get("s").unwrap_or_default())),
+            ],
+        );
+        trace::flush();
         effects
     }
 

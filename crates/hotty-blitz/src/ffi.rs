@@ -3,6 +3,7 @@
 //! from one thread at a time, and hands it OSC 7279 bodies as its parser
 //! finishes them. Everything the host must do comes back through callbacks.
 
+use crate::trace::{self, Arg};
 use crate::{
     CellsTouch, Config, CopyKey, Damage, Effect, Host, Metrics, Mods, PointerKind, Rgb, Theme,
     Touch, TouchPhase,
@@ -132,6 +133,14 @@ fn guard<R>(h: *mut HottyHost, default: R, f: impl FnOnce(&mut HottyHost) -> R) 
         return default;
     }
     host.host.leave();
+    // The stamps a call made go out after it, whole (gov R-22).
+    struct Flush;
+    impl Drop for Flush {
+        fn drop(&mut self) {
+            crate::trace::flush();
+        }
+    }
+    let _flush = Flush;
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(unsafe { &mut *h }))) {
         Ok(r) => r,
         Err(_) => {
@@ -321,6 +330,7 @@ pub unsafe extern "C" fn hotty_host_osc(
     };
     let fx = unsafe { fx.as_ref() };
     guard(h, (), |h| {
+        let t0 = trace::now();
         let mut framed = Vec::with_capacity(len + 12);
         framed.extend_from_slice(b"\x1b]");
         framed.extend_from_slice(hotty::NUMBER.as_bytes());
@@ -331,6 +341,7 @@ pub unsafe extern "C" fn hotty_host_osc(
             let effects = h.host.handle(&c);
             run_effects(effects, fx);
         }
+        trace::span("blitz.osc", t0, &[("n", Arg::U(len as u64))]);
     })
 }
 
@@ -385,6 +396,7 @@ pub unsafe extern "C" fn hotty_host_redeliver(h: *mut HottyHost, surface: *const
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_render(h: *mut HottyHost, ctx: *mut c_void, cb: HottyFrameFn) {
     guard(h, (), |h| {
+        let t0 = trace::now();
         h.host.render_dirty(&mut |name, frame, damage| {
             let Ok(name) = CString::new(name) else { return };
             let (rects, full): (Vec<HottyRect>, bool) = match damage {
@@ -402,7 +414,8 @@ pub unsafe extern "C" fn hotty_host_render(h: *mut HottyHost, ctx: *mut c_void, 
                 rects.len(),
                 full,
             );
-        })
+        });
+        trace::span("blitz.render", t0, &[]);
     })
 }
 
@@ -499,11 +512,19 @@ pub unsafe extern "C" fn hotty_host_pointer(
         _ => PointerKind::Move,
     };
     guard(h, (), |h| {
+        let t0 = trace::now();
         run_effects(
             h.host
                 .pointer_counted(surface, kind, x, y, mods(mod_bits), count),
             fx,
-        )
+        );
+        let k = match kind {
+            PointerKind::Down => "down",
+            PointerKind::Up => "up",
+            PointerKind::Leave => "leave",
+            PointerKind::Move => "move",
+        };
+        trace::span("blitz.pointer", t0, &[("k", Arg::S(k))]);
     })
 }
 
@@ -535,8 +556,10 @@ pub unsafe extern "C" fn hotty_host_wheel(
     let surface = unsafe { name(surface) }.unwrap_or("");
     let fx = unsafe { fx.as_ref() };
     guard(h, false, |h| {
+        let t0 = trace::now();
         let out = h.host.wheel(surface, x, y, dx, dy, mods(mod_bits));
         run_effects(out.effects, fx);
+        trace::span("blitz.wheel", t0, &[("taken", Arg::U(out.taken as u64))]);
         out.taken
     })
 }
@@ -762,8 +785,14 @@ pub unsafe extern "C" fn hotty_host_key_pressed(
             return false;
         };
         h.host.set_paste(fx.is_some_and(|f| f.paste.is_some()));
+        let t0 = trace::now();
         let outcome = h.host.key_pressed(&surface, physical, other);
         run_effects(outcome.effects, fx);
+        trace::span(
+            "blitz.key",
+            t0,
+            &[("taken", Arg::U(outcome.consumed as u64))],
+        );
         outcome.consumed
     })
 }
@@ -795,8 +824,14 @@ pub unsafe extern "C" fn hotty_host_key_bytes(
             return false;
         };
         h.host.set_paste(fx.is_some_and(|f| f.paste.is_some()));
+        let t0 = trace::now();
         let outcome = h.host.key_bytes(&surface, bytes);
         run_effects(outcome.effects, fx);
+        trace::span(
+            "blitz.keybytes",
+            t0,
+            &[("taken", Arg::U(outcome.consumed as u64))],
+        );
         outcome.consumed
     })
 }

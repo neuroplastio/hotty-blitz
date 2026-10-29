@@ -789,6 +789,7 @@ dependencies = [
  "image",
  "keyboard-types",
  "kurbo",
+ "libc",
  "parley",
  "peniko",
  "png 0.17.16",
