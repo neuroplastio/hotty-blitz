@@ -188,3 +188,126 @@ fn current_color_from_a_color_mix_is_drawn() {
         [r, g, b]
     );
 }
+
+/// A 40px square `svg` at the surface's top left, black behind it, styled
+/// by `css` (in the document's stylesheet, with `--c` red), with `shapes`
+/// in a 40-unit viewBox.
+fn icon(css: &str, shapes: &str) -> Host {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        &format!(
+            "<style id=theme>:root{{--c:#f00}}</style>\
+             <style>body{{margin:0;background:#000}}svg{{display:block}}{css}</style>\
+             <svg class=icon width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">{shapes}</svg>"
+        ),
+    ));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "10"),
+            ("r", "4"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    h
+}
+
+#[test]
+fn a_document_rule_fills_a_shape() {
+    let h = icon(".icon rect{fill:#00f}", r#"<rect width="40" height="40"/>"#);
+    assert_eq!(pixel(&h, "x", 20, 20), BLUE);
+}
+
+#[test]
+fn a_document_rule_with_a_custom_property_fills_a_shape() {
+    let mut h = icon(
+        ".icon rect{fill:var(--c)}",
+        r#"<rect width="40" height="40"/>"#,
+    );
+    assert_eq!(pixel(&h, "x", 20, 20), RED);
+    delta(&mut h, "text", "theme", None, ":root{--c:#0f0}");
+    assert_eq!(pixel(&h, "x", 20, 20), GREEN, "the theme changed");
+}
+
+#[test]
+fn a_custom_property_in_a_shape_s_style_fills_it() {
+    let h = icon(
+        "",
+        r#"<rect width="40" height="40" style="fill:var(--c)"/>"#,
+    );
+    assert_eq!(pixel(&h, "x", 20, 20), RED);
+}
+
+#[test]
+fn a_document_rule_strokes_a_shape() {
+    // A 4-unit stroke along x = 20, in the theme's colour; nothing filled.
+    let h = icon(
+        ".icon path{stroke:var(--c);stroke-width:4px;fill:none}",
+        r#"<path d="M20 0V40"/>"#,
+    );
+    assert_eq!(pixel(&h, "x", 20, 20), RED);
+    assert_eq!(pixel(&h, "x", 10, 20), [0, 0, 0]);
+}
+
+#[test]
+fn a_document_rule_beats_a_presentation_attribute() {
+    // As in a browser: presentation attributes are the cascade's lowest
+    // author-level hints.
+    let h = icon(
+        ".icon rect{fill:#0f0}",
+        r##"<rect width="40" height="40" fill="#f00"/>"##,
+    );
+    assert_eq!(pixel(&h, "x", 20, 20), GREEN);
+}
+
+#[test]
+fn presentation_attributes_still_draw() {
+    let h = icon(
+        "",
+        r##"<g fill="#00f"><rect width="20" height="40"/><rect x="20" width="20" height="40" fill="#0f0"/></g>"##,
+    );
+    assert_eq!(pixel(&h, "x", 10, 20), BLUE, "inherited from the group");
+    assert_eq!(pixel(&h, "x", 30, 20), GREEN, "its own");
+}
+
+#[test]
+fn a_used_symbol_inherits_from_the_use() {
+    let h = icon(
+        "",
+        r##"<defs><symbol id="s" viewBox="0 0 40 40"><rect width="40" height="40"/></symbol></defs><use href="#s" width="40" height="40" fill="#0f0"/>"##,
+    );
+    assert_eq!(pixel(&h, "x", 20, 20), GREEN);
+}
+
+#[test]
+fn the_svg_s_own_opacity_applies_once() {
+    // Blitz paints it on the svg's box; usvg is not to apply it again.
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<style>body{margin:0;background:#000}svg{display:block}</style>\
+         <svg opacity=\"0.5\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">\
+         <rect width=\"40\" height=\"40\" fill=\"#f00\"/></svg>",
+    ));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "10"),
+            ("r", "4"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    let [r, g, b] = pixel(&h, "x", 20, 20);
+    assert!(
+        r.abs_diff(128) <= 2 && g == 0 && b == 0,
+        "half red: {:?}",
+        [r, g, b]
+    );
+}
