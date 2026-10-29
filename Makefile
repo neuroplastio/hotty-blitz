@@ -59,7 +59,7 @@ bench: release   ## delta cost vs delta size and document size
 	./target/release/hotty bench --frames 30
 
 oracle: corpus   ## corpus pages in Chromium next to hotty-blitz: corpus-out/*.sheet.png
-	@./target/release/hotty css --cell 20x42 --scale 2 > corpus-out/host.css
+	@./target/release/hotty css --cell 20x42 --scale 2 --font "AdwaitaMono Nerd Font Propo" > corpus-out/host.css
 	@args=""; for f in $(HOTTY_DIR)/corpus/*.html; do n=$$(basename $$f .html); h=$$(magick identify -format %h corpus-out/$$n.png); args="$$args $$f:$$h"; done; \
 	  NODE_PATH=$$HOME/.cache/hotty/oracle/node_modules mise x node -- node scripts/oracle.cjs corpus-out/host.css corpus-out $$args
 	@for f in $(HOTTY_DIR)/corpus/*.html; do n=$$(basename $$f .html); \
