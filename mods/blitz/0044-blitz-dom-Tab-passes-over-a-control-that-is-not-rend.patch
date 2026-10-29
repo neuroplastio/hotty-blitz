@@ -1,0 +1,137 @@
+From 572fd22aa0af24a7e1ed4740ffba823e895b2181 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 30 Oct 2026 00:00:51 +0100
+Subject: [PATCH] blitz-dom: Tab passes over a control that is not rendered
+
+Tab and Shift+Tab stepped to every focusable element, a hidden one too.
+As in browsers, they now pass over an element that is not displayed (or
+is in a `display: none` subtree, which Stylo leaves unstyled) or not
+visible (`visibility: hidden` or `collapse`), by its resolved styles.
+---
+ packages/blitz-dom/src/document.rs            |  8 ++-
+ packages/blitz-dom/src/node/node.rs           | 14 +++++
+ .../blitz-tests/tests/tab_skips_unrendered.rs | 61 +++++++++++++++++++
+ 3 files changed, 81 insertions(+), 2 deletions(-)
+ create mode 100644 tests/blitz-tests/tests/tab_skips_unrendered.rs
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 0d03e316..f5c098a4 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1771,7 +1771,9 @@ impl BaseDocument {
+ 
+     pub fn focus_next_node(&mut self) -> Option<NodeId> {
+         let focussed_node_id = self.get_focussed_node_id()?;
+-        let id = self.next_node(&self.nodes[focussed_node_id], |node| node.is_focussable())?;
++        let id = self.next_node(&self.nodes[focussed_node_id], |node| {
++            node.is_sequentially_focussable()
++        })?;
+         self.set_focus_to(id);
+         Some(id)
+     }
+@@ -1779,7 +1781,9 @@ impl BaseDocument {
+     /// Move focus to the previous focussable node in the document
+     pub fn focus_prev_node(&mut self) -> Option<NodeId> {
+         let focussed_node_id = self.get_focussed_node_id()?;
+-        let id = self.prev_node(&self.nodes[focussed_node_id], |node| node.is_focussable())?;
++        let id = self.prev_node(&self.nodes[focussed_node_id], |node| {
++            node.is_sequentially_focussable()
++        })?;
+         self.set_focus_to(id);
+         Some(id)
+     }
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 56a35a45..f6347e56 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -559,6 +559,20 @@ impl Node {
+             .unwrap_or(false)
+     }
+ 
++    /// Whether Tab can bring focus here: the element is focusable and
++    /// rendered, as browsers have it. An element not displayed (nor in a
++    /// `display: none` subtree, which Stylo leaves unstyled) or not
++    /// visible (`visibility: hidden` or `collapse`) is passed over. Its
++    /// styles must be resolved.
++    pub fn is_sequentially_focussable(&self) -> bool {
++        use style::computed_values::visibility::T as Visibility;
++        self.is_focussable()
++            && self.primary_styles().is_some_and(|style| {
++                !style.get_box().display.is_none()
++                    && style.get_inherited_box().visibility == Visibility::Visible
++            })
++    }
++
+     pub fn set_restyle_hint(&mut self, hint: RestyleHint) {
+         if let Some(stylo_element_data) = self.try_stylo_element_data_mut() {
+             if let Some(mut element_data) = stylo_element_data.get_mut() {
+diff --git a/tests/blitz-tests/tests/tab_skips_unrendered.rs b/tests/blitz-tests/tests/tab_skips_unrendered.rs
+new file mode 100644
+index 00000000..89adbd8e
+--- /dev/null
++++ b/tests/blitz-tests/tests/tab_skips_unrendered.rs
+@@ -0,0 +1,61 @@
++//! Tab and Shift+Tab pass over a focusable element that is not rendered, as
++//! browsers do: one not displayed, in a `display: none` subtree, or not
++//! visible. A visible child of a hidden box is rendered, and takes focus.
++
++use blitz_dom::{DocumentConfig, NodeId};
++use blitz_html::{HtmlDocument, HtmlProvider};
++use blitz_traits::shell::{ColorScheme, Viewport};
++use std::sync::Arc;
++
++fn make_doc(html: &str) -> HtmlDocument {
++    HtmlDocument::from_html(
++        html,
++        DocumentConfig {
++            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
++            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
++            ..Default::default()
++        },
++    )
++}
++
++fn node_id(doc: &HtmlDocument, selector: &str) -> NodeId {
++    doc.query_selector(selector).unwrap().expect(selector)
++}
++
++fn id_of(doc: &HtmlDocument, node: NodeId) -> String {
++    doc.get_node(node)
++        .and_then(|n| n.attr(blitz_dom::local_name!("id")))
++        .unwrap_or_default()
++        .to_string()
++}
++
++#[test]
++fn tab_passes_over_controls_that_are_not_rendered() {
++    let mut doc = make_doc(
++        "<html><body><button id=a>a</button>\
++         <button id=hidden style='visibility:hidden'>h</button>\
++         <div style='visibility:hidden'><button id=inherits>h</button>\
++         <button id=shown style='visibility:visible'>v</button></div>\
++         <button id=collapsed style='visibility:collapse'>c</button>\
++         <button id=none style='display:none'>n</button>\
++         <div style='display:none'><button id=in_none>n</button></div>\
++         <button id=z>z</button></body></html>",
++    );
++    doc.resolve(0.0);
++    let a = node_id(&doc, "#a");
++    doc.set_focus_to(a);
++
++    let mut forward = Vec::new();
++    for _ in 0..3 {
++        let id = doc.focus_next_node().expect("a next control");
++        forward.push(id_of(&doc, id));
++    }
++    assert_eq!(forward, ["shown", "z", "a"]);
++
++    let mut back = Vec::new();
++    for _ in 0..3 {
++        let id = doc.focus_prev_node().expect("a previous control");
++        back.push(id_of(&doc, id));
++    }
++    assert_eq!(back, ["z", "shown", "a"]);
++}
+-- 
+2.56.0
+

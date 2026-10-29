@@ -1681,6 +1681,8 @@ impl Surface {
             }
             None => {
                 if self.focused().is_none() {
+                    // The first control rendered, by the styles as they are.
+                    self.resolve();
                     self.doc.focus_next_node();
                 }
             }
@@ -2452,6 +2454,9 @@ impl Surface {
         match (&key.name, kind) {
             (KeyName::Tab, _) if plain => {
                 let before = focused;
+                // Tab passes over what isn't rendered, which a delta since
+                // the last frame may have changed: Blitz reads the styles.
+                self.resolve();
                 let mut events = self.drive_key(key);
                 let after = self.focused();
                 let wrapped = match (before, after) {
