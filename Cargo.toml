@@ -58,8 +58,9 @@ parley_emoji = { path = "../parley/parley_emoji" }
 # The vello_cpu fork (../vello_cpu, branch `hotty`, made by
 # scripts/vello-fork.sh from the published package and the patches in
 # mods/vello_cpu/): flushing waits for the workers without spinning, a context
-# takes at most 4 of them and one under 256 K px none, and a blurred
-# rectangle's inside is not worked out pixel by pixel.
+# takes at most 4 of them and one under 256 K px none, a blurred
+# rectangle's inside is not worked out pixel by pixel, and a clip layer
+# nothing is drawn in is not pushed.
 [patch.crates-io]
 vello_cpu = { path = "../vello_cpu" }
 

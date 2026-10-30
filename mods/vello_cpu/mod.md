@@ -13,9 +13,11 @@ crates.io: the published package, not the vello repository, because its
 dependencies are the crates.io ones anyrender builds against. A terminal
 repaints small parts of its surfaces many times a second, which is where
 the first two patches and the fourth save; the third makes a large box
-shadow cheap. We mod vello_cpu rather than fork it so that they stay four
-changes on the version we build with. All four still apply to vello_cpu
-0.3.0.
+shadow cheap, and the fifth a clip nothing is drawn in. We mod vello_cpu
+rather than fork it so that they stay five changes on the version we
+build with. The first four still apply to vello_cpu 0.3.0. The fifth
+needs its hook in 0.3.0's two new clip methods as well, so it will need
+a version of its own there.
 
 In hotty-blitz, `make blitz`, which every build runs, sets up
 `../vello_cpu`: the package as published, checked against the checksum

@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 30 Oct 2026 23:03:07 +0100
+Subject: [PATCH] vello_cpu: a clip layer nothing is drawn in is not pushed
+
+`push_clip_layer` now keeps the layer back and gives it to the dispatcher
+just before the first draw inside it; a clip layer popped before any draw
+is dropped. Such a layer changes no pixel, and pushing it costs the clip
+path's strips and the layer's bookkeeping. A draw of an empty path (a
+space's glyph) does not count as a draw. A held layer also goes to the
+dispatcher before any other layer, and before a clip path is pushed or
+popped, so its clip is cut by the same clip paths as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/render.rs | 192 +++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 189 insertions(+), 3 deletions(-)
+
+diff --git a/src/render.rs b/src/render.rs
+index 61ec0ba..c15ffab 100644
+--- a/src/render.rs
++++ b/src/render.rs
+@@ -176,6 +176,23 @@ pub struct RenderContext {
+     )]
+     pub(crate) render_settings: RenderSettings,
+     dispatcher: Box<dyn Dispatcher>,
++    /// Clip layers pushed and not drawn into yet, the first `pending_clips`
++    /// of these. Each goes to the dispatcher just before the first draw
++    /// inside it, and one popped before any is dropped: a clip layer with
++    /// nothing in it changes no pixel, and pushing one costs the clip
++    /// path's strips. The paths' buffers are kept between pushes.
++    pending: Vec<PendingClip>,
++    pending_clips: usize,
++}
++
++/// A clip layer not given to the dispatcher yet, as `push_layer` would give
++/// it.
++#[derive(Debug)]
++struct PendingClip {
++    path: BezPath,
++    fill_rule: Fill,
++    transform: Affine,
++    aliasing_threshold: Option<u8>,
+ }
+ 
+ /// Settings to apply to the render context.
+@@ -259,6 +276,8 @@ impl RenderContext {
+             temp_path,
+             encoded_paints,
+             filter: None,
++            pending: Vec::new(),
++            pending_clips: 0,
+         }
+     }
+ 
+@@ -291,6 +310,9 @@ impl RenderContext {
+ 
+     /// Fill a path.
+     pub fn fill_path(&mut self, path: &BezPath) {
++        if !path.elements().is_empty() {
++            self.push_pending_clips();
++        }
+         // TODO: Similarly to Vello Hybrid, make sure that inline blend + filter are applies
+         // to the same layer.
+         self.with_optional_filter(|ctx| {
+@@ -312,6 +334,9 @@ impl RenderContext {
+ 
+     /// Stroke a path.
+     pub fn stroke_path(&mut self, path: &BezPath) {
++        if !path.elements().is_empty() {
++            self.push_pending_clips();
++        }
+         self.with_optional_filter(|ctx| {
+             let paint = ctx.encode_current_paint();
+             let transform = ctx
+@@ -331,6 +356,7 @@ impl RenderContext {
+ 
+     /// Fill a rectangle.
+     pub fn fill_rect(&mut self, rect: &Rect) {
++        self.push_pending_clips();
+         self.with_optional_filter(|ctx| {
+             let paint = ctx.encode_current_paint();
+             let transform = ctx
+@@ -367,6 +393,7 @@ impl RenderContext {
+ 
+     /// Stroke a rectangle.
+     pub fn stroke_rect(&mut self, rect: &Rect) {
++        self.push_pending_clips();
+         self.with_optional_filter(|ctx| {
+             ctx.rect_to_temp_path(rect);
+             let paint = ctx.encode_current_paint();
+@@ -413,6 +440,7 @@ impl RenderContext {
+         std_dev: f32,
+         invert: bool,
+     ) {
++        self.push_pending_clips();
+         let rect = rect.abs();
+         let color = match self.state.paint {
+             PaintType::Solid(s) => s,
+@@ -491,6 +519,7 @@ impl RenderContext {
+         mask: Option<Mask>,
+         filter: Option<Filter>,
+     ) {
++        self.push_pending_clips();
+         let mask = mask.and_then(|m| {
+             if m.width() != self.width || m.height() != self.height {
+                 None
+@@ -534,8 +563,49 @@ impl RenderContext {
+     ///
+     /// See the explanation in the [clipping](https://github.com/linebender/vello/tree/main/sparse_strips/vello_cpu/examples)
+     /// example for how this method differs from `push_clip_path`.
++    ///
++    /// The layer reaches the dispatcher with the first draw inside it, and
++    /// not at all if it is popped first.
+     pub fn push_clip_layer(&mut self, path: &BezPath) {
+-        self.push_layer(Some(path), None, None, None, None);
++        let transform = self
++            .root_transforms
++            .effective_path_transform(self.transforms());
++        self.root_transforms.push_root(Affine::IDENTITY);
++        if self.pending_clips == self.pending.len() {
++            self.pending.push(PendingClip {
++                path: BezPath::new(),
++                fill_rule: Fill::NonZero,
++                transform: Affine::IDENTITY,
++                aliasing_threshold: None,
++            });
++        }
++        let clip = &mut self.pending[self.pending_clips];
++        clip.path.truncate(0);
++        clip.path.extend(path.iter());
++        clip.fill_rule = self.state.fill_rule;
++        clip.transform = transform;
++        clip.aliasing_threshold = self.aliasing_threshold;
++        self.pending_clips += 1;
++    }
++
++    /// Give the dispatcher the clip layers pushed and not drawn into yet.
++    #[inline]
++    fn push_pending_clips(&mut self) {
++        if self.pending_clips > 0 {
++            for clip in &self.pending[..self.pending_clips] {
++                self.dispatcher.push_layer(
++                    Some(&clip.path),
++                    clip.fill_rule,
++                    clip.transform,
++                    BlendMode::default(),
++                    1.0,
++                    clip.aliasing_threshold,
++                    None,
++                    None,
++                );
++            }
++            self.pending_clips = 0;
++        }
+     }
+ 
+     /// Push a new blend layer.
+@@ -588,7 +658,11 @@ impl RenderContext {
+ 
+     /// Pop the last-pushed layer.
+     pub fn pop_layer(&mut self) {
+-        self.dispatcher.pop_layer();
++        if self.pending_clips > 0 {
++            self.pending_clips -= 1;
++        } else {
++            self.dispatcher.pop_layer();
++        }
+         self.root_transforms.pop_root();
+     }
+ 
+@@ -728,6 +802,7 @@ impl RenderContext {
+     /// Reset the render context.
+     pub fn reset(&mut self) {
+         self.dispatcher.reset(self.width, self.height);
++        self.pending_clips = 0;
+         self.encoded_paints.clear();
+         self.mask = None;
+         self.root_transforms.reset();
+@@ -739,6 +814,7 @@ impl RenderContext {
+     /// See the explanation in the [clipping](https://github.com/linebender/vello/tree/main/sparse_strips/vello_cpu/examples)
+     /// example for how this method differs from `push_clip_layer`.
+     pub fn push_clip_path(&mut self, path: &BezPath) {
++        self.push_pending_clips();
+         let transform = self.transforms().clip_path_transform();
+         self.dispatcher.push_clip_path(
+             path,
+@@ -753,6 +829,7 @@ impl RenderContext {
+     /// Note that unlike `push_clip_layer`, it is permissible to have pending
+     /// pushed clip paths before finishing the rendering operation.
+     pub fn pop_clip_path(&mut self) {
++        self.push_pending_clips();
+         self.dispatcher.pop_clip_path();
+     }
+ 
+@@ -813,7 +890,7 @@ impl RenderContext {
+     ) {
+         // TODO: Maybe we should move those checks into the dispatcher.
+         assert!(
+-            !self.dispatcher.has_layers(),
++            !self.dispatcher.has_layers() && self.pending_clips == 0,
+             "some layers haven't been popped yet"
+         );
+ 
+@@ -1286,6 +1363,115 @@ mod tests {
+         );
+     }
+ 
++    /// The contexts the lazy clip layer tests run on: one drawing on the
++    /// calling thread and, with workers, one with two.
++    fn clip_test_contexts() -> vec::Vec<RenderContext> {
++        use crate::RenderSettings;
++
++        let mut contexts = vec![RenderContext::new_with(
++            16,
++            16,
++            RenderSettings {
++                num_threads: 0,
++                ..Default::default()
++            },
++        )];
++        #[cfg(feature = "multithreading")]
++        contexts.push(RenderContext::new_with(
++            16,
++            16,
++            RenderSettings {
++                num_threads: 2,
++                ..Default::default()
++            },
++        ));
++        contexts
++    }
++
++    #[test]
++    fn clip_layer_reaches_the_dispatcher_with_its_first_draw() {
++        use vello_common::kurbo::BezPath;
++
++        for mut ctx in clip_test_contexts() {
++            ctx.push_clip_layer(&Rect::new(0.0, 0.0, 8.0, 16.0).to_path(0.1));
++            ctx.push_clip_layer(&Rect::new(0.0, 0.0, 16.0, 8.0).to_path(0.1));
++            ctx.fill_path(&BezPath::new());
++            assert!(!ctx.dispatcher.has_layers(), "an empty path draws nothing");
++            ctx.pop_layer();
++            assert!(!ctx.dispatcher.has_layers());
++            ctx.set_paint(RED);
++            ctx.fill_rect(&Rect::new(0.0, 0.0, 16.0, 16.0));
++            assert!(ctx.dispatcher.has_layers());
++            ctx.pop_layer();
++            assert!(!ctx.dispatcher.has_layers());
++            ctx.flush();
++        }
++    }
++
++    #[test]
++    fn lazy_clip_layers_clip_what_is_drawn_in_them() {
++        for mut ctx in clip_test_contexts() {
++            // An empty clip layer inside one that is drawn into, and one
++            // nothing is drawn into after it.
++            ctx.push_clip_layer(&Rect::new(0.0, 0.0, 8.0, 16.0).to_path(0.1));
++            ctx.push_clip_layer(&Rect::new(0.0, 0.0, 16.0, 4.0).to_path(0.1));
++            ctx.pop_layer();
++            ctx.set_paint(RED);
++            ctx.fill_rect(&Rect::new(0.0, 0.0, 16.0, 16.0));
++            ctx.pop_layer();
++            ctx.push_clip_layer(&Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.1));
++            ctx.pop_layer();
++            ctx.set_paint(BLUE);
++            ctx.fill_rect(&Rect::new(12.0, 12.0, 16.0, 16.0));
++            ctx.flush();
++
++            let mut resources = Resources::new();
++            let mut pixmap = solid_pixmap(16, 16, GRAY);
++            ctx.render(&mut pixmap, &mut resources);
++            for y in 0..16 {
++                for x in 0..16 {
++                    let expected = if x < 8 {
++                        red_pixel()
++                    } else if x >= 12 && y >= 12 {
++                        blue_pixel()
++                    } else {
++                        transparent_pixel()
++                    };
++                    assert_eq!(pixmap.sample(x, y), expected, "pixel at ({x}, {y})");
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn held_clip_layer_takes_the_clip_paths_it_was_pushed_under() {
++        for mut ctx in clip_test_contexts() {
++            // The layer is pushed under the clip path, which is popped before
++            // anything is drawn in it: the layer still clips to both.
++            ctx.push_clip_path(&Rect::new(0.0, 0.0, 8.0, 16.0).to_path(0.1));
++            ctx.push_clip_layer(&Rect::new(0.0, 0.0, 16.0, 8.0).to_path(0.1));
++            ctx.pop_clip_path();
++            ctx.set_paint(RED);
++            ctx.fill_rect(&Rect::new(0.0, 0.0, 16.0, 16.0));
++            ctx.pop_layer();
++            ctx.flush();
++
++            let mut resources = Resources::new();
++            let mut pixmap = solid_pixmap(16, 16, GRAY);
++            ctx.render(&mut pixmap, &mut resources);
++            for y in 0..16 {
++                for x in 0..16 {
++                    let expected = if x < 8 && y < 8 {
++                        red_pixel()
++                    } else {
++                        transparent_pixel()
++                    };
++                    assert_eq!(pixmap.sample(x, y), expected, "pixel at ({x}, {y})");
++                }
++            }
++        }
++    }
++
+     #[cfg(feature = "multithreading")]
+     #[test]
+     fn multithreaded_drop_with_pending_tasks() {
+-- 
+2.56.0
+
