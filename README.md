@@ -20,7 +20,7 @@ with its capabilities, and any other, one with no `v` too, with `EVERSION`:
 a program of 0.4 finds no host.
 
 0.5.x speaks hotty 0.5; the patch number is this repository's own. The
-capabilities name it: `"host": "hotty-blitz"`, `"version": "0.5.4"`.
+capabilities name it: `"host": "hotty-blitz"`, `"version": "0.5.5"`.
 
 ## Try it
 
