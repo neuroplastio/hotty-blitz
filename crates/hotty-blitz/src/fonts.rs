@@ -12,7 +12,7 @@
 //! Not in the spec: a document can't count on it on another host.
 
 use blitz_dom::FontContext;
-use parley::fontique::{Blob, FamilyId, GenericFamily};
+use parley::fontique::{Blob, FamilyId, GenericFamily, SourceCache};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -72,7 +72,14 @@ fn build() -> FontContext {
             .map(|d| Blob::new(Arc::new(d.join().expect("font decoding panicked")) as _))
             .collect()
     });
-    let mut ctx = FontContext::default();
+    let mut ctx = FontContext {
+        // One source cache for every clone: a system font a surface loads
+        // is the same blob in the next, so the glyph caches a host's
+        // renderers keep by blob (hinting, outlines) serve every surface
+        // after the first.
+        source_cache: SourceCache::new_shared(),
+        ..Default::default()
+    };
     let c = &mut ctx.collection;
     let mut ours: Vec<FamilyId> = Vec::new();
     for face in faces {
