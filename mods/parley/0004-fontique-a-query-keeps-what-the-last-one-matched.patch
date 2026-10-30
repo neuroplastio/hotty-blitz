@@ -1,0 +1,426 @@
+From 23d2eba5d92d94fddf16b6fe882e6622629da82b Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 30 Oct 2026 08:29:42 +0100
+Subject: [PATCH] fontique: a query keeps what the last one matched
+
+Parley makes a query each time it shapes a text layout, and another for
+its line metrics, and each query began by clearing the collection's
+query state. Every layout then listed its font stack's families again,
+looked each one up, matched it and loaded its fonts, and dropped all of
+it at the end. The families a query matched and the fonts it loaded
+from them now outlive it: a query that sets the same families keeps
+their matches, the same fallback key keeps its fallback families, and
+fonts are matched again only for other attributes. A query that sets
+no families, or no fallbacks, still matches none. Whatever changes the
+collection (registering or unregistering fonts, a generic family or a
+fallback list set, clearing, loading fonts), or a shared collection's
+new version, forgets all of it.
+---
+ fontique/src/collection/mod.rs   |   9 ++
+ fontique/src/collection/query.rs | 239 +++++++++++++++++++++++++------
+ 2 files changed, 204 insertions(+), 44 deletions(-)
+
+diff --git a/fontique/src/collection/mod.rs b/fontique/src/collection/mod.rs
+index bf3fa43..c3135c7 100644
+--- a/fontique/src/collection/mod.rs
++++ b/fontique/src/collection/mod.rs
+@@ -95,6 +95,7 @@ impl Collection {
+     pub fn load_system_fonts(&mut self) {
+         if self.inner.system.is_none() {
+             self.inner.load_system_fonts();
++            self.query_state.reset();
+         }
+     }
+ 
+@@ -102,6 +103,7 @@ impl Collection {
+     #[cfg(feature = "std")]
+     pub fn load_fonts_from_paths(&mut self, paths: impl IntoIterator<Item = impl AsRef<Path>>) {
+         self.inner.load_fonts_from_paths(paths);
++        self.query_state.reset();
+     }
+ 
+     /// Returns an iterator over all available family names in the collection.
+@@ -157,6 +159,7 @@ impl Collection {
+         families: impl Iterator<Item = FamilyId>,
+     ) {
+         self.inner.set_generic_families(generic, families);
++        self.query_state.reset();
+     }
+ 
+     /// Appends the set of family identifiers to the given generic family.
+@@ -166,6 +169,7 @@ impl Collection {
+         families: impl Iterator<Item = FamilyId>,
+     ) {
+         self.inner.append_generic_families(generic, families);
++        self.query_state.reset();
+     }
+ 
+     /// Returns an iterator over the fallback families for the given
+@@ -184,6 +188,7 @@ impl Collection {
+         key: impl Into<FallbackKey>,
+         families: impl Iterator<Item = FamilyId>,
+     ) -> bool {
++        self.query_state.reset();
+         self.inner.set_fallbacks(key, families)
+     }
+ 
+@@ -193,6 +198,7 @@ impl Collection {
+         key: impl Into<FallbackKey>,
+         families: impl Iterator<Item = FamilyId>,
+     ) -> bool {
++        self.query_state.reset();
+         self.inner.append_fallbacks(key, families)
+     }
+ 
+@@ -212,6 +218,7 @@ impl Collection {
+         data: Blob<u8>,
+         info_override: Option<FontInfoOverride<'_>>,
+     ) -> Vec<(FamilyId, Vec<FontInfo>)> {
++        self.query_state.reset();
+         self.inner.register_fonts(data, info_override)
+     }
+ 
+@@ -225,6 +232,7 @@ impl Collection {
+         style: FontStyle,
+         weight: FontWeight,
+     ) -> bool {
++        self.query_state.reset();
+         self.inner.unregister_font(family, width, style, weight)
+     }
+ 
+@@ -233,6 +241,7 @@ impl Collection {
+     /// and fallbacks. This will not remove any system fonts.
+     pub fn clear(&mut self) {
+         self.inner.clear();
++        self.query_state.reset();
+     }
+ }
+ 
+diff --git a/fontique/src/collection/query.rs b/fontique/src/collection/query.rs
+index c54405c..755e891 100644
+--- a/fontique/src/collection/query.rs
++++ b/fontique/src/collection/query.rs
+@@ -6,6 +6,7 @@
+ use crate::{Charmap, CharmapIndex};
+ 
+ use super::super::{Collection, SourceCache, matching::match_fonts};
++use crate::CounterInt;
+ 
+ use alloc::vec::Vec;
+ use parlance::Script;
+@@ -16,16 +17,45 @@ use super::{
+     Inner,
+ };
+ 
++/// The families a query matched and the fonts it loaded from them, kept for
++/// the next query, which matches again only what it asks for differently:
++/// other families, attributes or fallbacks. A text layout makes a query
++/// for its shaping and one for its line metrics, so the many small layouts
++/// of a document (inline blocks, table cells) each paid for the whole
++/// match.
+ #[derive(Clone, Default)]
+ pub(super) struct QueryState {
+     families: Vec<CachedFamily>,
+     fallback_families: Vec<CachedFamily>,
++    /// The attributes the kept fonts were loaded for.
++    attributes: Attributes,
++    /// The key `fallback_families` were listed for.
++    fallbacks: Option<FallbackKey>,
++    /// Whether the query under way has set its families and its fallbacks:
++    /// one that has not matches none.
++    families_set: bool,
++    fallbacks_set: bool,
++    /// The shared collection's version the state was made in.
++    version: CounterInt,
+ }
+ 
+ impl QueryState {
+-    fn clear(&mut self) {
+-        self.families.clear();
+-        self.fallback_families.clear();
++    fn clear_fonts(&mut self) {
++        for family in &mut self.families {
++            family.clear_fonts();
++        }
++        for family in &mut self.fallback_families {
++            family.clear_fonts();
++        }
++    }
++
++    /// Forgets everything, after the collection changed.
++    pub(super) fn reset(&mut self) {
++        let version = self.version;
++        *self = Self {
++            version,
++            ..Self::default()
++        };
+     }
+ }
+ 
+@@ -37,18 +67,23 @@ pub struct Query<'a> {
+     state: &'a mut QueryState,
+     source_cache: &'a mut SourceCache,
+     attributes: Attributes,
+-    fallbacks: Option<FallbackKey>,
+ }
+ 
+ impl<'a> Query<'a> {
+     pub(super) fn new(collection: &'a mut Collection, source_cache: &'a mut SourceCache) -> Self {
+-        collection.query_state.clear();
++        collection.inner.sync_shared();
++        let state = &mut collection.query_state;
++        if state.version != collection.inner.shared_version {
++            state.reset();
++            state.version = collection.inner.shared_version;
++        }
++        state.families_set = false;
++        state.fallbacks_set = false;
+         Self {
+             collection: &mut collection.inner,
+-            state: &mut collection.query_state,
++            state,
+             source_cache,
+             attributes: Attributes::default(),
+-            fallbacks: None,
+         }
+     }
+ 
+@@ -58,44 +93,43 @@ impl<'a> Query<'a> {
+         I: IntoIterator,
+         I::Item: Into<QueryFamily<'f>>,
+     {
+-        self.state.families.clear();
++        let mut ids: SmallVec<[FamilyId; 16]> = SmallVec::new();
+         for family in families {
+-            let family = family.into();
+-            match family {
+-                QueryFamily::Named(name) => {
+-                    if let Some(id) = self.collection.family_id(name) {
+-                        self.state.families.push(CachedFamily::new(id));
+-                    }
+-                }
+-                QueryFamily::Id(id) => {
+-                    self.state.families.push(CachedFamily::new(id));
+-                }
++            match family.into() {
++                QueryFamily::Named(name) => ids.extend(self.collection.family_id(name)),
++                QueryFamily::Id(id) => ids.push(id),
+                 QueryFamily::Generic(generic) => {
+-                    for id in self.collection.generic_families(generic) {
+-                        self.state.families.push(CachedFamily::new(id));
+-                    }
++                    ids.extend(self.collection.generic_families(generic));
+                 }
+             }
+         }
++        self.state.families_set = true;
++        // The same families as the last query's keep what it matched.
++        if self
++            .state
++            .families
++            .iter()
++            .map(|f| f.id)
++            .eq(ids.iter().copied())
++        {
++            return;
++        }
++        self.state.families.clear();
++        self.state
++            .families
++            .extend(ids.into_iter().map(CachedFamily::new));
+     }
+ 
+     /// Sets the primary attributes to match against.
+     pub fn set_attributes(&mut self, attributes: Attributes) {
+-        if self.attributes != attributes {
+-            for family in &mut self.state.families {
+-                family.clear_fonts();
+-            }
+-            for family in &mut self.state.fallback_families {
+-                family.clear_fonts();
+-            }
+-            self.attributes = attributes;
+-        }
++        self.attributes = attributes;
+     }
+ 
+     /// Sets the script and locale for fallback fonts.
+     pub fn set_fallbacks(&mut self, key: impl Into<FallbackKey>) {
+         let key = key.into();
+-        if self.fallbacks != Some(key) {
++        self.state.fallbacks_set = true;
++        if self.state.fallbacks != Some(key) {
+             self.state.fallback_families.clear();
+             self.state.fallback_families.extend(
+                 self.collection
+@@ -110,7 +144,7 @@ impl<'a> Query<'a> {
+                     .fallback_families(FallbackKey::new(Script::from_bytes(*b"Hani"), None))
+                     .map(CachedFamily::new),
+             );
+-            self.fallbacks = Some(key);
++            self.state.fallbacks = Some(key);
+         }
+     }
+ 
+@@ -120,12 +154,23 @@ impl<'a> Query<'a> {
+     /// Return [`QueryStatus::Stop`] to end iterating over the matching
+     /// fonts or [`QueryStatus::Continue`] to continue iterating.
+     pub fn matches_with<'q>(&'q mut self, mut f: impl FnMut(&'q QueryFont) -> QueryStatus) {
+-        for family in self
+-            .state
+-            .families
+-            .iter_mut()
+-            .chain(self.state.fallback_families.iter_mut())
+-        {
++        // The fonts kept were loaded for the attributes of the query that
++        // loaded them.
++        if self.state.attributes != self.attributes {
++            self.state.clear_fonts();
++            self.state.attributes = self.attributes;
++        }
++        let families = if self.state.families_set {
++            &mut self.state.families[..]
++        } else {
++            &mut []
++        };
++        let fallbacks = if self.state.fallbacks_set {
++            &mut self.state.fallback_families[..]
++        } else {
++            &mut []
++        };
++        for family in families.iter_mut().chain(fallbacks.iter_mut()) {
+             match &mut family.family {
+                 Entry::Error => continue,
+                 Entry::Ok(..) => {}
+@@ -188,12 +233,6 @@ impl<'a> Query<'a> {
+     }
+ }
+ 
+-impl Drop for Query<'_> {
+-    fn drop(&mut self) {
+-        self.state.clear();
+-    }
+-}
+-
+ /// Determines whether a font query operation will continue.
+ ///
+ /// See [`Query::matches_with`].
+@@ -387,3 +426,115 @@ enum Entry<T> {
+     Vacant,
+     Error,
+ }
++
++#[cfg(test)]
++mod tests {
++    use alloc::sync::Arc;
++    use alloc::vec::Vec;
++
++    use crate::{
++        Attributes, Blob, Collection, CollectionOptions, FamilyId, FontInfoOverride, FontWeight,
++        QueryFamily, SourceCache,
++    };
++
++    const ROBOTO: &[u8] =
++        include_bytes!("../../../parley_dev/assets/fonts/roboto_fonts/Roboto-Regular.ttf");
++    const ARIMO: &[u8] =
++        include_bytes!("../../../parley_dev/assets/fonts/arimo_fonts/Arimo-VariableFont_wght.ttf");
++
++    fn collection() -> Collection {
++        Collection::new(CollectionOptions {
++            shared: false,
++            system_fonts: false,
++        })
++    }
++
++    fn register(c: &mut Collection, data: &[u8], over: Option<FontInfoOverride<'_>>) -> FamilyId {
++        c.register_fonts(Blob::new(Arc::new(data.to_vec())), over)[0].0
++    }
++
++    /// The first font a query for `families` at `weight` yields: its family
++    /// and its index there.
++    fn first(
++        c: &mut Collection,
++        cache: &mut SourceCache,
++        families: &[&str],
++        weight: Option<FontWeight>,
++    ) -> Option<(FamilyId, usize)> {
++        let mut query = c.query(cache);
++        query.set_families(families.iter().copied().map(QueryFamily::Named));
++        if let Some(weight) = weight {
++            query.set_attributes(Attributes {
++                weight,
++                ..Attributes::default()
++            });
++        }
++        query.first_available_font().map(|font| font.family)
++    }
++
++    #[test]
++    fn a_query_matches_what_the_last_one_did_and_no_more() {
++        let mut c = collection();
++        let mut cache = SourceCache::default();
++        let roboto = register(&mut c, ROBOTO, None);
++        let found: Vec<_> = (0..3)
++            .map(|_| first(&mut c, &mut cache, &["Roboto"], None))
++            .collect();
++        assert_eq!(found, [Some((roboto, 0)); 3]);
++        let mut query = c.query(&mut cache);
++        assert!(
++            query.first_available_font().is_none(),
++            "a query that names no family matches none, whatever the last one did"
++        );
++    }
++
++    #[test]
++    fn a_query_matches_at_its_own_attributes() {
++        let mut c = collection();
++        let mut cache = SourceCache::default();
++        let roboto = register(&mut c, ROBOTO, None);
++        let bold = FontInfoOverride {
++            family_name: Some("Roboto"),
++            weight: Some(FontWeight::BOLD),
++            ..Default::default()
++        };
++        assert_eq!(register(&mut c, ARIMO, Some(bold)), roboto);
++        let bold = Some(FontWeight::BOLD);
++        assert_eq!(
++            first(&mut c, &mut cache, &["Roboto"], bold),
++            Some((roboto, 1))
++        );
++        assert_eq!(
++            first(&mut c, &mut cache, &["Roboto"], None),
++            Some((roboto, 0)),
++            "after a bold query, one at the default weight takes the regular face"
++        );
++        assert_eq!(
++            first(&mut c, &mut cache, &["Roboto"], bold),
++            Some((roboto, 1))
++        );
++    }
++
++    #[test]
++    fn a_font_registered_after_a_query_is_one_the_next_query_sees() {
++        let mut c = collection();
++        let mut cache = SourceCache::default();
++        let roboto = register(&mut c, ROBOTO, None);
++        let bold = Some(FontWeight::BOLD);
++        assert_eq!(
++            first(&mut c, &mut cache, &["Roboto"], bold),
++            Some((roboto, 0)),
++            "the regular face, made bold, while it is the only one"
++        );
++        let face = FontInfoOverride {
++            family_name: Some("Roboto"),
++            weight: Some(FontWeight::BOLD),
++            ..Default::default()
++        };
++        register(&mut c, ARIMO, Some(face));
++        assert_eq!(
++            first(&mut c, &mut cache, &["Roboto"], bold),
++            Some((roboto, 1))
++        );
++    }
++}
+-- 
+2.56.0
+

@@ -11,8 +11,9 @@ Blitz lays out text with Parley, at the revision Blitz pins, which is our
 `base`. hotty-blitz draws hotty surfaces, often with a terminal's
 monospace font stack, and Parley chose a font for emoji in a way that drew
 them in monochrome there. It also broke lines between inline boxes that
-`white-space: nowrap` keeps together, and asked the system for a fallback
-font again for every surface's copy of a font collection. We mod Parley rather than fork it so
+`white-space: nowrap` keeps together, asked the system for a fallback
+font again for every surface's copy of a font collection, and matched a
+font stack again for every text layout. We mod Parley rather than fork it so
 that each fix stays one change on the revision Blitz builds with, until
 Parley has its own.
 
