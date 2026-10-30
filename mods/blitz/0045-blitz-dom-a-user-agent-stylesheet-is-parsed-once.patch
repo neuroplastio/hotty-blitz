@@ -1,0 +1,150 @@
+From d65e938507c4b4c1821408344dd6a82eb69466e7 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 30 Oct 2026 05:47:46 +0100
+Subject: [PATCH] blitz-dom: a user agent stylesheet is parsed once
+
+`add_user_agent_stylesheet` parsed its CSS for every document, and Stylo
+then built the user agent origin's cascade data again for each, since a
+sheet parsed anew is a new key in its cache of that data. A user agent
+sheet is now parsed once for the documents of a URL that add it, under
+a read-only lock, which any document's guard reads, and the process
+keeps the last eight such sheets. Every document after the first shares
+the sheet and takes its cascade data from Stylo's cache. A sheet that
+imports others is still parsed per document, so that its imports load
+through that document's loader.
+---
+ packages/blitz-dom/src/document.rs | 110 ++++++++++++++++++++++++++++-
+ 1 file changed, 109 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index f5c098a4..af6e629a 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1255,11 +1255,50 @@ impl BaseDocument {
+     }
+ 
+     pub fn add_user_agent_stylesheet(&mut self, css: &str) {
+-        let sheet = self.make_stylesheet(css, Origin::UserAgent);
++        let sheet = self.user_agent_stylesheet(css);
+         self.ua_stylesheets.insert(css.to_string(), sheet.clone());
+         self.stylist.append_stylesheet(sheet, &self.guard.read());
+     }
+ 
++    /// A user agent stylesheet, parsed once for the documents of a URL that
++    /// add it (the process keeps the last few). Its lock is read-only, so
++    /// every document's guard reads it, and as it is the same sheet each
++    /// time, Stylo's cache of the user agent origin's cascade data serves
++    /// every document after the first, which then builds none. A sheet that
++    /// imports others is parsed for each document, whose loader fetches them.
++    fn user_agent_stylesheet(&self, css: &str) -> DocumentStyleSheet {
++        const KEPT: usize = 8;
++        static PARSED: Mutex<Vec<(Url, String, DocumentStyleSheet)>> = Mutex::new(Vec::new());
++        if css.contains("@import") {
++            return self.make_stylesheet(css, Origin::UserAgent);
++        }
++        let url = self.url();
++        let mut parsed = PARSED.lock().unwrap_or_else(|e| e.into_inner());
++        if let Some(i) = parsed.iter().position(|(u, c, _)| u == url && c == css) {
++            let entry = parsed.remove(i);
++            let sheet = entry.2.clone();
++            parsed.push(entry);
++            return sheet;
++        }
++        let lock = SharedRwLock::read_only();
++        let sheet = DocumentStyleSheet(ServoArc::new(Stylesheet::from_str(
++            css,
++            self.url.url_extra_data(),
++            Origin::UserAgent,
++            ServoArc::new(lock.wrap(MediaList::empty())),
++            lock,
++            None,
++            None,
++            QuirksMode::NoQuirks,
++            AllowImportRules::Yes,
++        )));
++        if parsed.len() >= KEPT {
++            parsed.remove(0);
++        }
++        parsed.push((url.clone(), css.to_string(), sheet.clone()));
++        sheet
++    }
++
+     /// Adds a stylesheet of the user origin: its rules win over the user
+     /// agent's and lose to the document's own, whatever their specificity.
+     pub fn add_user_stylesheet(&mut self, css: &str) {
+@@ -3839,3 +3878,72 @@ mod focus_visible_tests {
+         assert!(!ring(&doc, button), "a button clicked shows none");
+     }
+ }
++
++#[cfg(test)]
++mod shared_user_agent_sheet_tests {
++    use super::*;
++    use crate::{Attribute, qual_name};
++
++    const UA: &str = ".a { color: rgb(4, 4, 4); }";
++
++    fn doc(url: &str, ua: &str) -> BaseDocument {
++        BaseDocument::new(DocumentConfig {
++            base_url: Some(url.to_string()),
++            ua_stylesheets: Some(vec![ua.to_string()]),
++            ..Default::default()
++        })
++    }
++
++    fn sheet(doc: &BaseDocument) -> DocumentStyleSheet {
++        doc.useragent_stylesheets().next().unwrap().clone()
++    }
++
++    /// The red channel of `<div class="a">`'s colour, in 0..=255.
++    fn red_of_a(doc: &mut BaseDocument) -> u8 {
++        let root_id = doc.root_node().id;
++        let mut mutator = doc.mutate();
++        let html = mutator.create_element(qual_name!("html"), vec![]);
++        let body = mutator.create_element(qual_name!("body"), vec![]);
++        let div = mutator.create_element(
++            qual_name!("div"),
++            vec![Attribute {
++                name: qual_name!("class"),
++                value: "a".to_string(),
++            }],
++        );
++        mutator.append_children(body, &[div]);
++        mutator.append_children(html, &[body]);
++        mutator.append_children(root_id, &[html]);
++        drop(mutator);
++        doc.resolve(0.0);
++        let c = doc.nodes[div].primary_styles().unwrap().clone_color();
++        (c.components.0 * 255.0).round() as u8
++    }
++
++    #[test]
++    fn the_documents_of_a_url_share_their_user_agent_sheet() {
++        let a = doc("https://ua-share-a.example/", UA);
++        let b = doc("https://ua-share-a.example/", UA);
++        let c = doc("https://ua-share-c.example/", UA);
++        assert!(ServoArc::ptr_eq(&sheet(&a).0, &sheet(&b).0));
++        assert!(
++            !ServoArc::ptr_eq(&sheet(&a).0, &sheet(&c).0),
++            "another URL is another sheet: its relative URLs resolve against it"
++        );
++        let imports = format!("@import url(x.css);\n{UA}");
++        let d = doc("https://ua-share-a.example/", &imports);
++        let e = doc("https://ua-share-a.example/", &imports);
++        assert!(
++            !ServoArc::ptr_eq(&sheet(&d).0, &sheet(&e).0),
++            "a sheet that imports is its document's own"
++        );
++    }
++
++    #[test]
++    fn a_shared_sheet_styles_every_document_that_has_it() {
++        let mut a = doc("https://ua-share-styles.example/", UA);
++        let mut b = doc("https://ua-share-styles.example/", UA);
++        assert_eq!(red_of_a(&mut a), 4);
++        assert_eq!(red_of_a(&mut b), 4, "parsed once, it styles both");
++    }
++}
+-- 
+2.56.0
+
