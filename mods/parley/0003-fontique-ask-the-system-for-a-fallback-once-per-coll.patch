@@ -1,0 +1,70 @@
+From e946d9e63a47b721a3a1fd0da474a79f1d334b79 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 30 Oct 2026 05:47:46 +0100
+Subject: [PATCH] fontique: ask the system for a fallback once per collection
+
+A collection's clones share the system's fonts, but the fallback family
+the system gave for a key was kept in the clone that asked, so each new
+clone asked again: with fontconfig, a match over every font installed.
+The answer is now kept beside the system's fonts, for every clone, and a
+key the system has no fallback for is asked once too.
+---
+ fontique/src/collection/mod.rs | 24 +++++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/fontique/src/collection/mod.rs b/fontique/src/collection/mod.rs
+index 807854b..bf3fa43 100644
+--- a/fontique/src/collection/mod.rs
++++ b/fontique/src/collection/mod.rs
+@@ -446,9 +446,6 @@ impl Inner {
+             if let Some(families) = self.data.fallbacks.get(selector) {
+                 self.fallback_cache.set(script, lang_key, families);
+             } else if let Some(system) = self.system.as_ref() {
+-                // Some platforms don't need mut System
+-                #[allow(unused_mut)]
+-                let mut system = system.fonts.lock().unwrap();
+                 if let Some(family) = system.fallback(selector) {
+                     self.data.fallbacks.set(selector, core::iter::once(family));
+                     self.fallback_cache.set(script, lang_key, &[family]);
+@@ -670,6 +667,11 @@ impl FallbackCache {
+ struct System {
+     #[cfg(feature = "system")]
+     fonts: Arc<Mutex<SystemFonts>>,
++    /// The family the system gave as the fallback for each key, kept for
++    /// every clone of the collection: asking again is a match over all of
++    /// the system's fonts.
++    #[cfg(feature = "system")]
++    fallbacks: Arc<Mutex<HashMap<FallbackKey, Option<FamilyId>>>>,
+     family_names: Arc<FamilyNameMap>,
+     generic_families: Arc<GenericFamilyMap>,
+ }
+@@ -684,10 +686,26 @@ impl System {
+         Self {
+             #[cfg(feature = "system")]
+             fonts,
++            #[cfg(feature = "system")]
++            fallbacks: Arc::default(),
+             family_names,
+             generic_families,
+         }
+     }
++
++    /// The system's fallback family for `key`, asked once.
++    #[cfg(feature = "system")]
++    fn fallback(&self, key: FallbackKey) -> Option<FamilyId> {
++        if let Some(&family) = self.fallbacks.lock().unwrap().get(&key) {
++            return family;
++        }
++        // Some platforms don't need mut System
++        #[allow(unused_mut)]
++        let mut fonts = self.fonts.lock().unwrap();
++        let family = fonts.fallback(key);
++        self.fallbacks.lock().unwrap().insert(key, family);
++        family
++    }
+ }
+ 
+ /// Common data for base and shared collections.
+-- 
+2.56.0
+
