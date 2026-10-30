@@ -12,7 +12,7 @@ use blitz_dom::{
     BaseDocument, DEFAULT_CSS, Document, DocumentConfig, EventDriver, EventHandler, FontContext,
     NodeId, local_name,
 };
-use blitz_html::{HtmlDocument, HtmlProvider};
+use blitz_html::{DocumentHtmlParser, HtmlDocument, HtmlProvider};
 use blitz_paint::paint_scene;
 use blitz_traits::events::{
     BlitzInputEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData,
@@ -139,7 +139,7 @@ impl Renderers {
 pub(crate) struct Surface {
     doc: HtmlDocument,
     /// Where delta fragments are parsed (see delta.rs).
-    parse_doc: HtmlDocument,
+    parse_doc: BaseDocument,
     pub cols: u16,
     pub rows: u16,
     pub auto_rows: bool,
@@ -644,15 +644,17 @@ impl Surface {
         // Along an axis it did not ask for, nothing in it scrolls (SPEC §5.3).
         doc.set_scroll_axes(scroll_axes & 2 != 0, scroll_axes & 1 != 0);
         // The shared font context: without one, a document scans the
-        // system's fonts, which cost every new surface ~12 ms.
-        let parse_doc = HtmlDocument::from_html(
-            "",
-            DocumentConfig {
-                html_parser_provider: Some(Arc::new(HtmlProvider)),
-                font_ctx: Some(font_ctx),
-                ..Default::default()
-            },
-        );
+        // system's fonts, which cost every new surface ~12 ms. It is never
+        // styled, so it takes no stylesheet: built as HtmlDocument builds
+        // one, but without the default stylesheet HtmlDocument always adds,
+        // 24 KB parsed for each new surface (0.3 ms).
+        let mut parse_doc = BaseDocument::new(DocumentConfig {
+            html_parser_provider: Some(Arc::new(HtmlProvider)),
+            font_ctx: Some(font_ctx),
+            ua_stylesheets: Some(Vec::new()),
+            ..Default::default()
+        });
+        DocumentHtmlParser::parse_into_mutator(&mut parse_doc.mutate(), "");
         Surface {
             doc,
             parse_doc,
