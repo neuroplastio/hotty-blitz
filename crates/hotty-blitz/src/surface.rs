@@ -113,23 +113,66 @@ impl NavigationProvider for NavQueue {
 /// surface, they were hundreds of idle threads once a program had shown a
 /// few dozen surfaces.
 ///
+/// A context also keeps the glyphs it drew (vello_cpu's outlines and
+/// hinting instances, by font and size), which a surface of text fills at
+/// a cost: a palette's first paint in a context of its own took 4.2 ms of
+/// scene, against 1.2 in one that had drawn it (gov R-22). hottyterm's
+/// chrome paints a pane ring's strips in six sizes and an overlay, which
+/// with plx's palette and its box made nine sizes for eight contexts, and
+/// the palette's context went between two openings. So a host keeps ten,
+/// and a small paint takes the place of a small context, and a large one
+/// of a large context once `LARGE_KEPT` are kept: small paints in more
+/// sizes than fit do not push the large contexts out.
+///
 /// They also keep which glyphs draw nothing (`paint::Ink`), for every
 /// surface's painter.
 #[derive(Default)]
 pub(crate) struct Renderers(Vec<((u32, u32), VelloCpuImageRenderer)>, paint::Ink);
 
 impl Renderers {
-    /// How many contexts a host keeps.
-    const KEPT: usize = 8;
+    /// How many contexts a host keeps (each with its workers: 40 threads
+    /// at most, vello_cpu taking 4 per context).
+    const KEPT: usize = 10;
+    /// How many of them may be large, and how many pixels make one.
+    const LARGE_KEPT: usize = 4;
+    const LARGE: u64 = 256 * 1024;
+
+    fn large(bucket: (u32, u32)) -> bool {
+        bucket.0 as u64 * bucket.1 as u64 >= Self::LARGE
+    }
+
+    /// Which of the contexts kept for `buckets` (least recently used first)
+    /// goes to make room for one for `bucket`, if one must: the least
+    /// recently used large one when as many as `LARGE_KEPT` are kept and
+    /// `bucket` is large, or else the least recently used small one when
+    /// `KEPT` are kept (there is one then, since at most `LARGE_KEPT` are
+    /// large).
+    fn evicted(buckets: &[(u32, u32)], bucket: (u32, u32)) -> Option<usize> {
+        let large = buckets.iter().filter(|b| Self::large(**b)).count();
+        let class = if Self::large(bucket) && large >= Self::LARGE_KEPT {
+            true
+        } else if buckets.len() >= Self::KEPT {
+            false
+        } else {
+            return None;
+        };
+        Some(
+            buckets
+                .iter()
+                .position(|b| Self::large(*b) == class)
+                .unwrap_or(0),
+        )
+    }
 
     /// The context for `bucket`, made if there is none; it becomes the most
-    /// recently used, and the least recently used goes past `KEPT`.
+    /// recently used, and one goes as `evicted` says.
     fn get(&mut self, bucket: (u32, u32)) -> (&mut VelloCpuImageRenderer, &mut paint::Ink) {
         let entry = match self.0.iter().position(|(k, _)| *k == bucket) {
             Some(i) => self.0.remove(i),
             None => {
-                if self.0.len() >= Self::KEPT {
-                    self.0.remove(0);
+                let kept: Vec<(u32, u32)> = self.0.iter().map(|(k, _)| *k).collect();
+                if let Some(i) = Self::evicted(&kept, bucket) {
+                    self.0.remove(i);
                 }
                 (bucket, VelloCpuImageRenderer::new(bucket.0, bucket.1))
             }
@@ -3925,5 +3968,90 @@ fn unpremultiply(buf: &mut [u8]) {
                 p[2] = ((p[2] as u32 * 255 + a / 2) / a).min(255) as u8;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Renderers;
+
+    /// `Renderers::get` on bucket sizes alone: whether each was kept.
+    fn run(seq: &[(u32, u32)]) -> (Vec<(u32, u32)>, Vec<bool>) {
+        let mut kept: Vec<(u32, u32)> = Vec::new();
+        let mut hits = Vec::new();
+        for &b in seq {
+            match kept.iter().position(|k| *k == b) {
+                Some(i) => {
+                    kept.remove(i);
+                    hits.push(true);
+                }
+                None => {
+                    if let Some(i) = Renderers::evicted(&kept, b) {
+                        kept.remove(i);
+                    }
+                    hits.push(false);
+                }
+            }
+            kept.push(b);
+            assert!(kept.len() <= Renderers::KEPT);
+            assert!(kept.iter().filter(|k| Renderers::large(**k)).count() <= Renderers::LARGE_KEPT);
+        }
+        (kept, hits)
+    }
+
+    #[test]
+    fn the_palette_s_contexts_outlast_the_chrome_between_openings() {
+        // plx's E7 in hottyterm (gov R-22's rig): between two openings of
+        // the palette (960x704) and its box (960x768), the chrome paints a
+        // pane ring's strips in six sizes and an overlay (1152x512).
+        let strips = [(1216, 64), (64, 1408), (64, 64), (1152, 64)];
+        let edges = [(64, 64), (2304, 64), (2432, 64)];
+        let mut cycle = vec![(1152, 512)];
+        for _ in 0..3 {
+            cycle.extend(strips);
+            cycle.extend(strips);
+            cycle.extend([(1152, 512), (1152, 512)]);
+        }
+        cycle.extend(edges);
+        cycle.extend([(960, 704), (960, 704), (960, 768), (1152, 512)]);
+        let seq: Vec<(u32, u32)> = cycle
+            .iter()
+            .copied()
+            .cycle()
+            .take(cycle.len() * 4)
+            .collect();
+        let (_, hits) = run(&seq);
+        // After the first cycle, every paint finds its context.
+        for (i, (b, hit)) in seq.iter().zip(&hits).enumerate().skip(cycle.len()) {
+            assert!(hit, "paint {i} of {b:?} made a context");
+        }
+    }
+
+    #[test]
+    fn small_paints_in_many_sizes_leave_the_large_contexts_alone() {
+        let large = [(960, 704), (960, 768), (1152, 512)];
+        let mut seq = large.to_vec();
+        seq.extend((1..=20).map(|i| (64 * i, 64)));
+        seq.extend(large);
+        let (_, hits) = run(&seq);
+        assert!(hits[hits.len() - 3..].iter().all(|h| *h));
+    }
+
+    #[test]
+    fn a_large_paint_takes_a_large_context_s_place_past_four() {
+        let large = [
+            (1024, 1024),
+            (2048, 512),
+            (960, 704),
+            (960, 768),
+            (1152, 512),
+        ];
+        let (kept, _) = run(&[(64, 64), large[0], large[1], large[2], large[3], large[4]]);
+        // The least recently used large one went; the small one stayed.
+        assert_eq!(kept, vec![(64, 64), large[1], large[2], large[3], large[4]]);
+        // Small paints alone keep the ten most recent.
+        let small: Vec<(u32, u32)> = (1..=12).map(|i| (64 * i, 64)).collect();
+        let (kept, _) = run(&small);
+        assert_eq!(kept, small[2..].to_vec());
     }
 }
