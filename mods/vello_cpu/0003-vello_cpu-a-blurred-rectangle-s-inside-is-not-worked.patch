@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 30 Oct 2026 10:03:16 +0100
+Subject: [PATCH] vello_cpu: a blurred rectangle's inside is not worked out
+ pixel by pixel
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`fill_blurred_rounded_rect` (a box shadow) paints its rectangle with a
+shader that works out each pixel's alpha with three scalar `powf`s and
+two `erf` approximations, inside the rectangle too, where the alpha is
+1. A chunk of 8 pixels whose corners are all at least `max(r1, 7σ)` and
+a pixel from both edges now takes 1.0 straight away, when `scale` is
+exactly 0.5. There both `erf7` terms are ±1.0 exactly in f32, so the
+formula's own result is 1.0 and the pixels are the same bits; a test
+compares every lane of both over rectangles, radii, blurs and
+transforms, a rotation among them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/fine/common/rounded_blurred_rect.rs | 133 ++++++++++++++++++++++++
+ 1 file changed, 133 insertions(+)
+
+diff --git a/src/fine/common/rounded_blurred_rect.rs b/src/fine/common/rounded_blurred_rect.rs
+index 9089d1d..f310260 100644
+--- a/src/fine/common/rounded_blurred_rect.rs
++++ b/src/fine/common/rounded_blurred_rect.rs
+@@ -45,6 +45,7 @@ impl<S: Simd> BlurredRoundedRectFiller<S> {
+                     rect.x_advance,
+                     rect.y_advance,
+                     simd_rect,
++                    Inside::new(rect),
+                     simd,
+                 );
+ 
+@@ -122,12 +123,67 @@ impl<S: Simd> crate::fine::Painter for BlurredRoundedRectFiller<S> {
+     }
+ }
+ 
++/// How far inside the rectangle's edges the blur is spent: there the
++/// formula below gives exactly 1.0, so it need not be worked out.
++///
++/// Where a pixel is at least `max(r1, 7σ)` from both edges, `x1` and `y1`
++/// are 0, `d_pos` is 0 and `d` is minus the distance to the nearer edge,
++/// so both `erf7` arguments are 7 or more from 0 (`min_edge + d` is at
++/// least `-d`). Past about 6.2 the polynomial's `x` is past 2^13, where the
++/// rounded square root of `x * x + 1` is `x` itself, so `erf7` is ±1.0
++/// exactly; with `scale` exactly 0.5 the alpha is `0.5 * (1.0 + 1.0)`. The
++/// test is made on a chunk's four corners (the region is a rectangle) with
++/// a pixel to spare for the f32 positions.
++#[derive(Debug, Clone, Copy)]
++struct Inside {
++    /// Half the rectangle's width and height: its centre.
++    centre: Vec2,
++    /// Half of `w` and `h`, from the centre to the edges the formula uses.
++    edge: Vec2,
++    /// The least distance from both edges where alpha is 1.0.
++    margin: f64,
++}
++
++impl Inside {
++    /// How many standard deviations in `erf7` is exactly ±1.0, with room.
++    const SIGMAS: f64 = 7.0;
++
++    fn new(rect: &EncodedBlurredRoundedRectangle) -> Option<Self> {
++        if rect.scale != 0.5 || !(rect.std_dev_inv > 0.0) {
++            return None;
++        }
++        let sigma = 1.0 / f64::from(rect.std_dev_inv);
++        let margin = f64::from(rect.r1).max(Self::SIGMAS * sigma) + 1.0;
++        let edge = Vec2::new(0.5 * f64::from(rect.w), 0.5 * f64::from(rect.h));
++        (edge.x > margin && edge.y > margin && margin.is_finite()).then(|| Self {
++            centre: Vec2::new(0.5 * f64::from(rect.width), 0.5 * f64::from(rect.height)),
++            edge,
++            margin,
++        })
++    }
++
++    /// Whether every pixel of the chunk starting at `pos` (two columns of
++    /// a tile's height, `next` below) is that far in.
++    #[inline(always)]
++    fn holds(&self, pos: Point, x_advance: Vec2, y_advance: Vec2) -> bool {
++        let down = y_advance * f64::from(vello_common::tile::Tile::HEIGHT - 1);
++        [pos, pos + x_advance, pos + down, pos + x_advance + down]
++            .iter()
++            .all(|p| {
++                let x = self.edge.x - (p.x - self.centre.x).abs();
++                let y = self.edge.y - (p.y - self.centre.y).abs();
++                x >= self.margin && y >= self.margin
++            })
++    }
++}
++
+ #[derive(Debug)]
+ struct AlphaCalculator<S: Simd> {
+     cur_pos: Point,
+     x_advance: Vec2,
+     y_advance: Vec2,
+     r: SimdRoundedBlurredRect<S>,
++    inside: Option<Inside>,
+     simd: S,
+ }
+ 
+@@ -137,6 +193,7 @@ impl<S: Simd> AlphaCalculator<S> {
+         x_advance: Vec2,
+         y_advance: Vec2,
+         r: SimdRoundedBlurredRect<S>,
++        inside: Option<Inside>,
+         simd: S,
+     ) -> Self {
+         Self {
+@@ -144,6 +201,7 @@ impl<S: Simd> AlphaCalculator<S> {
+             x_advance,
+             y_advance,
+             r,
++            inside,
+             simd,
+         }
+     }
+@@ -154,6 +212,12 @@ impl<S: Simd> Iterator for AlphaCalculator<S> {
+ 
+     #[inline(always)]
+     fn next(&mut self) -> Option<Self::Item> {
++        if let Some(inside) = &self.inside
++            && inside.holds(self.cur_pos, self.x_advance, self.y_advance)
++        {
++            self.cur_pos += 2.0 * self.x_advance;
++            return Some(f32x8::splat(self.simd, 1.0));
++        }
+         let i = f32x8::splat_pos(
+             self.simd,
+             self.cur_pos.x as f32,
+@@ -283,3 +347,72 @@ impl<S: Simd> FloatExt<S> for f32x8<S> {
+         self
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::kurbo::{Affine, Rect};
++    use vello_common::blurred_rounded_rect::BlurredRoundedRectangle;
++    use vello_common::peniko::color::palette::css::BLACK;
++    use vello_common::encode::{EncodeExt, EncodedPaint};
++    use vello_common::fearless_simd::{Level, dispatch};
++
++    /// Every lane of every chunk over the painted area, with the inside
++    /// left to the formula and taken as 1.0: the same bits. Returns how
++    /// many chunks were taken as inside.
++    fn same_bits<S: Simd>(simd: S, rect: Rect, radius: f32, std_dev: f32, t: Affine) -> usize {
++        let mut paints = alloc::vec::Vec::new();
++        let _ = BlurredRoundedRectangle {
++            rect,
++            color: BLACK,
++            radius,
++            std_dev,
++            invert: false,
++        }
++        .encode_into(&mut paints, t, None);
++        let Some(EncodedPaint::BlurredRoundedRect(e)) = paints.pop() else {
++            panic!("not a blurred rectangle");
++        };
++        let mut taken = 0;
++        let area = t.transform_rect_bbox(rect.inflate(f64::from(3.0 * std_dev), f64::from(3.0 * std_dev)));
++        let (x0, y0) = (area.x0.floor() as i32, area.y0.floor() as i32);
++        let (x1, y1) = (area.x1.ceil() as i32, area.y1.ceil() as i32);
++        for y in (y0..y1).step_by(4) {
++            let start = e.transform * Point::new(f64::from(x0), f64::from(y));
++            let mut fast = AlphaCalculator::new(start, e.x_advance, e.y_advance, SimdRoundedBlurredRect::new(&e, simd), Inside::new(&e), simd);
++            let mut slow = AlphaCalculator::new(start, e.x_advance, e.y_advance, SimdRoundedBlurredRect::new(&e, simd), None, simd);
++            for _ in (x0..x1).step_by(2) {
++                let inside = fast.inside.is_some_and(|i| i.holds(fast.cur_pos, fast.x_advance, fast.y_advance));
++                taken += usize::from(inside);
++                let (a, b) = (fast.next().unwrap(), slow.next().unwrap());
++                for k in 0..8 {
++                    assert_eq!(a[k].to_bits(), b[k].to_bits(), "{rect:?} r {radius} σ {std_dev} at ({x0}+, {y}) lane {k}: {} vs {}", a[k], b[k]);
++                }
++            }
++        }
++        taken
++    }
++
++    #[test]
++    fn the_inside_is_the_formula_s_own_one() {
++        dispatch!(Level::try_detect().unwrap_or(Level::baseline()), simd => {
++            let mut taken = 0;
++            for (rect, radius, std_dev, t) in [
++                // plx's dialog box: 8 px corners, a 6 px blur, at scale 1.6.
++                (Rect::new(13.0, 27.0, 949.0, 721.0), 12.8, 6.0, Affine::IDENTITY),
++                (Rect::new(13.0, 27.0, 949.0, 721.0), 12.8, 6.0, Affine::translate((0.3, 2.0))),
++                (Rect::new(0.0, 0.0, 300.0, 40.0), 0.0, 1.5, Affine::IDENTITY),
++                (Rect::new(0.0, 0.0, 300.0, 40.0), 18.0, 2.0, Affine::scale(1.6)),
++                (Rect::new(5.0, 5.0, 200.0, 180.0), 30.0, 0.5, Affine::rotate(0.3)),
++                // A spread with no blur (std_dev 0, as a box-shadow's spread).
++                (Rect::new(-500.0, -500.0, 900.0, 700.0), 4.0, 0.0, Affine::IDENTITY),
++                // Too small to have an inside, and one too blurred for it.
++                (Rect::new(0.0, 0.0, 20.0, 10.0), 2.0, 1.0, Affine::IDENTITY),
++                (Rect::new(0.0, 0.0, 120.0, 90.0), 2.0, 40.0, Affine::IDENTITY),
++            ] {
++                taken += same_bits(simd, rect, radius, std_dev, t);
++            }
++            assert!(taken > 10_000, "chunks taken as inside: {taken}");
++        });
++    }
++}
+-- 
+2.56.0
+
