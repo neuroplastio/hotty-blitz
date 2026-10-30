@@ -796,6 +796,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "skrifa",
  "stylo",
  "stylo_dom",
  "stylo_static_prefs",

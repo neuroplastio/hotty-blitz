@@ -112,8 +112,11 @@ impl NavigationProvider for NavQueue {
 /// of its own, so the host keeps a few, the most recently used: kept per
 /// surface, they were hundreds of idle threads once a program had shown a
 /// few dozen surfaces.
+///
+/// They also keep which glyphs draw nothing (`paint::Ink`), for every
+/// surface's painter.
 #[derive(Default)]
-pub(crate) struct Renderers(Vec<((u32, u32), VelloCpuImageRenderer)>);
+pub(crate) struct Renderers(Vec<((u32, u32), VelloCpuImageRenderer)>, paint::Ink);
 
 impl Renderers {
     /// How many contexts a host keeps.
@@ -121,7 +124,7 @@ impl Renderers {
 
     /// The context for `bucket`, made if there is none; it becomes the most
     /// recently used, and the least recently used goes past `KEPT`.
-    fn get(&mut self, bucket: (u32, u32)) -> &mut VelloCpuImageRenderer {
+    fn get(&mut self, bucket: (u32, u32)) -> (&mut VelloCpuImageRenderer, &mut paint::Ink) {
         let entry = match self.0.iter().position(|(k, _)| *k == bucket) {
             Some(i) => self.0.remove(i),
             None => {
@@ -132,7 +135,7 @@ impl Renderers {
             }
         };
         self.0.push(entry);
-        &mut self.0.last_mut().expect("just pushed").1
+        (&mut self.0.last_mut().expect("just pushed").1, &mut self.1)
     }
 }
 
@@ -1231,7 +1234,7 @@ impl Surface {
         // Render into a context of the rectangle's size rounded up to 64 px,
         // reused across frames; only `r` is copied out.
         let bucket = (r.w.div_ceil(64) * 64, r.h.div_ceil(64) * 64);
-        let renderer = renderers.get(bucket);
+        let (renderer, ink) = renderers.get(bucket);
         let r_render = Rect {
             x: r.x,
             y: r.y,
@@ -1259,7 +1262,9 @@ impl Surface {
             // falls outside).
             renderer.render(
                 |scene| {
-                    let mut window = paint::Window::new(scene, r.x, r.y, r_render.w, r_render.h);
+                    let mut inked = paint::Inked::new(scene, ink);
+                    let mut window =
+                        paint::Window::new(&mut inked, r.x, r.y, r_render.w, r_render.h);
                     paint_scene(&mut window, doc, scale, w, h, 0, 0);
                     bars.paint(&mut window, kurbo::Affine::IDENTITY);
                     scened = trace::now();
@@ -1278,9 +1283,10 @@ impl Surface {
             });
             renderer.render(
                 |scene| {
-                    paint_scene(scene, doc, scale, r_render.w, r_render.h, 0, 0);
+                    let mut scene = paint::Inked::new(scene, ink);
+                    paint_scene(&mut scene, doc, scale, r_render.w, r_render.h, 0, 0);
                     let shift = kurbo::Affine::translate((-(r.x as f64), -(r.y as f64)));
-                    bars.paint(scene, shift);
+                    bars.paint(&mut scene, shift);
                     scened = trace::now();
                 },
                 &mut self.scratch,

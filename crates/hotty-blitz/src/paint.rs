@@ -204,6 +204,256 @@ impl<S: PaintScene> PaintScene for Window<'_, S> {
     }
 }
 
+/// Which glyphs draw something, by font face and glyph: a space's outline
+/// is empty. Kept by the host, across frames and surfaces, since a face's
+/// glyphs do not change (a face is its blob and index; one source cache
+/// serves every surface, fonts.rs). Per face, a byte per glyph id: 0 not
+/// yet known, 1 nothing, 2 something. A paint asks about every glyph run,
+/// so this is an index, not a hash.
+#[derive(Default)]
+pub struct Ink(Vec<((u64, u32), Vec<u8>)>);
+
+impl Ink {
+    /// Faces past which the table starts over (their glyphs in use, found
+    /// again).
+    const FACES: usize = 64;
+
+    /// Whether glyph `id` of `font` draws anything, as vello_cpu draws
+    /// glyphs (glifo): a colour glyph, a bitmap, or an outline with a
+    /// segment. A face that cannot be read counts as drawing.
+    #[inline]
+    fn of(&mut self, font: &FontData, id: u32) -> bool {
+        let key = (font.data.id(), font.index);
+        let face = match self.0.iter().position(|(k, _)| *k == key) {
+            Some(i) => i,
+            None => {
+                if self.0.len() >= Self::FACES {
+                    self.0.clear();
+                }
+                self.0.push((key, Vec::new()));
+                self.0.len() - 1
+            }
+        };
+        let glyphs = &mut self.0[face].1;
+        let g = id as usize;
+        // OpenType glyph ids fit in 16 bits.
+        if g > u16::MAX as usize {
+            return inked(font, id);
+        }
+        if g >= glyphs.len() {
+            glyphs.resize(g + 1, 0);
+        }
+        match glyphs[g] {
+            0 => {
+                let ink = inked(font, id);
+                glyphs[g] = 1 + u8::from(ink);
+                ink
+            }
+            known => known == 2,
+        }
+    }
+}
+
+fn inked(font: &FontData, id: u32) -> bool {
+    use skrifa::MetadataProvider;
+    use skrifa::outline::{DrawSettings, OutlinePen};
+    let Ok(face) = skrifa::FontRef::from_index(font.data.data(), font.index) else {
+        return true;
+    };
+    let gid = skrifa::GlyphId::new(id);
+    // Bitmaps are looked up by size, so a face with any is left alone.
+    if face.color_glyphs().get(gid).is_some() || !face.bitmap_strikes().is_empty() {
+        return true;
+    }
+    let Some(outline) = face.outline_glyphs().get(gid) else {
+        return false;
+    };
+    struct Segments(bool);
+    impl OutlinePen for Segments {
+        fn move_to(&mut self, _: f32, _: f32) {}
+        fn line_to(&mut self, _: f32, _: f32) {
+            self.0 = true;
+        }
+        fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {
+            self.0 = true;
+        }
+        fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {
+            self.0 = true;
+        }
+        fn close(&mut self) {}
+    }
+    // A glyph's segments are the same at every location of a variable font
+    // (gvar and CFF2 blends move points; they add none).
+    let mut pen = Segments(false);
+    let settings = DrawSettings::unhinted(
+        skrifa::instance::Size::unscaled(),
+        skrifa::instance::LocationRef::default(),
+    );
+    outline.draw(settings, &mut pen).map_or(true, |_| pen.0)
+}
+
+/// A scene painter that leaves out glyph runs that draw nothing (a run of
+/// spaces), forwarding everything else as it is. Preparing a run costs
+/// vello_cpu a fixed amount (its font's tables looked up again), which a
+/// document of one-space cells (a box drawn cell by cell) pays per cell.
+pub struct Inked<'a, S: PaintScene> {
+    pub inner: &'a mut S,
+    ink: &'a mut Ink,
+    /// The fill rule the inner painter was last given: a layer's clip
+    /// takes it (vello_cpu), so a run is left out only when its rule is
+    /// that one already. A reset painter starts at non-zero.
+    rule: Option<Fill>,
+    /// Runs left out, for the tests.
+    pub left_out: u32,
+}
+
+impl<'a, S: PaintScene> Inked<'a, S> {
+    pub fn new(inner: &'a mut S, ink: &'a mut Ink) -> Self {
+        Inked {
+            inner,
+            ink,
+            rule: Some(Fill::NonZero),
+            left_out: 0,
+        }
+    }
+}
+
+impl<S: PaintScene> RenderContext for Inked<'_, S> {
+    #[inline]
+    fn try_register_custom_resource(
+        &mut self,
+        resource: Box<dyn std::any::Any>,
+    ) -> Result<anyrender::ResourceId, anyrender::RegisterResourceError> {
+        self.inner.try_register_custom_resource(resource)
+    }
+
+    #[inline]
+    fn unregister_resource(&mut self, resource_id: anyrender::ResourceId) {
+        self.inner.unregister_resource(resource_id)
+    }
+
+    #[inline]
+    fn renderer_specific_context(&self) -> Option<Box<dyn std::any::Any>> {
+        self.inner.renderer_specific_context()
+    }
+}
+
+impl<S: PaintScene> PaintScene for Inked<'_, S> {
+    #[inline]
+    fn reset(&mut self) {
+        self.rule = Some(Fill::NonZero);
+        self.inner.reset()
+    }
+
+    #[inline]
+    fn push_layer(
+        &mut self,
+        blend: impl Into<BlendMode>,
+        alpha: f32,
+        transform: Affine,
+        clip: &impl Shape,
+        filter: Option<std::sync::Arc<anyrender::Filter>>,
+        backdrop_filter: Option<std::sync::Arc<anyrender::Filter>>,
+    ) {
+        self.inner
+            .push_layer(blend, alpha, transform, clip, filter, backdrop_filter)
+    }
+
+    #[inline]
+    fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
+        self.inner.push_clip_layer(transform, clip)
+    }
+
+    #[inline]
+    fn pop_layer(&mut self) {
+        self.inner.pop_layer()
+    }
+
+    #[inline]
+    fn stroke<'b>(
+        &mut self,
+        style: &Stroke,
+        transform: Affine,
+        brush: impl Into<PaintRef<'b>>,
+        brush_transform: Option<Affine>,
+        shape: &impl Shape,
+    ) {
+        self.inner
+            .stroke(style, transform, brush, brush_transform, shape)
+    }
+
+    #[inline]
+    fn fill<'b>(
+        &mut self,
+        style: Fill,
+        transform: Affine,
+        brush: impl Into<PaintRef<'b>>,
+        brush_transform: Option<Affine>,
+        shape: &impl Shape,
+    ) {
+        self.rule = Some(style);
+        self.inner
+            .fill(style, transform, brush, brush_transform, shape)
+    }
+
+    #[inline]
+    fn draw_glyphs<'b, 's: 'b>(
+        &'s mut self,
+        font: &'b FontData,
+        font_size: f32,
+        hint: bool,
+        normalized_coords: &'b [anyrender::NormalizedCoord],
+        embolden: kurbo::Vec2,
+        style: impl Into<StyleRef<'b>>,
+        brush: impl Into<PaintRef<'b>>,
+        brush_alpha: f32,
+        transform: Affine,
+        glyph_transform: Option<Affine>,
+        glyphs: impl Iterator<Item = anyrender::Glyph> + Clone,
+    ) {
+        let style = style.into();
+        let rule = match &style {
+            StyleRef::Fill(rule) => Some(*rule),
+            StyleRef::Stroke(_) => None,
+        };
+        let same_rule = rule.is_none() || rule == self.rule;
+        let ink = &mut *self.ink;
+        if same_rule && !glyphs.clone().any(|g| ink.of(font, g.id)) {
+            self.left_out += 1;
+            return;
+        }
+        if rule.is_some() {
+            self.rule = rule;
+        }
+        self.inner.draw_glyphs(
+            font,
+            font_size,
+            hint,
+            normalized_coords,
+            embolden,
+            style,
+            brush,
+            brush_alpha,
+            transform,
+            glyph_transform,
+            glyphs,
+        )
+    }
+
+    #[inline]
+    fn draw_box_shadow(
+        &mut self,
+        transform: Affine,
+        rect: kurbo::Rect,
+        brush: Color,
+        radius: f64,
+        std_dev: f64,
+    ) {
+        self.inner
+            .draw_box_shadow(transform, rect, brush, radius, std_dev)
+    }
+}
+
 /// A rectangle in device pixels, as floats while it is being built.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DevRect {
@@ -680,6 +930,30 @@ mod tests {
             }
         }
         rects
+    }
+
+    #[test]
+    fn a_space_draws_nothing_and_a_letter_does() {
+        use skrifa::MetadataProvider;
+        let bytes = blitz_dom::decode_font_bytes(include_bytes!(
+            "../fonts/AdwaitaMonoNerdFontPropo-Regular.woff2"
+        ))
+        .into_owned();
+        let font = FontData::new(peniko::Blob::new(std::sync::Arc::new(bytes)), 0);
+        let face = skrifa::FontRef::from_index(font.data.data(), 0).unwrap();
+        let glyph = |c| face.charmap().map(c).unwrap().to_u32();
+        let mut ink = Ink::default();
+        for (c, inked) in [
+            (' ', false),
+            ('\u{a0}', false),
+            ('A', true),
+            ('.', true),
+            ('│', true),
+        ] {
+            assert_eq!(ink.of(&font, glyph(c)), inked, "{c:?}");
+            // Asked again, from the map.
+            assert_eq!(ink.of(&font, glyph(c)), inked, "{c:?}");
+        }
     }
 
     #[test]
