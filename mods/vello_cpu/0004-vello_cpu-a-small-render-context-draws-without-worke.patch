@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 30 Oct 2026 21:08:36 +0100
+Subject: [PATCH] vello_cpu: a small render context draws without workers
+
+RenderContext::new now gives a context of fewer than 256 K pixels no
+workers (num_threads 0), so it draws on the calling thread. A caller
+that keeps a context per paint size, as a terminal painting the parts
+of its surfaces that changed does, holds many small contexts, and each
+kept its workers' threads alive; a paint that small is over before the
+workers have taken much of it. new_with still takes any count.
+---
+ src/render.rs | 26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/src/render.rs b/src/render.rs
+index 68d33c6..61ec0ba 100644
+--- a/src/render.rs
++++ b/src/render.rs
+@@ -207,10 +207,22 @@ impl Default for RenderSettings {
+     }
+ }
+ 
++/// Below this many pixels, [`RenderContext::new`] makes a context without
++/// workers.
++const SMALL_AREA: u32 = 256 * 1024;
++
+ impl RenderContext {
+     /// Create a new render context with the given width and height in pixels.
++    ///
++    /// A context of fewer than 256 K pixels draws on the calling thread: a
++    /// paint that small is over before workers have taken much of it, and
++    /// every context keeps its workers' threads for as long as it lives.
+     pub fn new(width: u16, height: u16) -> Self {
+-        Self::new_with(width, height, RenderSettings::default())
++        let mut settings = RenderSettings::default();
++        if u32::from(width) * u32::from(height) < SMALL_AREA {
++            settings.num_threads = 0;
++        }
++        Self::new_with(width, height, settings)
+     }
+ 
+     /// Create a new render context with specific settings.
+@@ -1262,6 +1274,18 @@ mod tests {
+         ctx.reset();
+     }
+ 
++    #[test]
++    fn small_context_has_no_workers() {
++        use crate::RenderSettings;
++
++        assert_eq!(RenderContext::new(1152, 64).render_settings().num_threads, 0);
++        assert_eq!(RenderContext::new(511, 512).render_settings().num_threads, 0);
++        assert_eq!(
++            RenderContext::new(512, 512).render_settings().num_threads,
++            RenderSettings::default().num_threads
++        );
++    }
++
+     #[cfg(feature = "multithreading")]
+     #[test]
+     fn multithreaded_drop_with_pending_tasks() {
+-- 
+2.56.0
+

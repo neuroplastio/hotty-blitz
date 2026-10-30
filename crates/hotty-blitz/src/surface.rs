@@ -130,8 +130,9 @@ impl NavigationProvider for NavQueue {
 pub(crate) struct Renderers(Vec<((u32, u32), VelloCpuImageRenderer)>, paint::Ink);
 
 impl Renderers {
-    /// How many contexts a host keeps (each with its workers: 40 threads
-    /// at most, vello_cpu taking 4 per context).
+    /// How many contexts a host keeps: 16 worker threads at most, since
+    /// vello_cpu gives a large context 4 and a small one none
+    /// (mods/vello_cpu 0004, whose line between them is `LARGE`'s).
     const KEPT: usize = 10;
     /// How many of them may be large, and how many pixels make one.
     const LARGE_KEPT: usize = 4;
