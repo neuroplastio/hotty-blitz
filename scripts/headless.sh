@@ -27,19 +27,31 @@ output HEADLESS-1 resolution 2400x1500 scale 2
 default_border none
 focus_follows_mouse no
 CFG
-  before=$(ls "$XDG_RUNTIME_DIR" | grep -E '^wayland-[0-9]+$' || true)
+  # Other sways may run beside this one (other sessions', the rig's), so it
+  # is told apart by the display and the IPC socket (sway-ipc.<uid>.<pid>.sock)
+  # that appear while it starts.
+  sockets() { ls "$XDG_RUNTIME_DIR" | grep -E '^(wayland-[0-9]+|sway-ipc\.[0-9]+\.[0-9]+\.sock)$' || true; }
+  before=$(sockets)
   (env -u WAYLAND_DISPLAY -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE \
     WLR_BACKENDS=headless WLR_RENDERER=gles2 WLR_LIBINPUT_NO_DEVICES=1 \
     LD_LIBRARY_PATH="$CACHE/root/usr/lib" \
     setsid "$CACHE/root/usr/bin/sway" -c "$CACHE/config" >"$CACHE/sway.log" 2>&1 &)
   sleep 1.5
-  after=$(ls "$XDG_RUNTIME_DIR" | grep -E '^wayland-[0-9]+$' || true)
-  new=$(printf '%s\n%s\n' "$before" "$after" | sort | uniq -u | head -1)
-  echo "${new:-?}" > "$CACHE/display"
-  pgrep -n -x sway > "$CACHE/pid" || true   # its IPC socket is sway-ipc.<uid>.<pid>.sock
-  echo "headless sway on ${new:-?}"
+  new=$(sockets | grep -vxF -e "$before" || true)
+  display=$(echo "$new" | grep -m1 '^wayland-' || true)
+  echo "${display:-?}" > "$CACHE/display"
+  echo "$new" | sed -n 's/^sway-ipc\.[0-9]*\.\([0-9]*\)\.sock$/\1/p' | head -1 > "$CACHE/pid"
+  echo "headless sway on ${display:-?}"
   ;;
 stop)
-  pkill -x sway || true
+  # Only the sway `start` began, if it still runs on this config: never
+  # another's.
+  pid=$(cat "$CACHE/pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && [ "$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline")" = "$CACHE/root/usr/bin/sway -c $CACHE/config " ]; then
+    kill "$pid"
+  else
+    echo "headless.sh: no sway of its own to stop" >&2
+  fi
+  rm -f "$CACHE/pid"
   ;;
 esac
