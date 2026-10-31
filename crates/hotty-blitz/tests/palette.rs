@@ -139,6 +139,65 @@ fn controls_take_the_palette(dark: bool) {
     assert_eq!(s(&h, "#own", "outline-style"), "none");
 }
 
+/// The focus ring is the controls' (hotty 0.6, V6-07): a container that
+/// takes the focus, here an element with `tabindex` and a scrolling list,
+/// shows none, while a button, a link and a summary do.
+#[test]
+fn a_focused_container_has_no_ring() {
+    let t = theme(true);
+    let accent = rgb(t.palette[12]);
+    let mut h = Host::new(Config {
+        metrics: Metrics {
+            cell_w: 10,
+            cell_h: 20,
+            scale: 1.0,
+        },
+        theme: t,
+        ..Config::default()
+    });
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        "<div id=pane tabindex=0>a pane that takes keys</div>\
+         <div id=list tabindex=-1 style='height:40px;overflow:auto'><p>one</p><p>two</p><p>three</p></div>\
+         <button id=b>Go</button> <a id=a href='#x'>link</a>\
+         <details><summary id=sum>more</summary>hidden</details>",
+    ));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "60"),
+            ("r", "10"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    h.render_dirty(&mut |_, _, _| {});
+    for id in ["pane", "list"] {
+        focus(&mut h, id);
+        assert!(h.is_focused("x"), "#{id} takes the focus");
+        assert_eq!(
+            style(&h, &format!("#{id}"), "outline-style"),
+            "none",
+            "#{id}"
+        );
+    }
+    for id in ["b", "a", "sum"] {
+        focus(&mut h, id);
+        assert_eq!(
+            style(&h, &format!("#{id}"), "outline-style"),
+            "solid",
+            "#{id}"
+        );
+        assert_eq!(
+            style(&h, &format!("#{id}"), "outline-color"),
+            accent,
+            "#{id}"
+        );
+    }
+    assert_eq!(style(&h, "#pane", "outline-style"), "none");
+}
+
 #[test]
 fn controls_take_the_palette_on_a_dark_scheme() {
     controls_take_the_palette(true);

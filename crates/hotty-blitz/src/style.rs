@@ -54,6 +54,9 @@ pub fn host_css(config: &Config) -> String {
 /// Controls in the terminal's colours, not the engine's: ansi-8 is the dim
 /// grey of borders, buttons, placeholders and what is disabled. :where()
 /// keeps the base rule below the state rules after it, such as :disabled.
+/// The focus ring is the controls' alone (hotty 0.6, V6-07): a container
+/// that takes the focus, such as an element with `tabindex` or a scrolling
+/// region, shows none unless the document gives it one.
 const CONTROLS: &str = "\
 :where(input:not([type=checkbox], [type=radio], [type=range]), textarea,
        select, button) {
@@ -65,7 +68,9 @@ button:enabled, input:is([type=button], [type=submit], [type=reset]):enabled {
   background: var(--hotty-ansi-8);
 }
 ::placeholder, :disabled { color: var(--hotty-ansi-8); }
-:focus-visible { outline: 1px solid var(--hotty-accent); }
+:is(a[href], button, input, select, textarea, summary):focus-visible {
+  outline: 1px solid var(--hotty-accent);
+}
 :any-link { color: var(--hotty-accent); }
 ::selection { color: var(--hotty-bg); background: var(--hotty-accent); }
 ";
