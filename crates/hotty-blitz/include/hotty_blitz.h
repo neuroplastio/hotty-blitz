@@ -30,10 +30,15 @@ typedef struct {
   /* The surface is cols x rows cells; the placement shows the window
    * x, y, w x h of it, over w x h cells at the cursor, above or below
    * overlapping placements by z (SPEC 5.2: greater above; among equals, the
-   * one whose surface was created later, a greater `created`, above). */
+   * one whose surface was created later, a greater `created`, above). A
+   * backdrop (hotty 0.6, V6-06), which only a terminal that called
+   * hotty_host_set_backdrops is given, is drawn under the cells instead:
+   * below every other placement, among backdrops by z and created, a cell
+   * with the default background transparent over it. It takes no pointer:
+   * leave it out of the hit test. */
   void (*place)(void *ctx, const char *surface, uint16_t cols, uint16_t rows,
                 uint16_t x, uint16_t y, uint16_t w, uint16_t h, int32_t z, uint32_t created,
-                bool move_cursor);
+                bool move_cursor, bool backdrop);
   void (*remove)(void *ctx, const char *surface); /* the surface is gone */
   /* The surface is hidden (SPEC 5.4): remove its placement, and keep what
    * shows it again cheaply. Its document stays. */
@@ -87,8 +92,8 @@ void hotty_host_redeliver(hotty_host *h, const char *surface);
 void hotty_host_render(hotty_host *h, void *ctx, hotty_frame_fn cb);
 /* What rendering and the terminal's settings found for the program, through
  * fx->reply: caps events (SPEC 4, 9) after hotty_host_configure,
- * hotty_host_set_network, hotty_host_set_passthrough or hotty_host_set_counts
- * changed what the capabilities say; fit events (SPEC 5.2: a surface with
+ * hotty_host_set_network, hotty_host_set_passthrough, hotty_host_set_counts or
+ * hotty_host_set_backdrops changed what the capabilities say; fit events (SPEC 5.2: a surface with
  * f=1 hears the rows its document needs), with the rows of the last frame
  * drawn, and view events (SPEC 9.5: which elements with data-on~=view are in
  * view), with what it shows, at most one of each per surface; a caret
@@ -273,6 +278,11 @@ void hotty_host_set_passthrough(hotty_host *h, bool on);
  * hotty_host_pointer: the capabilities then list the feature "count" (SPEC
  * 4, 9). */
 void hotty_host_set_counts(hotty_host *h, bool on);
+/* The terminal draws backdrops under the cells (hotty 0.6, V6-06): a
+ * placement with b=1 reaches place() with backdrop set, and the capabilities
+ * list the feature "backdrop". Without it, b is a key the host does not know
+ * (SPEC 15), and the surface is placed above the cells. */
+void hotty_host_set_backdrops(hotty_host *h, bool on);
 /* The host's half of the network policy (SPEC 7.2) in CSP's syntax, as its
  * user grants it: "img-src https://example.com; font-src https:". NULL or
  * empty: none, as a new host starts. The capabilities report it ("net"). A

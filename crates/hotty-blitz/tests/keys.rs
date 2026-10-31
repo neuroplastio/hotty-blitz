@@ -324,6 +324,43 @@ fn caps_report_the_settings_and_their_changes() {
     );
 }
 
+/// A terminal that draws backdrops (hotty 0.6, V6-06) says so: the
+/// capabilities list `backdrop`, last, and a program that asked for them
+/// hears it come and go as `caps`.
+#[test]
+fn caps_list_backdrop_where_the_terminal_draws_them() {
+    let mut h = host(KeySettings::default());
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
+    assert_eq!(
+        body(&r[0].payload)["features"],
+        serde_json::json!(["hover"])
+    );
+    h.set_backdrops(true);
+    let r = replies(&h.take_events());
+    assert_eq!(
+        (r[0].get("e"), r[0].get("s")),
+        (Some("caps"), None),
+        "{r:?}"
+    );
+    assert_eq!(
+        body(&r[0].payload),
+        serde_json::json!({"features": ["hover", "backdrop"]})
+    );
+    h.set_passthrough(true);
+    h.take_events();
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
+    assert_eq!(
+        body(&r[0].payload)["features"],
+        serde_json::json!(["passthrough", "hover", "backdrop"])
+    );
+    h.set_backdrops(false);
+    let r = replies(&h.take_events());
+    assert_eq!(
+        body(&r[0].payload),
+        serde_json::json!({"features": ["passthrough", "hover"]})
+    );
+}
+
 /// A new font tells `caps` with the new `cellcss`; a zoom, which changes
 /// the cell in device pixels and `scale` together, and a program that did
 /// not ask, hear nothing (SPEC §4, §5.3).

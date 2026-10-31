@@ -194,6 +194,10 @@ pub(crate) struct Surface {
     /// The program asked for `press` (`p=1`, SPEC §5.2): every press in
     /// the window is reported, whatever it lands on.
     pub presses: bool,
+    /// Its placement is a backdrop (`b=1`, hotty 0.6's V6-06): drawn under
+    /// the cells, it takes no pointer and never has the keyboard. Like
+    /// `z`, the placement's: each placement says it again.
+    pub backdrop: bool,
     /// The program asked for `fit` (`f=1`, SPEC §5.2): the rows it last
     /// heard the document needs, the placement's own first.
     pub fit: Option<u16>,
@@ -709,6 +713,7 @@ impl Surface {
             auto_rows: false,
             placed: false,
             presses: false,
+            backdrop: false,
             fit: None,
             fit_event: None,
             view_askers: None,

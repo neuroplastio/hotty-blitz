@@ -165,6 +165,14 @@ pub enum Effect {
     /// surface was `created` later above). Its pixels come from
     /// [`Host::render_dirty`] when the surface changed; an adapter that no
     /// longer has them asks again with [`Host::redeliver`].
+    ///
+    /// A `backdrop` (hotty 0.6, V6-06), which only a host that said it
+    /// draws them is given ([`Host::set_backdrops`]), is drawn under the
+    /// cells instead: a cell with the default background is transparent
+    /// over it, and any other background, the text and the cursor cover it.
+    /// Backdrops stack among themselves by `z` and `created`, under every
+    /// other placement, and take no pointer: the host hands it to what is
+    /// above them.
     Place {
         surface: String,
         cols: u16,
@@ -173,6 +181,7 @@ pub enum Effect {
         z: i16,
         created: u32,
         move_cursor: bool,
+        backdrop: bool,
     },
     /// The surface is hidden (SPEC §5.4): remove its placement. Its document
     /// stays; an adapter that keeps the pixels can show it again without them.
@@ -253,6 +262,10 @@ pub struct Host {
     /// The embedding terminal hands over its platform's count of each press
     /// (`pointer_counted`), and the capabilities say `count` (SPEC §9).
     counts: bool,
+    /// The embedding terminal draws backdrops under the cells
+    /// ([`Host::set_backdrops`]), and the capabilities say `backdrop`
+    /// (hotty 0.6, V6-06).
+    backdrops: bool,
     /// The embedding terminal reads the clipboard for a field's `paste`
     /// ([`Effect::Paste`], `set_paste`).
     paste: bool,
@@ -488,6 +501,7 @@ impl Host {
             program_press: false,
             passthrough: false,
             counts: false,
+            backdrops: false,
             paste: false,
             click_run: None,
             fits: Vec::new(),
@@ -536,6 +550,7 @@ impl Host {
             ("hover", true),
             ("count", self.counts),
             ("menu", self.keys.menus),
+            ("backdrop", self.backdrops),
         ];
         Heard {
             cellcss: cellcss(&self.config.metrics),
@@ -1479,6 +1494,19 @@ impl Host {
                         .filter(|z| (-1000..=1000).contains(z))
                         .ok_or(("EINVAL", "z is an integer from -1000 to 1000".to_string()))?,
                 };
+                // A backdrop (hotty 0.6, V6-06), where the terminal draws
+                // them; elsewhere `b` is a key the host doesn't know, and
+                // the surface is placed above the cells (SPEC §15). Like
+                // `z`, the placement's: one without `b=1` is above them.
+                let backdrop = self.backdrops && cmd.get("b") == Some("1");
+                // A backdrop never has the keyboard: one that had it gives
+                // it back to the terminal, as with a=blur.
+                if backdrop && s.has_focus() {
+                    for e in s.blur() {
+                        effects.push(Effect::Reply(e.encode(&name)));
+                    }
+                }
+                s.backdrop = backdrop;
                 s.set_size(cols, rows);
                 s.auto_rows = auto;
                 s.placed = true;
@@ -1516,6 +1544,7 @@ impl Host {
                     z,
                     created: s.created,
                     move_cursor: cmd.get("C") != Some("1"),
+                    backdrop,
                 });
                 Ok((
                     vec![
@@ -1623,6 +1652,10 @@ impl Host {
                     .ok_or(("ENOENT", format!("no surface {name}")))?;
                 if cmd.action() == "focus" && s.is_detached() {
                     return Err(("EDETACHED", format!("surface {name} is detached")));
+                }
+                // A backdrop never has the keyboard (hotty 0.6, V6-06).
+                if cmd.action() == "focus" && s.backdrop {
+                    return Err(("EINVAL", format!("surface {name} is a backdrop")));
                 }
                 if cmd.action() == "focus" {
                     for e in s.focus(cmd.get("t")).map_err(|e| ("ENOTARGET", e))? {
@@ -1773,6 +1806,19 @@ impl Host {
         count: u32,
     ) -> Vec<Effect> {
         enter(&mut self.working, surface);
+        // A backdrop takes no pointer (hotty 0.6, V6-06): the terminal hands
+        // it to what is above, and what reaches one here anyway does
+        // nothing. A gesture held on the surface before it became a
+        // backdrop ends as it would have, and the pointer's leaving still
+        // ends what it hovered.
+        if kind != PointerKind::Leave
+            && self
+                .surfaces
+                .get(surface)
+                .is_some_and(|s| s.backdrop && !s.held())
+        {
+            return Vec::new();
+        }
         // A press begins a gesture, and decides whose it is: a release the
         // host lost does not leave the next one the program's.
         if kind == PointerKind::Down {
@@ -1927,7 +1973,10 @@ impl Host {
             TouchPhase::Down => {
                 // A touch that never lifted: its drag ends.
                 out.effects = self.cancel_touch();
-                let pans = if mods.alt {
+                // A backdrop takes no touch (hotty 0.6, V6-06): it is the
+                // terminal's, to scroll with, and taps nothing.
+                let backdrop = self.surfaces.get(surface).is_some_and(|s| s.backdrop);
+                let pans = if mods.alt || backdrop {
                     None
                 } else {
                     self.touch_pans(surface, x, y)
@@ -1943,7 +1992,7 @@ impl Host {
                     mods,
                     pans: pans.unwrap_or((true, true)),
                     touch: out.touch,
-                    tap: true,
+                    tap: !backdrop,
                 });
             }
             TouchPhase::Move => {
@@ -2360,7 +2409,11 @@ impl Host {
         });
         let route = match same {
             Some(g) => g.route,
-            None => match self.surfaces.get_mut(surface).filter(|s| s.placed) {
+            None => match self
+                .surfaces
+                .get_mut(surface)
+                .filter(|s| s.placed && !s.backdrop)
+            {
                 Some(s) => s.wheel_route(cx, cy, dx, dy),
                 None => scroll::Route::Terminal,
             },
@@ -2557,16 +2610,29 @@ impl Host {
         self.owed.extend(owed);
     }
 
+    /// The terminal embedding this host draws backdrops (hotty 0.6, V6-06):
+    /// a placement with `b=1` is then one ([`Effect::Place`]'s `backdrop`),
+    /// the capabilities list the feature `backdrop`, and a program that
+    /// asked for them hears a change as `caps`, with [`Host::take_events`].
+    /// Without it, `b` is a key the host does not know (SPEC §15).
+    pub fn set_backdrops(&mut self, on: bool) {
+        self.backdrops = on;
+        let owed = self.caps_changed(false);
+        self.owed.extend(owed);
+    }
+
     /// Whether `surface` takes the pointer at device pixel (`x`, `y`) of the
-    /// surface. False where only boxes with `pointer-events: none` are, and
-    /// for a surface there is no such: the host then hands the pointer to
-    /// what is below the surface, another placement or the cells (SPEC §9.3).
+    /// surface. False where only boxes with `pointer-events: none` are, on
+    /// a backdrop (hotty 0.6, V6-06), and for a surface there is no such:
+    /// the host then hands the pointer to what is below the surface,
+    /// another placement or the cells (SPEC §9.3), or what is above a
+    /// backdrop.
     pub fn takes_pointer(&mut self, surface: &str, x: f32, y: f32) -> bool {
         enter(&mut self.working, surface);
         let scale = self.config.metrics.scale;
         self.surfaces
             .get_mut(surface)
-            .is_some_and(|s| s.takes_pointer(x / scale, y / scale))
+            .is_some_and(|s| !s.backdrop && s.takes_pointer(x / scale, y / scale))
     }
 
     pub fn cursor(&self, surface: &str) -> Option<&'static str> {

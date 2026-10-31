@@ -27,6 +27,23 @@ pub struct HottyConfig {
     pub font_size: f32,
 }
 
+/// `HottyEffects::place`: (ctx, surface, cols, rows, the window's x, y, w,
+/// h, z, created, move_cursor, backdrop).
+pub type PlaceFn = extern "C" fn(
+    ctx: *mut c_void,
+    surface: *const c_char,
+    cols: u16,
+    rows: u16,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    z: i32,
+    created: u32,
+    move_cursor: bool,
+    backdrop: bool,
+);
+
 #[repr(C)]
 pub struct HottyEffects {
     pub ctx: *mut c_void,
@@ -37,22 +54,10 @@ pub struct HottyEffects {
     /// cells, above or below overlapping placements by `z` (SPEC §5.2:
     /// greater above; among equals, the one whose surface was `created`
     /// later above). An adapter without the surface's pixels asks for them
-    /// with `hotty_host_redeliver`.
-    pub place: Option<
-        extern "C" fn(
-            ctx: *mut c_void,
-            surface: *const c_char,
-            cols: u16,
-            rows: u16,
-            x: u16,
-            y: u16,
-            w: u16,
-            h: u16,
-            z: i32,
-            created: u32,
-            move_cursor: bool,
-        ),
-    >,
+    /// with `hotty_host_redeliver`. A `backdrop` (hotty 0.6, V6-06), given
+    /// only to a terminal that set `hotty_host_set_backdrops`, is drawn
+    /// under the cells, below every other placement, and takes no pointer.
+    pub place: Option<PlaceFn>,
     /// Remove `surface`'s placement: the surface is gone.
     pub remove: Option<extern "C" fn(ctx: *mut c_void, surface: *const c_char)>,
     /// Remove `surface`'s placement and keep what shows it again cheaply: the
@@ -207,6 +212,7 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                 z,
                 created,
                 move_cursor,
+                backdrop,
             } => {
                 if let (Some(f), Ok(name)) = (fx.place, CString::new(surface)) {
                     f(
@@ -221,6 +227,7 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
                         z as i32,
                         created,
                         move_cursor,
+                        backdrop,
                     );
                 }
             }
@@ -421,8 +428,9 @@ pub unsafe extern "C" fn hotty_host_render(h: *mut HottyHost, ctx: *mut c_void, 
 
 /// Sends what rendering and the terminal's settings found for the program
 /// through `fx`: `caps` events (SPEC §4, §9) after `hotty_host_configure`,
-/// `hotty_host_set_network`, `hotty_host_set_passthrough` or
-/// `hotty_host_set_counts` changed what the capabilities say, `fit` events
+/// `hotty_host_set_network`, `hotty_host_set_passthrough`,
+/// `hotty_host_set_counts` or `hotty_host_set_backdrops` changed what the
+/// capabilities say, `fit` events
 /// (SPEC §5.2), with the rows of the last frame drawn, and `view` events
 /// (§9.5), with what it shows, at most one of each per surface, and a
 /// `caret` event (§9) held back to this frame. Call after
@@ -1104,6 +1112,17 @@ pub unsafe extern "C" fn hotty_host_set_passthrough(h: *mut HottyHost, on: bool)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hotty_host_set_counts(h: *mut HottyHost, on: bool) {
     guard(h, (), |h| h.host.set_counts(on))
+}
+
+/// The terminal draws backdrops under the cells (hotty 0.6, V6-06): a
+/// placement with `b=1` reaches `place` as one, and the capabilities list
+/// the feature `backdrop` (Host::set_backdrops).
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_backdrops(h: *mut HottyHost, on: bool) {
+    guard(h, (), |h| h.host.set_backdrops(on))
 }
 
 /// Whether the surface takes the pointer at device pixel (`x`, `y`) of the
