@@ -10,7 +10,7 @@ use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
     BaseDocument, CopyStyleGetters as _, Document, DocumentConfig, EventDriver, EventHandler,
-    FontContext, NodeId, local_name,
+    FontContext, NodeId, ScrollSnapIntent, local_name,
 };
 use blitz_html::{DocumentHtmlParser, HtmlDocument, HtmlProvider};
 use blitz_paint::paint_scene;
@@ -277,6 +277,9 @@ pub(crate) struct Surface {
     cell: (f64, f64),
     /// The root's scrollbars, which hotty-blitz draws (scroll.rs).
     root_bar: scroll::RootBar,
+    /// What the wheel gesture under way scrolls, and its offset when the
+    /// gesture began: it snaps when the gesture comes to rest (scroll.rs).
+    wheel_from: Option<(Scroller, (f64, f64))>,
     /// Elements whose scrollbars Blitz shows, with when they last showed:
     /// they are painted again as they fade.
     fading: Vec<(NodeId, Instant)>,
@@ -753,6 +756,7 @@ impl Surface {
             scroll_axes,
             cell: cell_css(&m),
             root_bar: scroll::RootBar::default(),
+            wheel_from: None,
             fading: Vec::new(),
             faded_at: None,
             caret_at: Instant::now(),
@@ -1272,7 +1276,14 @@ impl Surface {
         }
         let ((x, y), (mx, my)) = scroll::state(&self.doc, Scroller::Viewport, self.scroll_axes);
         if x > mx || y > my {
-            scroll::scroll_to(&mut self.doc, Scroller::Viewport, x.min(mx), y.min(my));
+            let snap = Some(ScrollSnapIntent::EndPosition);
+            scroll::scroll_to(
+                &mut self.doc,
+                Scroller::Viewport,
+                x.min(mx),
+                y.min(my),
+                snap,
+            );
             self.damage.full = true;
         }
     }
@@ -3135,11 +3146,37 @@ impl Surface {
     }
 
     /// Scrolls `s`, which the wheel gesture at CSS pixel (`x`, `y`) is
-    /// latched to, by (`dx`, `dy`) CSS pixels, as far as it goes.
+    /// latched to, by (`dx`, `dy`) CSS pixels, as far as it goes. It snaps
+    /// when the gesture comes to rest ([`Surface::wheel_rest`]).
     pub fn wheel_scroll(&mut self, s: Scroller, x: f32, y: f32, dx: f64, dy: f64) {
         self.pointer_at = Some((x, y));
+        if self.wheel_from.is_some_and(|(w, _)| w != s) {
+            self.wheel_rest();
+        }
         self.resolve();
+        if self.wheel_from.is_none() {
+            self.wheel_from = Some((s, scroll::state(&self.doc, s, 3).0));
+        }
         if scroll::scroll_by(&mut self.doc, s, self.scroll_axes, dx, dy) {
+            self.scrolled(s);
+        }
+    }
+
+    /// Whether a wheel gesture scrolled the document and has not come to
+    /// rest here yet.
+    pub fn wheel_owed(&self) -> bool {
+        self.wheel_from.is_some()
+    }
+
+    /// The wheel gesture that scrolled the document came to rest: what it
+    /// scrolled snaps, past where the gesture began, nearest where it ended
+    /// (CSS Scroll Snap's intended direction and end position).
+    pub fn wheel_rest(&mut self) {
+        let Some((s, from)) = self.wheel_from.take() else {
+            return;
+        };
+        self.resolve();
+        if scroll::snap_at_rest(&mut self.doc, s, from, ScrollSnapIntent::Direction) {
             self.scrolled(s);
         }
     }
@@ -3258,6 +3295,12 @@ impl Surface {
             self.root_bar.drag = None;
             self.root_bar.shown = Some(now);
             self.damage_root_bar();
+            // A thumb let go comes to rest where it was dragged to.
+            let at = scroll::state(&self.doc, Scroller::Viewport, 3).0;
+            let end = ScrollSnapIntent::EndPosition;
+            if scroll::snap_at_rest(&mut self.doc, Scroller::Viewport, at, end) {
+                self.scrolled(Scroller::Viewport);
+            }
             if kind != PointerKind::Leave {
                 return true;
             }

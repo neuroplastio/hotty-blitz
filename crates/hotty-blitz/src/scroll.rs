@@ -8,10 +8,21 @@
 //! here, not by Blitz: the innermost box that can still move that way,
 //! from the pointer (or the focused element) outward, then the root, then
 //! the terminal, unless `overscroll-behavior` stops it on the way.
+//!
+//! A scroll comes to rest as CSS Scroll Snap has it, in a box (or a root)
+//! whose `scroll-snap-type` asks: Blitz picks the snap position
+//! (mods/blitz/scroll-snap.md), and what the scroll meant decides which. A
+//! key's line or page goes its way and rests past where it began, a page no
+//! further than its step; Home and End, a thumb let go and `reveal` rest
+//! nearest where they ended, `reveal` keeping its element in view; a wheel
+//! gesture rests, past where it began, when it ends. The host's steps are
+//! what they were; snapping is where they end.
 
 use crate::body::{Area, MAX_INT};
 use blitz_dom::node::ScrollbarWidth;
-use blitz_dom::{BaseDocument, CopyStyleGetters as _, NodeId, ScrollBehavior};
+use blitz_dom::{
+    BaseDocument, CopyStyleGetters as _, NodeId, Point, ScrollBehavior, ScrollSnapIntent,
+};
 use std::time::{Duration, Instant};
 use style::computed_values::visibility::T as Visibility;
 use style::values::computed::{Overflow, OverscrollBehavior, TouchAction};
@@ -296,25 +307,74 @@ pub fn touch_pans(doc: &BaseDocument, from: NodeId, axes: u8) -> (bool, bool) {
     (x, y)
 }
 
-/// Scrolls `s` to (`x`, `y`), clamped; true if it moved.
-pub fn scroll_to(doc: &mut BaseDocument, s: Scroller, x: f64, y: f64) -> bool {
-    let id = match s {
+/// The element whose scroll `s` is, for Blitz: the root's for the viewport.
+fn element(doc: &BaseDocument, s: Scroller) -> Option<NodeId> {
+    match s {
         Scroller::Viewport => root(doc),
         Scroller::Node(id) => Some(id),
+    }
+}
+
+/// Scrolls `s` to (`x`, `y`), clamped; true if it moved. It comes to rest
+/// as `snap` says where `s` snaps, and with `None` it has not come to rest
+/// (a gesture under way, a thumb held), and does not snap yet.
+pub fn scroll_to(
+    doc: &mut BaseDocument,
+    s: Scroller,
+    x: f64,
+    y: f64,
+    snap: Option<ScrollSnapIntent>,
+) -> bool {
+    let Some(id) = element(doc, s) else {
+        return false;
     };
-    let Some(id) = id else { return false };
     let before = state(doc, s, 3).0;
-    doc.scroll_to(id, x.max(0.0), y.max(0.0), ScrollBehavior::Instant);
+    doc.scroll_to_with_snap(id, x.max(0.0), y.max(0.0), ScrollBehavior::Instant, snap);
     state(doc, s, 3).0 != before
 }
 
 /// Scrolls `s` by (`dx`, `dy`) CSS pixels along the asked axes, clamped;
-/// true if it moved.
+/// true if it moved. A gesture's or a thumb's: it snaps when it comes to
+/// rest ([`snap_at_rest`]).
 pub fn scroll_by(doc: &mut BaseDocument, s: Scroller, axes: u8, dx: f64, dy: f64) -> bool {
+    step(doc, s, axes, dx, dy, None)
+}
+
+/// Scrolls `s` by (`dx`, `dy`) along the asked axes, and it comes to rest
+/// as `snap` says.
+fn step(
+    doc: &mut BaseDocument,
+    s: Scroller,
+    axes: u8,
+    dx: f64,
+    dy: f64,
+    snap: Option<ScrollSnapIntent>,
+) -> bool {
     let ((x, y), _) = state(doc, s, axes);
     let dx = if axes & 2 != 0 { dx } else { 0.0 };
     let dy = if axes & 1 != 0 { dy } else { 0.0 };
-    scroll_to(doc, s, x + dx, y + dy)
+    scroll_to(doc, s, x + dx, y + dy, snap)
+}
+
+/// A scroll of `s` that began at offset `from` (a wheel gesture's, a
+/// thumb's) comes to rest where it is, as `intent` says: where `s` snaps,
+/// at its snap position (CSS Scroll Snap). True if that moved it.
+pub fn snap_at_rest(
+    doc: &mut BaseDocument,
+    s: Scroller,
+    from: (f64, f64),
+    intent: ScrollSnapIntent,
+) -> bool {
+    let Some(id) = element(doc, s) else {
+        return false;
+    };
+    let (x, y) = state(doc, s, 3).0;
+    let from = Point {
+        x: from.0,
+        y: from.1,
+    };
+    let to = doc.scroll_snap_position(id, from, Point { x, y }, intent);
+    (to.x, to.y) != (x, y) && scroll_to(doc, s, to.x, to.y, None)
 }
 
 /// What a key a browser scrolls with does (SPEC §5.3): along which axis,
@@ -382,7 +442,9 @@ pub fn action_scroll(action: &str) -> Option<KeyScroll> {
     Some(KeyScroll { axis, sign, by })
 }
 
-/// Scrolls `s` as key scroll `k` does.
+/// Scrolls `s` as key scroll `k` does, and it comes to rest as CSS Scroll
+/// Snap has a key's: a line or a page goes its way, a page no further than
+/// its step where it can, and Home and End end where they go.
 pub fn scroll_key(doc: &mut BaseDocument, s: Scroller, axes: u8, k: KeyScroll) -> bool {
     let (w, h) = port(doc, s);
     let len = match k.axis {
@@ -396,9 +458,14 @@ pub fn scroll_key(doc: &mut BaseDocument, s: Scroller, axes: u8, k: KeyScroll) -
         // To the end: as far as there is.
         KeyStep::End => f64::MAX / 4.0,
     } * k.sign;
+    let snap = Some(match k.by {
+        KeyStep::Line => ScrollSnapIntent::Direction,
+        KeyStep::Page | KeyStep::HalfPage => ScrollSnapIntent::Page,
+        KeyStep::End => ScrollSnapIntent::EndPosition,
+    });
     match k.axis {
-        Axis::X => scroll_by(doc, s, axes, by, 0.0),
-        Axis::Y => scroll_by(doc, s, axes, 0.0, by),
+        Axis::X => step(doc, s, axes, by, 0.0, snap),
+        Axis::Y => step(doc, s, axes, 0.0, by, snap),
     }
 }
 
@@ -458,7 +525,9 @@ pub enum Boxes {
 /// document asked for: along the block axis as `align` says, and across by
 /// as little as it can. Focus scrolls an element into view (SPEC §5.3) with
 /// [`Align::Nearest`] and [`Boxes::Clipping`]; `reveal` (§6.1) as its
-/// payload says, and only what scrolls. Returns the scrollers that moved.
+/// payload says, and only what scrolls. A box that snaps comes to rest at the
+/// snap position nearest that which keeps the element in view. Returns the
+/// scrollers that moved.
 pub fn into_view(
     doc: &mut BaseDocument,
     id: NodeId,
@@ -470,6 +539,7 @@ pub fn into_view(
     if axes == 0 {
         return moved;
     }
+    let snap = Some(ScrollSnapIntent::IntoView(id));
     let Some(root) = root(doc) else {
         return moved;
     };
@@ -497,7 +567,7 @@ pub fn into_view(
         let along = (along(Axis::X), along(Axis::Y));
         if (along.0 || along.1)
             && let Some((x, y)) = target(doc, id, Scroller::Node(n), axes, align, along)
-            && scroll_to(doc, Scroller::Node(n), x, y)
+            && scroll_to(doc, Scroller::Node(n), x, y, snap)
         {
             moved.push(Scroller::Node(n));
         }
@@ -515,7 +585,7 @@ pub fn into_view(
     };
     if (along.0 || along.1)
         && let Some((x, y)) = target(doc, id, Scroller::Viewport, axes, align, along)
-        && scroll_to(doc, Scroller::Viewport, x, y)
+        && scroll_to(doc, Scroller::Viewport, x, y, snap)
     {
         moved.push(Scroller::Viewport);
     }

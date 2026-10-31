@@ -449,6 +449,26 @@ fn view_rest(
     })
 }
 
+/// When the wheel gesture that scrolled `s`, named `surface`, comes to rest
+/// there, so that what it scrolled snaps (CSS Scroll Snap): once the gesture
+/// under way ends, `now` if it has. None while it owes no rest.
+fn wheel_rest_at(
+    gesture: &Option<Gesture>,
+    surface: &str,
+    s: &surface::Surface,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    if !s.wheel_owed() {
+        return None;
+    }
+    Some(match gesture {
+        Some(g) if g.surface == surface && matches!(g.route, scroll::Route::Doc(_)) => {
+            (g.at + GESTURE).max(now)
+        }
+        _ => now,
+    })
+}
+
 /// `HOTTY_FRAME_LOG=<file>`: one tab-separated line per rendered surface,
 /// timing the commands applied since the last frame and each render stage,
 /// including the host's own handling of the pixels (`deliver`, the callback).
@@ -927,18 +947,19 @@ impl Host {
                 s.placed
                     && (s.dirty
                         || s.next_frame().is_some_and(|t| t <= now)
-                        || view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now))
+                        || view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now)
+                        || wheel_rest_at(&self.gesture, name, s, now).is_some_and(|t| t <= now))
             })
     }
 
     /// When an animated image (GIF, APNG, WebP) on a placed surface is due
     /// to show its next frame, scrollbars that fade are drawn again, or a
-    /// scroll that held a `view` back comes to rest (SPEC §9.5): render
-    /// then. `None` while nothing plays, or nothing that plays is in a
-    /// placement's window, no scrollbar fades and no `view` waits. Each
-    /// animated image has one deadline at a time, so a host needs one
-    /// timer. Now, when something a document fetched has arrived, or
-    /// `caps` is owed.
+    /// scroll that held a `view` back (SPEC §9.5) or that snaps (CSS Scroll
+    /// Snap) comes to rest: render then. `None` while nothing plays, or
+    /// nothing that plays is in a placement's window, no scrollbar fades and
+    /// no `view` or snap waits. Each animated image has one deadline at a
+    /// time, so a host needs one timer. Now, when something a document
+    /// fetched has arrived, or `caps` is owed.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
         let now = std::time::Instant::now();
         if self.store.has_delivered() || !self.owed.is_empty() {
@@ -949,7 +970,8 @@ impl Host {
             .filter(|(_, s)| s.placed)
             .flat_map(|(name, s)| {
                 let rest = view_rest(&self.gesture, name, s, now);
-                s.next_frame().into_iter().chain(rest)
+                let wheel = wheel_rest_at(&self.gesture, name, s, now);
+                s.next_frame().into_iter().chain(rest).chain(wheel)
             })
             .min()
     }
@@ -1093,6 +1115,12 @@ impl Host {
             // A new frame: a `caret` held back to one a frame (SPEC §9).
             if let Some(e) = s.new_frame() {
                 self.carets.push(Effect::Reply(e.encode(name)));
+            }
+            // A wheel gesture came to rest: what it scrolled snaps, before
+            // the frame and its `view`.
+            if wheel_rest_at(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
+                enter(&mut self.working, name);
+                s.wheel_rest();
             }
             // A scroll came to rest: the `view` it held back (SPEC §9.5).
             if view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
@@ -2380,6 +2408,8 @@ impl Host {
     /// [`Host::end_gesture`]. Shift turns a wheel's vertical delta
     /// horizontal, as browsers do. The `view` a gesture changes (SPEC
     /// §9.5) waits for it to come to rest: [`Host::next_frame`] says when.
+    /// So does what it scrolled, where that snaps (CSS Scroll Snap): it
+    /// snaps then.
     pub fn wheel(
         &mut self,
         surface: &str,
@@ -2409,14 +2439,22 @@ impl Host {
         });
         let route = match same {
             Some(g) => g.route,
-            None => match self
-                .surfaces
-                .get_mut(surface)
-                .filter(|s| s.placed && !s.backdrop)
-            {
-                Some(s) => s.wheel_route(cx, cy, dx, dy),
-                None => scroll::Route::Terminal,
-            },
+            None => {
+                // A gesture before this one has come to rest.
+                for (name, s) in self.surfaces.iter_mut().filter(|(_, s)| s.wheel_owed()) {
+                    enter(&mut self.working, name);
+                    s.wheel_rest();
+                }
+                enter(&mut self.working, surface);
+                match self
+                    .surfaces
+                    .get_mut(surface)
+                    .filter(|s| s.placed && !s.backdrop)
+                {
+                    Some(s) => s.wheel_route(cx, cy, dx, dy),
+                    None => scroll::Route::Terminal,
+                }
+            }
         };
         self.gesture = Some(Gesture {
             surface: surface.to_string(),
