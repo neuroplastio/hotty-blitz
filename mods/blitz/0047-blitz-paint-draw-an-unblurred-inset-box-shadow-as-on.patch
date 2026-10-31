@@ -1,0 +1,94 @@
+From 0ca9303a323de4249e3a740cea6a2c62ca14e7e5 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 31 Oct 2026 19:23:06 +0100
+Subject: [PATCH] blitz-paint: draw an unblurred inset box-shadow as one ring
+ fill
+
+An inset box-shadow without blur or offset, such as `inset 0 0 0 1px`,
+a common way to draw a hairline inside a box, was painted as two layers
+the size of the padding box: the whole box filled with the shadow
+colour, then the hole cut out by a blurred rectangle in a DestOut
+layer. On a CPU renderer that is two composites of the whole box for a
+ring one pixel wide. Fill the ring between the padding box and the hole
+directly, with the even-odd rule, when the transform is a translation.
+
+The hole's edges are snapped to device pixels, where the unblurred
+rectangle's step at the pixel centres put them, and kept inside the
+padding box, which clipped them, so straight edges paint as before; the
+rounded inner edge is now anti-aliased. A spread larger than half the
+box leaves no hole, as CSS says, where the blurred rectangle's abs()
+made one, and a spread of zero or less leaves no shadow, where the
+layers left the rounded corners' anti-aliasing behind.
+---
+ packages/blitz-paint/src/render/box_shadow.rs | 41 +++++++++++++++++--
+ 1 file changed, 38 insertions(+), 3 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render/box_shadow.rs b/packages/blitz-paint/src/render/box_shadow.rs
+index d0d0fac76..a746bb425 100644
+--- a/packages/blitz-paint/src/render/box_shadow.rs
++++ b/packages/blitz-paint/src/render/box_shadow.rs
+@@ -2,7 +2,7 @@ use super::ElementCx;
+ use crate::color::{Color, ToColorColor as _};
+ use anyrender::PaintScene;
+ use blitz_dom::CopyStyleGetters;
+-use kurbo::{Rect, Vec2};
++use kurbo::{Rect, RoundedRect, Shape as _, Vec2};
+ use peniko::{Compose, Fill, Mix};
+ 
+ impl ElementCx<'_, '_> {
+@@ -110,6 +110,43 @@ impl ElementCx<'_, '_> {
+ 
+             // TODO draw shadows with matching individual radii instead of averaging
+             let radius = self.frame.border_radii.average();
++            let spread = shadow.spread.px() as f64 * self.scale;
++            let hole = self.frame.padding_box.inflate(-spread, -spread);
++
++            // Without blur or offset the shadow is the ring between the
++            // padding box and the hole: one even-odd fill, where the layers
++            // below cost two composites the size of the padding box. The
++            // hole's edges fall on device pixels, as the unblurred hole's
++            // step at the pixel centres put them, so a hairline stays crisp,
++            // and inside the padding box, which clipped it. A spread past
++            // half the box leaves no hole: the whole padding box is shadow.
++            // A spread of zero or less leaves nothing: the hole covers the
++            // padding box.
++            let [a, b, c, d, tx, ty] = self.transform.as_coeffs();
++            if shadow.base.blur.px() == 0.0
++                && shadow.base.horizontal.px() == 0.0
++                && shadow.base.vertical.px() == 0.0
++                && (a, b, c, d) == (1.0, 0.0, 0.0, 1.0)
++            {
++                if spread <= 0.0 {
++                    continue;
++                }
++                let snap = |v: f64, t: f64| (v + t - 0.5).ceil() - t;
++                let hole = Rect::new(
++                    snap(hole.x0, tx),
++                    snap(hole.y0, ty),
++                    snap(hole.x1, tx),
++                    snap(hole.y1, ty),
++                )
++                .intersect(self.frame.padding_box);
++                let mut ring = padding_box.clone();
++                if hole.width() > 0.0 && hole.height() > 0.0 {
++                    ring.extend(RoundedRect::from_rect(hole, radius).path_elements(0.1));
++                }
++                scene.fill(Fill::EvenOdd, self.transform, shadow_color, None, &ring);
++                continue;
++            }
++
+             let transform = self.transform.then_translate(Vec2 {
+                 x: shadow.base.horizontal.px() as f64,
+                 y: shadow.base.vertical.px() as f64,
+@@ -142,8 +179,6 @@ impl ElementCx<'_, '_> {
+                 None,
+             );
+             // The unshadowed area is the padding box shrunk by the spread radius
+-            let spread = shadow.spread.px() as f64 * self.scale;
+-            let hole = self.frame.padding_box.inflate(-spread, -spread);
+             scene.draw_box_shadow(
+                 transform,
+                 hole,
+-- 
+2.56.0
+
