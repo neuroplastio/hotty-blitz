@@ -12,7 +12,7 @@ host and program shares:
 | --- | --- |
 | `crates/hotty-blitz` | the host of hotty 0.5: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty` | the `hotty` CLI (package `hotty-cli`): `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
-| [`mods/`](mods/) | our patches on Blitz, parley (its text layout) and vello_cpu (its renderer), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
+| [`mods/`](mods/) | our patches on Blitz, parley (its text layout), vello_cpu (its renderer) and Stylo (its style engine), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
 The host speaks hotty 0.5 and no other version. It answers a query that
 lists 0.5 among the versions its program speaks (`a=q:n=1:v=0.5`, SPEC §4)
@@ -28,7 +28,7 @@ Needs [mise](https://mise.jdx.dev) and a checkout of `neuroplastio/hotty`
 next to this repository (or `HOTTY_DIR`).
 
 ```
-mise install && make release       # also patches Blitz at ../blitz, parley at ../parley and vello_cpu at ../vello_cpu
+mise install && make release       # also patches Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu and Stylo at ../stylo
 ./target/release/hotty run -- python3 ../hotty/examples/dash.py
 ./target/release/hotty render ../hotty/corpus/01-card.html -o card.png
 ./target/release/hotty dump capture.bin     # the hotty messages in a captured stream
@@ -292,10 +292,9 @@ Chromium. The known gaps:
 ## Licence
 
 Apache-2.0 ([LICENSE](LICENSE)).
-- Blitz is MIT OR Apache-2.0, parley Apache-2.0 OR MIT, and vello_cpu
-  Apache-2.0 OR MIT. Our patches on each, in `mods/`, are offered under that
-  upstream's licence, the one its `mod.md` names (gov P-7).
-- Stylo is MPL-2.0 and stays a dependency.
+- Blitz is MIT OR Apache-2.0, parley Apache-2.0 OR MIT, vello_cpu
+  Apache-2.0 OR MIT, and Stylo MPL-2.0. Our patches on each, in `mods/`, are
+  offered under that upstream's licence, the one its `mod.md` names (gov P-7).
 - The font in `crates/hotty-blitz/fonts/` is OFL-1.1 (`OFL.txt`). Its Nerd
   Fonts icon sets keep their own licences, listed with their texts in
   `NOTICE.txt`. A program that ships the library ships both files.

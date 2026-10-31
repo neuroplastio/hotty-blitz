@@ -63,6 +63,24 @@ parley_data = { path = "../parley/parley_data" }
 parley_emoji = { path = "../parley/parley_emoji" }
 vello_cpu = { path = "../vello_cpu" }
 
+# The Stylo fork (../stylo, branch `hotty`, made by scripts/stylo-fork.sh from
+# the commit Blitz pins and the patches in mods/stylo/): Scroll Snap's
+# properties parse in Servo mode, behind a pref Blitz sets. Every package Blitz
+# takes from that repository is patched, so that the prefs Blitz sets are the
+# ones Stylo reads.
+[patch."https://github.com/nicoburns/stylo"]
+stylo = { path = "../stylo/style" }
+stylo_traits = { path = "../stylo/style_traits" }
+stylo_atoms = { path = "../stylo/stylo_atoms" }
+stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
+stylo_dom = { path = "../stylo/stylo_dom" }
+stylo_derive = { path = "../stylo/style_derive" }
+stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
+selectors = { path = "../stylo/selectors" }
+servo_arc = { path = "../stylo/servo_arc" }
+to_shmem = { path = "../stylo/to_shmem" }
+to_shmem_derive = { path = "../stylo/to_shmem_derive" }
+
 [profile.release]
 lto = "thin"
 debug = false

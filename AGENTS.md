@@ -8,8 +8,8 @@ for the hotty repository.
   finds), the mods, build, tests (including the shared conformance vectors
   from the hotty checkout), clippy with `-D warnings`, the pty test and the
   fuzz test. It needs a hotty checkout (`HOTTY_DIR`, or next to this
-  repository) and sets up the forks at `../blitz`, `../parley` and
-  `../vello_cpu` when missing.
+  repository) and sets up the forks at `../blitz`, `../parley`,
+  `../vello_cpu` and `../stylo` when missing.
 - **Release builds only for numbers.** A debug build of Stylo is orders of
   magnitude slower.
 - **Blitz stays upstream code, modded (gov P-7):** a pinned commit plus
@@ -18,6 +18,8 @@ for the hotty repository.
   format-patch` into `mods/blitz/`. parley is modded the same way: the
   revision Blitz pins plus `mods/parley/*.patch`, at `../parley`. vello_cpu
   is the published package plus `mods/vello_cpu/*.patch`, at `../vello_cpu`.
+  Stylo is the commit Blitz pins plus `mods/stylo/*.patch`, at `../stylo`;
+  mods/blitz builds only with it.
   Each set's `mod.md` holds its `base` and the commands.
 - **Every patch has its `.md`**, written in the same commit: `title`,
   `patch`, `upstream-fit` (`yes`, `maybe` or `no`), and a body of at most
