@@ -1,7 +1,7 @@
-From 23d2eba5d92d94fddf16b6fe882e6622629da82b Mon Sep 17 00:00:00 2001
+From 2a9774817c1edc05f6842153c28a63d8928e283c Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 08:29:42 +0100
-Subject: [PATCH] fontique: a query keeps what the last one matched
+Subject: [PATCH 4/4] fontique: a query keeps what the last one matched
 
 Parley makes a query each time it shapes a text layout, and another for
 its line metrics, and each query began by clearing the collection's
@@ -21,7 +21,7 @@ new version, forgets all of it.
  2 files changed, 204 insertions(+), 44 deletions(-)
 
 diff --git a/fontique/src/collection/mod.rs b/fontique/src/collection/mod.rs
-index bf3fa43..c3135c7 100644
+index b00ab15..5360b2d 100644
 --- a/fontique/src/collection/mod.rs
 +++ b/fontique/src/collection/mod.rs
 @@ -95,6 +95,7 @@ impl Collection {
@@ -97,7 +97,7 @@ index bf3fa43..c3135c7 100644
  }
  
 diff --git a/fontique/src/collection/query.rs b/fontique/src/collection/query.rs
-index c54405c..755e891 100644
+index 35774fc..86c50d6 100644
 --- a/fontique/src/collection/query.rs
 +++ b/fontique/src/collection/query.rs
 @@ -6,6 +6,7 @@

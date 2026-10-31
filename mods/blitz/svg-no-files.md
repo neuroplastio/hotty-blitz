@@ -1,6 +1,6 @@
 ---
 title: "An SVG's image loads a data: URL and no file"
-patch: 0006-blitz-dom-an-SVG-s-image-loads-a-data-URL-and-no-fil.patch
+patch: 0005-blitz-dom-an-SVG-s-image-loads-a-data-URL-and-no-fil.patch
 upstream-fit: yes
 ---
 

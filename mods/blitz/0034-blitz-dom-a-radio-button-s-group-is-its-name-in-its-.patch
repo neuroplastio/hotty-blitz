@@ -1,0 +1,44 @@
+From 45744a218c6899594d85fc31349ac3c7f9b1c7f8 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 22 Oct 2026 12:06:00 +0200
+Subject: [PATCH 34/45] blitz-dom: a radio button's group is its name in its
+ form
+
+toggle_radio unchecked every radio button of the name in the document.
+HTML's group is the buttons of that name with the same form owner, so a
+button in another form, or in none, keeps its state.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index edd0ddc30..ef23d42e2 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -812,14 +812,19 @@ impl BaseDocument {
+     }
+ 
+     pub fn toggle_radio(&mut self, radio_set_name: String, target_radio_id: NodeId) {
++        // A radio button's group is the buttons of its name in its form
++        // owner: another form's buttons of that name are another group.
++        // https://html.spec.whatwg.org/multipage/input.html#radio-button-group
++        let form = self.controls_to_form.get(&target_radio_id);
+         let radio_ids: Vec<NodeId> = self
+             .nodes
+             .iter()
+             .filter_map(|(i, node)| {
+                 let el = node.data.downcast_element()?;
+                 (el.attr(local_name!("name")) == Some(&radio_set_name)
+-                    && el.checkbox_input_checked().is_some())
+-                .then_some(i)
++                    && el.checkbox_input_checked().is_some()
++                    && self.controls_to_form.get(&i) == form)
++                    .then_some(i)
+             })
+             .collect();
+ 
+-- 
+2.56.0
+

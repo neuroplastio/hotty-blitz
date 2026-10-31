@@ -11,7 +11,7 @@
 
 use crate::body::{Area, MAX_INT};
 use blitz_dom::node::ScrollbarWidth;
-use blitz_dom::{BaseDocument, NodeId, ScrollBehavior};
+use blitz_dom::{BaseDocument, CopyStyleGetters as _, NodeId, ScrollBehavior};
 use std::time::{Duration, Instant};
 use style::computed_values::visibility::T as Visibility;
 use style::values::computed::{Overflow, OverscrollBehavior, TouchAction};
@@ -93,8 +93,8 @@ fn contains(doc: &BaseDocument, id: NodeId, axis: Axis) -> bool {
         .and_then(|n| n.primary_styles())
         .is_some_and(|s| {
             let b = match axis {
-                Axis::X => s.clone_overscroll_behavior_x(),
-                Axis::Y => s.clone_overscroll_behavior_y(),
+                Axis::X => s.slow_clone_overscroll_behavior_x(),
+                Axis::Y => s.slow_clone_overscroll_behavior_y(),
             };
             b != OverscrollBehavior::Auto
         })
@@ -130,8 +130,8 @@ pub fn state(doc: &BaseDocument, s: Scroller, axes: u8) -> ((f64, f64), (f64, f6
                 return ((0.0, 0.0), (0.0, 0.0));
             };
             let l = root.final_layout();
-            let w = l.size.width.max(l.scrollable_overflow_rect.right) as f64;
-            let h = l.size.height.max(l.scrollable_overflow_rect.bottom) as f64;
+            let w = l.size.width.max(l.scrollable_overflow_rect.right()) as f64;
+            let h = l.size.height.max(l.scrollable_overflow_rect.bottom()) as f64;
             let vp = doc.viewport();
             let scale = vp.scale_f64();
             let (vw, vh) = (

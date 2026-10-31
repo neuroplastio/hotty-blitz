@@ -78,6 +78,7 @@ impl<S: PaintScene> PaintScene for Window<'_, S> {
 
     fn push_layer(
         &mut self,
+        fill: Fill,
         blend: impl Into<BlendMode>,
         alpha: f32,
         transform: Affine,
@@ -86,6 +87,7 @@ impl<S: PaintScene> PaintScene for Window<'_, S> {
         backdrop_filter: Option<std::sync::Arc<anyrender::Filter>>,
     ) {
         self.inner.push_layer(
+            fill,
             blend,
             alpha,
             self.shift * transform,
@@ -95,8 +97,9 @@ impl<S: PaintScene> PaintScene for Window<'_, S> {
         )
     }
 
-    fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
-        self.inner.push_clip_layer(self.shift * transform, clip)
+    fn push_clip_layer(&mut self, fill: Fill, transform: Affine, clip: &impl Shape) {
+        self.inner
+            .push_clip_layer(fill, self.shift * transform, clip)
     }
 
     fn pop_layer(&mut self) {
@@ -348,6 +351,7 @@ impl<S: PaintScene> PaintScene for Inked<'_, S> {
     #[inline]
     fn push_layer(
         &mut self,
+        fill: Fill,
         blend: impl Into<BlendMode>,
         alpha: f32,
         transform: Affine,
@@ -356,12 +360,12 @@ impl<S: PaintScene> PaintScene for Inked<'_, S> {
         backdrop_filter: Option<std::sync::Arc<anyrender::Filter>>,
     ) {
         self.inner
-            .push_layer(blend, alpha, transform, clip, filter, backdrop_filter)
+            .push_layer(fill, blend, alpha, transform, clip, filter, backdrop_filter)
     }
 
     #[inline]
-    fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
-        self.inner.push_clip_layer(transform, clip)
+    fn push_clip_layer(&mut self, fill: Fill, transform: Affine, clip: &impl Shape) {
+        self.inner.push_clip_layer(fill, transform, clip)
     }
 
     #[inline]

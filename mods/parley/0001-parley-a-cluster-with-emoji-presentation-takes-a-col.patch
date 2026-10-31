@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From d403374abe9b4c14849e2594d17e56e59133bd59 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Fri, 16 Oct 2026 12:35:30 +0200
-Subject: [PATCH] parley: a cluster with emoji presentation takes a colour font
- before a text font
+Subject: [PATCH 1/4] parley: a cluster with emoji presentation takes a colour
+ font before a text font
 
 An emoji-presentation cluster (Emoji_Presentation, VS16, a keycap, a
 flag, a ZWJ sequence) queried the style's font stack first and the
@@ -24,7 +24,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  2 files changed, 52 insertions(+)
 
 diff --git a/fontique/src/collection/query.rs b/fontique/src/collection/query.rs
-index 5f72752..c54405c 100644
+index edfcc08..35774fc 100644
 --- a/fontique/src/collection/query.rs
 +++ b/fontique/src/collection/query.rs
 @@ -257,6 +257,18 @@ impl QueryFont {
@@ -47,10 +47,10 @@ index 5f72752..c54405c 100644
  
  /// Loads every font in `family` matching `attributes` (all coverage variants of the best match).
 diff --git a/parley/src/shape/mod.rs b/parley/src/shape/mod.rs
-index 1c6e945..ff8e873 100644
+index 060a32d..e12f048 100644
 --- a/parley/src/shape/mod.rs
 +++ b/parley/src/shape/mod.rs
-@@ -273,6 +273,10 @@ struct FontSelector<'a, 'b, B: Brush> {
+@@ -271,6 +271,10 @@ struct FontSelector<'a, 'b, B: Brush> {
      /// The font to use if [`Self::query`] doesn't return any font.
      last_resort_font: LastResortFont,
  
@@ -61,15 +61,15 @@ index 1c6e945..ff8e873 100644
      analysis_data_sources: &'a AnalysisDataSources,
  }
  
-@@ -300,6 +304,7 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
-             features: &[],
+@@ -296,6 +300,7 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
+             attrs,
              query_yields_font: None,
              last_resort_font: LastResortFont::Unresolved,
 +            emoji_font: None,
  
              analysis_data_sources,
          }
-@@ -406,6 +411,41 @@ impl<'a, 'b, B: Brush> parley_engine::FontSelector for FontSelector<'a, 'b, B> {
+@@ -400,6 +405,41 @@ impl<'a, 'b, B: Brush> parley_engine::FontSelector for FontSelector<'a, 'b, B> {
          let mut selected_font = None;
          let mut best_coverage = Coverage::NONE;
  
@@ -111,3 +111,6 @@ index 1c6e945..ff8e873 100644
          self.query.matches_with(|font| {
              let Some(charmap) = font.charmap() else {
                  return fontique::QueryStatus::Continue;
+-- 
+2.56.0
+

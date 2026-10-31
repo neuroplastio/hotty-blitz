@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 10:03:16 +0100
-Subject: [PATCH] vello_cpu: a blurred rectangle's inside is not worked out
+Subject: [PATCH 3/5] vello_cpu: a blurred rectangle's inside is not worked out
  pixel by pixel
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,11 +19,11 @@ transforms, a rotation among them.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/fine/common/rounded_blurred_rect.rs | 133 ++++++++++++++++++++++++
- 1 file changed, 133 insertions(+)
+ src/fine/common/rounded_blurred_rect.rs | 156 ++++++++++++++++++++++++
+ 1 file changed, 156 insertions(+)
 
 diff --git a/src/fine/common/rounded_blurred_rect.rs b/src/fine/common/rounded_blurred_rect.rs
-index 9089d1d..f310260 100644
+index 5a66904..b23ba53 100644
 --- a/src/fine/common/rounded_blurred_rect.rs
 +++ b/src/fine/common/rounded_blurred_rect.rs
 @@ -45,6 +45,7 @@ impl<S: Simd> BlurredRoundedRectFiller<S> {
@@ -34,7 +34,7 @@ index 9089d1d..f310260 100644
                      simd,
                  );
  
-@@ -122,12 +123,67 @@ impl<S: Simd> crate::fine::Painter for BlurredRoundedRectFiller<S> {
+@@ -121,12 +122,67 @@ impl<S: Simd> crate::fine::Painter for BlurredRoundedRectFiller<S> {
      }
  }
  
@@ -102,7 +102,7 @@ index 9089d1d..f310260 100644
      simd: S,
  }
  
-@@ -137,6 +193,7 @@ impl<S: Simd> AlphaCalculator<S> {
+@@ -136,6 +192,7 @@ impl<S: Simd> AlphaCalculator<S> {
          x_advance: Vec2,
          y_advance: Vec2,
          r: SimdRoundedBlurredRect<S>,
@@ -110,7 +110,7 @@ index 9089d1d..f310260 100644
          simd: S,
      ) -> Self {
          Self {
-@@ -144,6 +201,7 @@ impl<S: Simd> AlphaCalculator<S> {
+@@ -143,6 +200,7 @@ impl<S: Simd> AlphaCalculator<S> {
              x_advance,
              y_advance,
              r,
@@ -118,7 +118,7 @@ index 9089d1d..f310260 100644
              simd,
          }
      }
-@@ -154,6 +212,12 @@ impl<S: Simd> Iterator for AlphaCalculator<S> {
+@@ -153,6 +211,12 @@ impl<S: Simd> Iterator for AlphaCalculator<S> {
  
      #[inline(always)]
      fn next(&mut self) -> Option<Self::Item> {
@@ -131,7 +131,7 @@ index 9089d1d..f310260 100644
          let i = f32x8::splat_pos(
              self.simd,
              self.cur_pos.x as f32,
-@@ -283,3 +347,72 @@ impl<S: Simd> FloatExt<S> for f32x8<S> {
+@@ -282,3 +346,95 @@ impl<S: Simd> FloatExt<S> for f32x8<S> {
          self
      }
  }
@@ -141,9 +141,9 @@ index 9089d1d..f310260 100644
 +    use super::*;
 +    use crate::kurbo::{Affine, Rect};
 +    use vello_common::blurred_rounded_rect::BlurredRoundedRectangle;
-+    use vello_common::peniko::color::palette::css::BLACK;
 +    use vello_common::encode::{EncodeExt, EncodedPaint};
 +    use vello_common::fearless_simd::{Level, dispatch};
++    use vello_common::peniko::color::palette::css::BLACK;
 +
 +    /// Every lane of every chunk over the painted area, with the inside
 +    /// left to the formula and taken as 1.0: the same bits. Returns how
@@ -162,19 +162,42 @@ index 9089d1d..f310260 100644
 +            panic!("not a blurred rectangle");
 +        };
 +        let mut taken = 0;
-+        let area = t.transform_rect_bbox(rect.inflate(f64::from(3.0 * std_dev), f64::from(3.0 * std_dev)));
++        let area =
++            t.transform_rect_bbox(rect.inflate(f64::from(3.0 * std_dev), f64::from(3.0 * std_dev)));
 +        let (x0, y0) = (area.x0.floor() as i32, area.y0.floor() as i32);
 +        let (x1, y1) = (area.x1.ceil() as i32, area.y1.ceil() as i32);
 +        for y in (y0..y1).step_by(4) {
 +            let start = e.transform * Point::new(f64::from(x0), f64::from(y));
-+            let mut fast = AlphaCalculator::new(start, e.x_advance, e.y_advance, SimdRoundedBlurredRect::new(&e, simd), Inside::new(&e), simd);
-+            let mut slow = AlphaCalculator::new(start, e.x_advance, e.y_advance, SimdRoundedBlurredRect::new(&e, simd), None, simd);
++            let mut fast = AlphaCalculator::new(
++                start,
++                e.x_advance,
++                e.y_advance,
++                SimdRoundedBlurredRect::new(&e, simd),
++                Inside::new(&e),
++                simd,
++            );
++            let mut slow = AlphaCalculator::new(
++                start,
++                e.x_advance,
++                e.y_advance,
++                SimdRoundedBlurredRect::new(&e, simd),
++                None,
++                simd,
++            );
 +            for _ in (x0..x1).step_by(2) {
-+                let inside = fast.inside.is_some_and(|i| i.holds(fast.cur_pos, fast.x_advance, fast.y_advance));
++                let inside = fast
++                    .inside
++                    .is_some_and(|i| i.holds(fast.cur_pos, fast.x_advance, fast.y_advance));
 +                taken += usize::from(inside);
 +                let (a, b) = (fast.next().unwrap(), slow.next().unwrap());
 +                for k in 0..8 {
-+                    assert_eq!(a[k].to_bits(), b[k].to_bits(), "{rect:?} r {radius} σ {std_dev} at ({x0}+, {y}) lane {k}: {} vs {}", a[k], b[k]);
++                    assert_eq!(
++                        a[k].to_bits(),
++                        b[k].to_bits(),
++                        "{rect:?} r {radius} σ {std_dev} at ({x0}+, {y}) lane {k}: {} vs {}",
++                        a[k],
++                        b[k]
++                    );
 +                }
 +            }
 +        }

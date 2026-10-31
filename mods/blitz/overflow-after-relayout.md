@@ -1,6 +1,6 @@
 ---
 title: "A box whose layout changed gets its overflow and transform again"
-patch: 0005-blitz-dom-a-box-whose-layout-changed-gets-its-overfl.patch
+patch: 0004-blitz-dom-a-box-whose-layout-changed-gets-its-overfl.patch
 upstream-fit: yes
 ---
 

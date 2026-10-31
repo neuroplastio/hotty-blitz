@@ -15,7 +15,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FORK="${HOTTY_VELLO_CPU:-$(dirname "$HERE")/vello_cpu}"
 VERSION="$(sed -n 's/^base:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$HERE/mods/vello_cpu/mod.md")"
 # The checksum of base's .crate: a new base needs its own.
-SHA256=ac7349e1f55f6b801c7c277958df4ea53e7f20f21e8014910ad888b2ecda93ea
+SHA256=ed1fec424fbba6acf6cbc78bb526447eb77590d95f40419d598870fe37535212
 
 if [ -d "$FORK/.git" ]; then
   have=$(git -C "$FORK" rev-list --count published..hotty 2>/dev/null || echo 0)

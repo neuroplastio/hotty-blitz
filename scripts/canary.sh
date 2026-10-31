@@ -50,7 +50,7 @@ git_set parley "$(dirname "$HERE")/parley"
 
 # vello_cpu is a published package: the fork's `published` commit is base.
 # Its newest release goes on a commit of its own after that one, so a
-# three-way merge finds base's files.
+# three-way merge finds base's files; an empty one while base is newest.
 fork="$(dirname "$HERE")/vello_cpu"
 if [ "$AT" = base ]; then
   try vello_cpu "$fork" published "base $(base vello_cpu)"
@@ -64,7 +64,7 @@ else
   git -C "$up" rm -q -r .
   cp -R "$pkg"/. "$up"/
   git -C "$up" add -A
-  git -C "$up" commit -q -m "vello_cpu $v as published on crates.io"
+  git -C "$up" commit -q --allow-empty -m "vello_cpu $v as published on crates.io"
   rev=$(git -C "$up" rev-parse HEAD)
   git -C "$fork" worktree remove --force "$up"
   rm -rf "$pkg"

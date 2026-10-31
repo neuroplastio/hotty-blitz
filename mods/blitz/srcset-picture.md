@@ -1,6 +1,6 @@
 ---
 title: "An img shows the source that srcset, sizes and picture choose"
-patch: 0008-blitz-dom-an-img-shows-the-source-srcset-sizes-and-p.patch
+patch: 0007-blitz-dom-an-img-shows-the-source-srcset-sizes-and-p.patch
 upstream-fit: yes
 ---
 

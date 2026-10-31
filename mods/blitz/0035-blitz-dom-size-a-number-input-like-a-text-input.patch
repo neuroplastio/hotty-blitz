@@ -1,0 +1,36 @@
+From b2b34b786cb4425e8cdb6512414974b0000f98a1 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 23 Oct 2026 17:17:41 +0200
+Subject: [PATCH 35/45] blitz-dom: size a number input like a text input
+
+A number input fell through to the generic leaf layout, which sizes a
+control by its content, so an empty one was as wide as its padding and
+border. Browsers give it a text input's width: `size` characters (20 by
+default) plus the widest glyph less one character. (Chromium narrows it
+to the digits of `min` and `max` when both are set; this does not.) It
+now shares the text input's branch, baseline included.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/layout/mod.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 36610baa9..0a5d1b606 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -390,7 +390,10 @@ impl LayoutPassState<'_> {
+                                 },
+                             );
+                         }
+-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
++                        None
++                        | Some(
++                            "text" | "password" | "email" | "number" | "tel" | "url" | "search",
++                        ) => {
+                             // Chromium adds the widest glyph less one character,
+                             // as Internet Explorer did.
+                             let size = control_count(element_data.attr(local_name!("size")), 20);
+-- 
+2.56.0
+

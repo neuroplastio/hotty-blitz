@@ -1,6 +1,6 @@
 ---
 title: "A border keeps the device pixels Stylo snapped it to"
-patch: 0048-blitz-dom-a-border-keeps-the-device-pixels-Stylo-sna.patch
+patch: 0043-blitz-dom-a-border-keeps-the-device-pixels-Stylo-sna.patch
 upstream-fit: yes
 ---
 

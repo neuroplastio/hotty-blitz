@@ -1,6 +1,6 @@
 ---
 title: "A table emptied of its rows forgets them"
-patch: 0024-blitz-dom-a-table-emptied-of-its-rows-forgets-them.patch
+patch: 0023-blitz-dom-a-table-emptied-of-its-rows-forgets-them.patch
 upstream-fit: yes
 ---
 

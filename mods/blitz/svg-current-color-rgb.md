@@ -1,10 +1,10 @@
 ---
 title: "An inline svg's currentColor is written as rgb()"
-patch: 0029-blitz-dom-an-inline-svg-s-currentColor-is-written-as.patch
+patch: 0027-blitz-dom-an-inline-svg-s-currentColor-is-written-as.patch
 upstream-fit: yes
 ---
 
-**What it changes:** `outer_html` wrote an inline svg's `currentColor` with
+**What it changes:** `svg_source` wrote an inline svg's `currentColor` with
 `to_css_string`, so a colour that computes to anything but legacy sRGB
 (`color-mix()`, oklab, display-p3) came out as `color(srgb …)`, which usvg
 doesn't parse, and the icon drew black. It is now written as `rgb()` or
@@ -14,4 +14,5 @@ doesn't parse, and the icon drew black. It is now written as `rgb()` or
 `color-mix()`, drew black.
 
 **For upstream:** yes. It is small, and any page with modern colours hits
-it.
+it. Later in this set, `svg-document-styles.md` replaces that serializer
+with one that writes `rgb()` itself; this is the same fix alone.

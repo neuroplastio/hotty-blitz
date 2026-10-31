@@ -1,0 +1,142 @@
+From 74a2a29567a6949a362d9cd089f87fd8aeacc16a Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 23 Oct 2026 22:28:22 +0200
+Subject: [PATCH 37/45] blitz-dom: keep baselines in measure cache entries
+
+A measure entry of the layout cache kept only the size, as taffy's Cache
+does, so a hit answered with no baselines. Inline layout places an
+inline-block by the baselines its child's layout returns, when only
+measuring too, so an inline-block measured from the cache sat on the
+line by its bottom margin edge and the line grew.
+
+A wrapping flex row inside a column container measures an item a third
+time under constraints it has used before, and that measurement hits:
+an item of inline-blocks sized at 25.4px came back 30.1px, and the row
+laid the item out taller than it had sized it.
+
+Measure entries now keep the baselines and answer with them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/layout/cache.rs | 52 +++++++++++++++++++-------
+ 1 file changed, 39 insertions(+), 13 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/cache.rs b/packages/blitz-dom/src/layout/cache.rs
+index a3c444afa..90f0a2218 100644
+--- a/packages/blitz-dom/src/layout/cache.rs
++++ b/packages/blitz-dom/src/layout/cache.rs
+@@ -10,9 +10,14 @@
+ //!
+ //! This cache matches entries exactly as Taffy's does (the key and the mode
+ //! below are Taffy's `CacheKey` and `CacheMode`, taffy c256056
+-//! `src/tree/cache.rs`) and differs only in capacity: measure entries grow
+-//! as a node needs them, up to `MAX_ENTRIES`, and a node measured once costs
+-//! no allocation.
++//! `src/tree/cache.rs`) and differs in capacity: measure entries grow as a
++//! node needs them, up to `MAX_ENTRIES`, and a node measured once costs no
++//! allocation.
++//!
++//! A measure entry also keeps the baselines, which Taffy's drops: inline
++//! layout places an inline-block by the baselines its measurement returns, so
++//! a hit that lost them dropped the block onto the line's baseline by its
++//! bottom edge, and the line grew.
+ //!
+ //! It also keeps each request's full input, so that `speculate` can ask a
+ //! changed node everything its parent asked it last time.
+@@ -20,8 +25,8 @@
+ // The float bit patterns below are grouped as sign, exponent, mantissa.
+ #![allow(clippy::unusual_byte_groupings)]
+ 
+-use taffy::{AvailableSpace, CollapsibleMarginSet, LayoutInput, LayoutOutput, RequestedAxis};
+-use taffy::{RunMode, Size, SizingMode};
++use taffy::{AvailableSpace, Baselines, CollapsibleMarginSet, LayoutInput, LayoutOutput};
++use taffy::{RequestedAxis, RunMode, ScrollableOverflow, Size, SizingMode};
+ 
+ /// Past this many entries, the oldest entry is replaced.
+ const MAX_ENTRIES: usize = 64;
+@@ -117,7 +122,7 @@ impl Mode {
+ pub struct LayoutCache {
+     mode: Mode,
+     final_layout: Option<(Key, LayoutInput, LayoutOutput)>,
+-    measures: Vec<(Key, LayoutInput, Size<f32>)>,
++    measures: Vec<(Key, LayoutInput, Measure)>,
+     /// The entry to replace next once `measures` is full.
+     next: usize,
+     /// A request was answered but not kept (the cache was full, or the
+@@ -158,7 +163,7 @@ impl LayoutCache {
+                 .measures
+                 .iter()
+                 .find(|(k, _, _)| k.measures(&key))
+-                .map(|(_, _, size)| LayoutOutput::from_outer_size(*size)),
++                .map(|(_, _, measure)| measure.output()),
+             RunMode::PerformHiddenLayout => None,
+         }
+     }
+@@ -190,12 +195,13 @@ impl LayoutCache {
+                     self.incomplete = true;
+                     return;
+                 }
++                let measure = Measure::of(&output);
+                 if let Some(entry) = self.measures.iter_mut().find(|(k, _, _)| *k == key) {
+-                    entry.2 = output.size;
++                    entry.2 = measure;
+                 } else if self.measures.len() < MAX_ENTRIES {
+-                    self.measures.push((key, *input, output.size));
++                    self.measures.push((key, *input, measure));
+                 } else {
+-                    self.measures[self.next] = (key, *input, output.size);
++                    self.measures[self.next] = (key, *input, measure);
+                     self.next = (self.next + 1) % MAX_ENTRIES;
+                     self.incomplete = true;
+                 }
+@@ -220,7 +226,7 @@ impl LayoutCache {
+         let measures = self
+             .measures
+             .iter()
+-            .map(|(_, input, size)| (*input, Answer::Size(*size)));
++            .map(|(_, input, measure)| (*input, Answer::Size(*measure)));
+         let layout = self
+             .final_layout
+             .iter()
+@@ -229,16 +235,36 @@ impl LayoutCache {
+     }
+ }
+ 
++/// What a measurement keeps of its answer.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct Measure {
++    size: Size<f32>,
++    baselines: Baselines,
++}
++
++impl Measure {
++    fn of(output: &LayoutOutput) -> Self {
++        Self {
++            size: output.size,
++            baselines: output.baselines,
++        }
++    }
++
++    fn output(self) -> LayoutOutput {
++        LayoutOutput::from_sizes_and_baselines(self.size, ScrollableOverflow::ZERO, self.baselines)
++    }
++}
++
+ /// What a node answered to one request.
+ pub(crate) enum Answer {
+-    Size(Size<f32>),
++    Size(Measure),
+     Layout(LayoutOutput),
+ }
+ 
+ impl Answer {
+     pub(crate) fn matches(&self, output: &LayoutOutput) -> bool {
+         match self {
+-            Answer::Size(size) => output.size == *size,
++            Answer::Size(measure) => Measure::of(output) == *measure,
+             Answer::Layout(old) => output == old,
+         }
+     }
+-- 
+2.56.0
+

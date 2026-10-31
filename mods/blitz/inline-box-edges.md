@@ -1,6 +1,6 @@
 ---
 title: "An inline box's margin, border and padding take their space"
-patch: 0033-blitz-dom-an-inline-box-s-margin-border-and-padding-.patch
+patch: 0031-blitz-dom-an-inline-box-s-margin-border-and-padding-.patch
 upstream-fit: maybe
 ---
 

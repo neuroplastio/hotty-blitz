@@ -1,6 +1,6 @@
 ---
 title: "A number input is as wide as a text input"
-patch: 0038-blitz-dom-size-a-number-input-like-a-text-input.patch
+patch: 0035-blitz-dom-size-a-number-input-like-a-text-input.patch
 upstream-fit: yes
 ---
 

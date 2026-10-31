@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Sat, 10 Oct 2026 19:30:14 +0200
-Subject: [PATCH] vello_cpu: a render context takes at most 4 workers by
+Subject: [PATCH 2/5] vello_cpu: a render context takes at most 4 workers by
  default
 
 The default was one worker per core but one, up to 8. Measured in
@@ -18,10 +18,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 4 insertions(+), 1 deletion(-)
 
 diff --git a/src/render.rs b/src/render.rs
-index ecc8a87..68d33c6 100644
+index ef6f07a..47c3785 100644
 --- a/src/render.rs
 +++ b/src/render.rs
-@@ -192,12 +192,15 @@ impl Default for RenderSettings {
+@@ -179,12 +179,15 @@ impl Default for RenderSettings {
      fn default() -> Self {
          Self {
              level: Level::try_detect().unwrap_or(Level::baseline()),

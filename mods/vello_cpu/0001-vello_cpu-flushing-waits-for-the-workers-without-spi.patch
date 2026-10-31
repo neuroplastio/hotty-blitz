@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Sat, 10 Oct 2026 19:04:22 +0200
-Subject: [PATCH] vello_cpu: flushing waits for the workers without spinning
+Subject: [PATCH 1/5] vello_cpu: flushing waits for the workers without
+ spinning
 
 `MultiThreadedDispatcher::flush` drains the recorded commands with
 `record_finished_commands(false)`, which looped on `try_recv` until every
@@ -21,7 +22,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 13 insertions(+), 1 deletion(-)
 
 diff --git a/src/dispatch/multi_threaded.rs b/src/dispatch/multi_threaded.rs
-index 557076b..a553819 100644
+index 3a7803b..28a796e 100644
 --- a/src/dispatch/multi_threaded.rs
 +++ b/src/dispatch/multi_threaded.rs
 @@ -302,7 +302,19 @@ impl MultiThreadedDispatcher {

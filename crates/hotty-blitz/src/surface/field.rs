@@ -379,7 +379,7 @@ pub(super) fn bump(revs: &mut BTreeMap<NodeId, i64>, doc: &BaseDocument, id: Nod
 pub(super) fn radio_group(doc: &BaseDocument, id: NodeId) -> Vec<NodeId> {
     let name = |n: NodeId| {
         let el = doc.get_node(n)?.element_data()?;
-        let radio = el.name.local.as_ref() == "input"
+        let radio = &*el.name.local == "input"
             && el
                 .attr(local_name!("type"))
                 .is_some_and(|t| t.eq_ignore_ascii_case("radio"));
@@ -411,7 +411,7 @@ fn form_of(doc: &BaseDocument, id: NodeId) -> Option<NodeId> {
     let is_form = |n: NodeId| {
         doc.get_node(n)
             .and_then(|n| n.element_data())
-            .is_some_and(|e| e.name.local.as_ref() == "form")
+            .is_some_and(|e| &*e.name.local == "form")
     };
     let named = doc
         .get_node(id)?

@@ -17,14 +17,14 @@ hotty = { git = "https://github.com/neuroplastio/hotty-rs", rev = "995115dd7c680
 hotty-blitz = { path = "crates/hotty-blitz" }
 
 # Blitz is pinned by commit. Upgrade in a leg of its own.
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg", "system-fonts", "floats", "woff"] }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65", default-features = false, features = ["svg", "scrollbars"] }
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "674d7d2144585baa0f7368b8ad76371c93fe1b65" }
-# The revision Blitz pins (its workspace), for the fonts a host ships (fonts.rs).
-parley = { git = "https://github.com/linebender/parley", rev = "332c1c7d9758839577e7979d211d1e3bbf4818af", default-features = false, features = ["std"] }
-anyrender = "0.13.0"
-anyrender_vello_cpu = { version = "0.17.0", default-features = false, features = ["filters", "multithreading"] }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["svg", "system-fonts", "floats", "woff"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["svg", "scrollbars"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc" }
+# The version Blitz pins (its workspace), for the fonts a host ships (fonts.rs).
+parley = { version = "0.12", default-features = false, features = ["std"] }
+anyrender = "0.14.0"
+anyrender_vello_cpu = { version = "0.18.0", default-features = false, features = ["filters", "multithreading"] }
 
 base64 = "0.22"
 unicode-segmentation = "1.13"
@@ -46,15 +46,9 @@ debug_timer = { path = "../blitz/packages/debug_timer" }
 stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 
 # The parley fork (../parley, branch `hotty`, made by scripts/parley-fork.sh
-# from the revision Blitz pins and the patches in mods/parley/): a cluster with
+# from the release Blitz pins and the patches in mods/parley/): a cluster with
 # emoji presentation takes a colour font before a text font.
-[patch."https://github.com/linebender/parley"]
-parley = { path = "../parley/parley" }
-fontique = { path = "../parley/fontique" }
-parley_engine = { path = "../parley/parley_engine" }
-parley_data = { path = "../parley/parley_data" }
-parley_emoji = { path = "../parley/parley_emoji" }
-
+#
 # The vello_cpu fork (../vello_cpu, branch `hotty`, made by
 # scripts/vello-fork.sh from the published package and the patches in
 # mods/vello_cpu/): flushing waits for the workers without spinning, a context
@@ -62,6 +56,11 @@ parley_emoji = { path = "../parley/parley_emoji" }
 # rectangle's inside is not worked out pixel by pixel, and a clip layer
 # nothing is drawn in is not pushed.
 [patch.crates-io]
+parley = { path = "../parley/parley" }
+fontique = { path = "../parley/fontique" }
+parley_engine = { path = "../parley/parley_engine" }
+parley_data = { path = "../parley/parley_data" }
+parley_emoji = { path = "../parley/parley_emoji" }
 vello_cpu = { path = "../vello_cpu" }
 
 [profile.release]

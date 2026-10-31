@@ -1,6 +1,6 @@
 ---
 title: "Text controls are as wide as size and cols, and as tall as rows"
-patch: 0012-blitz-dom-text-controls-are-as-wide-as-size-and-cols.patch
+patch: 0011-blitz-dom-text-controls-are-as-wide-as-size-and-cols.patch
 upstream-fit: yes
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "Selected text takes the colours of its ::selection"
-patch: 0018-blitz-dom-blitz-paint-selected-text-takes-the-colour.patch
+patch: 0017-blitz-dom-blitz-paint-selected-text-takes-the-colour.patch
 upstream-fit: yes
 ---
 

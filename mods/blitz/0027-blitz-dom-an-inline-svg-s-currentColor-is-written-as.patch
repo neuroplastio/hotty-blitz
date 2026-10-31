@@ -1,0 +1,33 @@
+From a8126279e706496c483f5a4951d9b0807e2a3a13 Mon Sep 17 00:00:00 2001
+From: HOTTY Agent <hotty@neuroplast.io>
+Date: Sat, 10 Oct 2026 15:52:24 +0200
+Subject: [PATCH 27/45] blitz-dom: an inline svg's currentColor is written as
+ rgb()
+
+A colour that computes to anything but legacy sRGB (color-mix(), oklab,
+display-p3) serialized as color(srgb ...), which usvg does not parse: the
+svg drew its currentColor black. Write it with into_srgb_legacy(), as
+rgb() or rgba().
+---
+ packages/blitz-dom/src/node/serialize.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/node/serialize.rs b/packages/blitz-dom/src/node/serialize.rs
+index d8919a73b..71b6dd570 100644
+--- a/packages/blitz-dom/src/node/serialize.rs
++++ b/packages/blitz-dom/src/node/serialize.rs
+@@ -123,7 +123,10 @@ impl Node {
+             .then(|| self.primary_styles())
+             .flatten()
+             .map(|style| style.clone_color())
+-            .map(|color| color.to_css_string());
++            // rgb()/rgba(): a color-mix(), oklab or display-p3 colour would
++            // otherwise write color(srgb …), which usvg does not parse, and
++            // draws black.
++            .map(|color| color.into_srgb_legacy().to_css_string());
+ 
+         match &self.data {
+             NodeData::Document(_) => {}
+-- 
+2.56.0
+

@@ -1,6 +1,6 @@
 ---
 title: "A text input's baseline is its text's"
-patch: 0034-blitz-dom-a-text-input-s-baseline-is-its-text-s.patch
+patch: 0032-blitz-dom-a-text-input-s-baseline-is-its-text-s.patch
 upstream-fit: yes
 ---
 

@@ -3,7 +3,7 @@
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{DEFAULT_CSS, DocumentConfig};
+use blitz_dom::DocumentConfig;
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use hotty_blitz::paint::{Ink, Inked};
@@ -54,7 +54,6 @@ fn runs_of_spaces_are_left_out_and_nothing_changes() {
         html,
         DocumentConfig {
             viewport: Some(Viewport::new(W, H, 2.0, ColorScheme::Light)),
-            ua_stylesheets: Some(vec![DEFAULT_CSS.to_string()]),
             font_ctx: Some(hotty_blitz::fonts::context()),
             ..Default::default()
         },

@@ -1,26 +1,30 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
-Date: Fri, 30 Oct 2026 23:03:07 +0100
-Subject: [PATCH] vello_cpu: a clip layer nothing is drawn in is not pushed
+Date: Sat, 31 Oct 2026 12:44:30 +0100
+Subject: [PATCH 5/5] vello_cpu: a clip layer nothing is drawn in is not pushed
 
 `push_clip_layer` now keeps the layer back and gives it to the dispatcher
 just before the first draw inside it; a clip layer popped before any draw
 is dropped. Such a layer changes no pixel, and pushing it costs the clip
 path's strips and the layer's bookkeeping. A draw of an empty path (a
-space's glyph) does not count as a draw. A held layer also goes to the
-dispatcher before any other layer, and before a clip path is pushed or
-popped, so its clip is cut by the same clip paths as before.
+space's glyph) does not count as a draw, nor does one whose paint covers
+no area. A held layer also goes to the dispatcher before any other layer,
+and before a clip path or clip rectangle is pushed or popped, so its clip
+is cut by the same clips as before.
+
+The clip_overflow test now draws in its clip layer, which it needs for
+the layer to be pushed at all.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/render.rs | 192 +++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 189 insertions(+), 3 deletions(-)
+ src/render.rs | 206 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 201 insertions(+), 5 deletions(-)
 
 diff --git a/src/render.rs b/src/render.rs
-index 61ec0ba..c15ffab 100644
+index 54f0bf6..72cb57e 100644
 --- a/src/render.rs
 +++ b/src/render.rs
-@@ -176,6 +176,23 @@ pub struct RenderContext {
+@@ -163,6 +163,23 @@ pub struct RenderContext {
      )]
      pub(crate) render_settings: RenderSettings,
      dispatcher: Box<dyn Dispatcher>,
@@ -44,7 +48,7 @@ index 61ec0ba..c15ffab 100644
  }
  
  /// Settings to apply to the render context.
-@@ -259,6 +276,8 @@ impl RenderContext {
+@@ -246,6 +263,8 @@ impl RenderContext {
              temp_path,
              encoded_paints,
              filter: None,
@@ -53,51 +57,51 @@ index 61ec0ba..c15ffab 100644
          }
      }
  
-@@ -291,6 +310,9 @@ impl RenderContext {
- 
-     /// Fill a path.
-     pub fn fill_path(&mut self, path: &BezPath) {
+@@ -299,6 +318,9 @@ impl RenderContext {
+         if !self.paint_has_area() {
+             return;
+         }
 +        if !path.elements().is_empty() {
 +            self.push_pending_clips();
 +        }
-         // TODO: Similarly to Vello Hybrid, make sure that inline blend + filter are applies
+ 
+         // TODO: Similarly to Vello GPU, make sure that inline blend + filter are applied
          // to the same layer.
-         self.with_optional_filter(|ctx| {
-@@ -312,6 +334,9 @@ impl RenderContext {
- 
-     /// Stroke a path.
-     pub fn stroke_path(&mut self, path: &BezPath) {
+@@ -326,6 +348,9 @@ impl RenderContext {
+         if !self.paint_has_area() {
+             return;
+         }
 +        if !path.elements().is_empty() {
 +            self.push_pending_clips();
 +        }
-         self.with_optional_filter(|ctx| {
-             let paint = ctx.encode_current_paint();
-             let transform = ctx
-@@ -331,6 +356,7 @@ impl RenderContext {
  
-     /// Fill a rectangle.
-     pub fn fill_rect(&mut self, rect: &Rect) {
-+        self.push_pending_clips();
          self.with_optional_filter(|ctx| {
-             let paint = ctx.encode_current_paint();
-             let transform = ctx
-@@ -367,6 +393,7 @@ impl RenderContext {
- 
-     /// Stroke a rectangle.
-     pub fn stroke_rect(&mut self, rect: &Rect) {
+             let Some(paint) = ctx.encode_current_paint() else {
+@@ -351,6 +376,7 @@ impl RenderContext {
+         if !self.paint_has_area() {
+             return;
+         }
 +        self.push_pending_clips();
+ 
+         self.with_optional_filter(|ctx| {
+             let Some(paint) = ctx.encode_current_paint() else {
+@@ -393,6 +419,7 @@ impl RenderContext {
+         if !self.paint_has_area() {
+             return;
+         }
++        self.push_pending_clips();
+ 
          self.with_optional_filter(|ctx| {
              ctx.rect_to_temp_path(rect);
-             let paint = ctx.encode_current_paint();
-@@ -413,6 +440,7 @@ impl RenderContext {
-         std_dev: f32,
-         invert: bool,
-     ) {
+@@ -475,6 +502,7 @@ impl RenderContext {
+             return;
+         };
+ 
 +        self.push_pending_clips();
-         let rect = rect.abs();
-         let color = match self.state.paint {
-             PaintType::Solid(s) => s,
-@@ -491,6 +519,7 @@ impl RenderContext {
+         self.rect_to_temp_path(&inflated_rect);
+         self.dispatcher.fill_path(
+             &self.temp_path,
+@@ -523,6 +551,7 @@ impl RenderContext {
          mask: Option<Mask>,
          filter: Option<Filter>,
      ) {
@@ -105,9 +109,9 @@ index 61ec0ba..c15ffab 100644
          let mask = mask.and_then(|m| {
              if m.width() != self.width || m.height() != self.height {
                  None
-@@ -534,8 +563,49 @@ impl RenderContext {
+@@ -566,8 +595,49 @@ impl RenderContext {
      ///
-     /// See the explanation in the [clipping](https://github.com/linebender/vello/tree/main/sparse_strips/vello_cpu/examples)
+     /// See the explanation in the [clipping](https://github.com/linebender/vello/tree/main/vello_cpu/examples)
      /// example for how this method differs from `push_clip_path`.
 +    ///
 +    /// The layer reaches the dispatcher with the first draw inside it, and
@@ -156,7 +160,7 @@ index 61ec0ba..c15ffab 100644
      }
  
      /// Push a new blend layer.
-@@ -588,7 +658,11 @@ impl RenderContext {
+@@ -620,7 +690,11 @@ impl RenderContext {
  
      /// Pop the last-pushed layer.
      pub fn pop_layer(&mut self) {
@@ -169,7 +173,7 @@ index 61ec0ba..c15ffab 100644
          self.root_transforms.pop_root();
      }
  
-@@ -728,6 +802,7 @@ impl RenderContext {
+@@ -760,6 +834,7 @@ impl RenderContext {
      /// Reset the render context.
      pub fn reset(&mut self) {
          self.dispatcher.reset(self.width, self.height);
@@ -177,23 +181,31 @@ index 61ec0ba..c15ffab 100644
          self.encoded_paints.clear();
          self.mask = None;
          self.root_transforms.reset();
-@@ -739,6 +814,7 @@ impl RenderContext {
-     /// See the explanation in the [clipping](https://github.com/linebender/vello/tree/main/sparse_strips/vello_cpu/examples)
+@@ -772,6 +847,7 @@ impl RenderContext {
+     /// See the explanation in the [clipping](https://github.com/linebender/vello/tree/main/vello_cpu/examples)
      /// example for how this method differs from `push_clip_layer`.
      pub fn push_clip_path(&mut self, path: &BezPath) {
 +        self.push_pending_clips();
          let transform = self.transforms().clip_path_transform();
          self.dispatcher.push_clip_path(
              path,
-@@ -753,6 +829,7 @@ impl RenderContext {
-     /// Note that unlike `push_clip_layer`, it is permissible to have pending
-     /// pushed clip paths before finishing the rendering operation.
-     pub fn pop_clip_path(&mut self) {
+@@ -783,6 +859,7 @@ impl RenderContext {
+ 
+     /// Push a rectangular clip path.
+     pub fn push_clip_rect(&mut self, rect: &Rect) {
 +        self.push_pending_clips();
-         self.dispatcher.pop_clip_path();
+         let transform = self.transforms().clip_path_transform();
+ 
+         if let Some(rect) = into_fast_path_rect(*rect, &transform, self.aliasing_threshold) {
+@@ -803,6 +880,7 @@ impl RenderContext {
+     /// Note that unlike `push_clip_layer`, it is permissible to have pending
+     /// pushed clips before finishing the rendering operation.
+     pub fn pop_clip(&mut self) {
++        self.push_pending_clips();
+         self.dispatcher.pop_clip();
      }
  
-@@ -813,7 +890,7 @@ impl RenderContext {
+@@ -863,7 +941,7 @@ impl RenderContext {
      ) {
          // TODO: Maybe we should move those checks into the dispatcher.
          assert!(
@@ -202,7 +214,32 @@ index 61ec0ba..c15ffab 100644
              "some layers haven't been popped yet"
          );
  
-@@ -1286,6 +1363,115 @@ mod tests {
+@@ -1108,6 +1186,8 @@ mod tests {
+         }
+ 
+         ctx.push_clip_layer(&Rect::new(20.0, 20.0, 180.0, 180.0).to_path(0.1));
++        // Something drawn in it, so that the layer reaches the dispatcher.
++        ctx.fill_rect(&Rect::new(20.0, 20.0, 30.0, 30.0));
+         ctx.pop_layer();
+         ctx.flush();
+     }
+@@ -1451,14 +1531,130 @@ mod tests {
+     fn small_context_has_no_workers() {
+         use crate::RenderSettings;
+ 
+-        assert_eq!(RenderContext::new(1152, 64).render_settings().num_threads, 0);
+-        assert_eq!(RenderContext::new(511, 512).render_settings().num_threads, 0);
++        assert_eq!(
++            RenderContext::new(1152, 64).render_settings().num_threads,
++            0
++        );
++        assert_eq!(
++            RenderContext::new(511, 512).render_settings().num_threads,
++            0
++        );
+         assert_eq!(
+             RenderContext::new(512, 512).render_settings().num_threads,
+             RenderSettings::default().num_threads
          );
      }
  
@@ -211,6 +248,7 @@ index 61ec0ba..c15ffab 100644
 +    fn clip_test_contexts() -> vec::Vec<RenderContext> {
 +        use crate::RenderSettings;
 +
++        #[allow(unused_mut, reason = "a second context is pushed with workers")]
 +        let mut contexts = vec![RenderContext::new_with(
 +            16,
 +            16,
@@ -293,7 +331,7 @@ index 61ec0ba..c15ffab 100644
 +            // anything is drawn in it: the layer still clips to both.
 +            ctx.push_clip_path(&Rect::new(0.0, 0.0, 8.0, 16.0).to_path(0.1));
 +            ctx.push_clip_layer(&Rect::new(0.0, 0.0, 16.0, 8.0).to_path(0.1));
-+            ctx.pop_clip_path();
++            ctx.pop_clip();
 +            ctx.set_paint(RED);
 +            ctx.fill_rect(&Rect::new(0.0, 0.0, 16.0, 16.0));
 +            ctx.pop_layer();

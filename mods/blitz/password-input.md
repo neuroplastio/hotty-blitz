@@ -1,6 +1,6 @@
 ---
 title: "A password input shows a mask and edits its value"
-patch: 0021-blitz-dom-a-password-input-shows-a-mask-and-edits-it.patch
+patch: 0020-blitz-dom-a-password-input-shows-a-mask-and-edits-it.patch
 upstream-fit: yes
 ---
 

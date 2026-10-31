@@ -1,6 +1,6 @@
 ---
 title: "The layer limit counts the layers open at once"
-patch: 0046-blitz-paint-limit-the-layers-open-at-once-not-the-la.patch
+patch: 0041-blitz-paint-limit-the-layers-open-at-once-not-the-la.patch
 upstream-fit: maybe
 ---
 

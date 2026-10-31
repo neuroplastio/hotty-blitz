@@ -1,0 +1,73 @@
+From d5a61cb21f8fa73ffdec11c8925dc72f68ee6c9e Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 22 Oct 2026 11:20:17 +0200
+Subject: [PATCH 33/45] blitz-dom: a text field's caret starts at the end of
+ its value
+
+A new text input or textarea, and one whose value a script or the value
+attribute changes, put the caret at the end of the value, as browsers
+do. Before, the caret stayed at 0, or where it was.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/layout/construct.rs | 9 ++++++++-
+ packages/blitz-dom/src/node/text.rs        | 6 ++++--
+ 2 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index d9524399c..61f57f9c7 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -885,7 +885,8 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
+     let is_focussed = node.is_focussed();
+     let is_password = !is_multiline && node.attr(local_name!("type")) == Some("password");
+     let element = &mut node.data.downcast_element_mut().unwrap();
+-    if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
++    let created = !matches!(element.special_data, SpecialElementData::TextInput(_));
++    if created {
+         let mut text_input_data = TextInputData::new(is_multiline);
+         let editor = &mut text_input_data.editor;
+         editor.set_text(&initial_text);
+@@ -929,6 +930,12 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
+     editor.set_base_direction(base_direction);
+ 
+     editor.refresh_layout(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx);
++    if created {
++        // A new field's caret starts at the end of its value.
++        editor
++            .driver(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx)
++            .move_to_text_end();
++    }
+     // After a change of `type` too, to or from a password field.
+     text_input_data.set_password(
+         &mut doc.font_ctx.lock().unwrap(),
+diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
+index 5378d4768..d3c367d03 100644
+--- a/packages/blitz-dom/src/node/text.rs
++++ b/packages/blitz-dom/src/node/text.rs
+@@ -216,6 +216,8 @@ impl TextInputData {
+         Some((layout.height(), layout.lines().next()?.metrics().baseline))
+     }
+ 
++    /// Set the field's value, as a script or the `value` attribute does: a
++    /// changed value puts the caret at its end.
+     pub fn set_text(
+         &mut self,
+         font_ctx: &mut FontContext,
+@@ -226,11 +228,11 @@ impl TextInputData {
+             if value != text {
+                 *value = text.to_string();
+                 self.editor.set_text(&mask(char_len(text)));
+-                self.editor.driver(font_ctx, layout_ctx).refresh_layout();
++                self.editor.driver(font_ctx, layout_ctx).move_to_text_end();
+             }
+         } else if self.editor.text() != text {
+             self.editor.set_text(text);
+-            self.editor.driver(font_ctx, layout_ctx).refresh_layout();
++            self.editor.driver(font_ctx, layout_ctx).move_to_text_end();
+         }
+     }
+ 
+-- 
+2.56.0
+

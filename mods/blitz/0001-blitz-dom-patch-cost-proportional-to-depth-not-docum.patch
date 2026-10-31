@@ -1,8 +1,8 @@
-From 58c7cda9e9491a28181f96108a8ba5f421f64e96 Mon Sep 17 00:00:00 2001
+From 14baf04b46e4bc4c239fdef3c57cc12f9fc1774c Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Tue, 29 Sep 2026 11:03:38 +0200
-Subject: [PATCH] blitz-dom: patch cost proportional to depth, not document
- size
+Subject: [PATCH 01/45] blitz-dom: patch cost proportional to depth, not
+ document size
 
 Four changes to make an incremental resolve cost what the change touches:
 
@@ -23,33 +23,36 @@ Four changes to make an incremental resolve cost what the change touches:
   keeps full inputs); when every answer matches, the container keeps its
   old cache instead of laying out all its items again.
 
+With the writing-mode feature, which lays each box out in its own frame,
+rounding stays the physicalising pass and nothing is speculated.
+
 Measured (release, one changed cell per frame): in a tree of
 groups of 8, resolve goes from 68.8 ms to 0.016 ms at 262,144 cells; in
 a flat 50,000-cell flex grid, from 28 ms to 5.8 ms.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- packages/blitz-dom/src/document.rs         |  21 +++
- packages/blitz-dom/src/layout/cache.rs     | 210 +++++++++++++++++++++
- packages/blitz-dom/src/layout/damage.rs    |  45 ++++-
- packages/blitz-dom/src/layout/inline.rs    |   6 +
- packages/blitz-dom/src/layout/mod.rs       |  10 +-
- packages/blitz-dom/src/layout/round.rs     | 190 +++++++++++++++++++
- packages/blitz-dom/src/layout/speculate.rs | 169 +++++++++++++++++
- packages/blitz-dom/src/node/element.rs     |   7 +-
- packages/blitz-dom/src/node/mod.rs         |   2 +-
- packages/blitz-dom/src/node/node.rs        |   8 +-
- packages/blitz-dom/src/resolve.rs          |  31 ++-
- 11 files changed, 687 insertions(+), 12 deletions(-)
+ packages/blitz-dom/src/document.rs            |  21 ++
+ packages/blitz-dom/src/layout/cache.rs        | 245 ++++++++++++++++++
+ packages/blitz-dom/src/layout/damage.rs       |  49 +++-
+ .../blitz-dom/src/layout/inline/layout.rs     |   6 +
+ packages/blitz-dom/src/layout/mod.rs          |  11 +-
+ packages/blitz-dom/src/layout/round.rs        | 206 +++++++++++++++
+ packages/blitz-dom/src/layout/speculate.rs    | 172 ++++++++++++
+ packages/blitz-dom/src/node/element.rs        |   7 +-
+ packages/blitz-dom/src/node/mod.rs            |   2 +-
+ packages/blitz-dom/src/node/node.rs           |   8 +-
+ packages/blitz-dom/src/resolve.rs             |  38 ++-
+ 11 files changed, 752 insertions(+), 13 deletions(-)
  create mode 100644 packages/blitz-dom/src/layout/cache.rs
  create mode 100644 packages/blitz-dom/src/layout/round.rs
  create mode 100644 packages/blitz-dom/src/layout/speculate.rs
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 0fe19120..72048f8d 100644
+index c23f0c92c..c78f6fc3d 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -213,6 +213,21 @@ pub struct BaseDocument {
+@@ -299,6 +299,21 @@ pub struct BaseDocument {
      /// every node is treated as damaged on every `resolve`, so the same damage
      /// pipeline reconstructs and relays out the whole tree.
      pub(crate) incremental_layout: bool,
@@ -71,7 +74,7 @@ index 0fe19120..72048f8d 100644
      /// How deeply this document is nested within other documents
      /// (0 for a root document). Used to limit `<iframe>` nesting depth.
      pub(crate) subdocument_depth: usize,
-@@ -450,6 +465,12 @@ impl BaseDocument {
+@@ -524,6 +539,12 @@ impl BaseDocument {
              pending_device_changes: DeviceChanges::empty(),
              style_threading: config.style_threading,
              incremental_layout: config.incremental.unwrap_or(true),
@@ -86,10 +89,10 @@ index 0fe19120..72048f8d 100644
              url: base_url,
 diff --git a/packages/blitz-dom/src/layout/cache.rs b/packages/blitz-dom/src/layout/cache.rs
 new file mode 100644
-index 00000000..733d0a61
+index 000000000..a3c444afa
 --- /dev/null
 +++ b/packages/blitz-dom/src/layout/cache.rs
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,245 @@
 +//! A layout cache that grows to the number of measurements a node receives.
 +//!
 +//! Taffy's `Cache` keeps 9 measure entries per node. A content-sized
@@ -100,10 +103,11 @@ index 00000000..733d0a61
 +//! changed path, and the misses cascade down the siblings' subtrees: a change
 +//! to one cell costs O(N).
 +//!
-+//! This cache matches entries exactly as Taffy's does (the key below is
-+//! Taffy's `CacheKey`, taffy 8fab2bd `src/tree/cache.rs`) and differs only in
-+//! capacity: measure entries grow as a node needs them, up to `MAX_ENTRIES`,
-+//! and a node measured once costs no allocation.
++//! This cache matches entries exactly as Taffy's does (the key and the mode
++//! below are Taffy's `CacheKey` and `CacheMode`, taffy c256056
++//! `src/tree/cache.rs`) and differs only in capacity: measure entries grow
++//! as a node needs them, up to `MAX_ENTRIES`, and a node measured once costs
++//! no allocation.
 +//!
 +//! It also keeps each request's full input, so that `speculate` can ask a
 +//! changed node everything its parent asked it last time.
@@ -112,7 +116,7 @@ index 00000000..733d0a61
 +#![allow(clippy::unusual_byte_groupings)]
 +
 +use taffy::{AvailableSpace, CollapsibleMarginSet, LayoutInput, LayoutOutput, RequestedAxis};
-+use taffy::{RunMode, Size};
++use taffy::{RunMode, Size, SizingMode};
 +
 +/// Past this many entries, the oldest entry is replaced.
 +const MAX_ENTRIES: usize = 64;
@@ -187,8 +191,26 @@ index 00000000..733d0a61
 +    }
 +}
 +
++/// The inputs that Taffy keeps out of the key and records once per cache:
++/// the sizing mode and which vertical margins collapse. A node's parent
++/// algorithm and its own style decide them, so a lookup in another mode
++/// misses, and a store in another mode drops every entry first.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct Mode(u8);
++
++impl Mode {
++    const INITIAL: Self = Self(0);
++
++    fn new(input: &LayoutInput) -> Self {
++        let inherent = matches!(input.sizing_mode, SizingMode::InherentSize) as u8;
++        let margins = input.vertical_margins_are_collapsible;
++        Self(inherent | (margins.start as u8) << 1 | (margins.end as u8) << 2)
++    }
++}
++
 +#[derive(Debug, Clone)]
 +pub struct LayoutCache {
++    mode: Mode,
 +    final_layout: Option<(Key, LayoutInput, LayoutOutput)>,
 +    measures: Vec<(Key, LayoutInput, Size<f32>)>,
 +    /// The entry to replace next once `measures` is full.
@@ -208,6 +230,7 @@ index 00000000..733d0a61
 +impl LayoutCache {
 +    pub const fn new() -> Self {
 +        Self {
++            mode: Mode::INITIAL,
 +            final_layout: None,
 +            measures: Vec::new(),
 +            next: 0,
@@ -216,6 +239,9 @@ index 00000000..733d0a61
 +    }
 +
 +    pub fn get(&self, input: &LayoutInput) -> Option<LayoutOutput> {
++        if self.mode != Mode::new(input) {
++            return None;
++        }
 +        let key = Key::new(input);
 +        match input.run_mode {
 +            RunMode::PerformLayout => self
@@ -233,6 +259,18 @@ index 00000000..733d0a61
 +    }
 +
 +    pub fn store(&mut self, input: &LayoutInput, output: LayoutOutput) {
++        if input.run_mode == RunMode::PerformHiddenLayout {
++            return;
++        }
++        let mode = Mode::new(input);
++        if self.mode != mode {
++            // What the node was asked before is gone, so `requests` no
++            // longer covers it.
++            let dropped = self.final_layout.is_some() || !self.measures.is_empty();
++            self.clear();
++            self.mode = mode;
++            self.incomplete = dropped;
++        }
 +        let key = Key::new(input);
 +        match input.run_mode {
 +            RunMode::PerformLayout => self.final_layout = Some((key, *input, output)),
@@ -301,20 +339,10 @@ index 00000000..733d0a61
 +    }
 +}
 diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
-index 082c9549..90b9dc23 100644
+index 3ebe0e7e9..f15e5445e 100644
 --- a/packages/blitz-dom/src/layout/damage.rs
 +++ b/packages/blitz-dom/src/layout/damage.rs
-@@ -59,6 +59,9 @@ impl BaseDocument {
-             return RestyleDamage::empty();
-         };
- 
-+        // What this node itself needs, before its children's damage joins.
-+        let own = damage;
-+
-         // Skip subtrees which contain no damage. Anonymous nodes are never
-         // skipped themselves because damage marking walks the DOM parent
-         // chain, which bypasses anonymous boxes: a damaged node's flagged
-@@ -116,8 +119,8 @@ impl BaseDocument {
+@@ -141,8 +141,8 @@ impl BaseDocument {
          // If the node or any of it's children have been mutated or their layout styles
          // have changed, then we should clear it's layout cache.
          let mut invalidate_anonymous_ancestors = false;
@@ -325,19 +353,20 @@ index 082c9549..90b9dc23 100644
              invalidate_anonymous_ancestors = true;
              damage.remove(ONLY_RELAYOUT);
          }
-@@ -125,6 +128,11 @@ impl BaseDocument {
+@@ -150,6 +150,12 @@ impl BaseDocument {
          // Store damage for current node
          node.set_damage(damage);
  
 +        if relayout {
-+            let own = reorder || own.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC);
++            let own =
++                reorder || own_damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC);
 +            self.evict_layout_cache(node_id, own);
 +        }
 +
          // Anonymous boxes between this node and its nearest element ancestor
          // are not visited by the DOM walk, so invalidate them here by walking
          // `layout_parent`. Stop at the first non-anonymous node: elements are
-@@ -145,7 +153,10 @@ impl BaseDocument {
+@@ -170,7 +176,10 @@ impl BaseDocument {
                      break;
                  }
                  ancestor.invalidate_layout_cache();
@@ -349,14 +378,31 @@ index 082c9549..90b9dc23 100644
              }
          }
  
-@@ -170,6 +181,34 @@ impl BaseDocument {
+@@ -255,10 +264,14 @@ impl BaseDocument {
+             damage_for_parent |= damage;
+ 
+             // Invalidate cached layout and consume only the relayout bit.
++            let speculating = self.speculating();
+             let node = &mut self.nodes[anonymous_id];
+             if damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX) {
+                 node.invalidate_layout_cache();
+                 damage.remove(ONLY_RELAYOUT);
++                if speculating {
++                    self.invalidated.push(anonymous_id);
++                }
+             }
+ 
+             // Store remaining damage and mark the ancestor path when needed.
+@@ -273,6 +286,36 @@ impl BaseDocument {
          damage_for_parent
      }
  
 +    /// Whether this resolve keeps evicted layout caches for
-+    /// `speculate_layout`: only incremental relayouts of a laid-out tree.
++    /// `speculate_layout`: only incremental relayouts of a laid-out tree,
++    /// in horizontal writing modes alone (`layout::round` is not built
++    /// with `writing-mode`, which lays out each box in its own frame).
 +    pub(crate) fn speculating(&self) -> bool {
-+        self.incremental_layout && self.rounded_once
++        cfg!(not(feature = "writing-mode")) && self.incremental_layout && self.rounded_once
 +    }
 +
 +    /// Clear a node's layout cache for relayout, keeping the old one for
@@ -384,11 +430,11 @@ index 082c9549..90b9dc23 100644
      /// Mark every node in the document with `ALL_DAMAGE` (non-incremental
      /// mode). Iterates the node slotmap directly rather than walking the tree,
      /// which is cheaper and also reaches pseudo-elements and anonymous boxes
-diff --git a/packages/blitz-dom/src/layout/inline.rs b/packages/blitz-dom/src/layout/inline.rs
-index e384a811..8fbf8930 100644
---- a/packages/blitz-dom/src/layout/inline.rs
-+++ b/packages/blitz-dom/src/layout/inline.rs
-@@ -35,6 +35,12 @@ impl BaseDocument {
+diff --git a/packages/blitz-dom/src/layout/inline/layout.rs b/packages/blitz-dom/src/layout/inline/layout.rs
+index 2f05a084f..9914e5355 100644
+--- a/packages/blitz-dom/src/layout/inline/layout.rs
++++ b/packages/blitz-dom/src/layout/inline/layout.rs
+@@ -95,6 +95,12 @@ impl LayoutPassState<'_> {
              run_mode,
              ..
          } = inputs;
@@ -402,11 +448,11 @@ index e384a811..8fbf8930 100644
  
          // Pull these out earlier to avoid borrowing issues
 diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
-index 01ee0357..2102dfd1 100644
+index d623c3e70..14b7e0bd6 100644
 --- a/packages/blitz-dom/src/layout/mod.rs
 +++ b/packages/blitz-dom/src/layout/mod.rs
-@@ -20,12 +20,15 @@ use taffy::{
-     compute_grid_layout, compute_leaf_layout, compute_oof_layout, prelude::*,
+@@ -23,12 +23,16 @@ use taffy::{
+     compute_oof_layout, prelude::*,
  };
  
 +pub(crate) mod cache;
@@ -416,12 +462,13 @@ index 01ee0357..2102dfd1 100644
  pub(crate) mod list;
  pub(crate) mod paint_tree;
  pub(crate) mod replaced;
++#[cfg(not(feature = "writing-mode"))]
 +pub(crate) mod round;
 +pub(crate) mod speculate;
  pub(crate) mod table;
- 
- use self::replaced::{
-@@ -460,7 +463,12 @@ impl LayoutPartialTree for BaseDocument {
+ pub(crate) mod text_transform;
+ #[cfg(feature = "writing-mode")]
+@@ -667,7 +671,12 @@ impl LayoutPartialTree for LayoutPassState<'_> {
      }
  
      fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
@@ -437,10 +484,10 @@ index 01ee0357..2102dfd1 100644
      fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
 diff --git a/packages/blitz-dom/src/layout/round.rs b/packages/blitz-dom/src/layout/round.rs
 new file mode 100644
-index 00000000..f5d90b82
+index 000000000..8eab052a9
 --- /dev/null
 +++ b/packages/blitz-dom/src/layout/round.rs
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,206 @@
 +//! Incremental layout rounding.
 +//!
 +//! `taffy::round_layout` rewrites the final layout of every node on every
@@ -463,11 +510,12 @@ index 00000000..f5d90b82
 +use std::collections::HashMap;
 +
 +use blitz_traits::node_id::NodeId;
-+use taffy::{Layout, RoundTree as _, TraversePartialTree as _};
++use taffy::{Layout, Rect, RoundTree as _, ScrollableOverflow, TraversePartialTree as _};
 +
++use super::LayoutPassState;
++use crate::dom_node_id;
 +#[cfg(debug_assertions)]
 +use crate::node::NodeData;
-+use crate::{BaseDocument, dom_node_id};
 +
 +/// The node's own layout changed.
 +const NODE: u8 = 1;
@@ -476,7 +524,7 @@ index 00000000..f5d90b82
 +/// A recorded node lies below this one.
 +const PATH: u8 = 4;
 +
-+impl BaseDocument {
++impl LayoutPassState<'_> {
 +    /// Round the layout of the tree at `root` after `compute_root_layout`.
 +    pub(crate) fn round_layout(&mut self, root: taffy::NodeId) {
 +        let dirty = std::mem::take(&mut self.round_dirty);
@@ -540,7 +588,7 @@ index 00000000..f5d90b82
 +}
 +
 +fn round_marked(
-+    doc: &mut BaseDocument,
++    doc: &mut LayoutPassState<'_>,
 +    node: taffy::NodeId,
 +    parent_x: f32,
 +    parent_y: f32,
@@ -577,7 +625,7 @@ index 00000000..f5d90b82
 +
 +/// What `taffy::round_layout` does, from a node whose rounding parent sits at
 +/// the given cumulative position.
-+fn round_subtree(doc: &mut BaseDocument, node: taffy::NodeId, parent_x: f32, parent_y: f32) {
++fn round_subtree(doc: &mut LayoutPassState<'_>, node: taffy::NodeId, parent_x: f32, parent_y: f32) {
 +    let unrounded = doc.get_unrounded_layout(node);
 +    round_one(doc, node, &unrounded, parent_x, parent_y);
 +    let x = parent_x + unrounded.location.x;
@@ -599,9 +647,9 @@ index 00000000..f5d90b82
 +    (value + 0.5).floor()
 +}
 +
-+/// Taffy's rounding of one node (`taffy::compute::round_layout`, 8fab2bd).
++/// Taffy's rounding of one node (`taffy::compute::round_layout`, c256056).
 +fn round_one(
-+    doc: &mut BaseDocument,
++    doc: &mut LayoutPassState<'_>,
 +    node: taffy::NodeId,
 +    u: &Layout,
 +    parent_x: f32,
@@ -625,18 +673,33 @@ index 00000000..f5d90b82
 +    layout.padding.top = round(y + u.padding.top) - round(y);
 +    layout.padding.bottom = round(y + u.size.height) - round(y + u.size.height - u.padding.bottom);
 +    let o = u.scrollable_overflow_rect;
-+    layout.scrollable_overflow_rect.left = round(x + o.left) - round(x);
-+    layout.scrollable_overflow_rect.right = round(x + o.right) - round(x);
-+    layout.scrollable_overflow_rect.top = round(y + o.top) - round(y);
-+    layout.scrollable_overflow_rect.bottom = round(y + o.bottom) - round(y);
++    let edge = |offset: f32, edge: f32| {
++        let rounded = round(offset + edge) - round(offset);
++        // A zero edge keeps its sign, which marks a reversed scroll origin.
++        if rounded == 0.0 {
++            rounded.copysign(edge)
++        } else {
++            rounded
++        }
++    };
++    let rect = o.rect();
++    layout.scrollable_overflow_rect = ScrollableOverflow::new(
++        Rect {
++            left: edge(x, rect.left),
++            right: edge(x, rect.right),
++            top: edge(y, rect.top),
++            bottom: edge(y, rect.bottom),
++        },
++        o.is_reversed(),
++    );
 +    doc.set_final_layout(node, &layout);
 +}
 diff --git a/packages/blitz-dom/src/layout/speculate.rs b/packages/blitz-dom/src/layout/speculate.rs
 new file mode 100644
-index 00000000..8cdd2eef
+index 000000000..18cff533e
 --- /dev/null
 +++ b/packages/blitz-dom/src/layout/speculate.rs
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,172 @@
 +//! Speculative relayout boundaries.
 +//!
 +//! Damage clears the layout cache of every ancestor of a changed node, so the
@@ -662,8 +725,10 @@ index 00000000..8cdd2eef
 +
 +use blitz_traits::node_id::NodeId;
 +use style::values::specified::box_::DisplayInside;
++use stylo_taffy::CopyStyleGetters as _;
 +use taffy::{CoreStyle as _, LayoutOutput, LayoutPartialTree as _};
 +
++use super::LayoutPassState;
 +use super::cache::Answer;
 +use super::replaced::is_replaced_element;
 +use crate::{BaseDocument, taffy_node_id};
@@ -732,8 +797,9 @@ index 00000000..8cdd2eef
 +            return false;
 +        };
 +        let node = taffy_node_id(id);
++        let mut state = LayoutPassState::new(self);
 +        for (input, answer) in requests {
-+            let output = self.compute_child_layout(node, input);
++            let output = state.compute_child_layout(node, input);
 +            if answer.matches(&output) {
 +                continue;
 +            }
@@ -747,12 +813,12 @@ index 00000000..8cdd2eef
 +                scrollable_overflow_rect: old.scrollable_overflow_rect,
 +                ..output.clone()
 +            } == *old;
-+            if !same_box || !self.overflow_is_private(id) {
++            if !same_box || !state.overflow_is_private(id) {
 +                return false;
 +            }
-+            let layout = self.nodes[id].unrounded_layout_mut();
++            let layout = state.nodes[id].unrounded_layout_mut();
 +            layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
-+            self.round_dirty.push((id, false));
++            state.round_dirty.push((id, false));
 +        }
 +        true
 +    }
@@ -807,13 +873,13 @@ index 00000000..8cdd2eef
 +    }
 +}
 diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
-index 501da7b6..bcbfdc48 100644
+index f0ac2dc22..6b5bdef57 100644
 --- a/packages/blitz-dom/src/node/element.rs
 +++ b/packages/blitz-dom/src/node/element.rs
 @@ -1,3 +1,4 @@
 +pub use crate::layout::cache::LayoutCache;
  use blitz_traits::node_id::NodeId;
- use cssparser::ParserInput;
+ use cssparser::Parser;
  use kurbo::{Affine, Rect as KurboRect};
 @@ -21,7 +22,7 @@ use style::{
  };
@@ -824,7 +890,7 @@ index 501da7b6..bcbfdc48 100644
  use thin_vec::ThinVec;
  use url::Url;
  
-@@ -124,7 +125,7 @@ pub struct ElementData {
+@@ -138,7 +139,7 @@ pub struct ElementData {
  /// nodes on text-heavy pages never allocate one.
  #[derive(Debug, Clone)]
  pub struct LayoutData {
@@ -833,7 +899,7 @@ index 501da7b6..bcbfdc48 100644
      pub unrounded_layout: Layout,
      pub final_layout: Layout,
      pub scroll_offset: crate::Point<f64>,
-@@ -134,7 +135,7 @@ pub struct LayoutData {
+@@ -152,7 +153,7 @@ pub struct LayoutData {
  impl LayoutData {
      pub const fn new() -> Self {
          Self {
@@ -843,12 +909,12 @@ index 501da7b6..bcbfdc48 100644
              final_layout: Layout::new(),
              scroll_offset: crate::Point::ZERO,
 diff --git a/packages/blitz-dom/src/node/mod.rs b/packages/blitz-dom/src/node/mod.rs
-index 01214795..2c82c9a2 100644
+index dfc9153e9..8b521ae7b 100644
 --- a/packages/blitz-dom/src/node/mod.rs
 +++ b/packages/blitz-dom/src/node/mod.rs
-@@ -17,7 +17,7 @@ pub use custom_widget::{
-     ComputedStyles, CustomWidgetData, CustomWidgetStatus, ProxyRenderContext, Widget,
+@@ -19,7 +19,7 @@ pub use custom_widget::{
  };
+ pub(crate) use element::parse_classes;
  pub use element::{
 -    CanvasData, DocumentData, ElementData, ImageData, ImageResourceData, LayoutData,
 +    CanvasData, DocumentData, ElementData, ImageData, ImageResourceData, LayoutCache, LayoutData,
@@ -856,13 +922,13 @@ index 01214795..2c82c9a2 100644
      SpecialElementType, Status,
  };
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index a098a9b8..4bd4d561 100644
+index 81e57baa0..c2d70eead 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
-@@ -34,7 +34,9 @@ use style::values::generics::transform::{Scale, Translate};
- use style::values::specified::box_::{DisplayInside, DisplayOutside};
- use style_dom::ElementState;
+@@ -36,7 +36,9 @@ use style_dom::ElementState;
  use style_traits::values::ToCss;
+ use stylo_taffy::CopyStyleGetters;
+ use stylo_taffy::WritingModeExt;
 -use taffy::{Cache, prelude::Layout};
 +use taffy::prelude::Layout;
 +
@@ -870,7 +936,7 @@ index a098a9b8..4bd4d561 100644
  use thin_vec::ThinVec;
  
  use super::stylo_data::{ComputedStyleRef, StyloData};
-@@ -250,12 +252,12 @@ impl Node {
+@@ -253,12 +255,12 @@ impl Node {
      }
  
      #[inline]
@@ -886,10 +952,10 @@ index a098a9b8..4bd4d561 100644
      }
  
 diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
-index 7eac5d7a..ceba815b 100644
+index c5c420a22..1b68a2853 100644
 --- a/packages/blitz-dom/src/resolve.rs
 +++ b/packages/blitz-dom/src/resolve.rs
-@@ -256,6 +256,20 @@ impl BaseDocument {
+@@ -257,6 +257,20 @@ impl BaseDocument {
                  return;
              }
  
@@ -910,7 +976,7 @@ index 7eac5d7a..ceba815b 100644
              let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
              let _flags = doc.nodes[node_id].flags;
  
-@@ -266,7 +280,13 @@ impl BaseDocument {
+@@ -267,7 +281,13 @@ impl BaseDocument {
                  // previous construction round. They live only in the slab, so
                  // reconstructing without freeing them would leak a slab entry per
                  // anonymous block per reconstruction.
@@ -924,7 +990,7 @@ index 7eac5d7a..ceba815b 100644
                  for anon_id in old_anonymous_blocks {
                      doc.deallocate_anonymous_block(anon_id);
                  }
-@@ -289,6 +309,14 @@ impl BaseDocument {
+@@ -290,6 +310,14 @@ impl BaseDocument {
                      }
                  }
  
@@ -939,17 +1005,31 @@ index 7eac5d7a..ceba815b 100644
                  *doc.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
                  // *doc.nodes[node_id].paint_children.borrow_mut() = Some(layout_children);
  
-@@ -441,8 +469,9 @@ impl BaseDocument {
+@@ -442,6 +470,7 @@ impl BaseDocument {
  
          // println!("\n\nRESOLVE LAYOUT\n===========\n");
  
 +        self.speculate_layout();
-         taffy::compute_root_layout(self, root_element_id, available_space);
--        taffy::round_layout(self, root_element_id);
-+        self.round_layout(root_element_id);
+         let mut state = LayoutPassState::new(self);
+         #[cfg(feature = "writing-mode")]
+         let available_space = {
+@@ -454,9 +483,14 @@ impl BaseDocument {
+         };
+         taffy::compute_root_layout(&mut state, root_element_id, available_space);
+         #[cfg(feature = "writing-mode")]
+-        state.physicalise_and_round_layout(root_element_id);
++        {
++            // Physicalising rounds every box: nothing is left to round
++            // incrementally (see `layout::round`).
++            state.physicalise_and_round_layout(root_element_id);
++            state.round_dirty.clear();
++        }
+         #[cfg(not(feature = "writing-mode"))]
+-        taffy::round_layout(&mut state, root_element_id);
++        state.round_layout(root_element_id);
  
          // println!("\n\n");
          // taffy::print_tree(self, root_node_id)
 -- 
-2.55.0
+2.56.0
 

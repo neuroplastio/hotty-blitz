@@ -1,6 +1,6 @@
 ---
 title: "A select has a selected option, submits it, and draws closed"
-patch: 0023-blitz-dom-a-select-has-a-selected-option-submits-it-.patch
+patch: 0022-blitz-dom-a-select-has-a-selected-option-submits-it-.patch
 upstream-fit: yes
 ---
 

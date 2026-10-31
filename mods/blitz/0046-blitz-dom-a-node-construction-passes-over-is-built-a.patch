@@ -1,0 +1,365 @@
+From c179bcae3123bb5864ae81858eda9eecd5c6d32f Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 31 Oct 2026 13:46:18 +0100
+Subject: [PATCH] blitz-dom: a node construction passes over is built afresh
+
+Construction builds no box for some nodes: an inline that its inline
+root's layout takes in, a table's row, a child of a table that is not a
+cell. It spent their construction damage and kept what they had built
+as boxes: their layout children, and those children's own. Nothing
+builds them while they are passed over, and the damage a delta leaves
+under them is cleared with the rest, so the lists went on naming the
+nodes it freed, and none it added. When such a node was a box again
+(its table's display removed, say), resolve found no damage on it and
+kept them: Taffy laid out a freed node ("invalid SlotMap key used" at
+node_from_id), and paint read one from a stale paint list. In debug
+builds, assert_layout_parents_consistent failed as soon as an inline was
+taken into its parent's inline layout.
+
+A node construction passes over now forgets its layout children, and
+theirs down the boxes it owned, each flagged PASSED_OVER. A flagged
+node that is a layout child again is built afresh with its subtree:
+damaged, its layout caches cleared, as a new subtree is. Constructing a
+node clears the flag.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs         | 139 +++++++++++++++++++++
+ packages/blitz-dom/src/layout/construct.rs |   6 +-
+ packages/blitz-dom/src/layout/damage.rs    |  27 ++++
+ packages/blitz-dom/src/layout/table.rs     |  10 +-
+ packages/blitz-dom/src/node/node.rs        |   4 +
+ packages/blitz-dom/src/resolve.rs          |  17 +++
+ 6 files changed, 195 insertions(+), 8 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 609cbef98..b7217c1c4 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -4203,3 +4203,142 @@ mod inline_rects_before_resolve_tests {
+         assert_eq!(doc.get_client_bounding_rect(em), before);
+     }
+ }
++
++#[cfg(test)]
++mod passed_over_box_tests {
++    use super::*;
++    use crate::qual_name;
++    use blitz_traits::shell::ColorScheme;
++
++    /// A table lays out its cells, and passes over a block among its
++    /// children. The block's children change meanwhile; a box again, it is
++    /// built from them, not from the layout children it had before.
++    #[test]
++    fn a_block_a_table_passed_over_is_built_again() {
++        let mut doc = BaseDocument::new(DocumentConfig {
++            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
++            ..Default::default()
++        });
++        let root_id = doc.root_node().id;
++        let mut mutator = doc.mutate();
++        let html = mutator.create_element(qual_name!("html", html), vec![]);
++        mutator.append_children(root_id, &[html]);
++        let body = mutator.create_element(qual_name!("body", html), vec![]);
++        mutator.append_children(html, &[body]);
++        let button = mutator.create_element(qual_name!("button", html), vec![]);
++        mutator.append_children(body, &[button]);
++        let section = mutator.create_element(qual_name!("section", html), vec![]);
++        mutator.append_children(button, &[section]);
++        let old = mutator.create_element(qual_name!("p", html), vec![]);
++        mutator.append_children(section, &[old]);
++        drop(mutator);
++        doc.resolve(0.0);
++
++        doc.mutate()
++            .set_attribute(button, qual_name!("style"), "display: table");
++        doc.resolve(0.0);
++        let mut mutator = doc.mutate();
++        let new = mutator.create_element(qual_name!("p", html), vec![]);
++        let text = mutator.create_text_node("a");
++        mutator.append_children(new, &[text]);
++        mutator.insert_nodes_before(old, &[new]);
++        mutator.remove_and_drop_node(old);
++        drop(mutator);
++        doc.resolve(0.0);
++
++        doc.mutate().clear_attribute(button, qual_name!("style"));
++        doc.resolve(0.0);
++        let section = doc.get_node(section).unwrap();
++        assert_eq!(
++            section.layout_children.borrow().as_deref(),
++            Some(&[new][..])
++        );
++        assert_eq!(section.paint_children.borrow().as_deref(), Some(&[new][..]));
++        assert!(doc.get_node(new).unwrap().final_layout().size.height > 0.0);
++    }
++
++    /// Nothing under a node construction passes over is built either, and
++    /// the damage a delta leaves there is cleared with the rest. A box again,
++    /// its subtree is built afresh.
++    #[test]
++    fn a_block_under_one_a_table_passed_over_is_built_again() {
++        let mut doc = BaseDocument::new(DocumentConfig {
++            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
++            ..Default::default()
++        });
++        let root_id = doc.root_node().id;
++        let mut mutator = doc.mutate();
++        let html = mutator.create_element(qual_name!("html", html), vec![]);
++        mutator.append_children(root_id, &[html]);
++        let body = mutator.create_element(qual_name!("body", html), vec![]);
++        mutator.append_children(html, &[body]);
++        let button = mutator.create_element(qual_name!("button", html), vec![]);
++        mutator.append_children(body, &[button]);
++        let section = mutator.create_element(qual_name!("section", html), vec![]);
++        mutator.append_children(button, &[section]);
++        let div = mutator.create_element(qual_name!("div", html), vec![]);
++        mutator.append_children(section, &[div]);
++        let old = mutator.create_element(qual_name!("p", html), vec![]);
++        mutator.append_children(div, &[old]);
++        drop(mutator);
++        doc.resolve(0.0);
++
++        doc.mutate()
++            .set_attribute(button, qual_name!("style"), "display: table");
++        doc.resolve(0.0);
++        let mut mutator = doc.mutate();
++        let new = mutator.create_element(qual_name!("p", html), vec![]);
++        let text = mutator.create_text_node("a");
++        mutator.append_children(new, &[text]);
++        mutator.insert_nodes_before(old, &[new]);
++        mutator.remove_and_drop_node(old);
++        drop(mutator);
++        doc.resolve(0.0);
++
++        doc.mutate().clear_attribute(button, qual_name!("style"));
++        doc.resolve(0.0);
++        let div = doc.get_node(div).unwrap();
++        assert_eq!(div.layout_children.borrow().as_deref(), Some(&[new][..]));
++        assert_eq!(div.paint_children.borrow().as_deref(), Some(&[new][..]));
++        assert!(doc.get_node(new).unwrap().final_layout().size.height > 0.0);
++    }
++
++    /// An inline holding only a block is a box; its block made inline, it is
++    /// taken into its parent's inline layout and keeps no layout children.
++    #[test]
++    fn an_inline_taken_into_an_inline_layout_lists_no_children() {
++        let mut doc = BaseDocument::new(DocumentConfig {
++            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
++            ..Default::default()
++        });
++        let root_id = doc.root_node().id;
++        let mut mutator = doc.mutate();
++        let html = mutator.create_element(qual_name!("html", html), vec![]);
++        mutator.append_children(root_id, &[html]);
++        let body = mutator.create_element(qual_name!("body", html), vec![]);
++        mutator.append_children(html, &[body]);
++        let p = mutator.create_element(qual_name!("p", html), vec![]);
++        mutator.append_children(body, &[p]);
++        let span = mutator.create_element(qual_name!("span", html), vec![]);
++        mutator.append_children(p, &[span]);
++        let button = mutator.create_element(qual_name!("button", html), vec![]);
++        let text = mutator.create_text_node("a");
++        mutator.append_children(button, &[text]);
++        mutator.append_children(span, &[button]);
++        drop(mutator);
++        doc.mutate()
++            .set_attribute(button, qual_name!("style"), "display: table");
++        doc.resolve(0.0);
++
++        doc.mutate().clear_attribute(button, qual_name!("style"));
++        doc.resolve(0.0);
++        assert_eq!(doc.get_node(button).unwrap().layout_parent.get(), Some(p));
++        assert!(
++            doc.get_node(span)
++                .unwrap()
++                .layout_children
++                .borrow()
++                .is_none()
++        );
++    }
++}
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index b596b2d1f..6186b00f2 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -19,7 +19,7 @@ use thin_vec::ThinVec;
+ use crate::{
+     BaseDocument, ElementData, Node, NodeData,
+     layout::damage::{
+-        CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC, sort_layout_children_by_order,
++        CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC, pass_over, sort_layout_children_by_order,
+     },
+     node::{
+         NodeFlags, NodeKind, Placeholder, SpecialElementData, TextBrush, TextInputData, TextLayout,
+@@ -1105,7 +1105,7 @@ pub(crate) fn find_inline_layout_embedded_boxes(
+                         node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                     }
+                     (DisplayOutside::None, DisplayInside::Contents) => {
+-                        node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
++                        pass_over(nodes, node_id);
+                         iter_children!(nodes[node_id], |child_id| {
+                             find_inline_layout_embedded_boxes_recursive(
+                                 nodes,
+@@ -1123,7 +1123,7 @@ pub(crate) fn find_inline_layout_embedded_boxes(
+                         } else if *tag_name == local_name!("br") {
+                             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                         } else {
+-                            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
++                            pass_over(nodes, node_id);
+                             iter_children_and_pseudos!(nodes[node_id], |child_id| {
+                                 find_inline_layout_embedded_boxes_recursive(
+                                     nodes,
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index 117f83ef6..89f15fbd7 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -56,6 +56,33 @@ pub(crate) const CONSTRUCT_DESCENDENT: RestyleDamage =
+ pub(crate) const ALL_DAMAGE: RestyleDamage =
+     RestyleDamage::from_bits_retain(0b_0000_0000_1110_1111);
+ 
++/// Construction passes over a node it builds no box for: one an inline
++/// layout takes in, or a table's row, or a child of a table that is not a
++/// cell. Its construction damage is spent. The layout children it had as a
++/// box are forgotten, and theirs, down the boxes it owned: they name the
++/// children of then, which a delta may free or add to while nothing builds
++/// them. Each is flagged, and built afresh with its subtree when it is a
++/// layout child again (`resolve_layout_children`).
++pub(crate) fn pass_over(nodes: &mut NodeTree, node_id: NodeId) {
++    nodes[node_id].remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
++    forget_layout_children(nodes, node_id);
++}
++
++fn forget_layout_children(nodes: &mut NodeTree, node_id: NodeId) {
++    let node = &mut nodes[node_id];
++    node.flags.insert(NodeFlags::PASSED_OVER);
++    let children = node.layout_children.get_mut().take();
++    for child_id in children.into_iter().flatten() {
++        // A box built elsewhere since (a node moved) is not this one's.
++        if nodes
++            .get(child_id)
++            .is_some_and(|child| child.layout_parent.get() == Some(node_id))
++        {
++            forget_layout_children(nodes, child_id);
++        }
++    }
++}
++
+ impl BaseDocument {
+     /// Union `RestyleDamage` up the tree and clear the layout caches of every
+     /// node whose subtree needs relayout.
+diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
+index 50ae6f01d..d92a3fa7b 100644
+--- a/packages/blitz-dom/src/layout/table.rs
++++ b/packages/blitz-dom/src/layout/table.rs
+@@ -28,7 +28,7 @@ use taffy::{
+ use crate::BaseDocument;
+ use crate::layout::LayoutPassState;
+ 
+-use super::damage::{CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
++use super::damage::{CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC, pass_over};
+ use super::resolve_calc_value;
+ 
+ pub struct TableTreeWrapper<'a, 'doc> {
+@@ -586,7 +586,6 @@ fn collect_table_cells(
+             }
+         }
+         DisplayInside::TableRow => {
+-            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+             *row += 1;
+             cursor.start_row();
+ 
+@@ -600,6 +599,7 @@ fn collect_table_cells(
+                 height,
+                 is_constrained: height.is_some(),
+             });
++            pass_over(&mut doc.nodes, node_id);
+ 
+             let children = std::mem::take(&mut doc.nodes[node_id].children);
+             for child_id in children.iter().copied() {
+@@ -741,7 +741,7 @@ fn collect_table_cells(
+         | DisplayInside::Flex
+         | DisplayInside::Grid
+         | DisplayInside::GridLanes => {
+-            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
++            pass_over(&mut doc.nodes, node_id);
+             // Probably a table caption: ignore
+             // println!(
+             //     "Warning: ignoring non-table typed descendent of table ({:?})",
+@@ -749,11 +749,11 @@ fn collect_table_cells(
+             // );
+         }
+         DisplayInside::TableColumnGroup | DisplayInside::TableColumn | DisplayInside::Table => {
+-            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
++            pass_over(&mut doc.nodes, node_id);
+             //Ignore
+         }
+         DisplayInside::None => {
+-            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
++            pass_over(&mut doc.nodes, node_id);
+             // Ignore
+         }
+     }
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index a110b95b3..3a9ed2b2a 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -62,6 +62,9 @@ bitflags! {
+         const IS_IN_DOCUMENT = 0b00000100;
+         /// Whether the node is an inline box whose in-flow content is block-level only
+         const IS_INLINE_WITH_ONLY_BLOCK_CHILDREN = 0b00001000;
++        /// Whether construction last passed over the node, building no box
++        /// for it (`layout::damage::pass_over`)
++        const PASSED_OVER = 0b00010000;
+     }
+ }
+ 
+@@ -86,6 +89,7 @@ impl NodeFlags {
+         self.remove(Self::IS_INLINE_ROOT);
+         self.remove(Self::IS_TABLE_ROOT);
+         self.remove(Self::IS_INLINE_WITH_ONLY_BLOCK_CHILDREN);
++        self.remove(Self::PASSED_OVER);
+     }
+ }
+ 
+diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
+index 6ee3a2181..c4c88703c 100644
+--- a/packages/blitz-dom/src/resolve.rs
++++ b/packages/blitz-dom/src/resolve.rs
+@@ -264,16 +264,33 @@ impl BaseDocument {
+             // children (and their `layout_parent`s) it was given last time.
+             // Anonymous boxes are always walked, as `propagate_damage_flags`
+             // does, because damage marking bypasses them.
++            let passed_over = doc.nodes[node_id]
++                .flags
++                .contains(crate::node::NodeFlags::PASSED_OVER);
+             {
+                 let node = &doc.nodes[node_id];
+                 if node.damage().is_some_and(|d| d.is_empty())
+                     && !node.has_damaged_descendants()
+                     && !node.is_anonymous()
++                    && !passed_over
+                 {
+                     return;
+                 }
+             }
+ 
++            // A node construction passed over is a box again (`pass_over`).
++            // Damage under it went unbuilt meanwhile, and what its subtree
++            // kept from being boxes before (layout children, layout caches,
++            // paint lists) names the nodes of then: it is built afresh, as a
++            // new subtree is.
++            if passed_over {
++                doc.iter_subtree_mut(node_id, |id, doc| {
++                    let node = &mut doc.nodes[id];
++                    node.insert_damage(ALL_DAMAGE);
++                    node.invalidate_layout_cache();
++                });
++            }
++
+             let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
+             let _flags = doc.nodes[node_id].flags;
+ 
+-- 
+2.56.0
+

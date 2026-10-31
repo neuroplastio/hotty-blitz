@@ -1,6 +1,6 @@
 ---
 title: "A mutation's queued work skips the nodes it freed"
-patch: 0027-blitz-dom-a-mutation-s-queued-work-skips-the-nodes-i.patch
+patch: 0026-blitz-dom-a-mutation-s-queued-work-skips-the-nodes-i.patch
 upstream-fit: yes
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "Backspace edits a text input on macOS too"
-patch: 0019-blitz-dom-Backspace-edits-a-text-input-on-macOS-too.patch
+patch: 0018-blitz-dom-Backspace-edits-a-text-input-on-macOS-too.patch
 upstream-fit: maybe
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "A text field's caret starts at the end of its value"
-patch: 0035-blitz-dom-a-text-field-s-caret-starts-at-the-end-of-.patch
+patch: 0033-blitz-dom-a-text-field-s-caret-starts-at-the-end-of-.patch
 upstream-fit: yes
 ---
 

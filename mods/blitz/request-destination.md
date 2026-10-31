@@ -1,6 +1,6 @@
 ---
 title: "A request says what it is for: image, style, font, iframe or document"
-patch: 0007-blitz-traits-blitz-dom-a-request-carries-its-destina.patch
+patch: 0006-blitz-traits-blitz-dom-a-request-carries-its-destina.patch
 upstream-fit: yes
 ---
 

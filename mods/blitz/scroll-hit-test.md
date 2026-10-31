@@ -1,6 +1,6 @@
 ---
 title: "A scroll container is hit only within its box"
-patch: 0015-blitz-dom-a-scroll-container-is-hit-only-within-its-.patch
+patch: 0014-blitz-dom-a-scroll-container-is-hit-only-within-its-.patch
 upstream-fit: yes
 ---
 

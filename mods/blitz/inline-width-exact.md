@@ -1,6 +1,6 @@
 ---
 title: "An inline layout measures its width without rounding it up"
-patch: 0049-blitz-dom-an-inline-layout-measures-its-width-withou.patch
+patch: 0044-blitz-dom-an-inline-layout-measures-its-width-withou.patch
 upstream-fit: maybe
 ---
 

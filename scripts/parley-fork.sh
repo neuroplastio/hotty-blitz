@@ -4,7 +4,7 @@
 #   scripts/parley-fork.sh
 #
 # The fork lives next to the repo's worktrees, at ../parley: upstream parley
-# at `base` in mods/parley/mod.md, the revision Blitz pins (Cargo.lock),
+# at `base` in mods/parley/mod.md, the commit of the release Blitz pins,
 # branch `hotty`, with mods/parley/*.patch applied. It stays local like the
 # Blitz fork.
 set -eu

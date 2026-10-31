@@ -14,11 +14,13 @@ cache when every changed item, asked again what the container asked it
 last time, answers the same (`layout/speculate.rs`). Rounding visits only
 the nodes whose layout changed and the subtrees that moved, and everything
 when more than a quarter changed. Debug builds compare every incremental
-rounding with `taffy::round_layout`, and Blitz's 299 tests pass.
+rounding with `taffy::round_layout`, and the tests of Blitz's DOM, HTML
+and paint crates pass. With Blitz's `writing-mode` feature, which
+hotty-blitz doesn't build, layout and rounding stay upstream's.
 
 **Why we carry it:** hotty programs send deltas many times a second; a
 one-cell change to a large dashboard cost the whole document.
 
 **For upstream:** maybe. The cache and the rounding are generic, but the
-speculation is a large change to how layout settles, and upstream's own
-damage tracking has moved since our base, so it would need rework there.
+speculation is a large change to how layout settles, and the
+`writing-mode` path would need its own incremental rounding.

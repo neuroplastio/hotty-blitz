@@ -1,6 +1,6 @@
 ---
 title: "A document can lock scrolling along an axis"
-patch: 0014-blitz-dom-blitz-paint-a-document-can-lock-scrolling-.patch
+patch: 0013-blitz-dom-blitz-paint-a-document-can-lock-scrolling-.patch
 upstream-fit: maybe
 ---
 

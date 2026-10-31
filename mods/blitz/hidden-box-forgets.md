@@ -1,6 +1,6 @@
 ---
 title: "A box gone display: none forgets the boxes built under it"
-patch: 0025-blitz-dom-a-box-gone-display-none-forgets-the-boxes-.patch
+patch: 0024-blitz-dom-a-box-gone-display-none-forgets-the-boxes-.patch
 upstream-fit: yes
 ---
 

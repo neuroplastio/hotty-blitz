@@ -9,8 +9,8 @@ use crate::{Config, Metrics, Rect, anim, delta, edit, net, paint, trace};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{
-    BaseDocument, DEFAULT_CSS, Document, DocumentConfig, EventDriver, EventHandler, FontContext,
-    NodeId, local_name,
+    BaseDocument, CopyStyleGetters as _, Document, DocumentConfig, EventDriver, EventHandler,
+    FontContext, NodeId, local_name,
 };
 use blitz_html::{DocumentHtmlParser, HtmlDocument, HtmlProvider};
 use blitz_paint::paint_scene;
@@ -24,7 +24,7 @@ use blitz_traits::net::Body;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use hotty::Op;
 use hotty::keys;
-use keyboard_types::{Code, Key as KbKey, Location, Modifiers};
+use keyboard_types::{Code, Key as KbKey, Location, Modifiers, NamedKey};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -662,13 +662,12 @@ impl Surface {
                 DocumentConfig {
                     viewport: Some(Viewport::new(w, h, m.scale, scheme(dark))),
                     base_url: Some(base.to_string()),
-                    ua_stylesheets: Some(vec![DEFAULT_CSS.to_string()]),
                     // The host stylesheet (SPEC §8) is the user's: it wins
                     // over Blitz's defaults and loses to the document.
-                    user_stylesheets: Some(vec![
+                    user_stylesheets: vec![
                         host_css.to_string(),
                         crate::style::scroll_css(scroll_axes).to_string(),
-                    ]),
+                    ],
                     net_provider: Some(Arc::new(net::Provider(store.clone()))),
                     navigation_provider: Some(nav.clone()),
                     html_parser_provider: Some(Arc::new(HtmlProvider)),
@@ -698,7 +697,7 @@ impl Surface {
         let mut parse_doc = BaseDocument::new(DocumentConfig {
             html_parser_provider: Some(Arc::new(HtmlProvider)),
             font_ctx: Some(font_ctx),
-            ua_stylesheets: Some(Vec::new()),
+            ua_stylesheets: Vec::new(),
             ..Default::default()
         });
         DocumentHtmlParser::parse_into_mutator(&mut parse_doc.mutate(), "");
@@ -1035,7 +1034,7 @@ impl Surface {
     /// overflows to, but never fewer than the placement's.
     fn laid_out_rows(&self, m: &Metrics) -> u16 {
         let l = self.doc.root_element().final_layout();
-        let content = l.border.top + l.scrollable_overflow_rect.bottom;
+        let content = l.border.top + l.scrollable_overflow_rect.bottom();
         let bottom = l.location.y + l.size.height.max(content) + l.margin.bottom;
         // Layout rounds to whole CSS pixels, so a bottom can be up to half a
         // pixel past where the content ends. At a scale where the rows are a
@@ -2346,7 +2345,7 @@ impl Surface {
             if let Some(style) = x.primary_styles() {
                 match style.clone_user_select() {
                     UserSelect::None => return true,
-                    UserSelect::Text | UserSelect::All => return false,
+                    UserSelect::Text | UserSelect::All | UserSelect::Contain => return false,
                     UserSelect::Auto => {}
                 }
             }
@@ -3300,19 +3299,19 @@ impl Surface {
                 Code::Space,
                 Some(" ".to_string()),
             ),
-            KeyName::Enter => (KbKey::Enter, Code::Enter, None),
-            KeyName::Tab => (KbKey::Tab, Code::Tab, None),
-            KeyName::Backspace => (KbKey::Backspace, Code::Backspace, None),
-            KeyName::Delete => (KbKey::Delete, Code::Delete, None),
-            KeyName::Escape => (KbKey::Escape, Code::Escape, None),
-            KeyName::Left => (KbKey::ArrowLeft, Code::ArrowLeft, None),
-            KeyName::Right => (KbKey::ArrowRight, Code::ArrowRight, None),
-            KeyName::Up => (KbKey::ArrowUp, Code::ArrowUp, None),
-            KeyName::Down => (KbKey::ArrowDown, Code::ArrowDown, None),
-            KeyName::Home => (KbKey::Home, Code::Home, None),
-            KeyName::End => (KbKey::End, Code::End, None),
-            KeyName::PageUp => (KbKey::PageUp, Code::PageUp, None),
-            KeyName::PageDown => (KbKey::PageDown, Code::PageDown, None),
+            KeyName::Enter => (KbKey::Named(NamedKey::Enter), Code::Enter, None),
+            KeyName::Tab => (KbKey::Named(NamedKey::Tab), Code::Tab, None),
+            KeyName::Backspace => (KbKey::Named(NamedKey::Backspace), Code::Backspace, None),
+            KeyName::Delete => (KbKey::Named(NamedKey::Delete), Code::Delete, None),
+            KeyName::Escape => (KbKey::Named(NamedKey::Escape), Code::Escape, None),
+            KeyName::Left => (KbKey::Named(NamedKey::ArrowLeft), Code::ArrowLeft, None),
+            KeyName::Right => (KbKey::Named(NamedKey::ArrowRight), Code::ArrowRight, None),
+            KeyName::Up => (KbKey::Named(NamedKey::ArrowUp), Code::ArrowUp, None),
+            KeyName::Down => (KbKey::Named(NamedKey::ArrowDown), Code::ArrowDown, None),
+            KeyName::Home => (KbKey::Named(NamedKey::Home), Code::Home, None),
+            KeyName::End => (KbKey::Named(NamedKey::End), Code::End, None),
+            KeyName::PageUp => (KbKey::Named(NamedKey::PageUp), Code::PageUp, None),
+            KeyName::PageDown => (KbKey::Named(NamedKey::PageDown), Code::PageDown, None),
             KeyName::Other => return Vec::new(),
         };
         let mk = |state| BlitzKeyEvent {
@@ -3583,10 +3582,7 @@ impl Surface {
     fn ancestor_with_tag(&self, mut id: NodeId, tag: &str) -> Option<NodeId> {
         loop {
             let node = self.doc.get_node(id)?;
-            if node
-                .element_data()
-                .is_some_and(|e| e.name.local.as_ref() == tag)
-            {
+            if node.element_data().is_some_and(|e| &*e.name.local == tag) {
                 return Some(id);
             }
             id = node.parent?;
@@ -3613,7 +3609,7 @@ impl Surface {
             return Control::None;
         };
         if el.text_input_data().is_some() {
-            return if el.name.local.as_ref() == "textarea" {
+            return if &*el.name.local == "textarea" {
                 Control::TextArea
             } else {
                 Control::Text
@@ -3927,7 +3923,7 @@ fn has_fixed_root_children(doc: &BaseDocument) -> bool {
         }
         if node
             .element_data()
-            .is_some_and(|e| e.name.local.as_ref() == "body")
+            .is_some_and(|e| &*e.name.local == "body")
         {
             stack.extend(node.children.iter().copied());
         }

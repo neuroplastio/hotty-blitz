@@ -1,6 +1,6 @@
 ---
 title: "An img chooses its source again when the device changes"
-patch: 0010-blitz-dom-an-img-chooses-its-source-again-when-the-d.patch
+patch: 0009-blitz-dom-an-img-chooses-its-source-again-when-the-d.patch
 upstream-fit: yes
 ---
 

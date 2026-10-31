@@ -1,6 +1,6 @@
 ---
 title: ":focus-visible matches, and a click shows the ring only on a text field"
-patch: 0017-blitz-dom-focus-visible-matches-the-focus-ring-a-cli.patch
+patch: 0016-blitz-dom-focus-visible-matches-the-focus-ring-a-cli.patch
 upstream-fit: yes
 ---
 

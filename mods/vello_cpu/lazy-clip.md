@@ -27,7 +27,7 @@ without.
 
 **For upstream:** yes. It is a change inside `RenderContext`, under the
 same API, and any renderer behind a DOM gets clip layers that stay
-empty. vello_hybrid could do the same. The patch applies to vello_cpu
-0.1.0 and 0.2.0. 0.3.0 adds `push_clip_rect` and renames the clip
-path's pop to `pop_clip`, which need the same hook, so it takes a
-version of its own there. The renderer is the same on every platform.
+empty. vello_hybrid could do the same. In 0.3.0 the hook is also in
+`push_clip_rect` and `pop_clip`, and the patch makes upstream's
+`clip_overflow` test draw in its clip layer, which it needs for the
+layer to be pushed at all. The renderer is the same on every platform.

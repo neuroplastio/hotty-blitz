@@ -1,6 +1,6 @@
 ---
 title: "An inline svg is drawn with the styles the document gives it"
-patch: 0042-blitz-dom-an-inline-svg-is-drawn-with-the-styles-the.patch
+patch: 0039-blitz-dom-an-inline-svg-is-drawn-with-the-styles-the.patch
 upstream-fit: yes
 ---
 
@@ -18,9 +18,10 @@ For that cascade to be the browser's, an SVG element's presentation
 attributes (`fill="…"` and the others Stylo computes) are now its
 presentational hints, below every author rule, as in a browser; before,
 Stylo didn't see them. The svg's own `opacity` is its box's, which Blitz
-paints, so usvg is told not to apply it again. The source compared to
-rebuild an svg (`inline-svg-rebuild.md`) is this markup, so a theme that
-changes a custom property redraws its icons.
+paints, so usvg is told not to apply it again. This markup replaces the
+svg path of Blitz's serializer, whose attribute names and xlink prefix it
+keeps. Blitz builds an svg again when anything in it is restyled, so a
+theme that changes a custom property redraws its icons.
 
 **Why we carry it:** hotty programs colour icons and charts with their
 theme's custom properties; each drew black.

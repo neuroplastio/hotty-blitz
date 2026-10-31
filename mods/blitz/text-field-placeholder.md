@@ -1,6 +1,6 @@
 ---
 title: "An empty text field shows its placeholder"
-patch: 0039-blitz-dom-blitz-paint-draw-a-text-field-s-placeholde.patch
+patch: 0036-blitz-dom-blitz-paint-draw-a-text-field-s-placeholde.patch
 upstream-fit: yes
 ---
 

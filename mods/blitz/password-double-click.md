@@ -1,6 +1,6 @@
 ---
 title: "A double click in a password input selects all of it"
-patch: 0032-blitz-dom-a-double-click-in-a-password-input-selects.patch
+patch: 0030-blitz-dom-a-double-click-in-a-password-input-selects.patch
 upstream-fit: yes
 ---
 

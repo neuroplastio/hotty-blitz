@@ -1,0 +1,96 @@
+From 1aa50393066efaa8480d17b641ac743eceda8fe0 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 31 Oct 2026 13:11:00 +0100
+Subject: [PATCH 45/45] blitz-dom: an inline's client rects skip the text of
+ freed nodes
+
+Node::inline_fragment_boxes walks the inline root's text layout and, for
+each run, the DOM parents of the node it was styled by. Between a
+mutation and the next resolve that layout is the last one, and a run can
+name a node freed since: Node::with panicked on it. get_client_rects and
+get_client_bounding_rect reach it for any non-atomic inline, so an
+embedder asking where an element was before a change it is applying
+crashed when an earlier change had removed text beside it.
+
+A freed node is now not in the target, and the walk stops there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs  | 39 +++++++++++++++++++++++++++++
+ packages/blitz-dom/src/node/node.rs |  6 +++--
+ 2 files changed, 43 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 2b7fb38d3..609cbef98 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -4164,3 +4164,42 @@ mod focus_visible_tests {
+         assert!(!ring(&doc, button), "a button clicked shows none");
+     }
+ }
++
++#[cfg(test)]
++mod inline_rects_before_resolve_tests {
++    use super::*;
++    use crate::qual_name;
++    use blitz_traits::shell::ColorScheme;
++
++    /// Geometry asked for between a mutation and the next resolve comes from
++    /// the last layout, whose text runs can name nodes freed since.
++    #[test]
++    fn an_inline_has_its_rect_after_a_neighbour_is_freed() {
++        let mut doc = BaseDocument::new(DocumentConfig {
++            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
++            ..Default::default()
++        });
++        let root_id = doc.root_node().id;
++        let mut mutator = doc.mutate();
++        let html = mutator.create_element(qual_name!("html"), vec![]);
++        mutator.append_children(root_id, &[html]);
++        let body = mutator.create_element(qual_name!("body"), vec![]);
++        mutator.append_children(html, &[body]);
++        let p = mutator.create_element(qual_name!("p"), vec![]);
++        mutator.append_children(body, &[p]);
++        let em = mutator.create_element(qual_name!("em"), vec![]);
++        let text = mutator.create_text_node("a");
++        mutator.append_children(em, &[text]);
++        let span = mutator.create_element(qual_name!("span"), vec![]);
++        let text = mutator.create_text_node("b");
++        mutator.append_children(span, &[text]);
++        mutator.append_children(p, &[em, span]);
++        drop(mutator);
++        doc.resolve(0.0);
++
++        let before = doc.get_client_bounding_rect(em);
++        assert!(before.is_some_and(|r| r.width > 0.0));
++        doc.mutate().remove_and_drop_node(span);
++        assert_eq!(doc.get_client_bounding_rect(em), before);
++    }
++}
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 932de7744..a110b95b3 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1844,7 +1844,9 @@ impl Node {
+         let scale = layout.scale();
+ 
+         // Walk up the DOM parent chain from `id` to check whether it is (or is
+-        // inside) the target node, stopping at the inline root.
++        // inside) the target node, stopping at the inline root. A layout not
++        // resolved since a mutation can name nodes freed since, which are not
++        // in the target.
+         let inline_root_id = inline_root.id;
+         let is_in_target = move |mut id: NodeId| -> bool {
+             loop {
+@@ -1854,7 +1856,7 @@ impl Node {
+                 if id == inline_root_id {
+                     return false;
+                 }
+-                match self.with(id).parent {
++                match self.tree().get(id).and_then(|node| node.parent) {
+                     Some(parent) => id = parent,
+                     None => return false,
+                 }
+-- 
+2.56.0
+

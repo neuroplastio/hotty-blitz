@@ -1,6 +1,6 @@
 ---
 title: "Speculative relayout leaves nodes out of the layout tree alone"
-patch: 0026-blitz-dom-speculative-relayout-leaves-nodes-out-of-t.patch
+patch: 0025-blitz-dom-speculative-relayout-leaves-nodes-out-of-t.patch
 upstream-fit: maybe
 ---
 

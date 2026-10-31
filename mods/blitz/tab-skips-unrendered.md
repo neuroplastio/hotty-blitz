@@ -1,6 +1,6 @@
 ---
 title: "Tab passes over a control that is not rendered"
-patch: 0044-blitz-dom-Tab-passes-over-a-control-that-is-not-rend.patch
+patch: 0040-blitz-dom-Tab-passes-over-a-control-that-is-not-rend.patch
 upstream-fit: yes
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "An embedder can edit a text input: its value, selection and rows"
-patch: 0022-blitz-dom-an-embedder-can-edit-a-text-input-its-valu.patch
+patch: 0021-blitz-dom-an-embedder-can-edit-a-text-input-its-valu.patch
 upstream-fit: maybe
 ---
 
