@@ -6,7 +6,7 @@ the code and `mods/` say is not repeated here.
 | Path | What it is |
 | --- | --- |
 | [`knowledge/parley-main.md`](knowledge/parley-main.md) | Why `make canary` is red for mods/parley on Parley's main, and until when |
-| [`knowledge/parked-shadows.md`](knowledge/parked-shadows.md) | Two measured shadow fixes, parked: the blur's σ and an inset offset, at CSS's size |
+| [`knowledge/parked-shadows.md`](knowledge/parked-shadows.md) | Shadow work parked with its measurements: the blur's σ and an inset offset at CSS's size, and what a visible shadow costs |
 
 The repository is public, and so is this vault: nothing from private
 repositories, gov or the employer goes in it (gov P-1, P-4). Gov's
