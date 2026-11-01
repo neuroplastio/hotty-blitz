@@ -686,6 +686,14 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
     if terminal {
         host.cells_key(&name, "");
     }
+    // A key's scroll comes to rest at once: the frame drawn then, and what
+    // that frame tells the program (`view`, SPEC §9.5), as for a wheel.
+    host.render_dirty(&mut |_, _, _| {});
+    for e in host.take_events() {
+        if let Effect::Reply(b) = e {
+            sent.extend(b);
+        }
+    }
     check_terminal(step, terminal)?;
     check_events(step, &events(&from_host(&sent)?))
 }
@@ -900,10 +908,10 @@ fn protocol_vectors() {
     let mut skipped = 0;
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through, counts clicks, takes edit
-        // commands, shows menus and reports the mouse as hottyterm does, and
-        // hotty-blitz sends hover, scrolls, takes touch, drags in steps,
-        // takes drop targets, tells `view` and keeps a history for its text
-        // fields.
+        // commands, shows menus, draws backdrops and reports the mouse as
+        // hottyterm does, and hotty-blitz sends hover, scrolls, takes touch,
+        // drags in steps, takes drop targets, tells `view` and keeps a
+        // history for its text fields.
         let has = |r: &Value| {
             matches!(
                 r.as_str(),
@@ -912,6 +920,7 @@ fn protocol_vectors() {
                         | "hover"
                         | "count"
                         | "menu"
+                        | "backdrop"
                         | "touch"
                         | "commands"
                         | "mouse"
@@ -936,6 +945,7 @@ fn protocol_vectors() {
         let mut host = Host::new(Config::default());
         host.set_passthrough(true);
         host.set_counts(true);
+        host.set_backdrops(true);
         // Its terminal takes edit commands and shows menus.
         host.set_keys(KeySettings {
             commands: true,
