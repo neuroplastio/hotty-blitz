@@ -79,8 +79,9 @@ void hotty_host_configure(hotty_host *h, const hotty_config *cfg);
 void hotty_host_osc(hotty_host *h, const uint8_t *body, size_t len, const hotty_effects *fx);
 bool hotty_host_has_dirty(const hotty_host *h);
 /* Milliseconds until an animated image (GIF, APNG, WebP) on a placed surface
- * shows its next frame, scrollbars that fade are drawn again, or a scroll that
- * held a view back comes to rest (SPEC 9.5): render then (hotty_host_has_dirty
+ * shows its next frame, scrollbars that fade are drawn again, a CSS animation
+ * or transition on one is mid-flight, or a scroll that held a view back comes
+ * to rest (SPEC 9.5): render then (hotty_host_has_dirty
  * is true by that time). 0 when one is due now, -1 when nothing plays or
  * nothing that plays is in a placement's window, no scrollbar fades and no
  * view waits. Ask again after every call that renders, handles commands or

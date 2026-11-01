@@ -418,8 +418,9 @@ pub fn run(opts: Options) -> i32 {
             PollFd::new(sig_r.as_fd(), PollFlags::POLLIN),
             PollFd::new(wake_r.as_fd(), PollFlags::POLLIN),
         ];
-        // An animated image's next frame is a deadline too; not while the
-        // program holds its output back (mode 2026), which ends in a flush.
+        // An animated image's next frame, or a CSS animation or transition
+        // mid-flight, is a deadline too; not while the program holds its
+        // output back (mode 2026), which ends in a flush.
         let timeout = match shim.host.next_frame() {
             Some(t) if !shim.in_sync => {
                 let ms = t

@@ -10,7 +10,7 @@ host and program shares:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of hotty 0.6: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of hotty 0.6: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play, and CSS animations and transitions run), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty` | the `hotty` CLI (package `hotty-cli`): `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout), vello_cpu (its renderer) and Stylo (its style engine), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 

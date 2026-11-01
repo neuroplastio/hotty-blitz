@@ -259,6 +259,11 @@ pub(crate) struct Surface {
     told: Option<NodeId>,
     buttons: MouseEventButtons,
     started: std::time::Instant,
+    /// The document's time as last rendered (`advance`), which the CSS
+    /// animations and transitions run on: `resolve` resolves at it, and
+    /// only a later `advance` moves it, so a test can render a document at
+    /// any moment it names.
+    tick: Instant,
     /// The document's base URL (SPEC §7.3), when it declares an absolute
     /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
     /// this host fetches nothing from the network.
@@ -388,6 +393,14 @@ const HISTORY: usize = 100;
 /// (`gtk-cursor-blink-timeout`). Then it stays on: the count is even.
 const CARET_BLINK: std::time::Duration = std::time::Duration::from_millis(600);
 const CARET_BLINKS: u32 = 16;
+
+/// The cadence a CSS animation or transition mid-flight is rendered at,
+/// while it runs: a browser renders at the display's rate, which the host
+/// does not know, so it asks for one every 60th of a second (a terminal
+/// that paces its paints to its compositor, as hottyterm does, keeps that
+/// pace whatever this asks for). When the document has nothing animating
+/// any more, it stops asking.
+const CSS_FRAME: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000 / 60);
 
 /// Where the pointer is for `hover` (SPEC §9.4): out of the window, or in
 /// it over the nearest element with an id (empty for none).
@@ -750,6 +763,7 @@ impl Surface {
             buttons: MouseEventButtons::None,
             base,
             started: std::time::Instant::now(),
+            tick: Instant::now(),
             store,
             playing: Vec::new(),
             anim_stale: true,
@@ -793,25 +807,48 @@ impl Surface {
     /// Moves every playing image that is seen to its frame at `now`. True
     /// if one changed: the surface is then dirty.
     pub fn advance(&mut self, now: std::time::Instant) -> bool {
+        // Forward only: a render of a frame whose time a test set ahead
+        // must not take the document's time back.
+        if now > self.tick {
+            self.tick = now;
+        }
         let mut changed = false;
         for p in &mut self.playing {
             changed |= p.advance(now);
         }
         changed |= self.fade_scrollbars(now);
         changed |= self.blink(now);
+        // A CSS animation or transition mid-flight wants a frame: the
+        // render this dirty asks for resolves the document at `tick`, and
+        // that resolve advances it. When nothing is animating any more, it
+        // stops.
+        self.dirty |= self.doc.has_active_animations();
         self.dirty |= changed;
         changed
     }
 
     /// When the next frame of an animated image that is seen, of
-    /// scrollbars fading, or of the caret blinking is due.
+    /// scrollbars fading, of the caret blinking, or of a CSS animation or
+    /// transition mid-flight is due.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
         self.playing
             .iter()
             .filter_map(|p| p.due())
             .chain(self.fade_due())
             .chain(self.caret_due())
+            .chain(self.css_due())
             .min()
+    }
+
+    /// When a CSS animation or transition mid-flight wants its next frame:
+    /// one frame after the last, at [`CSS_FRAME`]'s cadence. The document
+    /// says whether one is mid-flight, as its last resolve left it; the
+    /// render that answers resolves again, and when none is left it stops
+    /// asking.
+    fn css_due(&self) -> Option<Instant> {
+        self.doc
+            .has_active_animations()
+            .then(|| self.tick + CSS_FRAME)
     }
 
     /// The text field whose caret shows: the focused element, if it edits
@@ -982,11 +1019,24 @@ impl Surface {
 
     fn resolve(&mut self) {
         self.doc.handle_messages();
-        self.doc.resolve(self.started.elapsed().as_secs_f64());
+        // The document's time is `tick`, which `advance` moves; a test
+        // moves it to any moment it names.
+        self.doc.resolve(
+            self.tick
+                .saturating_duration_since(self.started)
+                .as_secs_f64(),
+        );
         // Styling loads CSS images (a background), and a `cid:` or `data:`
         // one arrives at once: in place now, it paints in this frame
         // rather than the next one. It needs no layout.
         self.doc.handle_messages();
+        // A CSS animation or transition moved a style: nothing mutated the
+        // nodes it plays on, so the damage they need is said here, as a
+        // delta's is where it mutates.
+        let scale = self.viewport.2 as f64;
+        for id in self.doc.take_animated_nodes() {
+            self.damage.touch(&self.doc, id, scale);
+        }
     }
 
     /// Whether the surface takes the pointer at CSS pixel (`x`, `y`): some

@@ -932,8 +932,9 @@ impl Host {
 
     /// Whether [`Host::render_dirty`] has something to render: a placed
     /// surface changed, an animated image on one is due to show its next
-    /// frame, something a document fetched arrived, or a scroll came to
-    /// rest that held a `view` back (SPEC §9.5).
+    /// frame, a CSS animation or transition on one is mid-flight, something
+    /// a document fetched arrived, or a scroll came to rest that held a
+    /// `view` back (SPEC §9.5).
     pub fn has_dirty(&self) -> bool {
         let now = std::time::Instant::now();
         // Lost surfaces' deletions go out with the next frame's events, and
@@ -953,13 +954,14 @@ impl Host {
     }
 
     /// When an animated image (GIF, APNG, WebP) on a placed surface is due
-    /// to show its next frame, scrollbars that fade are drawn again, or a
-    /// scroll that held a `view` back (SPEC §9.5) or that snaps (CSS Scroll
-    /// Snap) comes to rest: render then. `None` while nothing plays, or
-    /// nothing that plays is in a placement's window, no scrollbar fades and
-    /// no `view` or snap waits. Each animated image has one deadline at a
-    /// time, so a host needs one timer. Now, when something a document
-    /// fetched has arrived, or `caps` is owed.
+    /// to show its next frame, scrollbars that fade are drawn again, a CSS
+    /// animation or transition on one is mid-flight, or a scroll that held
+    /// a `view` back (SPEC §9.5) or that snaps (CSS Scroll Snap) comes to
+    /// rest: render then. `None` while nothing plays, or nothing that plays
+    /// is in a placement's window, no scrollbar fades and no `view` or snap
+    /// waits. Each animated image has one deadline at a time, so a host
+    /// needs one timer. Now, when something a document fetched has arrived,
+    /// or `caps` is owed.
     pub fn next_frame(&self) -> Option<std::time::Instant> {
         let now = std::time::Instant::now();
         if self.store.has_delivered() || !self.owed.is_empty() {
@@ -1024,8 +1026,10 @@ impl Host {
     }
 
     /// Moves the animated images of placed surfaces to the frames they show
-    /// at `now`; the surfaces that changed are dirty. [`Host::render_dirty`]
-    /// does it with the current time.
+    /// at `now`, fades their scrollbars, blinks their carets, and asks for
+    /// a frame of every surface whose CSS animations or transitions are
+    /// mid-flight; the surfaces that changed are dirty.
+    /// [`Host::render_dirty`] does it with the current time.
     pub fn animate(&mut self, now: std::time::Instant) {
         for (name, s) in self.surfaces.iter_mut() {
             if s.placed {
