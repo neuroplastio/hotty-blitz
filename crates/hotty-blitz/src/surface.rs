@@ -3397,8 +3397,14 @@ impl Surface {
                 // focus shows.
                 matches!(ui, UiEvent::PointerMove(_)) && self.buttons != MouseEventButtons::None,
             ),
-            // A click from the keyboard, as a press.
-            Input::Dom(_) => (false, true, false),
+            // An edit of a field's value (a keymap action, undo, a paste)
+            // is a key's: only the field changed. A click from the
+            // keyboard is a press. Every edit was a press until gov R-22,
+            // and a BackSpace repainted the whole surface.
+            Input::Dom(e) => {
+                let edit = matches!(e.data, DomEventData::Input(_));
+                (edit, !edit, false)
+            }
         };
         let bar_before = self.doc.hovered_scrollbar();
         let selected = if dragging {
