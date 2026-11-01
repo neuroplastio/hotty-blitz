@@ -141,7 +141,8 @@ fn controls_take_the_palette(dark: bool) {
 
 /// The focus ring is the controls' (hotty 0.6, V6-07): a container that
 /// takes the focus, here an element with `tabindex` and a scrolling list,
-/// shows none, while a button, a link and a summary do.
+/// shows none, while a button, a link, a summary and an editing host
+/// (`contenteditable`, a text field, SPEC §10.2) do.
 #[test]
 fn a_focused_container_has_no_ring() {
     let t = theme(true);
@@ -160,7 +161,8 @@ fn a_focused_container_has_no_ring() {
         "<div id=pane tabindex=0>a pane that takes keys</div>\
          <div id=list tabindex=-1 style='height:40px;overflow:auto'><p>one</p><p>two</p><p>three</p></div>\
          <button id=b>Go</button> <a id=a href='#x'>link</a>\
-         <details><summary id=sum>more</summary>hidden</details>",
+         <details><summary id=sum>more</summary>hidden</details>\
+         <div id=ce contenteditable>notes</div> <p id=cet contenteditable=true tabindex=0>more notes</p>",
     ));
     h.handle(&cmd(
         &[
@@ -182,8 +184,9 @@ fn a_focused_container_has_no_ring() {
             "#{id}"
         );
     }
-    for id in ["b", "a", "sum"] {
+    for id in ["b", "a", "sum", "ce", "cet"] {
         focus(&mut h, id);
+        assert!(h.is_focused("x"), "#{id} takes the focus");
         assert_eq!(
             style(&h, &format!("#{id}"), "outline-style"),
             "solid",
