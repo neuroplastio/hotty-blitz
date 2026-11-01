@@ -37,7 +37,7 @@ pub use surface::{Damage, Frame, Timings};
 
 /// The hotty version this host speaks, its only one (SPEC §4): a query
 /// that does not list it is answered with `EVERSION`.
-pub const VERSION: &str = "0.5";
+pub const VERSION: &str = "0.6";
 
 /// The most bytes one command's payload decodes to, after base64 and zlib
 /// (SPEC §3.4): what the capabilities report as `limits.message` (§13). A
@@ -1373,10 +1373,16 @@ impl Host {
             "q" => {
                 // `v` lists the versions the program speaks, comma-separated
                 // (SPEC §4), and this host answers in the highest it shares:
-                // 0.5 when an entry is exactly that, whatever the others and
+                // 0.6 when an entry is exactly that, whatever the others and
                 // their order. Otherwise, a query with no `v` too, EVERSION,
-                // its detail the versions this host speaks.
-                if !hotty::host::speaks(cmd) {
+                // its detail the versions this host speaks. This is
+                // hotty::host::speaks for VERSION: the hotty crate pinned
+                // speaks 0.5, and the check goes back to it with the pin of
+                // a hotty-rs that speaks 0.6.
+                if !cmd
+                    .get("v")
+                    .is_some_and(|v| v.split(',').any(|v| v == VERSION))
+                {
                     return Err(("EVERSION", VERSION.to_string()));
                 }
                 let now = self.snapshot();

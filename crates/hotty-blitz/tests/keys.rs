@@ -285,7 +285,7 @@ fn caps_report_the_settings_and_their_changes() {
         })
         .is_empty()
     );
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.6")], b"")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["mod"], "ctrl");
     assert_eq!(
@@ -330,7 +330,7 @@ fn caps_report_the_settings_and_their_changes() {
 #[test]
 fn caps_list_backdrop_where_the_terminal_draws_them() {
     let mut h = host(KeySettings::default());
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.6")], b"")));
     assert_eq!(
         body(&r[0].payload)["features"],
         serde_json::json!(["hover"])
@@ -348,7 +348,7 @@ fn caps_list_backdrop_where_the_terminal_draws_them() {
     );
     h.set_passthrough(true);
     h.take_events();
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.6")], b"")));
     assert_eq!(
         body(&r[0].payload)["features"],
         serde_json::json!(["passthrough", "hover", "backdrop"])
@@ -392,7 +392,7 @@ fn caps_list_backdrop_however_they_are_chunked() {
         .map(|i| format!("https://host-{i:03}.example"))
         .collect();
     h.set_network(&format!("img-src {}", origins.join(" ")));
-    let fx = h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b""));
+    let fx = h.handle(&cmd(&[("a", "q"), ("v", "0.6")], b""));
     assert!(chunks(&fx) > 1, "{} chunk(s)", chunks(&fx));
     let r = replies(&fx);
     assert_eq!(r.len(), 1, "{r:?}");
@@ -459,7 +459,7 @@ fn a_new_font_tells_caps_and_a_zoom_does_not() {
     // Before a query: nothing is owed.
     h.set_config(config(12, 24, 1.0, 19.0));
     assert!(h.take_events().is_empty());
-    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b"")));
+    let r = replies(&h.handle(&cmd(&[("a", "q"), ("v", "0.6")], b"")));
     let caps = body(&r[0].payload);
     assert_eq!(caps["cellcss"], serde_json::json!({"w": 12.0, "h": 24.0}));
     assert_eq!(caps["scale"], serde_json::json!(1.0));

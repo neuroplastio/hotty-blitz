@@ -10,17 +10,17 @@ host and program shares:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of hotty 0.5: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of hotty 0.6: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty` | the `hotty` CLI (package `hotty-cli`): `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout), vello_cpu (its renderer) and Stylo (its style engine), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
-The host speaks hotty 0.5 and no other version. It answers a query that
-lists 0.5 among the versions its program speaks (`a=q:n=1:v=0.5`, SPEC §4)
+The host speaks hotty 0.6 and no other version. It answers a query that
+lists 0.6 among the versions its program speaks (`a=q:n=1:v=0.6`, SPEC §4)
 with its capabilities, and any other, one with no `v` too, with `EVERSION`:
-a program of 0.4 finds no host.
+a program of 0.5 finds no host.
 
-0.5.x speaks hotty 0.5; the patch number is this repository's own. The
-capabilities name it: `"host": "hotty-blitz"`, `"version": "0.5.10"`.
+0.6.x speaks hotty 0.6; the patch number is this repository's own. The
+capabilities name it: `"host": "hotty-blitz"`, `"version": "0.6.0"`.
 
 ## Try it
 
@@ -56,7 +56,7 @@ then its body as JSON with each value's type in sight, or what a program
 sent as its text.
 
 ```
-a=ok:n=1:re=q  {"v": "0.5", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
+a=ok:n=1:re=q  {"v": "0.6", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
 a=delta:s=form:q=2  {"ops": [{"op": "text", "t": "status", "v": "saved ✓"}]}
 a=ev:s=form:e=fit  {"r": 3}
 ```
