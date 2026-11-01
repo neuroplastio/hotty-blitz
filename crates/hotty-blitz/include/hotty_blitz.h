@@ -104,6 +104,14 @@ void hotty_host_events(hotty_host *h, const hotty_effects *fx);
 /* Full reset (RIS): every surface goes, with the program's menus and the
  * touch areas of both screens (SPEC 9.6). Deletions arrive through fx. */
 void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
+/* The terminal removed the surface's placement on its own and keeps the
+ * surface (SPEC 5.4): the line it was placed on left the scrollback, or the
+ * terminal left the alternate screen it was placed on. As a=hide, but for the
+ * placement, which is gone already: the keyboard goes back to the terminal
+ * (blur, through fx), a drag ends, view stops, and the surface is no backdrop
+ * until a placement makes it one again. A terminal that deletes the surface
+ * instead (a=del) need not call it. */
+void hotty_host_unplaced(hotty_host *h, const char *surface, const hotty_effects *fx);
 /* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's
  * (SPEC 10.1): pass no other button. A press also takes the
  * keyboard from any other surface that has it; its events come through fx.

@@ -464,6 +464,29 @@ pub unsafe extern "C" fn hotty_host_reset(h: *mut HottyHost, fx: *const HottyEff
     guard(h, (), |h| run_effects(h.host.reset(), fx))
 }
 
+/// The terminal removed the surface's placement on its own and keeps the
+/// surface (SPEC §5.4): the line it was placed on left the scrollback, or
+/// the terminal left the alternate screen it was placed on. As `a=hide`,
+/// but for the placement, which is gone already: the keyboard goes back to
+/// the terminal (`blur`, through `fx`), a drag ends, `view` stops, and the
+/// surface is no backdrop until a placement makes it one again. A terminal
+/// that deletes the surface instead (`a=del`) need not call it.
+///
+/// # Safety
+/// `h` and `surface` must be valid; `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_unplaced(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    fx: *const HottyEffects,
+) {
+    let Some(surface) = (unsafe { name(surface) }) else {
+        return;
+    };
+    let fx = unsafe { fx.as_ref() };
+    guard(h, (), |h| run_effects(h.host.unplaced(surface), fx))
+}
+
 unsafe fn name<'a>(s: *const c_char) -> Option<&'a str> {
     if s.is_null() {
         return None;

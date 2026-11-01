@@ -1428,7 +1428,7 @@ impl Host {
                 if self.gesture.as_ref().is_some_and(|g| g.surface == name) {
                     self.gesture = None;
                 }
-                let (cols, rows, auto, placed, presses, fit, hover, created, window) =
+                let (cols, rows, auto, placed, backdrop, presses, fit, hover, created, window) =
                     match self.surfaces.remove(&name) {
                         Some(mut old) => {
                             self.store.forget_document(old.doc_id());
@@ -1444,6 +1444,7 @@ impl Host {
                                 old.rows,
                                 old.auto_rows,
                                 old.placed,
+                                old.backdrop,
                                 old.presses,
                                 old.fit,
                                 old.hover,
@@ -1453,7 +1454,18 @@ impl Host {
                         }
                         None => {
                             self.created += 1;
-                            (80, 24, false, false, false, None, None, self.created, None)
+                            (
+                                80,
+                                24,
+                                false,
+                                false,
+                                false,
+                                false,
+                                None,
+                                None,
+                                self.created,
+                                None,
+                            )
                         }
                     };
                 let mut s = surface::Surface::new(
@@ -1468,8 +1480,10 @@ impl Host {
                     scroll::axes(cmd.get("scroll")),
                 );
                 // A replaced document keeps its placement: `r=auto` is
-                // measured when placed, not on every change.
+                // measured when placed, not on every change. A backdrop stays
+                // one (hotty 0.6, V6-06): it is the placement's.
                 s.placed = placed;
+                s.backdrop = backdrop;
                 s.window = window;
                 s.presses = presses;
                 s.fit = fit;
@@ -1638,27 +1652,13 @@ impl Host {
             }
             "hide" => {
                 let name = surface_name()?.to_string();
-                let s = self
+                let placed = self
                     .surfaces
-                    .get_mut(&name)
-                    .ok_or(("ENOENT", format!("no surface {name}")))?;
-                // The keyboard goes back to the terminal, as with a=blur.
-                if s.has_focus() {
-                    for e in s.blur() {
-                        effects.push(Effect::Reply(e.encode(&name)));
-                    }
-                }
-                // Its placement goes away, and with it a drag (SPEC §9.1).
-                if let Some(e) = s.cancel_drag(Mods::default()) {
-                    effects.push(Effect::Reply(e.encode(&name)));
-                }
-                // What the program hears stays asked for (SPEC §5.2), and
-                // goes on from what it last heard once the surface is placed
-                // again (§9).
-                if s.placed {
-                    s.placed = false;
-                    s.window = None;
-                    s.hidden();
+                    .get(&name)
+                    .ok_or(("ENOENT", format!("no surface {name}")))?
+                    .placed;
+                effects.extend(self.unplaced(&name));
+                if placed {
                     effects.push(Effect::Hide { surface: name });
                 }
                 Ok((Vec::new(), None))
@@ -2619,6 +2619,43 @@ impl Host {
             .into_iter()
             .map(|e| Effect::Reply(e.encode(surface)))
             .collect()
+    }
+
+    /// The placement of `surface` went, and the surface stays (SPEC §5.4):
+    /// the terminal removed it on its own, as when the line it was placed
+    /// on left the scrollback, or the terminal left the alternate screen it
+    /// was placed on and kept the surface. What `a=hide` does, which calls
+    /// it, but for removing the placement, which the terminal has done: the
+    /// keyboard goes back to the terminal, as with `a=blur`, a drag ends,
+    /// and `view` stops until the surface is placed again. Whether it is a
+    /// backdrop (hotty 0.6, V6-06) belongs to the placement and goes with
+    /// it: a hidden surface is none, and its next placement decides again.
+    /// The effects are the events the program hears.
+    pub fn unplaced(&mut self, surface: &str) -> Vec<Effect> {
+        enter(&mut self.working, surface);
+        self.menu.stale = true;
+        let mut effects = Vec::new();
+        let Some(s) = self.surfaces.get_mut(surface) else {
+            return effects;
+        };
+        if s.has_focus() {
+            for e in s.blur() {
+                effects.push(Effect::Reply(e.encode(surface)));
+            }
+        }
+        // A drag ends with the placement (SPEC §9.1).
+        if let Some(e) = s.cancel_drag(Mods::default()) {
+            effects.push(Effect::Reply(e.encode(surface)));
+        }
+        // What the program hears stays asked for (SPEC §5.2), and goes on
+        // from what it last heard once the surface is placed again (§9).
+        if s.placed {
+            s.placed = false;
+            s.window = None;
+            s.hidden();
+        }
+        s.backdrop = false;
+        effects
     }
 
     /// Whether `surface` currently holds the keyboard.
