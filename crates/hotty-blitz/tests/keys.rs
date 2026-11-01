@@ -361,6 +361,86 @@ fn caps_list_backdrop_where_the_terminal_draws_them() {
     );
 }
 
+/// How many hotty messages the replies in `effects` take on the wire: a
+/// body past one chunk takes several (SPEC §3.4).
+fn chunks(effects: &[Effect]) -> usize {
+    let start = format!("\x1b]{};", hotty::NUMBER);
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Reply(b) => Some(b),
+            _ => None,
+        })
+        .map(|b| {
+            b.windows(start.len())
+                .filter(|w| *w == start.as_bytes())
+                .count()
+        })
+        .sum()
+}
+
+/// The host lists `backdrop` itself, whole (hotty 0.6, V6-06): in the reply
+/// to a query and in every `caps` event that carries `features`, however
+/// many chunks the message takes, so a terminal passes what the host
+/// writes on as it is, and adds nothing to it.
+#[test]
+fn caps_list_backdrop_however_they_are_chunked() {
+    let mut h = host(KeySettings::default());
+    h.set_backdrops(true);
+    // Granted origins enough that the capabilities take several chunks.
+    let origins: Vec<String> = (0..200)
+        .map(|i| format!("https://host-{i:03}.example"))
+        .collect();
+    h.set_network(&format!("img-src {}", origins.join(" ")));
+    let fx = h.handle(&cmd(&[("a", "q"), ("v", "0.5")], b""));
+    assert!(chunks(&fx) > 1, "{} chunk(s)", chunks(&fx));
+    let r = replies(&fx);
+    assert_eq!(r.len(), 1, "{r:?}");
+    let caps = body(&r[0].payload);
+    assert_eq!(caps["features"], serde_json::json!(["hover", "backdrop"]));
+    assert_eq!(caps["net"]["img-src"].as_array().map(Vec::len), Some(200));
+
+    // A `caps` event with `features` and an `edit` long enough to be
+    // chunked too: the terminal's menus and edit shortcuts change at once.
+    let mut platform = Platform::new(hotty::keys::Mod::Super);
+    platform.edit = Some(
+        hotty::keys::EDIT_ACTIONS
+            .iter()
+            .map(|a| {
+                let keys = ["ctrl+alt", "super+alt"]
+                    .iter()
+                    .flat_map(|m| ('a'..='z').map(move |c| format!("{m}+{c}")))
+                    .collect();
+                (a.to_string(), keys)
+            })
+            .collect(),
+    );
+    let fx = h.set_keys(KeySettings {
+        platform,
+        commands: true,
+        menus: true,
+    });
+    assert!(chunks(&fx) > 1, "{} chunk(s)", chunks(&fx));
+    let r = replies(&fx);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!((r[0].get("e"), r[0].get("s")), (Some("caps"), None));
+    let changed = body(&r[0].payload);
+    assert_eq!(
+        changed["features"],
+        serde_json::json!(["hover", "menu", "backdrop"])
+    );
+    assert_eq!(changed["edit"]["copy"].as_array().map(Vec::len), Some(52));
+
+    // And in one chunk, with another feature's change.
+    h.set_passthrough(true);
+    let fx = h.take_events();
+    assert_eq!(chunks(&fx), 1);
+    assert_eq!(
+        body(&replies(&fx)[0].payload),
+        serde_json::json!({"features": ["passthrough", "hover", "menu", "backdrop"]})
+    );
+}
+
 /// A new font tells `caps` with the new `cellcss`; a zoom, which changes
 /// the cell in device pixels and `scale` together, and a program that did
 /// not ask, hear nothing (SPEC §4, §5.3).
