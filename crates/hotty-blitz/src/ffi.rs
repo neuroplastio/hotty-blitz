@@ -277,7 +277,8 @@ pub unsafe extern "C" fn hotty_host_new(cfg: *const HottyConfig) -> *mut HottyHo
     let Some(cfg) = (unsafe { cfg.as_ref() }) else {
         return std::ptr::null_mut();
     };
-    let host = Host::new(unsafe { config(cfg) });
+    let mut host = Host::new(unsafe { config(cfg) });
+    host.contained = true;
     Box::into_raw(Box::new(HottyHost {
         host,
         dead: false,
@@ -1514,5 +1515,111 @@ mod tests {
         assert!(names(h).is_empty());
         assert_eq!(host.host.take_events().len(), 2);
         unsafe { hotty_host_free(h) };
+    }
+
+    /// A host with surfaces `names`, placed and drawn.
+    fn surfaces(names: &[&str]) -> *mut HottyHost {
+        let h = unsafe { hotty_host_new(&c_config(0.0)) };
+        for s in names {
+            add(h, s);
+        }
+        assert_eq!(render(h), names);
+        h
+    }
+
+    fn cmd(h: *mut HottyHost, pairs: &[(&str, &str)], payload: &[u8]) {
+        let m = hotty::Message::new(pairs.iter().copied().collect(), payload.to_vec());
+        unsafe { &mut (*h).host }.handle(&m);
+    }
+
+    fn add(h: *mut HottyHost, s: &str) {
+        cmd(h, &[("a", "doc"), ("s", s)], b"<p id=p>x</p>");
+        cmd(h, &[("a", "place"), ("s", s), ("c", "4"), ("r", "1")], b"");
+    }
+
+    /// The text of `s`'s paragraph changes: it draws again.
+    fn change(h: *mut HottyHost, s: &str, text: &str) {
+        let body = rmp_serde::to_vec_named(&serde_json::json!({
+            "ops": [{"op": "text", "t": "p", "v": text}]
+        }))
+        .unwrap();
+        cmd(h, &[("a", "delta"), ("s", s)], &body);
+    }
+
+    extern "C" fn drew(
+        ctx: *mut c_void,
+        surface: *const c_char,
+        _: u32,
+        _: u32,
+        _: *const u8,
+        _: usize,
+        _: *const HottyRect,
+        _: usize,
+        _: bool,
+    ) {
+        let drew = unsafe { &mut *(ctx as *mut Vec<String>) };
+        drew.push(unsafe { CStr::from_ptr(surface) }.to_str().unwrap().into());
+    }
+
+    /// Renders through the C ABI: the surfaces that drew.
+    fn render(h: *mut HottyHost) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        unsafe { hotty_host_render(h, &mut out as *mut _ as *mut c_void, drew) };
+        out
+    }
+
+    fn deleted(h: *mut HottyHost) -> Vec<String> {
+        let events = unsafe { &mut (*h).host }.take_events();
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                Effect::Delete { surface } => Some(surface),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Surface `a` panics while it is styled or painted, in the frame `b`
+    /// and `c` changed in: they draw in that frame all the same, and after
+    /// it, as does a new surface `d`; `a` alone is deleted, and the
+    /// thread is left as it was, so another host on it draws too.
+    fn a_fault_costs_its_surface(fault: crate::surface::Fault) {
+        let h = surfaces(&["a", "b", "c"]);
+        let other = surfaces(&["a", "z"]);
+        unsafe { &mut (*h).host }
+            .surfaces
+            .get_mut("a")
+            .unwrap()
+            .fault = Some(fault);
+        change(h, "a", "y");
+        change(h, "b", "y");
+        change(h, "c", "y");
+        assert_eq!(render(h), ["b", "c"]);
+        assert!(!unsafe { &*h }.dead);
+        assert_eq!(names(h), ["b", "c"]);
+        assert_eq!(deleted(h), ["a"]);
+        assert!(!style::thread_state::get().is_layout());
+        change(h, "b", "z");
+        change(h, "c", "z");
+        assert_eq!(render(h), ["b", "c"]);
+        add(h, "d");
+        assert_eq!(render(h), ["d"]);
+        assert!(deleted(h).is_empty());
+        // The other host, on the same thread, styles and paints.
+        change(other, "a", "y");
+        change(other, "z", "y");
+        assert_eq!(render(other), ["a", "z"]);
+        unsafe { hotty_host_free(h) };
+        unsafe { hotty_host_free(other) };
+    }
+
+    #[test]
+    fn a_panic_while_styling_costs_that_surface_alone() {
+        a_fault_costs_its_surface(crate::surface::Fault::Style);
+    }
+
+    #[test]
+    fn a_panic_while_painting_costs_that_surface_alone() {
+        a_fault_costs_its_surface(crate::surface::Fault::Paint);
     }
 }

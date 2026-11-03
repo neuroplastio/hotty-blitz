@@ -295,6 +295,10 @@ pub struct Host {
     /// The surface whose document the host is working in (empty: none),
     /// so that a panic there costs that surface alone ([`Host::recover`]).
     working: String,
+    /// The C ABI holds the host and catches its panics: a render goes on
+    /// past a surface that panics, which [`Host::recover`] then deletes.
+    /// A Rust caller gets the panic.
+    pub(crate) contained: bool,
     /// What surfaces lost to a panic leave the embedder to do: delete
     /// their pictures. [`Host::take_events`] hands them over.
     lost: Vec<Effect>,
@@ -355,6 +359,20 @@ impl MenuState {
             &mut self.main
         }
     }
+}
+
+/// Puts back what a panic in a surface's document left that the others
+/// share. Blitz enters Stylo's LAYOUT state on the thread for a style pass
+/// and leaves it at the end, which an unwind skips: a debug build then
+/// asserts at the next pass, in whichever surface or host styles on the
+/// thread. And one of the render contexts may be left mid-paint: new ones
+/// are made as they are needed.
+fn unwound(renderers: &mut surface::Renderers) {
+    use ::style::thread_state::{self, ThreadState};
+    if thread_state::get().is_layout() {
+        thread_state::exit(ThreadState::LAYOUT);
+    }
+    *renderers = surface::Renderers::default();
 }
 
 /// Notes that the host now works in `surface`'s document ([`Host::recover`]).
@@ -533,6 +551,7 @@ impl Host {
             areas: Default::default(),
             frame_log: FrameLog::open(),
             working: String::new(),
+            contained: false,
             lost: Vec::new(),
             keys: KeySettings::default(),
             heard: None,
@@ -1095,6 +1114,7 @@ impl Host {
         let name = std::mem::take(&mut self.working);
         self.gesture = None;
         self.program_press = false;
+        unwound(&mut self.renderers);
         if self.surfaces.contains_key(&name) {
             let deleted = self.remove_surface(&name);
             self.lost.extend(deleted);
@@ -1115,83 +1135,104 @@ impl Host {
         let metrics = self.config.metrics;
         let dark = self.config.theme.dark;
         let now = std::time::Instant::now();
+        // Under the C ABI, a panic in one surface's document costs that
+        // surface, not the frames of the others after it (Host::recover).
+        let mut lost = Vec::new();
         for (name, s) in self.surfaces.iter_mut() {
-            // A new frame: a `caret` held back to one a frame (SPEC §9).
-            if let Some(e) = s.new_frame() {
-                self.carets.push(Effect::Reply(e.encode(name)));
-            }
-            // A wheel gesture came to rest: what it scrolled snaps, before
-            // the frame and its `view`.
-            if wheel_rest_at(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
+            let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // A new frame: a `caret` held back to one a frame (SPEC §9).
+                if let Some(e) = s.new_frame() {
+                    self.carets.push(Effect::Reply(e.encode(name)));
+                }
+                // A wheel gesture came to rest: what it scrolled snaps, before
+                // the frame and its `view`.
+                if wheel_rest_at(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
+                    enter(&mut self.working, name);
+                    s.wheel_rest();
+                }
+                // A scroll came to rest: the `view` it held back (SPEC §9.5).
+                if view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
+                    s.dirty = true;
+                }
+                if !(s.dirty && s.placed) {
+                    return;
+                }
                 enter(&mut self.working, name);
-                s.wheel_rest();
-            }
-            // A scroll came to rest: the `view` it held back (SPEC §9.5).
-            if view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
-                s.dirty = true;
-            }
-            if !(s.dirty && s.placed) {
-                continue;
-            }
-            enter(&mut self.working, name);
-            let moving = scrolling(&self.gesture, name, now);
-            let damage = s.render(&metrics, dark, moving, &mut self.renderers);
-            if let Some(rows) = s.fit_event.take() {
-                match self.fits.iter_mut().find(|(n, _)| n == name) {
-                    Some(f) => f.1 = rows,
-                    None => self.fits.push((name.clone(), rows)),
+                let moving = scrolling(&self.gesture, name, now);
+                let damage = s.render(&metrics, dark, moving, &mut self.renderers);
+                if let Some(rows) = s.fit_event.take() {
+                    match self.fits.iter_mut().find(|(n, _)| n == name) {
+                        Some(f) => f.1 = rows,
+                        None => self.fits.push((name.clone(), rows)),
+                    }
                 }
-            }
-            if let Some(view) = s.view_event.take() {
-                match self.views.iter_mut().find(|(n, _)| n == name) {
-                    Some(v) => v.1 = view,
-                    None => self.views.push((name.clone(), view)),
+                if let Some(view) = s.view_event.take() {
+                    match self.views.iter_mut().find(|(n, _)| n == name) {
+                        Some(v) => v.1 = view,
+                        None => self.views.push((name.clone(), view)),
+                    }
                 }
-            }
-            if let Some(damage) = damage {
-                let t = std::time::Instant::now();
-                let t0 = trace::now();
-                out(name, &s.frame, &damage);
-                if trace::on() {
-                    let (full, px) = match &damage {
-                        Damage::Full => (1, s.frame.width as u64 * s.frame.height as u64),
-                        Damage::Rects(rs) => (0, rs.iter().map(|r| r.w as u64 * r.h as u64).sum()),
-                    };
-                    trace::span(
-                        "blitz.deliver",
-                        t0,
-                        &[
-                            ("s", trace::Arg::S(name)),
-                            ("full", trace::Arg::U(full)),
-                            ("px", trace::Arg::U(px)),
-                        ],
-                    );
+                if let Some(damage) = damage {
+                    let t = std::time::Instant::now();
+                    let t0 = trace::now();
+                    out(name, &s.frame, &damage);
+                    if trace::on() {
+                        let (full, px) = match &damage {
+                            Damage::Full => (1, s.frame.width as u64 * s.frame.height as u64),
+                            Damage::Rects(rs) => {
+                                (0, rs.iter().map(|r| r.w as u64 * r.h as u64).sum())
+                            }
+                        };
+                        trace::span(
+                            "blitz.deliver",
+                            t0,
+                            &[
+                                ("s", trace::Arg::S(name)),
+                                ("full", trace::Arg::U(full)),
+                                ("px", trace::Arg::U(px)),
+                            ],
+                        );
+                    }
+                    if let Some(log) = &mut self.frame_log {
+                        use std::io::Write;
+                        let deliver = t.elapsed();
+                        let tm = s.frame.timings;
+                        let px: u64 = match &damage {
+                            Damage::Full => s.frame.width as u64 * s.frame.height as u64,
+                            Damage::Rects(rs) => rs.iter().map(|r| r.w as u64 * r.h as u64).sum(),
+                        };
+                        let handle = log.handle.as_micros() as u64;
+                        let total = handle
+                            + (tm.resolve_us + tm.diff_us + tm.paint_us) as u64
+                            + deliver.as_micros() as u64;
+                        let _ = writeln!(
+                            log.file,
+                            "{name}\t{}\t{handle}\t{}\t{}\t{}\t{}\t{total}\t{px}",
+                            log.commands,
+                            tm.resolve_us,
+                            tm.diff_us,
+                            tm.paint_us,
+                            deliver.as_micros(),
+                        );
+                        log.commands = 0;
+                        log.handle = std::time::Duration::ZERO;
+                    }
                 }
-                if let Some(log) = &mut self.frame_log {
-                    use std::io::Write;
-                    let deliver = t.elapsed();
-                    let tm = s.frame.timings;
-                    let px: u64 = match &damage {
-                        Damage::Full => s.frame.width as u64 * s.frame.height as u64,
-                        Damage::Rects(rs) => rs.iter().map(|r| r.w as u64 * r.h as u64).sum(),
-                    };
-                    let handle = log.handle.as_micros() as u64;
-                    let total = handle
-                        + (tm.resolve_us + tm.diff_us + tm.paint_us) as u64
-                        + deliver.as_micros() as u64;
-                    let _ = writeln!(
-                        log.file,
-                        "{name}\t{}\t{handle}\t{}\t{}\t{}\t{}\t{total}\t{px}",
-                        log.commands,
-                        tm.resolve_us,
-                        tm.diff_us,
-                        tm.paint_us,
-                        deliver.as_micros(),
-                    );
-                    log.commands = 0;
-                    log.handle = std::time::Duration::ZERO;
+            }));
+            match drawn {
+                Ok(()) => {}
+                Err(_) if self.contained => {
+                    // Before the next surface draws.
+                    unwound(&mut self.renderers);
+                    lost.push(name.clone());
                 }
+                Err(panic) => std::panic::resume_unwind(panic),
             }
+        }
+        for name in lost {
+            eprintln!("hotty-blitz: surface {name} panicked and is deleted");
+            self.working = name;
+            self.recover();
         }
         if let Some((_, s)) = self.menu.shown.as_mut()
             && s.dirty

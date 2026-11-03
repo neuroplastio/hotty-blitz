@@ -106,6 +106,14 @@ impl NavigationProvider for NavQueue {
     }
 }
 
+/// Where a test makes a surface's next render panic.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Fault {
+    Style,
+    Paint,
+}
+
 /// Render contexts by bucketed size, shared by a host's surfaces, so that
 /// painting a rectangle does not allocate one (the fixed cost that dominated
 /// small deltas). vello_cpu paints each context on a pool of worker threads
@@ -184,6 +192,9 @@ impl Renderers {
 }
 
 pub(crate) struct Surface {
+    /// A panic the next render has here, for the tests of containment.
+    #[cfg(test)]
+    pub fault: Option<Fault>,
     doc: HtmlDocument,
     /// Where delta fragments are parsed (see delta.rs).
     parse_doc: BaseDocument,
@@ -722,6 +733,8 @@ impl Surface {
         });
         DocumentHtmlParser::parse_into_mutator(&mut parse_doc.mutate(), "");
         Surface {
+            #[cfg(test)]
+            fault: None,
             doc,
             parse_doc,
             cols,
@@ -1122,6 +1135,13 @@ impl Surface {
         let t0 = std::time::Instant::now();
         let s0 = trace::now();
         self.ensure_viewport(m, w, h, dark);
+        #[cfg(test)]
+        if self.fault == Some(Fault::Style) {
+            // What a panic in Stylo's traversal leaves on its thread: Blitz
+            // entered the LAYOUT state for it and never left.
+            style::thread_state::enter(style::thread_state::ThreadState::LAYOUT);
+            panic!("a fault while styling");
+        }
         self.resolve();
         if self.doc.has_pending_critical_resources() {
             // A stylesheet has not arrived yet; the `res` that brings it marks
@@ -1355,6 +1375,8 @@ impl Surface {
             .resize((r_render.w * r_render.h * 4) as usize, 0);
         renderer.reset();
         let p0 = trace::now();
+        #[cfg(test)]
+        let fault = self.fault;
         let mut scened = 0;
         let doc: &mut BaseDocument = &mut self.doc;
         // The root's scrollbars, over everything (Blitz draws elements').
@@ -1375,6 +1397,8 @@ impl Surface {
                     let mut window =
                         paint::Window::new(&mut inked, r.x, r.y, r_render.w, r_render.h);
                     paint_scene(&mut window, doc, scale, w, h, 0, 0);
+                    #[cfg(test)]
+                    assert!(fault != Some(Fault::Paint), "a fault while painting");
                     bars.paint(&mut window, kurbo::Affine::IDENTITY);
                     scened = trace::now();
                 },
@@ -1394,6 +1418,8 @@ impl Surface {
                 |scene| {
                     let mut scene = paint::Inked::new(scene, ink);
                     paint_scene(&mut scene, doc, scale, r_render.w, r_render.h, 0, 0);
+                    #[cfg(test)]
+                    assert!(fault != Some(Fault::Paint), "a fault while painting");
                     let shift = kurbo::Affine::translate((-(r.x as f64), -(r.y as f64)));
                     bars.paint(&mut scene, shift);
                     scened = trace::now();
