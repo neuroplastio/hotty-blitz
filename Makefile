@@ -16,10 +16,11 @@ hotty:
 # A set's base, from its mod.md.
 base = $(shell sed -n 's/^base:[[:space:]]*\([^[:space:]\#]*\).*/\1/p' mods/$(1)/mod.md)
 
-blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, Stylo at ../stylo
+blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, glifo at ../glifo, Stylo at ../stylo
 	@test -f ../blitz/packages/blitz-dom/src/layout/speculate.rs || scripts/blitz-fork.sh
 	@test "$$(git -C ../parley rev-list --count $(call base,parley)..hotty 2>/dev/null)" = "$$(ls mods/parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
 	@test "$$(git -C ../vello_cpu rev-list --count published..hotty 2>/dev/null)" = "$$(ls mods/vello_cpu/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
+	@test "$$(git -C ../glifo rev-list --count published..hotty 2>/dev/null)" = "$$(ls mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/glifo-fork.sh
 	@test "$$(git -C ../stylo rev-list --count $(call base,stylo)..hotty 2>/dev/null)" = "$$(ls mods/stylo/*.patch | wc -l | tr -d ' ')" || scripts/stylo-fork.sh
 
 mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the one we build with, and each set applies on it
@@ -27,6 +28,7 @@ mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the o
 	@test "$$(sed -n 's/.*github.com\/DioxusLabs\/blitz", rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | sort -u)" = "$(call base,blitz)" || { echo "mods/blitz/mod.md: base is not the rev Cargo.toml pins" >&2; exit 1; }
 	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "parley"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../parley show $(call base,parley):Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "mods/parley/mod.md: base is not the parley release Blitz pins" >&2; exit 1; }
 	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.toml | sed -n 's/^style = .*github.com\/nicoburns\/stylo", rev = "\([0-9a-f]*\)".*/\1/p')" = "$(call base,stylo)" || { echo "mods/stylo/mod.md: base is not the Stylo rev Blitz pins" >&2; exit 1; }
+	@test "$$(sed -n '/^name = "glifo"$$/{n;s/^version = "\(.*\)"/\1/p;}' Cargo.lock)" = "$(call base,glifo)" || { echo "mods/glifo/mod.md: base is not the glifo Cargo.lock builds" >&2; exit 1; }
 	@scripts/canary.sh base
 
 canary: blitz   ## do the sets in mods/ still apply to upstream's latest?

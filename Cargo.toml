@@ -55,6 +55,11 @@ stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 # takes at most 4 of them and one under 256 K px none, a blurred
 # rectangle's inside is not worked out pixel by pixel, and a clip layer
 # nothing is drawn in is not pushed.
+#
+# The glifo fork (../glifo, branch `hotty`, made by scripts/glifo-fork.sh
+# from the published package and the patches in mods/glifo/): a bitmap
+# glyph drawn smaller than its strike, a colour emoji's, is shrunk once to
+# the pixels it covers.
 [patch.crates-io]
 parley = { path = "../parley/parley" }
 fontique = { path = "../parley/fontique" }
@@ -62,6 +67,7 @@ parley_engine = { path = "../parley/parley_engine" }
 parley_data = { path = "../parley/parley_data" }
 parley_emoji = { path = "../parley/parley_emoji" }
 vello_cpu = { path = "../vello_cpu" }
+glifo = { path = "../glifo" }
 
 # The Stylo fork (../stylo, branch `hotty`, made by scripts/stylo-fork.sh from
 # the commit Blitz pins and the patches in mods/stylo/): Scroll Snap's

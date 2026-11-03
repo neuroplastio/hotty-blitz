@@ -3,11 +3,12 @@
 # worktree of its fork, and says whether it applies. Changes nothing else.
 #
 #   scripts/canary.sh          # upstream's latest: Blitz's, parley's and Stylo's
-#                              # main, vello_cpu's newest release on crates.io
+#                              # main, vello_cpu's and glifo's newest release
+#                              # on crates.io
 #   scripts/canary.sh base     # each set's base, exactly (make mods)
 #
 # The forks are the ones make blitz sets up, at ../blitz, ../parley,
-# ../vello_cpu and ../stylo. Stylo's latest is servo/stylo's main, the
+# ../vello_cpu, ../glifo and ../stylo. Stylo's latest is servo/stylo's main, the
 # stylo fork's origin.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,27 +51,33 @@ git_set blitz "$(dirname "$HERE")/blitz"
 git_set parley "$(dirname "$HERE")/parley"
 git_set stylo "$(dirname "$HERE")/stylo"
 
-# vello_cpu is a published package: the fork's `published` commit is base.
-# Its newest release goes on a commit of its own after that one, so a
-# three-way merge finds base's files; an empty one while base is newest.
-fork="$(dirname "$HERE")/vello_cpu"
-if [ "$AT" = base ]; then
-  try vello_cpu "$fork" published "base $(base vello_cpu)"
-else
-  v=$(curl -sf -A 'hotty-blitz canary (https://github.com/neuroplastio/hotty-blitz)' https://crates.io/api/v1/crates/vello_cpu |
+# crate_set SET: a set on a package published on crates.io, whose name is
+# the set's: the fork's `published` commit is base. Its newest release goes
+# on a commit of its own after that one, so a three-way merge finds base's
+# files; an empty one while base is newest.
+crate_set() {
+  s=$1 fork="$(dirname "$HERE")/$1"
+  if [ "$AT" = base ]; then
+    try "$s" "$fork" published "base $(base "$s")"
+    return
+  fi
+  v=$(curl -sf -A 'hotty-blitz canary (https://github.com/neuroplastio/hotty-blitz)' "https://crates.io/api/v1/crates/$s" |
     sed -n 's/.*"max_stable_version":"\([^"]*\)".*/\1/p')
   pkg="$(mktemp -d)"
-  curl -sfL "https://static.crates.io/crates/vello_cpu/vello_cpu-$v.crate" | tar -xz -C "$pkg" --strip-components 1
+  curl -sfL "https://static.crates.io/crates/$s/$s-$v.crate" | tar -xz -C "$pkg" --strip-components 1
   up="$(mktemp -d)"
   git -C "$fork" worktree add -q --detach "$up" published
   git -C "$up" rm -q -r .
   cp -R "$pkg"/. "$up"/
   git -C "$up" add -A
-  git -C "$up" commit -q --allow-empty -m "vello_cpu $v as published on crates.io"
+  git -C "$up" commit -q --allow-empty -m "$s $v as published on crates.io"
   rev=$(git -C "$up" rev-parse HEAD)
   git -C "$fork" worktree remove --force "$up"
   rm -rf "$pkg"
-  try vello_cpu "$fork" "$rev" "$v, the newest release (base $(base vello_cpu))"
-fi
+  try "$s" "$fork" "$rev" "$v, the newest release (base $(base "$s"))"
+}
+
+crate_set vello_cpu
+crate_set glifo
 
 exit $red

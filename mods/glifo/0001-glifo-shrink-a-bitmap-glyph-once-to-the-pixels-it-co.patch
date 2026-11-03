@@ -1,0 +1,338 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 3 Nov 2026 17:50:25 +0100
+Subject: [PATCH] glifo: shrink a bitmap glyph once, to the pixels it covers
+
+A colour emoji's strike is usually far larger than the text it sits in:
+Noto Color Emoji's is 136 pixels, drawn at 20 to 40. Drawn from the strike
+with a bilinear image paint, each pixel samples only the 2x2 strike pixels
+around its centre, so at a shrink of five most of the strike is skipped
+and the glyph's round edges stair-step, next to FreeType-based renderers
+and browsers, which shrink the bitmap first.
+
+When a bitmap glyph's transform shrinks it on both axes, without skew,
+rotation or mirroring, shrink it once to the pixels it covers, each the
+average of the strike over the area it covers, in premultiplied
+components. Then draw that copy one to one at the strike's position
+rounded to whole pixels, so it is not resampled again; colour bitmap
+glyphs are not drawn at sub-pixel positions in browsers either. The atlas
+caches the copy under its size rather than the strike's ppem: a bitmap
+drawn at or above its strike's size keeps its key, and a shrunk one's size
+can never equal a ppem.
+
+The shrink is separable and in fixed point, with a pixel's four
+components in one u64 in the columns' pass. For Noto Color Emoji's strike
+it costs about half of what decoding the strike's PNG does, which glifo
+does for every bitmap glyph it does not find in the atlas.
+---
+ src/glyph.rs  |  14 ++-
+ src/lib.rs    |   1 +
+ src/shrink.rs | 238 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 252 insertions(+), 1 deletion(-)
+ create mode 100644 src/shrink.rs
+
+diff --git a/src/glyph.rs b/src/glyph.rs
+index e2f826e..3edfe39 100644
+--- a/src/glyph.rs
++++ b/src/glyph.rs
+@@ -23,6 +23,7 @@ use crate::kurbo::Vec2;
+ use crate::kurbo::{self, Affine, BezPath, Diagonal2, Join, Line, ParamCurve as _, PathSeg, Shape};
+ use crate::peniko::FontData;
+ use crate::renderer::{fill_glyph, render_cached_glyph, stroke_glyph};
++use crate::shrink::Shrink;
+ use crate::util::AffineExt;
+ use alloc::boxed::Box;
+ use alloc::sync::Arc;
+@@ -652,6 +653,13 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+                     &bitmap_glyph,
+                     is_apple_color_emoji,
+                 );
++                // A bitmap drawn smaller than its strike is drawn from a copy
++                // shrunk to the pixels it covers, cached under that size.
++                let shrink = Shrink::new(&outline_transform, &pixmap);
++                let (outline_transform, size_bits) = match &shrink {
++                    Some(shrink) => (shrink.transform, shrink.size_bits()),
++                    None => (outline_transform, bitmap_ppem.to_bits()),
++                };
+ 
+                 // Bitmaps are not hinted and have no sub-pixel offset or
+                 // context color; variation coords are irrelevant for fixed strikes.
+@@ -659,7 +667,7 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+                     font_id: font_info.id,
+                     font_index: font_info.index,
+                     glyph_id: glyph.id,
+-                    size_bits: bitmap_ppem.to_bits(),
++                    size_bits,
+                     hinted: false,
+                     subpixel_x: SUBPIXEL_BITMAP,
+                     context_color: BLACK,
+@@ -685,6 +693,10 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+                 }
+ 
+                 // Cache miss — wrap the decoded pixmap for rendering.
++                let pixmap = match &shrink {
++                    Some(shrink) => shrink.apply(&pixmap),
++                    None => pixmap,
++                };
+                 let glyph_type = create_bitmap_glyph(pixmap);
+ 
+                 let prepared_glyph = PreparedGlyph {
+diff --git a/src/lib.rs b/src/lib.rs
+index 0abad7e..847400e 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -52,6 +52,7 @@ mod colr;
+ mod glyph;
+ mod interface;
+ pub mod renderer;
++mod shrink;
+ mod util;
+ 
+ pub use atlas::{
+diff --git a/src/shrink.rs b/src/shrink.rs
+new file mode 100644
+index 0000000..86f568d
+--- /dev/null
++++ b/src/shrink.rs
+@@ -0,0 +1,238 @@
++// Copyright 2026 the Vello Authors
++// SPDX-License-Identifier: Apache-2.0 OR MIT
++
++//! Shrinking bitmap glyphs to the pixels they are drawn on.
++//!
++//! A colour emoji's strike is usually far larger than the text it sits in:
++//! Noto Color Emoji's is 136 pixels, drawn at 20 to 40. An image paint
++//! samples a few strike pixels around each pixel's centre, so at that
++//! shrink most of the strike is skipped and the glyph's edges stair-step.
++//! Shrunk once by averaging every strike pixel over the area it covers, as
++//! a rasterizer's own bitmap scaling does, the edges are smooth, and the
++//! copy is drawn one to one.
++
++use crate::Pixmap;
++use crate::color::PremulRgba8;
++use crate::kurbo::Affine;
++use alloc::vec;
++use alloc::vec::Vec;
++#[cfg(not(feature = "std"))]
++use core_maths::CoreFloat as _;
++
++/// A bitmap glyph drawn smaller than its strike: the size it covers, in
++/// whole pixels, and where it goes.
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct Shrink {
++    width: u16,
++    height: u16,
++    /// Draws the shrunk bitmap one to one, at the strike's position rounded
++    /// to whole pixels, so it is not resampled again.
++    pub(crate) transform: Affine,
++}
++
++impl Shrink {
++    /// The shrink of `pixmap` drawn with `transform`, if it is drawn smaller
++    /// on both axes, without skew or rotation or mirroring.
++    pub(crate) fn new(transform: &Affine, pixmap: &Pixmap) -> Option<Self> {
++        let [a, b, c, d, e, f] = transform.as_coeffs();
++        if b != 0.0 || c != 0.0 || !(a > 0.0 && a < 1.0 && d > 0.0 && d < 1.0) {
++            return None;
++        }
++        let width = (f64::from(pixmap.width()) * a).round().max(1.0) as u16;
++        let height = (f64::from(pixmap.height()) * d).round().max(1.0) as u16;
++        Some(Self {
++            width,
++            height,
++            transform: Affine::translate((e.round(), f.round())),
++        })
++    }
++
++    /// The glyph cache key's size for the shrunk bitmap: its width and
++    /// height, which are all the shrink depends on. Read as an `f32`, it is
++    /// below one for any width under 16256, so it never equals a strike's
++    /// ppem, the key of a bitmap drawn as it is.
++    pub(crate) fn size_bits(&self) -> u32 {
++        (u32::from(self.width) << 16) | u32::from(self.height)
++    }
++
++    /// `pixmap` shrunk to the shrink's size: each pixel the average of the
++    /// strike over the area it covers, in premultiplied components.
++    ///
++    /// In fixed point. The columns' pass weighs in 256ths of a pixel's area
++    /// and keeps all four components of a pixel in one `u64`, 16 bits each,
++    /// with 8 bits below the component. The rows' pass weighs in 65536ths
++    /// and rounds to the nearest. A span's weights sum to exactly its whole,
++    /// so no sum overflows its lane.
++    pub(crate) fn apply(&self, pixmap: &Pixmap) -> Pixmap {
++        let (sw, sh) = (usize::from(pixmap.width()), usize::from(pixmap.height()));
++        let (dw, dh) = (usize::from(self.width), usize::from(self.height));
++        let src = pixmap.data();
++
++        // Columns first: a row of `dw` per strike row, in 16-bit components.
++        let columns = spans(sw, dw, 1 << 8);
++        let mut narrow = vec![0_u16; dw * sh * 4];
++        for (row, out) in src.chunks_exact(sw).zip(narrow.chunks_exact_mut(dw * 4)) {
++            for (out, span) in out.chunks_exact_mut(4).zip(&columns) {
++                let mut acc = 0_u64;
++                for (p, &w) in row[span.first..].iter().zip(&span.weights) {
++                    acc += spread(*p) * u64::from(w);
++                }
++                for (i, o) in out.iter_mut().enumerate() {
++                    *o = (acc >> (16 * i)) as u16;
++                }
++            }
++        }
++
++        // Then rows, a whole row of `dw` at a time.
++        let mut shrunk = Pixmap::new(self.width, self.height);
++        let out = shrunk.data_mut();
++        let mut acc = vec![0_u32; dw * 4];
++        for (span, out) in spans(sh, dh, ONE).iter().zip(out.chunks_exact_mut(dw)) {
++            acc.fill(0);
++            for (i, &w) in span.weights.iter().enumerate() {
++                let y = span.first + i;
++                for (a, &c) in acc.iter_mut().zip(&narrow[y * dw * 4..(y + 1) * dw * 4]) {
++                    *a += u32::from(c) * w;
++                }
++            }
++            for (o, a) in out.iter_mut().zip(acc.chunks_exact(4)) {
++                let c = |v: u32| ((v + (1 << 23)) >> 24) as u8;
++                // A component stays within its alpha, as premultiplied
++                // colour must, whatever the rounding.
++                let alpha = c(a[3]);
++                *o = PremulRgba8 {
++                    r: c(a[0]).min(alpha),
++                    g: c(a[1]).min(alpha),
++                    b: c(a[2]).min(alpha),
++                    a: alpha,
++                };
++            }
++        }
++        shrunk
++    }
++}
++
++/// A pixel's four components in one `u64`, 16 bits each, r lowest.
++#[inline(always)]
++fn spread(p: PremulRgba8) -> u64 {
++    let x = u64::from(u32::from_le_bytes([p.r, p.g, p.b, p.a]));
++    let x = (x | (x << 16)) & 0x0000_ffff_0000_ffff;
++    (x | (x << 8)) & 0x00ff_00ff_00ff_00ff
++}
++
++/// A whole weight in the rows' pass: the area of one shrunk pixel.
++const ONE: u32 = 1 << 16;
++
++/// The strike pixels one shrunk pixel covers: the first, and the share of
++/// the shrunk pixel's area each covers from there on, summing to the whole.
++#[derive(Debug)]
++struct Span {
++    first: usize,
++    weights: Vec<u32>,
++}
++
++/// For each of `dst` pixels shrunk from `src`, the span of `src` it covers,
++/// in weights whose whole is `one`.
++fn spans(src: usize, dst: usize, one: u32) -> Vec<Span> {
++    let scale = src as f64 / dst as f64;
++    (0..dst)
++        .map(|i| {
++            let lo = i as f64 * scale;
++            let hi = ((i + 1) as f64 * scale).min(src as f64);
++            let first = lo.floor() as usize;
++            let last = (hi.ceil() as usize).clamp(first + 1, src);
++            let mut weights: Vec<u32> = (first..last)
++                .map(|j| {
++                    let share = (hi.min(j as f64 + 1.0) - lo.max(j as f64)) / scale;
++                    (share * f64::from(one)) as u32
++                })
++                .collect();
++            // What the truncation lost goes to the largest share.
++            let sum: u32 = weights.iter().sum();
++            if let Some(w) = weights.iter_mut().max() {
++                *w = (*w + one).saturating_sub(sum);
++            }
++            Span { first, weights }
++        })
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{ONE, Shrink, spans};
++    use crate::Pixmap;
++    use crate::color::PremulRgba8;
++    use crate::kurbo::Affine;
++    use alloc::vec;
++
++    #[test]
++    fn spans_cover_the_strike_once() {
++        for one in [1 << 8, ONE] {
++            for (src, dst) in [(136, 27), (136, 135), (40, 7), (3, 1), (128, 38)] {
++                let mut covered = vec![0.0_f64; src];
++                for span in spans(src, dst, one) {
++                    assert_eq!(span.weights.iter().sum::<u32>(), one, "{src}->{dst}");
++                    for (i, w) in span.weights.iter().enumerate() {
++                        covered[span.first + i] +=
++                            f64::from(*w) / f64::from(one) * src as f64 / dst as f64;
++                    }
++                }
++                // Every strike pixel counts, and counts once, to a weight's
++                // rounding.
++                let tolerance = 8.0 / f64::from(one) * src as f64 / dst as f64;
++                assert!(
++                    covered.iter().all(|c| (c - 1.0).abs() < tolerance),
++                    "{src}->{dst} in {one}ths"
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn a_flat_bitmap_stays_flat() {
++        let p = PremulRgba8 {
++            r: 40,
++            g: 80,
++            b: 120,
++            a: 160,
++        };
++        let mut pixmap = Pixmap::new(136, 128);
++        pixmap.data_mut().fill(p);
++        let t = Affine::new([27.0 / 136.0, 0.0, 0.0, 27.0 / 136.0, 10.4, 3.6]);
++        let s = Shrink::new(&t, &pixmap).expect("a shrink");
++        assert_eq!(s.transform, Affine::translate((10.0, 4.0)));
++        let out = s.apply(&pixmap);
++        assert_eq!((out.width(), out.height()), (27, 25));
++        assert!(out.data().iter().all(|q| *q == p));
++    }
++
++    #[test]
++    fn an_edge_between_pixels_averages() {
++        // Opaque white on the left 3 of 8 columns, shrunk to 2: the first
++        // pixel covers 3 of its 4 columns.
++        let mut pixmap = Pixmap::new(8, 1);
++        for (x, p) in pixmap.data_mut().iter_mut().enumerate() {
++            let v = if x < 3 { 255 } else { 0 };
++            *p = PremulRgba8 {
++                r: v,
++                g: v,
++                b: v,
++                a: v,
++            };
++        }
++        let s = Shrink::new(&Affine::scale_non_uniform(0.25, 0.5), &pixmap).expect("a shrink");
++        let out = s.apply(&pixmap);
++        assert_eq!(out.data()[0].a, 191);
++        assert_eq!(out.data()[1].a, 0);
++    }
++
++    #[test]
++    fn no_shrink_when_drawn_larger_or_skewed() {
++        let pixmap = Pixmap::new(16, 16);
++        assert!(Shrink::new(&Affine::scale(2.0), &pixmap).is_none());
++        assert!(Shrink::new(&Affine::IDENTITY, &pixmap).is_none());
++        assert!(Shrink::new(&Affine::scale_non_uniform(0.5, 1.5), &pixmap).is_none());
++        assert!(Shrink::new(&Affine::new([0.5, 0.1, 0.0, 0.5, 0.0, 0.0]), &pixmap).is_none());
++        assert!(Shrink::new(&Affine::scale_non_uniform(-0.5, 0.5), &pixmap).is_none());
++    }
++}
+-- 
+2.56.0
+

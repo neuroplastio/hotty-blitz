@@ -74,3 +74,73 @@ fn text_presentation_stays_text() {
         assert!(!coloured(text, "sans-serif"), "{text}");
     }
 }
+
+/// A red disc emoji (U+1F534) drawn at `px` on a black line: each of the
+/// line's pixels' red as a share of the brightest, row by row, and the
+/// frame's width.
+fn disc(px: u32) -> (Vec<f32>, usize) {
+    let mut h = host();
+    let html = format!(
+        "<style>body{{margin:0;background:#000}}</style>\
+         <div style=\"font: {px}px/{line}px emoji; color: #888\">\u{1F534}</div>",
+        line = px + 8
+    );
+    h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], &html));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "8"),
+            ("r", "3"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    h.render_dirty(&mut |_, _, _| {});
+    let f = h.frame("x").unwrap();
+    // The line only: below it is the host's background, not black.
+    let line = (px as usize + 8) * f.width as usize * 4;
+    let red: Vec<f32> = f.rgba[..line]
+        .chunks_exact(4)
+        .map(|p| f32::from(p[0]))
+        .collect();
+    let max = red.iter().copied().fold(0.0, f32::max).max(1.0);
+    (red.iter().map(|r| r / max).collect(), f.width as usize)
+}
+
+/// A colour emoji is drawn from a strike several times its size: shrunk by
+/// averaging (mods/glifo/shrink-bitmap-glyphs.md), its round edge is a band
+/// of part-covered pixels, as a browser's is, rather than a staircase of
+/// pixels either in or out. Sampled from the strike, the disc had 15 to 20
+/// steps from out straight to in round its edge; shrunk by averaging, it
+/// has 0 to 3, where the edge runs along the pixel grid.
+#[test]
+fn a_shrunk_emoji_has_soft_edges() {
+    if !coloured("😀", "emoji") {
+        eprintln!("skipped: no colour emoji font on this system");
+        return;
+    }
+    for px in [14, 20, 28] {
+        let (cov, w) = disc(px);
+        let partial = cov.iter().filter(|c| **c > 0.1 && **c < 0.9).count();
+        let full = cov.iter().filter(|c| **c >= 0.9).count();
+        assert!(full > 0 && partial > 0, "{px}px: no disc");
+        // Neighbours, across or down, of which one is out and one is in.
+        let mut steps = 0;
+        for (i, c) in cov.iter().enumerate() {
+            for j in [i + 1, i + w] {
+                if (j == i + w || j % w != 0)
+                    && let Some(d) = cov.get(j)
+                    && c.min(*d) < 0.1
+                    && c.max(*d) > 0.9
+                {
+                    steps += 1;
+                }
+            }
+        }
+        assert!(
+            steps <= 4,
+            "{px}px: {steps} steps from out to in ({full} in, {partial} part)"
+        );
+    }
+}
