@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 3 Nov 2026 17:41:09 +0100
+Subject: [PATCH] Pass over an element without styles when viewport units are
+ invalidated
+
+An element can carry style data before it has styles: an embedder may
+set up its data when it creates the element (Blitz does), and the
+traversal never styles an element under `display: none`. A viewport
+resize walked every element with data and asked each for its
+`viewport_unit_usage`, which unwraps the primary style, so a document
+that uses viewport units panicked when resized while it held such an
+element.
+
+Such an element needs no invalidation of its own: the next traversal
+that reaches it styles it from scratch. The walk still goes on into its
+children, which can be styled (a subtree moved under it) and use
+viewport units. The stylesheet invalidator already passes over an
+element without styles the same way.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ style/invalidation/viewport_units.rs | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/style/invalidation/viewport_units.rs b/style/invalidation/viewport_units.rs
+index 06faeb14c..4fc903578 100644
+--- a/style/invalidation/viewport_units.rs
++++ b/style/invalidation/viewport_units.rs
+@@ -33,7 +33,16 @@ where
+         return false;
+     }
+ 
+-    let usage = data.styles.viewport_unit_usage();
++    // An element can carry data before it has styles: an embedder may set up
++    // its data when it creates the element, and the traversal does not style
++    // an element under `display: none`. The next traversal that reaches it
++    // styles it from scratch, so it needs no invalidation of its own, but
++    // its descendants can be styled (a subtree moved under it) and may.
++    let usage = if data.has_styles() {
++        data.styles.viewport_unit_usage()
++    } else {
++        ViewportUnitUsage::None
++    };
+     let uses_viewport_units = usage != ViewportUnitUsage::None;
+     if uses_viewport_units {
+         debug!(
+-- 
+2.56.0
+

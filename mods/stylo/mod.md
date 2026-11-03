@@ -12,7 +12,8 @@ Blitz pins, which is our `base`: servo/stylo#504 on nicoburns/stylo, where
 Blitz stages the Stylo changes it needs (servo/stylo's `main` took it as
 890aa121c, with the same tree). In Servo mode Stylo leaves out properties
 only Gecko implements, and hotty-blitz needs CSS Scroll Snap's, so that a
-terminal program's list or file scrolls to rest on a row. We mod Stylo
+terminal program's list or file scrolls to rest on a row; and a resize
+must not panic over an element Blitz has not had styled yet. We mod Stylo
 rather than fork it so that each change stays one patch on the commit
 Blitz builds with, until Stylo has it.
 
