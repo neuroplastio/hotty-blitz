@@ -508,10 +508,19 @@ pub fn morph_children(
         }
         plan.push((matched, nk));
     }
-    let structural =
-        plan.iter().any(|(keep, _)| keep.is_none()) || old_kids.iter().any(|ok| !used.contains(ok));
+    // The kept children's order: a pure reorder moves nodes without adding
+    // or removing any, and still changes what the parent paints.
+    let kept_before: Vec<NodeId> = old_kids
+        .iter()
+        .copied()
+        .filter(|ok| used.contains(ok))
+        .collect();
+    let kept_after: Vec<NodeId> = plan.iter().filter_map(|(keep, _)| *keep).collect();
+    let structural = plan.iter().any(|(keep, _)| keep.is_none())
+        || old_kids.iter().any(|ok| !used.contains(ok))
+        || kept_before != kept_after;
     if structural {
-        // Children come or go: the parent's box can reflow.
+        // Children come, go or change places: the parent's box can reflow.
         touch(m.doc, old_parent);
     }
     for &ok in &old_kids {
