@@ -413,6 +413,12 @@ const CARET_BLINKS: u32 = 16;
 /// any more, it stops asking.
 const CSS_FRAME: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000 / 60);
 
+/// How long after a CSS animation's output changes (a `steps()` easing's
+/// jump, the end of a delay) the frame that shows it resolves: the time is
+/// worked out in floating point, and a resolve at the jump itself could
+/// land a hair before it and show the step before.
+const CSS_STEP: std::time::Duration = std::time::Duration::from_millis(1);
+
 /// Where the pointer is for `hover` (SPEC §9.4): out of the window, or in
 /// it over the nearest element with an id (empty for none).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -820,6 +826,8 @@ impl Surface {
     /// Moves every playing image that is seen to its frame at `now`. True
     /// if one changed: the surface is then dirty.
     pub fn advance(&mut self, now: std::time::Instant) -> bool {
+        // Before `tick` moves, which it is due after.
+        let css = self.css_due().is_some_and(|t| t <= now);
         // Forward only: a render of a frame whose time a test set ahead
         // must not take the document's time back.
         if now > self.tick {
@@ -831,11 +839,11 @@ impl Surface {
         }
         changed |= self.fade_scrollbars(now);
         changed |= self.blink(now);
-        // A CSS animation or transition mid-flight wants a frame: the
-        // render this dirty asks for resolves the document at `tick`, and
-        // that resolve advances it. When nothing is animating any more, it
-        // stops.
-        self.dirty |= self.doc.has_active_animations();
+        // A CSS animation or transition whose output changes by now wants
+        // a frame: the render this dirty asks for resolves the document at
+        // `tick`, and that resolve advances it. When nothing is animating
+        // any more, it stops.
+        self.dirty |= css;
         self.dirty |= changed;
         changed
     }
@@ -854,14 +862,20 @@ impl Surface {
     }
 
     /// When a CSS animation or transition mid-flight wants its next frame:
-    /// one frame after the last, at [`CSS_FRAME`]'s cadence. The document
-    /// says whether one is mid-flight, as its last resolve left it; the
-    /// render that answers resolves again, and when none is left it stops
-    /// asking.
+    /// when its output next changes, as the document's last resolve says
+    /// (the start of one in its delay, the next jump of a `steps()` easing),
+    /// [`CSS_STEP`] after so that the resolve lands past the jump, and never
+    /// sooner than one frame after the last, at [`CSS_FRAME`]'s cadence,
+    /// which an easing that moves continuously keeps. The render that
+    /// answers resolves again; when none is left it stops asking, and one
+    /// paused stops too.
     fn css_due(&self) -> Option<Instant> {
-        self.doc
-            .has_active_animations()
-            .then(|| self.tick + CSS_FRAME)
+        if !self.doc.has_active_animations() {
+            return None;
+        }
+        let at = self.doc.next_animation_change()?;
+        let at = self.started + std::time::Duration::from_secs_f64(at.max(0.0)) + CSS_STEP;
+        Some(at.max(self.tick + CSS_FRAME))
     }
 
     /// The text field whose caret shows: the focused element, if it edits

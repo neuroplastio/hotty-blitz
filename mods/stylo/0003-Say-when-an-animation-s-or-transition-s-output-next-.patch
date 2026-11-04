@@ -1,0 +1,381 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Wed, 4 Nov 2026 14:51:06 +0100
+Subject: [PATCH] Say when an animation's or transition's output next changes
+
+An embedder ticks CSS animations by resolving styles again while any
+animation or transition needs ticks, which in practice is every frame.
+A `steps()` easing changes its output only at its steps, and an
+animation or transition in its delay not before it starts, so most of
+those frames resolve to the same style.
+
+Add `next_change(now)` to `Animation`, `Transition` and
+`ElementAnimationSet`: when the output may next change, at or after
+`now`. `None` while paused, finished or canceled; the start while in a
+delay; for a `steps()` easing, the next jump, the end of its keyframe
+segment or the end of the iteration, whichever is first (per property,
+with the keyframe and direction the value is computed from); `now`
+while an easing moves continuously, or when the animation is due to
+iterate or finish. The keyframe lookup `get_property_declaration_at_time`
+does is factored out into `keyframes_around` so both use it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ style/servo/animation.rs | 309 +++++++++++++++++++++++++++++++++++----
+ 1 file changed, 277 insertions(+), 32 deletions(-)
+
+diff --git a/style/servo/animation.rs b/style/servo/animation.rs
+index a5bf56c10..a432925c7 100644
+--- a/style/servo/animation.rs
++++ b/style/servo/animation.rs
+@@ -838,6 +838,104 @@ impl Animation {
+         }
+     }
+ 
++    /// The indices into `computed_steps` of the keyframe before `total_progress`
++    /// (the progress into the current iteration, in [0, 1)) and of the keyframe
++    /// after it, in the current direction.
++    fn keyframes_around(&self, total_progress: f64) -> (usize, Option<usize>) {
++        let next_keyframe_index;
++        let prev_keyframe_index;
++        let num_steps = self.computed_steps.len();
++        match self.current_direction {
++            AnimationDirection::Normal => {
++                next_keyframe_index = self
++                    .computed_steps
++                    .iter()
++                    .position(|step| total_progress < step.start_percentage);
++                prev_keyframe_index = next_keyframe_index
++                    .and_then(|pos| if pos != 0 { Some(pos - 1) } else { None })
++                    .unwrap_or(0);
++            },
++            AnimationDirection::Reverse => {
++                next_keyframe_index = self
++                    .computed_steps
++                    .iter()
++                    .rev()
++                    .position(|step| total_progress <= 1. - step.start_percentage)
++                    .map(|pos| num_steps - pos - 1);
++                prev_keyframe_index = next_keyframe_index
++                    .and_then(|pos| {
++                        if pos != num_steps - 1 {
++                            Some(pos + 1)
++                        } else {
++                            None
++                        }
++                    })
++                    .unwrap_or(num_steps - 1)
++            },
++            _ => unreachable!(),
++        }
++        (prev_keyframe_index, next_keyframe_index)
++    }
++
++    /// When this animation's output may next change, at or after `now`, the
++    /// time `now` is on: `None` if it will not change unless its style does
++    /// (it is paused, finished or canceled); its start while it waits out a
++    /// delay; the next jump of a `steps()` easing, or the end of the keyframe
++    /// segment or of the iteration, whichever comes first; or `now` itself
++    /// while an easing moves continuously. An embedder that ticks animations
++    /// may sleep until then.
++    pub fn next_change(&self, now: f64) -> Option<f64> {
++        match self.state {
++            AnimationState::Pending | AnimationState::Running => {},
++            _ => return None,
++        }
++        if now < self.started_at {
++            return Some(self.started_at);
++        }
++        let end = self.current_iteration_end_progress();
++        let progress = (now - self.started_at) / self.duration;
++        if progress >= end {
++            // It iterates or finishes on the next tick.
++            return Some(now);
++        }
++        let mut next = self.started_at + end * self.duration;
++        let (prev_keyframe_index, next_keyframe_index) = self.keyframes_around(progress);
++        let Some(next_keyframe_index) = next_keyframe_index else {
++            return Some(next);
++        };
++        if prev_keyframe_index == next_keyframe_index {
++            return Some(next);
++        }
++        let reversed = self.current_direction != AnimationDirection::Normal;
++        for property_index in 0..self.number_of_animating_properties {
++            let (Some(from), Some(to)) = (
++                self.next_relevant_keyframe_for_property_in_direction(
++                    property_index,
++                    prev_keyframe_index,
++                    Direction::Backward.relative_to_animation_direction(reversed),
++                ),
++                self.next_relevant_keyframe_for_property_in_direction(
++                    property_index,
++                    next_keyframe_index,
++                    Direction::Forward.relative_to_animation_direction(reversed),
++                ),
++            ) else {
++                continue;
++            };
++            let length = (to.start_percentage - from.start_percentage).abs();
++            let start = if reversed {
++                1. - from.start_percentage
++            } else {
++                from.start_percentage
++            };
++            match next_step(from.timing_function, start, length, progress) {
++                Some(at) => next = next.min(self.started_at + at * self.duration),
++                None => return Some(now),
++            }
++        }
++        Some(next)
++    }
++
+     /// Fill in an `AnimationValueMap` with values calculated from this animation at
+     /// the given time value.
+     fn get_property_declaration_at_time(&self, now: f64, map: &mut AnimationValueMap) {
+@@ -907,38 +1005,7 @@ impl Animation {
+         }
+ 
+         // Get the indices of the previous (from) keyframe and the next (to) keyframe.
+-        let next_keyframe_index;
+-        let prev_keyframe_index;
+-        let num_steps = self.computed_steps.len();
+-        match self.current_direction {
+-            AnimationDirection::Normal => {
+-                next_keyframe_index = self
+-                    .computed_steps
+-                    .iter()
+-                    .position(|step| total_progress < step.start_percentage);
+-                prev_keyframe_index = next_keyframe_index
+-                    .and_then(|pos| if pos != 0 { Some(pos - 1) } else { None })
+-                    .unwrap_or(0);
+-            },
+-            AnimationDirection::Reverse => {
+-                next_keyframe_index = self
+-                    .computed_steps
+-                    .iter()
+-                    .rev()
+-                    .position(|step| total_progress <= 1. - step.start_percentage)
+-                    .map(|pos| num_steps - pos - 1);
+-                prev_keyframe_index = next_keyframe_index
+-                    .and_then(|pos| {
+-                        if pos != num_steps - 1 {
+-                            Some(pos + 1)
+-                        } else {
+-                            None
+-                        }
+-                    })
+-                    .unwrap_or(num_steps - 1)
+-            },
+-            _ => unreachable!(),
+-        }
++        let (prev_keyframe_index, next_keyframe_index) = self.keyframes_around(total_progress);
+ 
+         debug!(
+             "Animation::get_property_declaration_at_time: keyframe from {:?} to {:?}",
+@@ -1029,6 +1096,22 @@ impl fmt::Debug for Animation {
+     }
+ }
+ 
++/// When an easing over `[start, start + length]` of some progress next jumps
++/// after `at`, if it is a `steps()` easing: every jump position jumps at a
++/// whole number of steps into the interval, and the last at its end. `None`
++/// for an easing that moves continuously.
++fn next_step(timing_function: &TimingFunction, start: f64, length: f64, at: f64) -> Option<f64> {
++    let TimingFunction::Steps(steps, _) = timing_function else {
++        return None;
++    };
++    if length <= 0. {
++        return Some(start);
++    }
++    let steps = (*steps).max(1) as f64;
++    let done = ((at - start) / length * steps).floor() + 1.;
++    Some((start + done / steps * length).clamp(start, start + length))
++}
++
+ /// A CSS Transition
+ #[derive(Clone, Debug, MallocSizeOf)]
+ pub struct Transition {
+@@ -1161,6 +1244,25 @@ impl Transition {
+         time >= self.start_time + (self.property_animation.duration)
+     }
+ 
++    /// When this transition's output may next change, at or after `now`: as
++    /// [`Animation::next_change`] says.
++    pub fn next_change(&self, now: f64) -> Option<f64> {
++        match self.state {
++            AnimationState::Pending | AnimationState::Running => {},
++            _ => return None,
++        }
++        if now < self.start_time {
++            return Some(self.start_time);
++        }
++        let duration = self.property_animation.duration;
++        if now >= self.start_time + duration {
++            // It finishes on the next tick.
++            return Some(now);
++        }
++        let timing_function = &self.property_animation.timing_function;
++        Some(next_step(timing_function, self.start_time, duration, now).unwrap_or(now))
++    }
++
+     /// Update the given animation at a given point of progress.
+     pub fn calculate_value(&self, time: f64) -> AnimationValue {
+         let progress = if time < self.start_time {
+@@ -1256,6 +1358,15 @@ impl ElementAnimationSet {
+                 .any(|transition| transition.state.needs_to_be_ticked())
+     }
+ 
++    /// When the output of any of its animations or transitions may next
++    /// change, at or after `now`: the earliest of their
++    /// [`Animation::next_change`]s. `None` if none will.
++    pub fn next_change(&self, now: f64) -> Option<f64> {
++        let animations = self.animations.iter().filter_map(|a| a.next_change(now));
++        let transitions = self.transitions.iter().filter_map(|t| t.next_change(now));
++        animations.chain(transitions).min_by(f64::total_cmp)
++    }
++
+     /// The number of running animations and transitions for this `ElementAnimationSet`.
+     pub fn running_animation_and_transition_count(&self) -> usize {
+         self.animations
+@@ -1931,3 +2042,137 @@ pub fn maybe_start_animations<E>(
+         animation_state.animations.push(new_animation);
+     }
+ }
++
++#[cfg(test)]
++mod next_change_tests {
++    use super::*;
++    use crate::values::generics::easing::{StepPosition, TimingKeyword};
++
++    fn steps(n: i32) -> TimingFunction {
++        TimingFunction::Steps(n, StepPosition::End)
++    }
++
++    fn linear() -> TimingFunction {
++        TimingFunction::Keyword(TimingKeyword::Linear)
++    }
++
++    fn keyframe(start_percentage: f64, timing_function: TimingFunction) -> ComputedKeyframe {
++        ComputedKeyframe {
++            timing_function,
++            start_percentage,
++            values: vec![AnimationValueOrReference::AnimationValue(
++                AnimationValue::Opacity(start_percentage as f32),
++            )]
++            .into_boxed_slice(),
++        }
++    }
++
++    /// An animation of opacity over `duration` seconds from `started_at`,
++    /// through keyframes at `stops` (with the easing to the next one).
++    fn animation(started_at: f64, duration: f64, stops: Vec<(f64, TimingFunction)>) -> Animation {
++        Animation {
++            name: Atom::from("a"),
++            properties_changed: PropertyDeclarationIdSet::default(),
++            computed_steps: stops.into_iter().map(|(at, tf)| keyframe(at, tf)).collect(),
++            started_at,
++            duration,
++            delay: 0.,
++            fill_mode: AnimationFillMode::Forwards,
++            iteration_state: KeyframesIterationState::Infinite(0.),
++            state: AnimationState::Running,
++            direction: AnimationDirection::Normal,
++            current_direction: AnimationDirection::Normal,
++            number_of_animating_properties: 1,
++            is_new: false,
++        }
++    }
++
++    fn near(got: Option<f64>, want: f64) {
++        let got = got.expect("a next change");
++        assert!(
++            (got - want).abs() < 1e-9,
++            "next change at {got}, not {want}"
++        );
++    }
++
++    #[test]
++    fn steps_change_on_their_boundaries() {
++        let a = animation(0., 1., vec![(0., steps(10)), (1., linear())]);
++        near(a.next_change(0.), 0.1);
++        near(a.next_change(0.25), 0.3);
++        near(a.next_change(0.95), 1.);
++        // Ten steps over sixty seconds, later in its life.
++        let a = animation(100., 60., vec![(0., steps(600)), (1., linear())]);
++        near(a.next_change(130.05), 130.1);
++    }
++
++    #[test]
++    fn reversed_steps_change_on_their_boundaries() {
++        let mut a = animation(0., 1., vec![(0., steps(4)), (1., steps(4))]);
++        a.direction = AnimationDirection::Reverse;
++        a.current_direction = AnimationDirection::Reverse;
++        // Backwards from the last keyframe, whose easing applies.
++        near(a.next_change(0.3), 0.5);
++    }
++
++    #[test]
++    fn steps_stop_at_their_segment_and_continuous_easings_tick() {
++        let a = animation(
++            0.,
++            1.,
++            vec![(0., steps(2)), (0.5, linear()), (1., linear())],
++        );
++        near(a.next_change(0.1), 0.25);
++        near(a.next_change(0.3), 0.5);
++        near(a.next_change(0.6), 0.6);
++    }
++
++    #[test]
++    fn a_delay_waits_for_the_start_and_the_end_ticks_now() {
++        let a = animation(5., 1., vec![(0., linear()), (1., linear())]);
++        near(a.next_change(1.), 5.);
++        let mut a = animation(0., 1., vec![(0., steps(2)), (1., linear())]);
++        a.iteration_state = KeyframesIterationState::Finite(0., 1.);
++        near(a.next_change(1.5), 1.5);
++    }
++
++    #[test]
++    fn paused_and_finished_never_change() {
++        let mut a = animation(0., 1., vec![(0., linear()), (1., linear())]);
++        a.state = AnimationState::Paused(0.5);
++        assert_eq!(a.next_change(0.5), None);
++        a.state = AnimationState::Finished;
++        assert_eq!(a.next_change(0.5), None);
++    }
++
++    #[test]
++    fn transitions_wait_and_step() {
++        let t = Transition::new(
++            1.,
++            1.,
++            2.,
++            AnimationValue::Opacity(0.),
++            AnimationValue::Opacity(1.),
++            &steps(4),
++        );
++        near(t.next_change(0.5), 1.);
++        near(t.next_change(1.6), 2.);
++        near(t.next_change(3.5), 3.5);
++        let t = Transition::new(
++            0.,
++            0.,
++            2.,
++            AnimationValue::Opacity(0.),
++            AnimationValue::Opacity(1.),
++            &linear(),
++        );
++        near(t.next_change(0.7), 0.7);
++        let mut set = ElementAnimationSet::default();
++        set.transitions.push(t);
++        set.animations
++            .push(animation(0., 1., vec![(0., steps(10)), (1., linear())]));
++        near(set.next_change(0.25), 0.25);
++        set.transitions.clear();
++        near(set.next_change(0.25), 0.3);
++    }
++}
+-- 
+2.56.0
+

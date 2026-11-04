@@ -173,3 +173,86 @@ background:rgb(0,128,0);animation:go 4s linear 2'></div></body>",
     assert_eq!(pixel(&h, "x", 10, 10), GREEN);
     assert!(h.next_frame().is_none(), "the animation has ended");
 }
+
+/// A green box animated with `animation`, its background from red to blue.
+fn animated(h: &mut Host, animation: &str) {
+    doc(
+        h,
+        &format!(
+            "<style>@keyframes go{{from{{background:rgb(255,0,0)}}to{{background:rgb(0,0,255)}}}}</style>\
+<body style='margin:0'><div id=a style='{BOX}background:rgb(0,128,0);animation:{animation}'></div></body>"
+        ),
+    );
+}
+
+/// The frames the host is asked for over the second after the next one,
+/// rendering each when it is due, and the frames that drew something.
+fn frames_in_a_second(h: &mut Host) -> (usize, usize) {
+    let start = h.next_frame().expect("the animation wants frames");
+    let (mut asked, mut drawn) = (0, 0);
+    let mut t = start;
+    while t < start + Duration::from_secs(1) {
+        h.animate(t);
+        asked += 1;
+        drawn += render(h).len();
+        t = h.next_frame().expect("the animation wants frames");
+    }
+    (asked, drawn)
+}
+
+#[test]
+fn a_steps_animation_asks_for_a_frame_at_each_step() {
+    // Ten steps a second, for ten seconds.
+    let mut h = host();
+    animated(&mut h, "go 10s steps(100)");
+    let (asked, drawn) = frames_in_a_second(&mut h);
+    assert!((9..=11).contains(&asked), "{asked} frames asked for");
+    assert!((9..=11).contains(&drawn), "{drawn} frames drawn");
+}
+
+#[test]
+fn a_linear_animation_asks_for_every_frame() {
+    let mut h = host();
+    animated(&mut h, "go 10s linear");
+    let (asked, drawn) = frames_in_a_second(&mut h);
+    assert!((59..=61).contains(&asked), "{asked} frames asked for");
+    assert!((59..=61).contains(&drawn), "{drawn} frames drawn");
+}
+
+#[test]
+fn an_animation_in_its_delay_asks_for_nothing_until_it_starts() {
+    let mut h = host();
+    let before = Instant::now();
+    animated(&mut h, "go 10s linear 2s");
+    let after = Instant::now();
+    let due = h.next_frame().expect("the animation will start");
+    assert!(
+        due >= before + Duration::from_secs(2) && due <= after + Duration::from_millis(2010),
+        "the first frame is due when the delay ends, {:?} after the document",
+        due - before
+    );
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        GREEN,
+        "before it starts, its own style"
+    );
+    h.animate(due);
+    render(&mut h);
+    let p = pixel(&h, "x", 10, 10);
+    assert!(
+        p[0] >= 250 && p[2] <= 5,
+        "it starts at its from keyframe: {p:?}"
+    );
+    let (asked, _) = frames_in_a_second(&mut h);
+    assert!((59..=61).contains(&asked), "{asked} frames asked for");
+}
+
+#[test]
+fn a_paused_animation_asks_for_nothing() {
+    let mut h = host();
+    animated(&mut h, "go 10s linear paused");
+    assert!(
+        h.next_frame().is_none(),
+        "a paused animation wants no frames"
+    );
+}
