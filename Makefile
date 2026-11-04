@@ -17,7 +17,7 @@ hotty:
 base = $(shell sed -n 's/^base:[[:space:]]*\([^[:space:]\#]*\).*/\1/p' mods/$(1)/mod.md)
 
 blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, glifo at ../glifo, Stylo at ../stylo
-	@test -f ../blitz/packages/blitz-dom/src/layout/speculate.rs || scripts/blitz-fork.sh
+	@test "$$(git -C ../blitz rev-list --count $(call base,blitz)..hotty 2>/dev/null)" = "$$(ls mods/blitz/*.patch | wc -l | tr -d ' ')" || scripts/blitz-fork.sh
 	@test "$$(git -C ../parley rev-list --count $(call base,parley)..hotty 2>/dev/null)" = "$$(ls mods/parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
 	@test "$$(git -C ../vello_cpu rev-list --count published..hotty 2>/dev/null)" = "$$(ls mods/vello_cpu/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
 	@test "$$(git -C ../glifo rev-list --count published..hotty 2>/dev/null)" = "$$(ls mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/glifo-fork.sh

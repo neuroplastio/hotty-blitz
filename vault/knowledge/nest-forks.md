@@ -9,10 +9,12 @@ a patch added to `mods/` reaches the build only if the fork gets it too.
   commits on its base with the set's patch count and runs the fork script
   when they differ. The script applies the missing patches to a clean fork
   whose commits match the first patches by subject (`parley-fork.sh`).
-- Blitz: `make blitz` only checks that `../blitz` exists, and
-  `blitz-fork.sh` on an existing fork reports its count and changes
-  nothing. A new `mods/blitz` patch is therefore not in the build, and
-  `make check` passes without it.
+- Blitz: the same, since 2026-11-04. Before that, `make blitz` only checked
+  that `../blitz` existed, and `blitz-fork.sh` on an existing fork
+  reported its count and changed nothing, so a new `mods/blitz` patch was
+  not in the build and `make check` passed without it. Now a fork that
+  cannot be caught up (ahead, dirty, off `hotty`, or other subjects) fails
+  `make blitz` with what it found.
 
 That happened on 2026-11-04. hotty-blitz 0.6.5's first gate ran on a nest
 whose Blitz fork lacked mods/blitz 0050 (no hinting above a scale of 1).
@@ -20,8 +22,6 @@ The gate was green and the text was unchanged, so its measurement came out
 byte-identical to 0.6.4's. The patch was applied to the fork with `git am`
 and the gate run again before the hottyterm pin.
 
-Until `make blitz` catches Blitz up as it does the others, after adding or
-changing a `mods/blitz` patch in a nest, check
-`git -C ../blitz rev-list --count <base>..hotty` against
-`ls mods/blitz/*.patch | wc -l`, and bring the fork level (`git am` the
-missing patches, or set it up again) before trusting the gate.
+A changed patch (same count, new content) is still not caught: after
+changing a `mods/blitz` patch in a nest, change the fork the same way, or
+set it up again, before trusting the gate.
