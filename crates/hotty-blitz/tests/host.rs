@@ -1364,6 +1364,40 @@ fn a_press_on_another_surface_takes_the_keyboard_from_this_one() {
     assert_eq!(h.focused_surface(), None);
 }
 
+#[test]
+fn focus_the_program_gives_or_takes_while_the_button_is_down_stands() {
+    // The bug: a press on what takes no focus, then the program's
+    // `a=focus` before the release (plx gives its tool the keyboard as
+    // the press arrives): the release put the press's nothing back, and
+    // sent a `blur` the program never caused. The ring flickered.
+    let mut h = host();
+    place_form(&mut h);
+    // On the text under the field, and on empty space.
+    for (x, y) in [(10.0, 30.0), (250.0, 90.0)] {
+        let mut fx = h.pointer("f", PointerKind::Down, x, y, Mods::default());
+        h.handle(&cmd(
+            &[("a", "focus"), ("s", "f"), ("t", "name"), ("q", "2")],
+            "",
+        ));
+        fx.extend(h.pointer("f", PointerKind::Up, x, y, Mods::default()));
+        assert_eq!(kinds(&replies(&fx)), vec![], "a click at ({x}, {y})");
+        assert!(h.is_focused("f"), "a click at ({x}, {y})");
+        // The field has the keys.
+        assert!(key(&mut h, "f", "q").consumed, "a click at ({x}, {y})");
+        h.blur("f");
+    }
+    // And its `a=blur`: the press on the button focused it, and the
+    // release does not focus it again.
+    let mut fx = h.pointer("f", PointerKind::Down, 10.0, 65.0, Mods::default());
+    h.handle(&cmd(&[("a", "blur"), ("s", "f"), ("q", "2")], ""));
+    fx.extend(h.pointer("f", PointerKind::Up, 10.0, 65.0, Mods::default()));
+    assert_eq!(
+        kinds(&replies(&fx)),
+        vec![ev("focus", "go"), ev("click", "go")]
+    );
+    assert!(!h.is_focused("f"));
+}
+
 /// A form with every kind of control, a link and an element that asks
 /// for clicks, one per 20 px row.
 const CONTROLS: &str = "<style>*{margin:0;padding:0;border:0}

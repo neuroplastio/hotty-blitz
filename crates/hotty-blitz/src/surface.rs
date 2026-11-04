@@ -251,8 +251,9 @@ pub(crate) struct Surface {
     /// Detached (SPEC §5.5): it reports nothing, never has the keyboard,
     /// and its form controls are disabled. Only a new document undoes it.
     detached: bool,
-    /// What the last press focused, for its release (Surface::pointer).
-    press: Option<Option<NodeId>>,
+    /// A press decided focus, and its release keeps it (Surface::pointer):
+    /// false after a press on a scrollbar's thumb.
+    press: bool,
     /// The window its placement shows, in cells (SPEC §5.2): a drag's
     /// target is empty outside it (§9.1). None while it is not placed.
     pub window: Option<crate::Window>,
@@ -772,7 +773,7 @@ impl Surface {
             nav,
             keyboard: false,
             detached: false,
-            press: None,
+            press: false,
             window: None,
             drag: None,
             tapping: false,
@@ -1556,7 +1557,7 @@ impl Surface {
         self.prefix = false;
         self.focus_value = None;
         self.told = None;
-        self.press = None;
+        self.press = false;
         // A drag under way ends with nothing more reported (SPEC §9.1).
         self.drag = None;
         self.move_focus(None);
@@ -2328,7 +2329,7 @@ impl Surface {
     pub fn touch_cancel(&mut self) -> Vec<Event> {
         let (lead, _) = self.pointer_input(PointerKind::Leave, 0.0, 0.0, (0, 0), Mods::default());
         self.buttons = MouseEventButtons::None;
-        self.press = None;
+        self.press = false;
         lead
     }
 
@@ -2534,24 +2535,27 @@ impl Surface {
         // focus, and a click on anything else gives it back (SPEC §10.1).
         // Browsers focus on the press; Blitz focuses some elements on the
         // click and clears focus where its click matched nothing, a button
-        // included. So the press decides, and the release keeps that unless
-        // its click focused something else (a label's control).
+        // included. So the press decides, and the release keeps focus as the
+        // button came up unless its click focused something else (a label's
+        // control). Focus the program gave or took while the button was
+        // down stands: it came after the click.
         let want = match kind {
             // A press on a scrollbar's thumb focuses nothing (Blitz drags it).
             PointerKind::Down if self.doc.scrollbar_drag_target().is_some() => {
-                self.press = None;
+                self.press = false;
                 None
             }
             PointerKind::Down => {
-                let target = self.focus_target(self.doc.get_hover_node_id());
-                self.press = Some(target);
-                Some(target)
+                self.press = true;
+                Some(self.focus_target(self.doc.get_hover_node_id()))
             }
             PointerKind::Up => {
                 let now = self.focused();
-                Some(match self.press.take() {
-                    Some(target) if now.is_none() || now == before => target,
-                    _ => now,
+                let press = std::mem::take(&mut self.press);
+                Some(if press && (now.is_none() || now == before) {
+                    before
+                } else {
+                    now
                 })
             }
             _ => None,
