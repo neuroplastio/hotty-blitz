@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 pub use input::{
     CellsTouch, CellsTouchOutcome, Event, Key, KeyName, KeyOutcome, Mods, MouseReport, PointerKind,
-    Touch, TouchOutcome, TouchPhase, WheelOutcome,
+    SecondaryOutcome, Touch, TouchOutcome, TouchPhase, WheelOutcome,
 };
 pub use menu::{MENU, Shown};
 pub use surface::{Damage, Frame, Timings};
@@ -392,6 +392,9 @@ struct Finger {
     pans: (bool, bool),
     touch: Touch,
     tap: bool,
+    /// The touch was a long press the surface took as a secondary press
+    /// (SPEC §9.1): it is the surface's to its end, and reports nothing.
+    secondary: bool,
 }
 
 /// A touch on the cells under way (SPEC §9.6): where it began and where it
@@ -2066,6 +2069,7 @@ impl Host {
                     pans: pans.unwrap_or((true, true)),
                     touch: out.touch,
                     tap: !backdrop,
+                    secondary: false,
                 });
             }
             TouchPhase::Move => {
@@ -2073,6 +2077,10 @@ impl Host {
                 let Some(f) = self.finger.as_mut() else {
                     return out;
                 };
+                if f.secondary {
+                    out.touch = Touch::Surface;
+                    return out;
+                }
                 let (dx, dy) = ((x - f.start.0) / scale, (y - f.start.1) / scale);
                 if f.tap && dx.hypot(dy) >= TAP_SLOP {
                     f.tap = false;
@@ -2102,7 +2110,11 @@ impl Host {
                 let Some(f) = self.finger.take() else {
                     return out;
                 };
-                if f.touch == Touch::Surface {
+                if f.secondary {
+                    // The long press was a secondary press: its lift
+                    // makes no click and nothing else (SPEC §9.1).
+                    out.touch = Touch::Surface;
+                } else if f.touch == Touch::Surface {
                     out.touch = Touch::Surface;
                     out.effects =
                         self.pointer_with(&f.surface, PointerKind::Up, x, y, mods, false, 0);
@@ -2118,13 +2130,33 @@ impl Host {
                 }
             }
             TouchPhase::LongPress => {
-                if let Some(f) = self.finger.as_mut() {
-                    if f.touch == Touch::Surface {
+                let Some(f) = self.finger.as_ref() else {
+                    return out;
+                };
+                if f.secondary || f.touch == Touch::Surface {
+                    out.touch = Touch::Surface;
+                    return out;
+                }
+                // A long press over an element that takes the secondary
+                // press is one (SPEC §9.1), unless Shift or Alt is held
+                // (§9.2): the terminal's, as any long press is.
+                let (name, tap) = (f.surface.clone(), f.tap);
+                let keys = f.mods;
+                let held = |m: Mods| m.shift || m.alt;
+                let taken = if tap && !held(mods) && !held(keys) {
+                    self.secondary_at(&name, x, y, mods)
+                } else {
+                    None
+                };
+                let f = self.finger.as_mut().expect("checked above");
+                f.tap = false;
+                match taken {
+                    Some(effects) => {
+                        f.secondary = true;
                         out.touch = Touch::Surface;
-                    } else {
-                        f.touch = Touch::Terminal;
-                        f.tap = false;
+                        out.effects = effects;
                     }
+                    None => f.touch = Touch::Terminal,
                 }
             }
         }
@@ -2739,6 +2771,78 @@ impl Host {
         self.backdrops = on;
         let owed = self.caps_changed(false);
         self.owed.extend(owed);
+    }
+
+    /// A secondary press at device pixel (`x`, `y`) of `surface`, as the
+    /// platform makes one (SPEC §9, HOST.md §3): the mouse's secondary
+    /// button, a pen's barrel button, or on macOS the primary button with
+    /// Control, which the host passes without `ctrl` in `mods`. Returns
+    /// whether the surface took it ([`SecondaryOutcome::taken`]): the point
+    /// is one it takes ([`Host::takes_pointer`]), the surface is no
+    /// backdrop, neither Shift nor Alt is held, and an element there or
+    /// outward has `secondary` in its `data-on`. Its `press` (button 2, the
+    /// element's `area`, the pointer's cell `c` and `r`, and `mods`) comes
+    /// in the effects, `t` the nearest such element's id (absent without
+    /// one), whatever `p` is.
+    ///
+    /// When taken, the host passes nothing more of the press: no release,
+    /// no moves as a drag, no report to the program, no menu of its own.
+    /// It does nothing else: no click, drag, selection, focus or keyboard
+    /// change, and no `:active`. When not, the press is the terminal's,
+    /// as it would be without hotty: with Shift its own menu, with Alt the
+    /// program's mouse report (SGR button 10), otherwise the cells
+    /// beneath. A press with Alt does here what a primary one does in
+    /// [`Host::pointer`]: the surface is left (`hover` out), the selection
+    /// dropped and the keyboard given back; the rest of the gesture
+    /// (moves, release) is the host's to keep from the surface.
+    pub fn secondary(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> SecondaryOutcome {
+        enter(&mut self.working, surface);
+        if mods.alt && self.secondary_over(surface, x, y) {
+            self.gesture = None;
+            self.clear_selection(None);
+            let effects = self.program_pointer(surface, PointerKind::Down, mods);
+            return SecondaryOutcome {
+                taken: false,
+                effects,
+            };
+        }
+        if mods.shift || mods.alt {
+            return SecondaryOutcome::default();
+        }
+        match self.secondary_at(surface, x, y, mods) {
+            Some(effects) => SecondaryOutcome {
+                taken: true,
+                effects,
+            },
+            None => SecondaryOutcome::default(),
+        }
+    }
+
+    /// Whether a secondary press at device pixel (`x`, `y`) of `surface`
+    /// lands on the surface: placed, no backdrop, and a point it takes.
+    fn secondary_over(&mut self, surface: &str, x: f32, y: f32) -> bool {
+        let scale = self.config.metrics.scale;
+        self.surfaces.get_mut(surface).is_some_and(|s| {
+            s.placed && !s.backdrop && !s.detached() && s.takes_pointer(x / scale, y / scale)
+        })
+    }
+
+    /// The `press` of a secondary press at device pixel (`x`, `y`) of
+    /// `surface`, when it lands there and an element takes it.
+    fn secondary_at(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> Option<Vec<Effect>> {
+        enter(&mut self.working, surface);
+        if !self.secondary_over(surface, x, y) {
+            return None;
+        }
+        let m = self.config.metrics;
+        // The cell of the surface the pointer is in, as for a drag's.
+        let cell = (
+            (x / m.cell_w.max(1) as f32).floor() as i32,
+            (y / m.cell_h.max(1) as f32).floor() as i32,
+        );
+        let s = self.surfaces.get_mut(surface)?;
+        let press = s.secondary_press(x / m.scale, y / m.scale, cell, mods)?;
+        Some(vec![Effect::Reply(press.encode(surface))])
     }
 
     /// Whether `surface` takes the pointer at device pixel (`x`, `y`) of the

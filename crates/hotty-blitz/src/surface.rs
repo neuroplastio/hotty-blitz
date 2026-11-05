@@ -2032,6 +2032,53 @@ impl Surface {
         })
     }
 
+    /// Whether the surface was detached from its placement.
+    pub fn detached(&self) -> bool {
+        self.detached
+    }
+
+    /// The secondary press at CSS pixel (`x`, `y`) of the surface, in its
+    /// cell `cell` (SPEC §9): a `press` with button 2 for the nearest
+    /// element with `secondary` in its `data-on`, from the one there
+    /// outward, whose id is `t` (absent where it has none, and `area` with
+    /// it). None where the surface is detached, nothing is there, or no
+    /// element asks. Nothing in the document changes: no hover, focus or
+    /// selection.
+    pub fn secondary_press(
+        &mut self,
+        x: f32,
+        y: f32,
+        cell: (i32, i32),
+        mods: Mods,
+    ) -> Option<Event> {
+        if self.detached {
+            return None;
+        }
+        self.resolve();
+        let (px, py) = self.page(x, y);
+        let mut node = Some(self.doc.hit(px, py)?.node_id);
+        while let Some(n) = node {
+            if self.listens(n, "secondary") {
+                let id = self.id_of(n).filter(|id| !id.is_empty());
+                let area = id
+                    .as_ref()
+                    .and_then(|_| scroll::area(&self.doc, n, self.cell, self.slack()));
+                return Some(Event {
+                    kind: "press",
+                    target: id.unwrap_or_default(),
+                    detail: Some(Detail::Secondary {
+                        area,
+                        c: cell.0,
+                        r: cell.1,
+                        mods: mods.bits(),
+                    }),
+                });
+            }
+            node = self.doc.get_node(n).and_then(|x| x.parent);
+        }
+        None
+    }
+
     /// Half a device pixel, in CSS pixels: an edge that close to a cell's is
     /// on it, for `area`.
     fn slack(&self) -> f64 {

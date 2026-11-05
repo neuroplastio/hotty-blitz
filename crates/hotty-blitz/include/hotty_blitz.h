@@ -114,7 +114,8 @@ void hotty_host_reset(hotty_host *h, const hotty_effects *fx);
  * instead (a=del) need not call it. */
 void hotty_host_unplaced(hotty_host *h, const char *surface, const hotty_effects *fx);
 /* kind: 0 move, 1 down, 2 up, 3 leave; down and up are the primary button's
- * (SPEC 10.1): pass no other button. A press also takes the
+ * (SPEC 10.1): pass no other button; a secondary press goes to
+ * hotty_host_secondary. A press also takes the
  * keyboard from any other surface that has it; its events come through fx.
  * From a press to its release the pointer is the surface's: pass it every
  * move, with x and y counted from its top left even outside it (negative, or
@@ -130,6 +131,24 @@ void hotty_host_unplaced(hotty_host *h, const char *surface, const hotty_effects
  * hotty_host_set_counts once it passes them. */
 void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float x, float y,
                          uint32_t mods, uint32_t count, const hotty_effects *fx);
+/* A secondary press at device pixel (x, y) of surface, as the platform makes
+ * one (SPEC 9, HOST.md 3): the mouse's secondary button, a pen's barrel
+ * button, or on macOS the primary button with Control, which the caller
+ * passes without ctrl in mods (as for pointer events). Returns true if the
+ * surface took it: the point is one it takes (hotty_host_takes_pointer), the
+ * surface is no backdrop, neither Shift nor Alt is held, and an element
+ * there or outward has secondary in its data-on. Its press (button 2, the
+ * element's area, the pointer's cell, mods) comes through fx, whatever p is.
+ * When true, pass nothing more of that press: no release, no moves as a
+ * drag, no mouse report to the program and no menu of the terminal's; plain
+ * moves still go to hotty_host_pointer, for hover. It does nothing else: no
+ * click, drag, selection, or change of the keyboard. When false, the press
+ * is the terminal's, as it would be without hotty: with Shift its own menu,
+ * with Alt the program's mouse report (SGR CSI < 10), otherwise the cells
+ * beneath. With Alt the surface is left (hover out, through fx) and gives
+ * the keyboard back, as a primary press with Alt does. */
+bool hotty_host_secondary(hotty_host *h, const char *surface, float x, float y, uint32_t mods,
+                          const hotty_effects *fx);
 /* A wheel's turn, a touchpad's scroll or a touch drag at device pixel (x, y)
  * of the surface, by (dx, dy) device pixels: positive scrolls towards the
  * content's end, right and down, a wheel's notch as far as it scrolls the
@@ -153,7 +172,8 @@ void hotty_host_end_gesture(hotty_host *h);
  * down first, and none of it to hotty_host_pointer. phase: 0 down (the
  * first finger touched), 1 move, 2 up (it lifted), 3 cancel (a second finger
  * touched, or the platform cancelled the touch), 4 long press (the terminal
- * took the touch for one). mods as for pointer events. Returns whose the touch is:
+ * took the touch for one; x and y are where the finger is). mods as for
+ * pointer events. Returns whose the touch is:
  *   0 the terminal's: scroll with it (hotty_host_wheel first), or take it
  *     for a long press, as with any touch;
  *   1 undecided: it may still drag, so hold its moves (no scroll yet);
@@ -163,7 +183,12 @@ void hotty_host_end_gesture(hotty_host *h);
  * when the touched element opts in to drags and its touch-action allows no
  * pan along the move, else a pan (0), which the terminal scrolls from where
  * the touch began. A second finger is cancel: the rest of the gesture is the
- * terminal's until the next down (SPEC 9.1). Events come through fx. */
+ * terminal's until the next down (SPEC 9.1). A long press (phase 4) over an
+ * element with secondary in its data-on, or inside one, with no Shift or Alt
+ * held, is a secondary press (SPEC 9.1): its press (button 2, at the
+ * finger's cell) comes through fx, phase 4 returns 2, the terminal opens no
+ * menu of its own, and the lift that follows (2 too) makes no click.
+ * Anywhere else a long press is the terminal's (0). Events come through fx. */
 uint32_t hotty_host_touch(hotty_host *h, const char *surface, uint32_t phase, float x, float y,
                           uint32_t mods, const hotty_effects *fx);
 /* A report of the mouse's primary button for a finger in the cells (SPEC

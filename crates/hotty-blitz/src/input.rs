@@ -201,6 +201,15 @@ pub struct WheelOutcome {
     pub effects: Vec<Effect>,
 }
 
+/// What became of a secondary press ([`crate::Host::secondary`]).
+#[derive(Debug, Default)]
+pub struct SecondaryOutcome {
+    /// The surface took it: the host passes nothing more of the press. If
+    /// false, the press is the terminal's.
+    pub taken: bool,
+    pub effects: Vec<Effect>,
+}
+
 /// A finger's phase, as the terminal reports a touch ([`crate::Host::touch`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TouchPhase {

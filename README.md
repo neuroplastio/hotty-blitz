@@ -144,6 +144,17 @@ moves, whatever its CSS, and nothing shows a scrollbar.
   `hotty_host_end_gesture` or 150 ms after its last wheel, which
   `hotty_host_next_frame` counts as a deadline.
 
+## Secondary press
+
+A terminal passes the secondary press (SPEC §9: the mouse's secondary
+button, a pen's barrel button, on macOS the primary button with Control)
+to `hotty_host_secondary` (`Host::secondary`), not `hotty_host_pointer`. It
+returns true when the surface took it, an element there or outward having
+`secondary` in its `data-on`, and then the terminal passes nothing more of
+that press and opens no menu. Otherwise, and with Shift or Alt held, the
+press is the terminal's. It makes no click, drag, selection or change of
+the keyboard.
+
 ## Touch
 
 A terminal passes every phase of a touch that begins over a surface
@@ -175,6 +186,11 @@ surface's (2).
   Alt held at touch-down, on no drag element, on a detached surface or
   after a long press never drag. A tap, a touch that never went past the
   slop, is a click where the finger lifted: a press there, never a drag.
+- A long press over an element with `secondary` in its `data-on`, or
+  inside one, with no Shift or Alt, is a secondary press (SPEC §9.1): a
+  `press` with button 2 at the finger's cell, phase 4 returns the
+  surface's (2), and the lift makes no click. Elsewhere it is the
+  terminal's.
 - A touch hovers nothing.
 
 A touch that begins on the cells, outside every surface or where one lets

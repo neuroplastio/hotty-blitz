@@ -53,6 +53,15 @@ pub enum Detail {
         area: Option<Area>,
         mods: Option<u8>,
     },
+    /// `press` of a secondary press (SPEC §9, §9.1): button 2, where the
+    /// element `t` names is (none without `t`), the pointer's cell, and the
+    /// modifier keys held.
+    Secondary {
+        area: Option<Area>,
+        c: i32,
+        r: i32,
+        mods: Option<u8>,
+    },
     /// `change` of a checkbox or a radio button: whether it is checked,
     /// its `value` attribute, and the control's rev (SPEC §6.4).
     Checked {
@@ -124,6 +133,69 @@ fn area(a: &Area) -> hotty::Area {
     }
 }
 
+/// A msgpack int in its smallest form.
+fn mp_int(out: &mut Vec<u8>, v: i64) {
+    match v {
+        0..=0x7f => out.push(v as u8),
+        -32..=-1 => out.push(v as i8 as u8),
+        0x80..=0xff => out.extend([0xcc, v as u8]),
+        0x100..=0xffff => out.extend([0xcd, (v >> 8) as u8, v as u8]),
+        0x1_0000..=0xffff_ffff => {
+            out.push(0xce);
+            out.extend((v as u32).to_be_bytes());
+        }
+        0x1_0000_0000.. => {
+            out.push(0xcf);
+            out.extend((v as u64).to_be_bytes());
+        }
+        -128..=-33 => out.extend([0xd0, v as i8 as u8]),
+        -32768..=-129 => {
+            out.push(0xd1);
+            out.extend((v as i16).to_be_bytes());
+        }
+        -2_147_483_648..=-32769 => {
+            out.push(0xd2);
+            out.extend((v as i32).to_be_bytes());
+        }
+        _ => {
+            out.push(0xd3);
+            out.extend(v.to_be_bytes());
+        }
+    }
+}
+
+/// A msgpack map key: a short str.
+fn mp_key(out: &mut Vec<u8>, k: &str) {
+    out.push(0xa0 | k.len() as u8);
+    out.extend(k.as_bytes());
+}
+
+/// The body of a secondary press (SPEC §9): `{"button": 2, "area": {c, r,
+/// w, h}, "c": int, "r": int, "mods": int}`, `area` and `mods` left out
+/// when it has none.
+fn secondary_body(a: Option<&Area>, c: i32, r: i32, mods: Option<u8>) -> Vec<u8> {
+    let mut out = vec![0x80 | (3 + u8::from(a.is_some()) + u8::from(mods.is_some()))];
+    mp_key(&mut out, "button");
+    mp_int(&mut out, 2);
+    if let Some(a) = a {
+        mp_key(&mut out, "area");
+        out.push(0x84);
+        for (k, v) in [("c", a.c), ("r", a.r), ("w", a.w), ("h", a.h)] {
+            mp_key(&mut out, k);
+            mp_int(&mut out, v);
+        }
+    }
+    mp_key(&mut out, "c");
+    mp_int(&mut out, i64::from(c));
+    mp_key(&mut out, "r");
+    mp_int(&mut out, i64::from(r));
+    if let Some(m) = mods {
+        mp_key(&mut out, "mods");
+        mp_int(&mut out, i64::from(m));
+    }
+    out
+}
+
 /// The event a program hears, for the hotty crate to write
 /// (`hotty::host::encode_event`): its kind, the surface it is of (none for
 /// `command` and `caps`), the element it names (empty for none), and what
@@ -166,6 +238,15 @@ pub fn event(
             e.area = a.as_ref().map(area);
             e.mods = mods(m);
         }
+        // The hotty crate's press has no `button`, `c` or `r`: the body is
+        // written here, msgpack as the crate writes the others, and the
+        // crate puts it behind the control.
+        Detail::Secondary {
+            area: a,
+            c,
+            r,
+            mods: m,
+        } => e.message.payload = secondary_body(a.as_ref(), *c, *r, *m),
         Detail::Checked {
             checked,
             value,

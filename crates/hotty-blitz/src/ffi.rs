@@ -507,7 +507,8 @@ fn mods(bits: u32) -> Mods {
 
 /// A pointer event at surface pixel `(x, y)`. `kind`: 0 move, 1 down, 2 up, 3 leave;
 /// down and up are the primary button's (SPEC §10.1): pass no other button,
-/// and no touch, which goes to `hotty_host_touch`. `mods`: 1 shift, 2 ctrl,
+/// and no touch, which goes to `hotty_host_touch`; a secondary press goes to
+/// `hotty_host_secondary`. `mods`: 1 shift, 2 ctrl,
 /// 4 alt, 8 super. A press also takes the keyboard
 /// from any other surface that has it (SPEC §10.1): its events come through
 /// `fx` too. From a press to its release the pointer is the surface's, for
@@ -561,6 +562,53 @@ pub unsafe extern "C" fn hotty_host_pointer(
     })
 }
 
+/// A secondary press at device pixel `(x, y)` of `surface`, as the platform
+/// makes one (SPEC §9, HOST.md §3): the mouse's secondary button, a pen's
+/// barrel button, or on macOS the primary button with Control, which the
+/// caller passes without `ctrl` in `mods` (as for a pointer event: 1 shift,
+/// 2 ctrl, 4 alt, 8 super). Returns true if the surface took it: the point
+/// is one it takes (`hotty_host_takes_pointer`), the surface is no
+/// backdrop, neither Shift nor Alt is held, and an element there or outward
+/// has `secondary` in its `data-on`. Its `press` (button 2, the element's
+/// area, the pointer's cell, `mods`) comes through `fx`, whatever `p` is.
+/// When true, pass nothing more of that press: no release, no moves as a
+/// drag, no mouse report to the program and no menu of the terminal's; plain
+/// moves still go to `hotty_host_pointer`, for hover. It does nothing else:
+/// no click, drag, selection, or change of the keyboard. When false, the
+/// press is the terminal's, as it would be without hotty: with Shift its own
+/// menu, with Alt the program's mouse report (SGR `CSI < 10`), otherwise the
+/// cells beneath. With Alt the surface is left (`hover` out, through `fx`)
+/// and gives the keyboard back, as a primary press with Alt does. See
+/// `Host::secondary`.
+///
+/// # Safety
+/// `h` must be valid; `surface` NUL-terminated; `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_secondary(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    x: f32,
+    y: f32,
+    mod_bits: u32,
+    fx: *const HottyEffects,
+) -> bool {
+    let Some(surface) = (unsafe { name(surface) }) else {
+        return false;
+    };
+    let fx = unsafe { fx.as_ref() };
+    guard(h, false, |h| {
+        let t0 = trace::now();
+        let out = h.host.secondary(surface, x, y, mods(mod_bits));
+        run_effects(out.effects, fx);
+        trace::span(
+            "blitz.secondary",
+            t0,
+            &[("taken", Arg::U(out.taken as u64))],
+        );
+        out.taken
+    })
+}
+
 /// A wheel's turn, a touchpad's scroll or a touch drag at device pixel
 /// `(x, y)` of the surface, by `(dx, dy)` device pixels: positive scrolls
 /// towards the content's end, right and down, and a wheel's notch as far as
@@ -604,12 +652,17 @@ pub unsafe extern "C" fn hotty_host_wheel(
 /// it to `hotty_host_pointer`. `phase`: 0 down (the first finger touched),
 /// 1 move, 2 up (it lifted), 3 cancel (a second finger touched, or the
 /// platform cancelled the touch), 4 long press (the terminal took the touch
-/// for one). `mods` as for a pointer event. Returns
-/// whose the touch is: 0 the terminal's (it scrolls with it, through
+/// for one, with `(x, y)` where the finger is). `mods` as for a pointer
+/// event. Returns whose the touch is: 0 the terminal's (it scrolls with it, through
 /// `hotty_host_wheel` first, or takes it for a long press, as with any
 /// touch), 1 undecided (it may still drag: hold its moves), 2 the surface's
 /// (a drag, or on up a tap, which the surface took as a click where the
-/// finger lifted: do nothing with it). A touch drags an element that opts in
+/// finger lifted: do nothing with it). A long press over an element with
+/// `secondary` in its `data-on`, or inside one, with no Shift or Alt held,
+/// is a secondary press (SPEC §9.1): its `press` (button 2, at the finger's
+/// cell) comes through `fx`, phase 4 returns 2, the terminal opens no menu
+/// of its own, and the lift that follows (2 too) makes no click; anywhere
+/// else a long press is the terminal's (0). A touch drags an element that opts in
 /// when its `touch-action` allows no pan along the touch's first move past 8
 /// CSS pixels (SPEC §9.1); its events come through `fx`. See `Host::touch`.
 ///
@@ -1448,6 +1501,91 @@ mod tests {
             true
         });
         assert!(ok);
+        unsafe { hotty_host_free(h) };
+    }
+
+    extern "C" fn collect(ctx: *mut c_void, data: *const u8, len: usize) {
+        let out = unsafe { &mut *(ctx as *mut Vec<u8>) };
+        out.extend_from_slice(unsafe { std::slice::from_raw_parts(data, len) });
+    }
+
+    #[test]
+    fn a_secondary_press_and_a_long_press_through_the_c_abi() {
+        // Cells 16×34 device pixels, 2 per CSS pixel: #i is 10×2 cells.
+        let h = unsafe { hotty_host_new(&c_config(0.0)) };
+        let cmd = |pairs: &[(&str, &str)], payload: &str| {
+            hotty::Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+        };
+        let host = unsafe { &mut (*h).host };
+        host.handle(&cmd(
+            &[("a", "doc"), ("s", "x"), ("q", "2")],
+            "<style>body{margin:0}b{position:absolute;display:block;left:0;width:80px;height:34px}\
+             </style><b id=i data-on=secondary style=\"top:0\">i</b><b id=n style=\"top:34px\">n</b>",
+        ));
+        host.handle(&cmd(
+            &[
+                ("a", "place"),
+                ("s", "x"),
+                ("c", "20"),
+                ("r", "4"),
+                ("q", "2"),
+            ],
+            "",
+        ));
+        host.render_dirty(&mut |_, _, _| {});
+        let mut sent: Vec<u8> = Vec::new();
+        let fx = HottyEffects {
+            ctx: &mut sent as *mut Vec<u8> as *mut c_void,
+            reply: Some(collect),
+            place: None,
+            remove: None,
+            hide: None,
+            clipboard: None,
+            paste: None,
+            edit: None,
+            menu: None,
+        };
+        let s = c"x";
+        // The press: `t`, and the body's button 2 and the cell.
+        let mut press = |x: f32, y: f32, mods: u32| {
+            let taken = unsafe { hotty_host_secondary(h, s.as_ptr(), x, y, mods, &fx) };
+            (taken, std::mem::take(&mut sent))
+        };
+        let (taken, out) = press(40.0, 20.0, 0);
+        assert!(taken);
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert!(text.contains("e=press") && text.contains("t=i"), "{text:?}");
+        // msgpack {"button": 2, "area": {..}, "c": 2, "r": 0}, with the
+        // control's `t` and the body behind it.
+        let mut bodies = Vec::new();
+        hotty::host::Splitter::with_max(crate::MAX_COMMAND_BYTES).feed(&out, &mut |o| {
+            if let hotty::host::Output::Command(c) = o {
+                bodies.push(c.payload);
+            }
+        });
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].starts_with(b"\x84\xa6button\x02\xa4area\x84"));
+        // Not taken, and nothing sent: no opt-in there, Shift, no surface.
+        for (x, y, m) in [(40.0, 90.0, 0), (40.0, 20.0, 1)] {
+            let (taken, out) = press(x, y, m);
+            assert!(!taken && out.is_empty());
+        }
+        assert!(!unsafe { hotty_host_secondary(h, std::ptr::null(), 40.0, 20.0, 0, &fx) });
+        // A long press: phase 4 returns 2 with the press, and the lift 2.
+        let mut phase = |p: u32, y: f32| {
+            let r = unsafe { hotty_host_touch(h, s.as_ptr(), p, 40.0, y, 0, &fx) };
+            (r, std::mem::take(&mut sent))
+        };
+        assert_eq!(phase(0, 20.0).0, 0);
+        let (r, out) = phase(4, 20.0);
+        assert_eq!(r, 2);
+        assert!(String::from_utf8_lossy(&out).contains("t=i"));
+        let (r, out) = phase(2, 20.0);
+        assert_eq!((r, out.is_empty()), (2, true));
+        // Elsewhere a long press is the terminal's.
+        phase(0, 90.0);
+        assert_eq!(phase(4, 90.0), (0, Vec::new()));
+        phase(2, 90.0);
         unsafe { hotty_host_free(h) };
     }
 
