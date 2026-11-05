@@ -212,6 +212,31 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
             (mouse.x, mouse.y) = (x, y);
             PointerKind::Move
         }
+        // A secondary button (the DOM's number 2) is a platform's gesture
+        // of its own, not the primary's pointer events (conformance/README,
+        // Pointer): `Host::secondary` takes its press, and what it does not
+        // take is the terminal's. Its release is nothing, and the primary
+        // button's state is not touched.
+        "down" | "up" if step.get("button").and_then(Value::as_u64).unwrap_or(0) == 2 => {
+            if step["pointer"] == "down" {
+                let over = host.is_placed(&mouse.surface)
+                    && host.takes_pointer(&mouse.surface, mouse.x, mouse.y);
+                if let Some(want) = step.get("through").and_then(Value::as_bool)
+                    && want != !over
+                {
+                    return Err(format!("through: want {want}, got {}", !over));
+                }
+                if over {
+                    let out = host.secondary(&mouse.surface, mouse.x, mouse.y, mods(step));
+                    for e in out.effects {
+                        if let Effect::Reply(b) = e {
+                            sent.extend(b);
+                        }
+                    }
+                }
+            }
+            return check_events(step, &events(&from_host(&sent)?));
+        }
         "down" => PointerKind::Down,
         "up" => PointerKind::Up,
         "wheel" => return wheel_step(host, mouse, step),
@@ -397,6 +422,23 @@ fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
             }
             host.end_gesture();
             *f = Finger::default();
+        }
+        // The finger stays down until the host takes the touch as a long
+        // press: the runner tells the host the gesture directly, where the
+        // finger is. On the cells it is the terminal's own.
+        "hold" => {
+            if f.cells {
+                cells(host, TouchPhase::LongPress, f.at, &mut sent);
+            } else if !f.surface.is_empty() {
+                let out = host.touch(
+                    &f.surface,
+                    TouchPhase::LongPress,
+                    f.at.0,
+                    f.at.1,
+                    mods(step),
+                );
+                keep(out.effects, &mut sent);
+            }
         }
         other => return Err(format!("unknown touch {other}")),
     }
@@ -906,6 +948,7 @@ fn protocol_vectors() {
     let v = vectors();
     let mut failures = Vec::new();
     let mut skipped = 0;
+    let mut ran = 0;
     for vector in v["vectors"].as_array().unwrap() {
         // This runner passes the pointer through, counts clicks, takes edit
         // commands, shows menus, draws backdrops and reports the mouse as
@@ -942,6 +985,16 @@ fn protocol_vectors() {
             skipped += 1;
             continue;
         }
+        ran += 1;
+        // The vectors of a secondary button or a long press, by name.
+        if vector["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|st| st.get("button").is_some() || st["touch"] == "hold")
+        {
+            eprintln!("vector (secondary): {}", vector["name"].as_str().unwrap());
+        }
         let mut host = Host::new(Config::default());
         host.set_passthrough(true);
         host.set_counts(true);
@@ -971,6 +1024,10 @@ fn protocol_vectors() {
             }
         }
     }
+    eprintln!(
+        "host vectors: {ran} run, {skipped} skipped, {} failed",
+        failures.len()
+    );
     // It has every feature and platform capability a vector may require.
     assert_eq!(skipped, 0, "vectors this runner skips");
     assert!(
