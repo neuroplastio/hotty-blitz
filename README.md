@@ -254,18 +254,30 @@ Not done yet:
 
 ## Fonts
 
-A host ships one font, AdwaitaMono Nerd Font Propo (Regular, Bold, Italic
-and Bold Italic, in `crates/hotty-blitz/fonts/`), so a document looks the
-same on every system and its Nerd Font icons draw without an installed font.
-Italic is the font's own, as in hottyterm's cells, not Regular slanted. It
-is the first
-`monospace` font. In every other generic family it comes second: after the
-system's choice for that family and before the fonts fontconfig lists after
-it. So a symbol or icon the system's font lacks draws from it, at its own
-width. The faces are decompressed on a thread of their own when a host
-starts (about 85 ms).
+A host ships two families (in `crates/hotty-blitz/fonts/`), so a document
+looks the same on every system.
 
-The spec doesn't name the font: a document can't count on it on another host.
+AdwaitaMono Nerd Font Propo (Regular, Bold, Italic and Bold Italic) is there
+for the terminal's own text and its Nerd Font icons, which then draw without
+an installed font. Italic is the font's own, as in hottyterm's cells, not
+Regular slanted. It is the first `monospace` font. In every other generic
+family it comes second: after the system's choice for that family and before
+the fonts fontconfig lists after it. So a symbol or icon the system's font
+lacks draws from it, at its own width.
+
+IBM Plex Sans (Regular, Medium and SemiBold: 400, 500 and 600) is there
+because hotty-surf's kit draws its Compact and Roomy densities in it. Without
+it a surface falls to whatever sans the system has, with other metrics. It
+answers only to its own name, "IBM Plex Sans", and is in no generic family.
+The bundled faces win over an installed Plex of the same name, so a surface
+draws alike on a machine that has Plex and one that does not. The files are
+IBM's v6.4.0 release, byte for byte (the name "Plex" is reserved, so they
+are never subsetted or re-encoded).
+
+The faces are decompressed on a thread of their own when a host starts
+(about 85 ms).
+
+The spec names neither font: a document can't count on them on another host.
 
 ## Fidelity
 
@@ -295,6 +307,8 @@ Apache-2.0 ([LICENSE](LICENSE)).
 - Blitz is MIT OR Apache-2.0, parley Apache-2.0 OR MIT, vello_cpu
   and glifo Apache-2.0 OR MIT, and Stylo MPL-2.0. Our patches on each, in `mods/`, are
   offered under that upstream's licence, the one its `mod.md` names (gov P-7).
-- The font in `crates/hotty-blitz/fonts/` is OFL-1.1 (`OFL.txt`). Its Nerd
-  Fonts icon sets keep their own licences, listed with their texts in
-  `NOTICE.txt`. A program that ships the library ships both files.
+- The fonts in `crates/hotty-blitz/fonts/` are OFL-1.1: AdwaitaMono's in
+  `OFL.txt`, IBM Plex Sans's (Reserved Font Name "Plex") in `IBM-Plex-OFL.txt`.
+  AdwaitaMono's Nerd Fonts icon sets keep their own licences, listed with
+  their texts in `NOTICE.txt`, which also records where Plex's files came from.
+  A program that ships the library ships all three files.

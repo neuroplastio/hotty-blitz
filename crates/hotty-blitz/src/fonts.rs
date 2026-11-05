@@ -1,15 +1,24 @@
-//! The font a host ships: AdwaitaMono Nerd Font Propo, Regular, Bold, Italic
-//! and Bold Italic (fonts/, OFL-1.1, its icon sets' licences in
-//! fonts/NOTICE.txt). It is the first `monospace` font, so a document draws
-//! alike on every system, and the second of every other text family: after
-//! the system's choice, before the fonts fontconfig lists after it. A symbol
-//! the system's font lacks, and every Nerd Font icon, draws from it, and not
-//! from whichever Nerd Font the system has next (a plain one draws an icon
-//! past its cell, over the next letter). The Propo faces keep an icon at its
-//! own width. Italic is the font's own, as in hottyterm's cells, not Regular
-//! slanted.
+//! The fonts a host ships (fonts/, both OFL-1.1; Plex's source and the icon
+//! sets' licences in fonts/NOTICE.txt).
 //!
-//! Not in the spec: a document can't count on it on another host.
+//! AdwaitaMono Nerd Font Propo, Regular, Bold, Italic and Bold Italic. It is
+//! the first `monospace` font, so a document draws alike on every system, and
+//! the second of every other text family: after the system's choice, before
+//! the fonts fontconfig lists after it. A symbol the system's font lacks, and
+//! every Nerd Font icon, draws from it, and not from whichever Nerd Font the
+//! system has next (a plain one draws an icon past its cell, over the next
+//! letter). The Propo faces keep an icon at its own width. Italic is the
+//! font's own, as in hottyterm's cells, not Regular slanted.
+//!
+//! IBM Plex Sans, Regular, Medium and SemiBold (400, 500 and 600), IBM's
+//! v6.4.0 files byte for byte (the name "Plex" is reserved: no subsetting).
+//! It is the sans of hotty-surf's kit, so a surf surface draws alike, with
+//! the same metrics, on every host built on hotty-blitz, and not in whatever
+//! sans the system has. It answers to its own name only and is in no generic
+//! family. A collection looks a name up among the fonts registered in it
+//! before the system's, so these faces win over an installed Plex.
+//!
+//! Neither is in the spec: a document can't count on them on another host.
 
 use blitz_dom::FontContext;
 use parley::fontique::{Blob, FamilyId, GenericFamily, SourceCache};
@@ -24,6 +33,15 @@ const FACES: [&[u8]; 4] = [
     include_bytes!("../fonts/AdwaitaMonoNerdFontPropo-Bold.woff2"),
     include_bytes!("../fonts/AdwaitaMonoNerdFontPropo-Italic.woff2"),
     include_bytes!("../fonts/AdwaitaMonoNerdFontPropo-BoldItalic.woff2"),
+];
+
+/// The family of the kit's sans, as a document names it.
+pub const PLEX: &str = "IBM Plex Sans";
+
+const PLEX_FACES: [&[u8]; 3] = [
+    include_bytes!("../fonts/IBMPlexSans-Regular.woff2"),
+    include_bytes!("../fonts/IBMPlexSans-Medium.woff2"),
+    include_bytes!("../fonts/IBMPlexSans-SemiBold.woff2"),
 ];
 
 /// The families that take it first.
@@ -65,6 +83,7 @@ fn build() -> FontContext {
     let faces: Vec<Blob<u8>> = std::thread::scope(|s| {
         let decoding: Vec<_> = FACES
             .iter()
+            .chain(&PLEX_FACES)
             .map(|f| s.spawn(|| blitz_dom::decode_font_bytes(f).into_owned()))
             .collect();
         decoding
@@ -82,12 +101,17 @@ fn build() -> FontContext {
     };
     let c = &mut ctx.collection;
     let mut ours: Vec<FamilyId> = Vec::new();
-    for face in faces {
+    let mut faces = faces.into_iter();
+    for face in faces.by_ref().take(FACES.len()) {
         for (id, _) in c.register_fonts(face, None) {
             if !ours.contains(&id) {
                 ours.push(id);
             }
         }
+    }
+    // Plex is registered under its own name and listed nowhere.
+    for face in faces {
+        c.register_fonts(face, None);
     }
     // A collection lists its own families for a generic one before the
     // system's, so each list is written whole.
@@ -142,6 +166,48 @@ mod tests {
             first_with(&mut ctx, GenericFamily::Monospace, 'a'),
             Some(ours)
         );
+    }
+
+    /// The blob of the first font the query for `name` at `weight` matches.
+    fn blob_of(ctx: &mut FontContext, name: &str, weight: f32) -> Vec<u8> {
+        let FontContext {
+            collection,
+            source_cache,
+        } = ctx;
+        let mut q = collection.query(source_cache);
+        q.set_families([QueryFamily::Named(name)]);
+        q.set_attributes(Attributes::new(
+            FontWidth::NORMAL,
+            FontStyle::Normal,
+            FontWeight::new(weight),
+        ));
+        let mut data = None;
+        q.matches_with(|f| {
+            data = Some(f.blob.as_ref().to_vec());
+            QueryStatus::Stop
+        });
+        data.expect("the family answers")
+    }
+
+    #[test]
+    fn plex_is_ours_at_400_500_and_600_whatever_the_system_has() {
+        let mut ctx = context();
+        for (weight, bytes) in [
+            (400.0, PLEX_FACES[0]),
+            (500.0, PLEX_FACES[1]),
+            (600.0, PLEX_FACES[2]),
+        ] {
+            let ours = blitz_dom::decode_font_bytes(bytes);
+            assert!(
+                blob_of(&mut ctx, PLEX, weight)[..] == ours[..],
+                "{PLEX} at {weight} is the bundled face, not the system's"
+            );
+        }
+        // In no generic family: AdwaitaMono's roles are as they were.
+        let plex = ctx.collection.family_id(PLEX).expect("registered");
+        for g in FIRST.iter().chain(&SECOND) {
+            assert!(!ctx.collection.generic_families(*g).any(|id| id == plex));
+        }
     }
 
     #[test]

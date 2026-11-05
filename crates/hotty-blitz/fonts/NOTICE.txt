@@ -1,3 +1,29 @@
+IBM Plex Sans, as hotty-blitz bundles it
+
+IBM Plex Sans Regular, Medium and SemiBold (400, 500 and 600), byte for byte
+as IBM publishes them: the font's Reserved Font Name is "Plex", so they are
+not subsetted, converted or otherwise modified. Their licence is the
+SIL Open Font License 1.1, in IBM-Plex-OFL.txt beside this file.
+
+  Copyright (c) 2017 IBM Corp. with Reserved Font Name "Plex"
+
+  Version   v6.4.0
+  Source    https://github.com/IBM/plex/releases/tag/v6.4.0
+  Asset     IBM-Plex-Sans.zip
+            sha256 e9cac220220f66e8c3b903320a1ebd0e0bcfbfd216772879d33cc71de94570ab
+  Path      IBM-Plex-Sans/fonts/complete/woff2/
+
+  IBMPlexSans-Regular.woff2   63020 bytes
+            sha256 ba711a3085ff9f27440b6b9c4550cfc47c97bf36591d5da958b975bb3add8c1a
+  IBMPlexSans-Medium.woff2    66740 bytes
+            sha256 5660f8a658f8bb50dbc005232f885eadffd2bc1c235c4f6fbb63469d1f9cde6d
+  IBMPlexSans-SemiBold.woff2  67060 bytes
+            sha256 f78048030eab62e860efa39a0df79e2e5581bf122eb95b9bc42c0b8a4988d205
+
+The rest of this file is about the other font, AdwaitaMono Nerd Font Propo.
+
+========================================================================
+
 AdwaitaMono Nerd Font Propo, as hotty-blitz bundles it
 
 The font is Adwaita Mono (OFL-1.1, no reserved font names; OFL.txt beside
