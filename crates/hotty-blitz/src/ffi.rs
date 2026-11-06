@@ -578,8 +578,9 @@ pub unsafe extern "C" fn hotty_host_pointer(
 /// press is the terminal's, as it would be without hotty: with Shift its own
 /// menu, with Alt the program's mouse report (SGR `CSI < 10`), otherwise the
 /// cells beneath. With Alt the surface is left (`hover` out, through `fx`)
-/// and gives the keyboard back, as a primary press with Alt does. See
-/// `Host::secondary`.
+/// and gives the keyboard back, as a primary press with Alt does. In a 0.6
+/// session (HOST.md §4.1) there is no secondary press: false, nothing done,
+/// Alt or not. See `Host::secondary`.
 ///
 /// # Safety
 /// `h` must be valid; `surface` NUL-terminated; `fx` may be null.
@@ -662,7 +663,8 @@ pub unsafe extern "C" fn hotty_host_wheel(
 /// is a secondary press (SPEC §9.1): its `press` (button 2, at the finger's
 /// cell) comes through `fx`, phase 4 returns 2, the terminal opens no menu
 /// of its own, and the lift that follows (2 too) makes no click; anywhere
-/// else a long press is the terminal's (0). A touch drags an element that opts in
+/// else a long press is the terminal's (0), and so it is always in a 0.6
+/// session (HOST.md §4.1). A touch drags an element that opts in
 /// when its `touch-action` allows no pan along the touch's first move past 8
 /// CSS pixels (SPEC §9.1); its events come through `fx`. See `Host::touch`.
 ///
@@ -1534,8 +1536,10 @@ mod tests {
         ));
         host.render_dirty(&mut |_, _, _| {});
         let mut sent: Vec<u8> = Vec::new();
+        // What `reply` collects: the closures below take it through this.
+        let sp = &mut sent as *mut Vec<u8>;
         let fx = HottyEffects {
-            ctx: &mut sent as *mut Vec<u8> as *mut c_void,
+            ctx: sp as *mut c_void,
             reply: Some(collect),
             place: None,
             remove: None,
@@ -1547,9 +1551,9 @@ mod tests {
         };
         let s = c"x";
         // The press: `t`, and the body's button 2 and the cell.
-        let mut press = |x: f32, y: f32, mods: u32| {
+        let press = |x: f32, y: f32, mods: u32| {
             let taken = unsafe { hotty_host_secondary(h, s.as_ptr(), x, y, mods, &fx) };
-            (taken, std::mem::take(&mut sent))
+            (taken, std::mem::take(unsafe { &mut *sp }))
         };
         let (taken, out) = press(40.0, 20.0, 0);
         assert!(taken);
@@ -1572,9 +1576,9 @@ mod tests {
         }
         assert!(!unsafe { hotty_host_secondary(h, std::ptr::null(), 40.0, 20.0, 0, &fx) });
         // A long press: phase 4 returns 2 with the press, and the lift 2.
-        let mut phase = |p: u32, y: f32| {
+        let phase = |p: u32, y: f32| {
             let r = unsafe { hotty_host_touch(h, s.as_ptr(), p, 40.0, y, 0, &fx) };
-            (r, std::mem::take(&mut sent))
+            (r, std::mem::take(unsafe { &mut *sp }))
         };
         assert_eq!(phase(0, 20.0).0, 0);
         let (r, out) = phase(4, 20.0);
@@ -1586,6 +1590,24 @@ mod tests {
         phase(0, 90.0);
         assert_eq!(phase(4, 90.0), (0, Vec::new()));
         phase(2, 90.0);
+        // A 0.6 session (HOST.md §4.1) has no secondary press: nothing is
+        // taken, with Alt either, and a long press is the terminal's.
+        let query = |v: &str| {
+            let body = format!("a=q:n=1:v={v};");
+            unsafe { hotty_host_osc(h, body.as_ptr(), body.len(), &fx) };
+            String::from_utf8_lossy(&std::mem::take(unsafe { &mut *sp })).to_string()
+        };
+        assert!(query("0.6").contains("a=ok"));
+        for m in [0, 4] {
+            let (taken, out) = press(40.0, 20.0, m);
+            assert!(!taken && out.is_empty(), "mods {m}");
+        }
+        phase(0, 20.0);
+        assert_eq!(phase(4, 20.0), (0, Vec::new()));
+        assert_eq!(phase(2, 20.0), (0, Vec::new()));
+        // And a query that lists 0.7 too is a 0.7 session again.
+        assert!(query("0.6,0.7").contains("a=ok"));
+        assert!(press(40.0, 20.0, 0).0);
         unsafe { hotty_host_free(h) };
     }
 

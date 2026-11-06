@@ -146,7 +146,10 @@ void hotty_host_pointer(hotty_host *h, const char *surface, uint32_t kind, float
  * is the terminal's, as it would be without hotty: with Shift its own menu,
  * with Alt the program's mouse report (SGR CSI < 10), otherwise the cells
  * beneath. With Alt the surface is left (hover out, through fx) and gives
- * the keyboard back, as a primary press with Alt does. */
+ * the keyboard back, as a primary press with Alt does. In a 0.6 session
+ * (the program's query listed 0.6 and not 0.7, HOST.md 4.1) there is no
+ * secondary press: it returns false and does nothing, Alt or not, and the
+ * press is the terminal's, with Alt too (not SGR CSI < 10). */
 bool hotty_host_secondary(hotty_host *h, const char *surface, float x, float y, uint32_t mods,
                           const hotty_effects *fx);
 /* A wheel's turn, a touchpad's scroll or a touch drag at device pixel (x, y)
@@ -188,7 +191,8 @@ void hotty_host_end_gesture(hotty_host *h);
  * held, is a secondary press (SPEC 9.1): its press (button 2, at the
  * finger's cell) comes through fx, phase 4 returns 2, the terminal opens no
  * menu of its own, and the lift that follows (2 too) makes no click.
- * Anywhere else a long press is the terminal's (0). Events come through fx. */
+ * Anywhere else a long press is the terminal's (0), and so it is always in a
+ * 0.6 session (HOST.md 4.1). Events come through fx. */
 uint32_t hotty_host_touch(hotty_host *h, const char *surface, uint32_t phase, float x, float y,
                           uint32_t mods, const hotty_effects *fx);
 /* A report of the mouse's primary button for a finger in the cells (SPEC

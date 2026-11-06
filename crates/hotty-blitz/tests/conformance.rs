@@ -924,8 +924,9 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
 }
 
 /// The version is the spec's (gov P-5 rule 6): the package's MAJOR.MINOR,
-/// which the capabilities send in `version`, is the hotty version the host
-/// speaks and the one the vectors are for. hotty 0.6 is hotty-blitz 0.6.x.
+/// which the capabilities send in `version`, is the highest hotty version the
+/// host speaks and the one the vectors are for. hotty 0.7 is hotty-blitz
+/// 0.7.x, which speaks 0.6 as well (HOST.md §4).
 #[test]
 fn the_version_is_the_specs() {
     let pkg = env!("CARGO_PKG_VERSION");
@@ -953,8 +954,8 @@ fn protocol_vectors() {
         // This runner passes the pointer through, counts clicks, takes edit
         // commands, shows menus, draws backdrops and reports the mouse as
         // hottyterm does, and hotty-blitz sends hover, scrolls, takes touch,
-        // drags in steps, takes drop targets, tells `view` and keeps a
-        // history for its text fields.
+        // drags in steps, takes drop targets, tells `view`, keeps a history
+        // for its text fields and speaks 0.6 as well.
         let has = |r: &Value| {
             matches!(
                 r.as_str(),
@@ -973,6 +974,7 @@ fn protocol_vectors() {
                         | "drop"
                         | "view"
                         | "pressed"
+                        | "speaks-0.6"
                 )
             )
         };

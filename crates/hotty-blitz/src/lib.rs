@@ -2050,7 +2050,9 @@ impl Host {
     ///   a drag ends, with `dragend`; the rest of the gesture is the
     ///   terminal's.
     /// - `LongPress`: the terminal took the touch for one before it
-    ///   dragged. It never drags, nor taps.
+    ///   dragged. It never drags, nor taps. Over an element that takes
+    ///   the secondary press it is one ([`Host::secondary`]), except in a 0.6
+    ///   session (HOST.md §4.1).
     ///
     /// A touch that drags is a press when it does (SPEC §9.1), at the cell
     /// where it began: `press`, `dragstart`, then what the press causes,
@@ -2162,11 +2164,13 @@ impl Host {
                 }
                 // A long press over an element that takes the secondary
                 // press is one (SPEC §9.1), unless Shift or Alt is held
-                // (§9.2): the terminal's, as any long press is.
+                // (§9.2): the terminal's, as any long press is. In a 0.6
+                // session it never is one (HOST.md §4.1), and does what it
+                // did in 0.6.9: the touch is the terminal's.
                 let (name, tap) = (f.surface.clone(), f.tap);
                 let keys = f.mods;
                 let held = |m: Mods| m.shift || m.alt;
-                let taken = if tap && !held(mods) && !held(keys) {
+                let taken = if tap && self.version != V06 && !held(mods) && !held(keys) {
                     self.secondary_at(&name, x, y, mods)
                 } else {
                     None
@@ -2818,7 +2822,16 @@ impl Host {
     /// [`Host::pointer`]: the surface is left (`hover` out), the selection
     /// dropped and the keyboard given back; the rest of the gesture
     /// (moves, release) is the host's to keep from the surface.
+    ///
+    /// In a 0.6 session (HOST.md §4.1) there is no secondary press: this
+    /// takes nothing and does nothing, Alt or not, and the outcome says the
+    /// press is the terminal's, as it was before 0.7, with Alt too (not the
+    /// program's, SGR button 10). The surface is not left, the selection
+    /// stays and the keyboard is not given back.
     pub fn secondary(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> SecondaryOutcome {
+        if self.version == V06 {
+            return SecondaryOutcome::default();
+        }
         enter(&mut self.working, surface);
         if mods.alt && self.secondary_over(surface, x, y) {
             self.gesture = None;
