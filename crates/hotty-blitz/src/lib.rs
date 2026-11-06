@@ -37,11 +37,12 @@ pub use surface::{Damage, Frame, Timings};
 
 /// The hotty version this host speaks, the highest of the two it speaks
 /// (SPEC §4, §15): the one a package's MAJOR.MINOR names (gov P-5 rule 6),
-/// and the one a session is in until a query says otherwise. It is the
-/// hotty crate's, which also lists the lower one it speaks
+/// and the one a session is in until a query says otherwise. It is a string
+/// literal on one line, which hottyterm's scripts/versions.sh reads; a test
+/// holds it to the hotty crate's, which also lists the lower one it speaks
 /// ([`hotty::VERSIONS`]: 0.7 and 0.6, HOST.md §4). A query that lists
 /// neither is answered with `EVERSION`.
-pub const VERSION: &str = hotty::VERSION;
+pub const VERSION: &str = "0.7";
 
 /// The version a 0.6 session is in (HOST.md §4.1): a program that lists 0.6
 /// and not 0.7 is answered in it.

@@ -92,6 +92,7 @@ fn a_query_that_shares_no_version_is_eversion_with_the_versions_spoken_lowest_fi
 #[test]
 fn the_host_names_the_highest_version_it_speaks() {
     assert_eq!(hotty_blitz::VERSION, "0.7");
+    assert_eq!(hotty_blitz::VERSION, hotty::VERSION);
     assert_eq!(hotty::VERSIONS, ["0.7", "0.6"]);
 }
 
@@ -187,7 +188,13 @@ fn a_zero_point_seven_session_is_as_it_was() {
     let mut h = host();
     h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], DOC));
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "4"), ("p", "1")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "4"),
+            ("p", "1"),
+        ],
         "",
     ));
     h.render_dirty(&mut |_, _, _| {});
@@ -209,7 +216,13 @@ fn the_next_query_changes_the_session_and_a_reset_ends_it() {
     h.reset();
     h.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], DOC));
     h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "4"), ("p", "1")],
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "30"),
+            ("r", "4"),
+            ("p", "1"),
+        ],
         "",
     ));
     h.render_dirty(&mut |_, _, _| {});
