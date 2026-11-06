@@ -35,9 +35,17 @@ pub use input::{
 pub use menu::{MENU, Shown};
 pub use surface::{Damage, Frame, Timings};
 
-/// The hotty version this host speaks, its only one (SPEC §4): a query
-/// that does not list it is answered with `EVERSION`.
-pub const VERSION: &str = "0.6";
+/// The hotty version this host speaks, the highest of the two it speaks
+/// (SPEC §4, §15): the one a package's MAJOR.MINOR names (gov P-5 rule 6),
+/// and the one a session is in until a query says otherwise. It is the
+/// hotty crate's, which also lists the lower one it speaks
+/// ([`hotty::VERSIONS`]: 0.7 and 0.6, HOST.md §4). A query that lists
+/// neither is answered with `EVERSION`.
+pub const VERSION: &str = hotty::VERSION;
+
+/// The version a 0.6 session is in (HOST.md §4.1): a program that lists 0.6
+/// and not 0.7 is answered in it.
+const V06: &str = "0.6";
 
 /// The most bytes one command's payload decodes to, after base64 and zlib
 /// (SPEC §3.4): what the capabilities report as `limits.message` (§13). A
@@ -307,6 +315,11 @@ pub struct Host {
     /// The capabilities a program last heard since the last reset, when it
     /// asked for them: it hears `caps` when they change (SPEC §4, §9).
     heard: Option<Heard>,
+    /// The version the program's session is in (SPEC §4): what the last
+    /// query was answered in, [`VERSION`] before one. A 0.6 session has no
+    /// secondary press (HOST.md §4.1). A full reset or the end of the
+    /// program's output ends the session ([`Host::reset`]).
+    version: &'static str,
     /// `caps` events that settings changed, for [`Host::take_events`].
     owed: Vec<Effect>,
     /// The program's menu (SPEC §10.7).
@@ -558,6 +571,7 @@ impl Host {
             lost: Vec::new(),
             keys: KeySettings::default(),
             heard: None,
+            version: VERSION,
             owed: Vec::new(),
             menu: MenuState::default(),
         }
@@ -1062,9 +1076,12 @@ impl Host {
     }
 
     /// Everything goes: full reset (RIS), or the program's session ended.
-    /// The touch areas of both screens go too (SPEC §9.6).
+    /// The touch areas of both screens go too (SPEC §9.6), and so does the
+    /// session's version: the next program asks again, and until it does the
+    /// session is in [`VERSION`].
     pub fn reset(&mut self) -> Vec<Effect> {
         self.areas = Default::default();
+        self.version = VERSION;
         self.delete_all()
     }
 
@@ -1123,7 +1140,10 @@ impl Host {
             self.lost.extend(deleted);
             Some(name)
         } else {
+            // The program goes on in the version it asked for.
+            let version = self.version;
             let all = self.reset();
+            self.version = version;
             self.lost.extend(all);
             None
         }
@@ -1420,17 +1440,20 @@ impl Host {
         match cmd.action() {
             "q" => {
                 // `v` lists the versions the program speaks, comma-separated
-                // (SPEC §4), and this host answers in the highest it shares:
-                // 0.6 when an entry is exactly that, whatever the others and
-                // their order. Otherwise, a query with no `v` too, EVERSION,
-                // its detail the versions this host speaks.
-                if !hotty::host::speaks(cmd) {
-                    return Err(("EVERSION", VERSION.to_string()));
-                }
+                // (SPEC §4), and this host answers in the highest it shares
+                // (`answer_in`), whatever the order, and speaks it to the
+                // program from then on (HOST.md §4.1). Otherwise, a query
+                // with no `v` too, EVERSION, its detail the versions this
+                // host speaks, lowest first, as a query lists them.
+                let Some(v) = hotty::host::answer_in(cmd) else {
+                    let spoken: Vec<&str> = hotty::VERSIONS.iter().rev().copied().collect();
+                    return Err(("EVERSION", spoken.join(",")));
+                };
+                self.version = v;
                 let now = self.snapshot();
                 self.heard = Some(now.clone());
                 let caps = hotty::Caps {
-                    v: Some(VERSION.to_string()),
+                    v: Some(v.to_string()),
                     cell_css: Some(now.cellcss),
                     scale: Some(now.scale),
                     scheme: Some(now.scheme.to_string()),

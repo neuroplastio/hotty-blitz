@@ -10,17 +10,20 @@ host and program shares:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of hotty 0.6: surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play, and CSS animations and transitions run), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of hotty 0.7 (and 0.6): surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play, and CSS animations and transitions run), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty` | the `hotty` CLI (package `hotty-cli`): `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout), vello_cpu (its renderer), glifo (vello_cpu's glyph renderer) and Stylo (its style engine), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
-The host speaks hotty 0.6 and no other version. It answers a query that
-lists 0.6 among the versions its program speaks (`a=q:n=1:v=0.6`, SPEC §4)
-with its capabilities, and any other, one with no `v` too, with `EVERSION`:
-a program of 0.5 finds no host.
+The host speaks hotty 0.7, and 0.6 as well (SPEC §15, HOST.md §4). It
+answers a query that lists either among the versions its program speaks
+(`a=q:n=1:v=0.6,0.7`, SPEC §4) with its capabilities, in the highest version
+the two share, and speaks that version to the program until the session
+ends. A 0.6 session has no secondary press (HOST.md §4.1). Any other query,
+one with no `v` too, is answered with `EVERSION`, its detail `0.6,0.7`: a
+program of 0.5 finds no host.
 
-0.6.x speaks hotty 0.6; the patch number is this repository's own. The
-capabilities name it: `"host": "hotty-blitz"`, `"version": "0.6.0"`.
+0.7.x speaks hotty 0.7; the patch number is this repository's own. The
+capabilities name it: `"host": "hotty-blitz"`, `"version": "0.7.0"`.
 
 ## Try it
 
