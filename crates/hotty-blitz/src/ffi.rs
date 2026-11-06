@@ -1555,7 +1555,7 @@ mod tests {
         assert!(taken);
         let text = String::from_utf8_lossy(&out).to_string();
         assert!(text.contains("e=press") && text.contains("t=i"), "{text:?}");
-        // msgpack {"button": 2, "area": {..}, "c": 2, "r": 0}, with the
+        // msgpack {"area": {..}, "button": 2, "c": 2, "r": 0}, with the
         // control's `t` and the body behind it.
         let mut bodies = Vec::new();
         hotty::host::Splitter::with_max(crate::MAX_COMMAND_BYTES).feed(&out, &mut |o| {
@@ -1564,7 +1564,7 @@ mod tests {
             }
         });
         assert_eq!(bodies.len(), 1);
-        assert!(bodies[0].starts_with(b"\x84\xa6button\x02\xa4area\x84"));
+        assert!(bodies[0].starts_with(b"\x84\xa4area\x84"));
         // Not taken, and nothing sent: no opt-in there, Shift, no surface.
         for (x, y, m) in [(40.0, 90.0, 0), (40.0, 20.0, 1)] {
             let (taken, out) = press(x, y, m);

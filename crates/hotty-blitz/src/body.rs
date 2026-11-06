@@ -133,69 +133,6 @@ fn area(a: &Area) -> hotty::Area {
     }
 }
 
-/// A msgpack int in its smallest form.
-fn mp_int(out: &mut Vec<u8>, v: i64) {
-    match v {
-        0..=0x7f => out.push(v as u8),
-        -32..=-1 => out.push(v as i8 as u8),
-        0x80..=0xff => out.extend([0xcc, v as u8]),
-        0x100..=0xffff => out.extend([0xcd, (v >> 8) as u8, v as u8]),
-        0x1_0000..=0xffff_ffff => {
-            out.push(0xce);
-            out.extend((v as u32).to_be_bytes());
-        }
-        0x1_0000_0000.. => {
-            out.push(0xcf);
-            out.extend((v as u64).to_be_bytes());
-        }
-        -128..=-33 => out.extend([0xd0, v as i8 as u8]),
-        -32768..=-129 => {
-            out.push(0xd1);
-            out.extend((v as i16).to_be_bytes());
-        }
-        -2_147_483_648..=-32769 => {
-            out.push(0xd2);
-            out.extend((v as i32).to_be_bytes());
-        }
-        _ => {
-            out.push(0xd3);
-            out.extend(v.to_be_bytes());
-        }
-    }
-}
-
-/// A msgpack map key: a short str.
-fn mp_key(out: &mut Vec<u8>, k: &str) {
-    out.push(0xa0 | k.len() as u8);
-    out.extend(k.as_bytes());
-}
-
-/// The body of a secondary press (SPEC §9): `{"button": 2, "area": {c, r,
-/// w, h}, "c": int, "r": int, "mods": int}`, `area` and `mods` left out
-/// when it has none.
-fn secondary_body(a: Option<&Area>, c: i32, r: i32, mods: Option<u8>) -> Vec<u8> {
-    let mut out = vec![0x80 | (3 + u8::from(a.is_some()) + u8::from(mods.is_some()))];
-    mp_key(&mut out, "button");
-    mp_int(&mut out, 2);
-    if let Some(a) = a {
-        mp_key(&mut out, "area");
-        out.push(0x84);
-        for (k, v) in [("c", a.c), ("r", a.r), ("w", a.w), ("h", a.h)] {
-            mp_key(&mut out, k);
-            mp_int(&mut out, v);
-        }
-    }
-    mp_key(&mut out, "c");
-    mp_int(&mut out, i64::from(c));
-    mp_key(&mut out, "r");
-    mp_int(&mut out, i64::from(r));
-    if let Some(m) = mods {
-        mp_key(&mut out, "mods");
-        mp_int(&mut out, i64::from(m));
-    }
-    out
-}
-
 /// The event a program hears, for the hotty crate to write
 /// (`hotty::host::encode_event`): its kind, the surface it is of (none for
 /// `command` and `caps`), the element it names (empty for none), and what
@@ -238,15 +175,18 @@ pub fn event(
             e.area = a.as_ref().map(area);
             e.mods = mods(m);
         }
-        // The hotty crate's press has no `button`, `c` or `r`: the body is
-        // written here, msgpack as the crate writes the others, and the
-        // crate puts it behind the control.
         Detail::Secondary {
             area: a,
             c,
             r,
             mods: m,
-        } => e.message.payload = secondary_body(a.as_ref(), *c, *r, *m),
+        } => {
+            e.button = 2;
+            e.area = a.as_ref().map(area);
+            e.c = Some(i64::from(*c));
+            e.r = Some(i64::from(*r));
+            e.mods = mods(m);
+        }
         Detail::Checked {
             checked,
             value,
@@ -386,6 +326,50 @@ mod tests {
         assert_eq!(
             detail("view", &Detail::View(view)),
             b"\x82\xa2in\x81\xa1a\x84\xa1c\x00\xa1r\xfe\xa1w\x04\xa1h\x01\xa3end\xc2"
+        );
+    }
+
+    /// What `secondary_body` wrote before the hotty crate's press had
+    /// `button`, `c` and `r` (hotty-blitz 0.6.9 to V7-01): a press of button 2
+    /// over an area at cell (2, 0) with Alt, key by key in that order.
+    const SECONDARY_BEFORE: &[u8] = b"\x85\xa6button\x02\xa4area\x84\xa1c\x01\xa1r\x02\xa1w\x03\xa1h\x04\xa1c\x02\xa1r\x00\xa4mods\x04";
+
+    #[test]
+    fn a_secondary_press_body_is_the_one_it_was_before_the_crate_wrote_it() {
+        let area = Area {
+            c: 1,
+            r: 2,
+            w: 3,
+            h: 4,
+        };
+        let press = |area: Option<Area>, mods: Option<u8>| Detail::Secondary {
+            area,
+            c: 2,
+            r: 0,
+            mods,
+        };
+        let body = detail("press", &press(Some(area), Some(4)));
+        // The same map as a msgpack reader sees it, whatever the order of
+        // its keys: the crate writes `area` and `mods` before `button`.
+        let read = |b: &[u8]| rmp_serde::from_slice::<serde_json::Value>(b).unwrap();
+        assert_eq!(read(&body), read(SECONDARY_BEFORE));
+        assert_eq!(read(&body).as_object().unwrap().len(), 5);
+        // Without an area or mods: {"button": 2, "c": 2, "r": 0}.
+        let bare = detail("press", &press(None, None));
+        assert_eq!(read(&bare), read(b"\x83\xa6button\x02\xa1c\x02\xa1r\x00"));
+        // A cell above or left of the surface is a negative int.
+        let neg = detail(
+            "press",
+            &Detail::Secondary {
+                area: None,
+                c: -3,
+                r: -200,
+                mods: None,
+            },
+        );
+        assert_eq!(
+            read(&neg),
+            read(b"\x83\xa6button\x02\xa1c\xfd\xa1r\xd1\xff\x38")
         );
     }
 
