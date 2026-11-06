@@ -22,7 +22,7 @@ ends. A 0.6 session has no secondary press (HOST.md §4.1). Any other query,
 one with no `v` too, is answered with `EVERSION`, its detail `0.6,0.7`: a
 program of 0.5 finds no host.
 
-0.7.x speaks hotty 0.7; the patch number is this repository's own. The
+0.7.x speaks hotty 0.7, and 0.6 too; the patch number is this repository's own. The
 capabilities name it: `"host": "hotty-blitz"`, `"version": "0.7.0"`.
 
 ## Try it
@@ -59,7 +59,7 @@ then its body as JSON with each value's type in sight, or what a program
 sent as its text.
 
 ```
-a=ok:n=1:re=q  {"v": "0.6", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
+a=ok:n=1:re=q  {"v": "0.7", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
 a=delta:s=form:q=2  {"ops": [{"op": "text", "t": "status", "v": "saved ✓"}]}
 a=ev:s=form:e=fit  {"r": 3}
 ```
