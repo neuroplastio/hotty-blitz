@@ -278,6 +278,8 @@ pub struct Host {
     /// The embedding terminal reads the clipboard for a field's `paste`
     /// ([`Effect::Paste`], `set_paste`).
     paste: bool,
+    /// The user's `prefers-reduced-motion` (Host::set_reduced_motion).
+    reduced_motion: bool,
     /// The run of clicks the last click by the pointer was in: its surface,
     /// the element that reported it (its id, and a link's href), and the
     /// platform's count the run began at.
@@ -558,6 +560,7 @@ impl Host {
             counts: false,
             backdrops: false,
             paste: false,
+            reduced_motion: false,
             click_run: None,
             fits: Vec::new(),
             views: Vec::new(),
@@ -792,6 +795,7 @@ impl Host {
             fonts::context(),
             (500, 100),
             0,
+            self.reduced_motion,
         )
     }
 
@@ -857,6 +861,22 @@ impl Host {
         self.config = config;
         let owed = self.caps_changed(font);
         self.owed.extend(owed);
+    }
+
+    /// Whether the user asked the system the terminal runs on for less
+    /// motion (SPEC §8): `prefers-reduced-motion` is `reduce` in every
+    /// surface, those made later too, and `no-preference` otherwise, which
+    /// it is until this is called. A change draws every surface again, as
+    /// a new theme does.
+    pub fn set_reduced_motion(&mut self, reduce: bool) {
+        if reduce == self.reduced_motion {
+            return;
+        }
+        self.reduced_motion = reduce;
+        let own = self.menu.shown.as_mut().map(|(_, s)| s);
+        for s in self.surfaces.values_mut().chain(own) {
+            s.set_reduced_motion(reduce);
+        }
     }
 
     /// Paint every surface in full on the next render, for a terminal that
@@ -1550,6 +1570,7 @@ impl Host {
                     // Like `d`, the document's: without it, it does not
                     // scroll (SPEC §5.1).
                     scroll::axes(cmd.get("scroll")),
+                    self.reduced_motion,
                 );
                 // A replaced document keeps its placement: `r=auto` is
                 // measured when placed, not on every change. A backdrop stays

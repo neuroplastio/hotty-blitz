@@ -1205,6 +1205,18 @@ pub unsafe extern "C" fn hotty_host_set_backdrops(h: *mut HottyHost, on: bool) {
     guard(h, (), |h| h.host.set_backdrops(on))
 }
 
+/// The user asked the system the terminal runs on for less motion (SPEC §8):
+/// `prefers-reduced-motion` is `reduce` in every surface, those made later
+/// too, and `no-preference` when `reduce` is false, as it is for a new host
+/// (Host::set_reduced_motion). A change draws every surface again.
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_reduced_motion(h: *mut HottyHost, reduce: bool) {
+    guard(h, (), |h| h.host.set_reduced_motion(reduce))
+}
+
 /// Whether the surface takes the pointer at device pixel (`x`, `y`) of the
 /// surface (Host::takes_pointer). Where it does not, the host hands the
 /// pointer to what is below it (SPEC §9.3).
@@ -1726,6 +1738,22 @@ mod tests {
         let mut out: Vec<String> = Vec::new();
         unsafe { hotty_host_render(h, &mut out as *mut _ as *mut c_void, drew) };
         out
+    }
+
+    #[test]
+    fn reduced_motion_through_the_c_abi_draws_every_surface_again() {
+        let h = surfaces(&["a", "b"]);
+        assert!(render(h).is_empty());
+        unsafe { hotty_host_set_reduced_motion(h, true) };
+        let mut drawn = render(h);
+        drawn.sort();
+        assert_eq!(drawn, ["a", "b"]);
+        // The same setting again draws nothing.
+        unsafe { hotty_host_set_reduced_motion(h, true) };
+        assert!(render(h).is_empty());
+        unsafe { hotty_host_set_reduced_motion(h, false) };
+        assert_eq!(render(h).len(), 2);
+        unsafe { hotty_host_free(h) };
     }
 
     fn deleted(h: *mut HottyHost) -> Vec<String> {

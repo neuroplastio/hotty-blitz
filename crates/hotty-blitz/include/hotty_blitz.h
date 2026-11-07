@@ -321,6 +321,12 @@ void hotty_host_set_counts(hotty_host *h, bool on);
  * list the feature "backdrop". Without it, b is a key the host does not know
  * (SPEC 15), and the surface is placed above the cells. */
 void hotty_host_set_backdrops(hotty_host *h, bool on);
+/* The user asked the system the terminal runs on for less motion (SPEC 8):
+ * prefers-reduced-motion is "reduce" in every surface, those made later too,
+ * and "no-preference" when false, as a new host starts or when the terminal
+ * cannot tell. A change draws every surface again at the next
+ * hotty_host_render, as a new theme does. */
+void hotty_host_set_reduced_motion(hotty_host *h, bool reduce);
 /* The host's half of the network policy (SPEC 7.2) in CSP's syntax, as its
  * user grants it: "img-src https://example.com; font-src https:". NULL or
  * empty: none, as a new host starts. The capabilities report it ("net"). A

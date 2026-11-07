@@ -243,7 +243,10 @@ pub(crate) struct Surface {
     scratch: Vec<u8>,
     /// What to repaint at the next render (paint.rs).
     damage: paint::Tracker,
-    viewport: (u32, u32, f32, bool),
+    viewport: (u32, u32, f32, bool, bool),
+    /// The user's `prefers-reduced-motion` (Host::set_reduced_motion): the
+    /// viewport takes it at the next render.
+    reduced_motion: bool,
     nav: Arc<NavQueue>,
     /// The surface holds the keyboard (SPEC §10): granted by `a=focus`, or
     /// a click that focuses an element.
@@ -681,6 +684,7 @@ fn link_url(base: &Option<url::Url>, href: &str) -> Option<String> {
 }
 
 impl Surface {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         html: &str,
         config: &Config,
@@ -689,6 +693,7 @@ impl Surface {
         font_ctx: FontContext,
         (cols, rows): (u16, u16),
         scroll_axes: u8,
+        reduced_motion: bool,
     ) -> Surface {
         let m = config.metrics;
         let (w, h) = (cols as u32 * m.cell_w, rows as u32 * m.cell_h);
@@ -698,7 +703,7 @@ impl Surface {
             HtmlDocument::from_html(
                 html,
                 DocumentConfig {
-                    viewport: Some(Viewport::new(w, h, m.scale, scheme(dark))),
+                    viewport: Some(viewport(w, h, m.scale, dark, reduced_motion)),
                     base_url: Some(base.to_string()),
                     // The host stylesheet (SPEC §8) is the user's: it wins
                     // over Blitz's defaults and loses to the document.
@@ -769,7 +774,8 @@ impl Surface {
             },
             scratch: Vec::new(),
             damage: paint::Tracker::full(),
-            viewport: (w, h, m.scale, dark),
+            viewport: (w, h, m.scale, dark, reduced_motion),
+            reduced_motion,
             nav,
             keyboard: false,
             detached: false,
@@ -1025,6 +1031,16 @@ impl Surface {
         Some((r.width, r.height))
     }
 
+    /// The user's `prefers-reduced-motion`: the document restyles and
+    /// repaints at the next render.
+    pub fn set_reduced_motion(&mut self, reduce: bool) {
+        if self.reduced_motion != reduce {
+            self.reduced_motion = reduce;
+            self.dirty = true;
+            self.damage.full = true;
+        }
+    }
+
     pub fn set_size(&mut self, cols: u16, rows: u16) {
         if (cols, rows) != (self.cols, self.rows) {
             self.cols = cols;
@@ -1035,11 +1051,11 @@ impl Surface {
     }
 
     fn ensure_viewport(&mut self, m: &Metrics, w: u32, h: u32, dark: bool) {
-        let want = (w, h, m.scale, dark);
+        let want = (w, h, m.scale, dark, self.reduced_motion);
         self.cell = cell_css(m);
         if self.viewport != want {
             self.doc
-                .set_viewport(Viewport::new(w, h, m.scale, scheme(dark)));
+                .set_viewport(viewport(w, h, m.scale, dark, self.reduced_motion));
             self.viewport = want;
             self.damage.full = true;
         }
@@ -4134,6 +4150,12 @@ fn has_fixed_root_children(doc: &BaseDocument) -> bool {
         }
     }
     false
+}
+
+fn viewport(w: u32, h: u32, scale: f32, dark: bool, reduced_motion: bool) -> Viewport {
+    let mut v = Viewport::new(w, h, scale, scheme(dark));
+    v.reduced_motion = reduced_motion;
+    v
 }
 
 fn scheme(dark: bool) -> ColorScheme {
