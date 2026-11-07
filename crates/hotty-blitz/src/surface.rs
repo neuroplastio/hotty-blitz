@@ -1048,7 +1048,17 @@ impl Surface {
     fn resolve(&mut self) {
         self.doc.handle_messages();
         // The document's time is `tick`, which `advance` moves; a test
-        // moves it to any moment it names.
+        // moves it to any moment it names. A resolve outside a render (a
+        // hit test, a focus, a size asked for) sees the document after a
+        // delta too, and a transition that its style change starts begins
+        // at the time of that resolve: on a surface idle since its last
+        // frame `tick` is old, and the transition would be over by the
+        // render. So the time never lags the clock; forward only, as in
+        // `advance`.
+        let now = Instant::now();
+        if now > self.tick {
+            self.tick = now;
+        }
         self.doc.resolve(
             self.tick
                 .saturating_duration_since(self.started)

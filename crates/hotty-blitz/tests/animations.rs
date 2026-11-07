@@ -256,3 +256,45 @@ fn a_paused_animation_asks_for_nothing() {
         "a paused animation wants no frames"
     );
 }
+
+/// A surface that sat idle since its last render takes a delta that changes
+/// a class, and something resolves it before the frame does (a pointer hit
+/// test): the transition starts at that resolve, now, not at the idle
+/// surface's old clock, and the frame shows it under way.
+#[test]
+fn a_class_change_after_idle_transitions_from_now() {
+    let mut h = host();
+    doc(
+        &mut h,
+        "<style>.a{position:absolute;left:0;top:0;width:50px;height:50px;background:rgb(255,0,0);transition:background-color 400ms linear}.a.b{background:rgb(0,0,255)}</style><body style='margin:0'><div id=a class=a></div></body>",
+    );
+    assert_eq!(pixel(&h, "x", 10, 10), RED);
+    // Idle for longer than the transition lasts.
+    std::thread::sleep(Duration::from_millis(500));
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("n", "1")],
+        "attr",
+        Some("a"),
+        Some("class"),
+        "a b",
+    ));
+    // Something resolves the document before the frame does: the terminal
+    // asks whether the surface takes the pointer.
+    h.takes_pointer("x", 10.0, 10.0);
+    let before = Instant::now();
+    render(&mut h);
+    let after = Instant::now();
+    let first = pixel(&h, "x", 10, 10);
+    assert!(
+        h.next_frame().is_some(),
+        "the transition wants frames (first frame {first:?})"
+    );
+    // It began at the resolve before the render, a moment ago: in its first
+    // quarter, not over.
+    assert!(first[0] >= 190 && first[2] <= 65, "{first:?}");
+    // Halfway through its 400ms, whatever the resolve and the render took.
+    h.animate(after + Duration::from_millis(200));
+    render(&mut h);
+    let slack = (after - before).as_secs_f64() / 0.4;
+    between(pixel(&h, "x", 10, 10), RED, BLUE, 0.5, 0.55 + slack);
+}
