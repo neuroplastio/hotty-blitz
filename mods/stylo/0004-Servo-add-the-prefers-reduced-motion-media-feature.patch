@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 7 Nov 2026 18:39:26 +0100
+Subject: [PATCH] Servo: add the prefers-reduced-motion media feature
+
+An embedder sets whether the user asked for less motion on the Device
+(MediaData::prefers_reduced_motion, Device::set_prefers_reduced_motion), as
+it does for prefers-color-scheme, and an @media (prefers-reduced-motion:
+reduce) rule then matches. Until now Servo mode had no such feature, so the
+rule never matched. Gecko mode has it; the keyword enum is the same.
+---
+ style/device/servo.rs         | 16 ++++++++++++++++
+ style/servo/media_features.rs | 28 +++++++++++++++++++++++++++-
+ stylo_atoms/static_atoms.txt  |  1 +
+ 3 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/style/device/servo.rs b/style/device/servo.rs
+index 338b73a9b..31d053c05 100644
+--- a/style/device/servo.rs
++++ b/style/device/servo.rs
+@@ -79,6 +79,8 @@ pub struct MediaData {
+     /// Whether the user prefers light mode or dark mode
+     #[ignore_malloc_size_of = "Pure stack type"]
+     pub prefers_color_scheme: PrefersColorScheme,
++    /// Whether the user asked for less motion (`prefers-reduced-motion: reduce`)
++    pub prefers_reduced_motion: bool,
+     /// The capabilities of the primary pointer input
+     #[ignore_malloc_size_of = "Pure stack type"]
+     pub primary_pointer_capabilities: PointerCapabilities,
+@@ -330,6 +332,20 @@ impl Device {
+         self.extra.media_data.prefers_color_scheme
+     }
+ 
++    /// Set whether the user prefers reduced motion on this [`Device`].
++    ///
++    /// Note that this does not update any associated `Stylist`. For this you must call
++    /// `Stylist::media_features_change_changed_style` and
++    /// `Stylist::force_stylesheet_origins_dirty`.
++    pub fn set_prefers_reduced_motion(&mut self, reduce: bool) {
++        self.extra.media_data.prefers_reduced_motion = reduce;
++    }
++
++    /// Returns whether the user prefers reduced motion on this [`Device`].
++    pub fn prefers_reduced_motion(&self) -> bool {
++        self.extra.media_data.prefers_reduced_motion
++    }
++
+     /// Set the [`PointerCapbabilities`] value for the primary pointer on this [`Device`]
+     ///
+     /// Note that this does not update any associated `Stylist`. For this you must call
+diff --git a/style/servo/media_features.rs b/style/servo/media_features.rs
+index 14a3e520c..acde6cfaf 100644
+--- a/style/servo/media_features.rs
++++ b/style/servo/media_features.rs
+@@ -70,6 +70,26 @@ fn eval_prefers_color_scheme(context: &Context, query_value: Option<PrefersColor
+     }
+ }
+ 
++#[derive(Clone, Copy, Debug, FromPrimitive, Parse, ToCss)]
++#[repr(u8)]
++enum PrefersReducedMotion {
++    NoPreference,
++    Reduce,
++}
++
++/// https://drafts.csswg.org/mediaqueries-5/#prefers-reduced-motion
++fn eval_prefers_reduced_motion(
++    context: &Context,
++    query_value: Option<PrefersReducedMotion>,
++) -> bool {
++    let prefers_reduced = context.device().prefers_reduced_motion();
++    match query_value {
++        None => prefers_reduced,
++        Some(PrefersReducedMotion::NoPreference) => !prefers_reduced,
++        Some(PrefersReducedMotion::Reduce) => prefers_reduced,
++    }
++}
++
+ bitflags! {
+     /// https://drafts.csswg.org/mediaqueries-4/#mf-interaction
+     #[derive(Debug, Clone, Copy, PartialEq)]
+@@ -160,7 +180,7 @@ fn eval_aspect_ratio(context: &Context) -> Ratio {
+ }
+ 
+ /// A list with all the media features that Servo supports.
+-pub static MEDIA_FEATURES: [QueryFeatureDescription; 15] = [
++pub static MEDIA_FEATURES: [QueryFeatureDescription; 16] = [
+     feature!(
+         atom!("width"),
+         AllowsRanges::Yes,
+@@ -251,4 +271,10 @@ pub static MEDIA_FEATURES: [QueryFeatureDescription; 15] = [
+         keyword_evaluator!(eval_prefers_color_scheme, PrefersColorScheme),
+         FeatureFlags::empty(),
+     ),
++    feature!(
++        atom!("prefers-reduced-motion"),
++        AllowsRanges::No,
++        keyword_evaluator!(eval_prefers_reduced_motion, PrefersReducedMotion),
++        FeatureFlags::empty(),
++    ),
+ ];
+diff --git a/stylo_atoms/static_atoms.txt b/stylo_atoms/static_atoms.txt
+index ba5267fee..e890c6ebe 100644
+--- a/stylo_atoms/static_atoms.txt
++++ b/stylo_atoms/static_atoms.txt
+@@ -137,6 +137,7 @@ pointer
+ popstate
+ postershown
+ prefers-color-scheme
++prefers-reduced-motion
+ print
+ progress
+ radio
+-- 
+2.56.0
+

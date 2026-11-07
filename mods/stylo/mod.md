@@ -15,7 +15,8 @@ only Gecko implements, and hotty-blitz needs CSS Scroll Snap's, so that a
 terminal program's list or file scrolls to rest on a row; and a resize
 must not panic over an element Blitz has not had styled yet; and an
 animation says when its output next changes, so that a host is not woken
-every frame for a `steps()` easing or a delay. We mod Stylo
+every frame for a `steps()` easing or a delay; and `prefers-reduced-motion`
+must match when the user asked their system for less motion. We mod Stylo
 rather than fork it so that each change stays one patch on the commit
 Blitz builds with, until Stylo has it.
 

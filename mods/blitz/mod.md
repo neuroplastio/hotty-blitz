@@ -13,7 +13,8 @@ and in the polyfill for other terminals. A hotty program changes its
 documents by small deltas many times a second, and expects of them what a
 browser does: layout that costs the change rather than the document, form
 controls in the page's colour scheme, `srcset`, password inputs and
-selects, a user stylesheet, and SVG that reads no files. We mod Blitz
+selects, a user stylesheet, SVG that reads no files, and
+`prefers-reduced-motion` from the user's setting. We mod Blitz
 rather than fork it so that each of those stays one change on a pinned
 commit, written as a browser behaviour Blitz could take as it is.
 
