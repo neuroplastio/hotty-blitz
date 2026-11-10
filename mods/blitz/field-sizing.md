@@ -9,7 +9,7 @@ upstream-fit: maybe
 then for the height of its text wrapped at that width, which
 `min-height` and `max-height` bound as for any box. Past the most the text
 scrolls inside the box, following the caret, as it already did for a
-textarea with fixed rows. An edit that changes the text's height lays the
+textarea with fixed rows, and an offset kept for a shorter box is clamped when the box grows. An edit that changes the text's height lays the
 field out again, for which a text input that sizes to its text reports its
 line metrics as a single-line one does. The width stays `cols`: only the
 block size follows the text. Blitz sets `layout.css.field-sizing.enabled`,

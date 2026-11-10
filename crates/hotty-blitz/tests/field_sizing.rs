@@ -188,3 +188,13 @@ fn the_height_of_a_growing_textarea_reaches_fit() {
     h.set_text_field("x", "t", &"a\n".repeat(9), 0, 0);
     assert_eq!(fit_rows(&mut h), Some(5), "no more than max-height");
 }
+
+/// A box that grew shows its first line again: the offset the caret at the
+/// end of the text had kept for the old height is clamped to the new one.
+#[test]
+fn a_textarea_that_grew_to_fit_its_text_does_not_stay_scrolled() {
+    let text = "WWWW\n\n";
+    let h = show(GROWS, text, text.chars().count());
+    assert_eq!(height(&h), 60.0);
+    assert!(ink(&h, 0, 20) > 0, "the first line is shown");
+}
