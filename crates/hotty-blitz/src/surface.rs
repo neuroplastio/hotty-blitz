@@ -3252,6 +3252,7 @@ impl Surface {
             return false;
         };
         let (anchor, caret) = (edit::byte_at(value, anchor), edit::byte_at(value, caret));
+        self.damage.touch(&self.doc, node, self.viewport.2 as f64);
         self.doc.set_text_input(node, value, anchor, caret);
         self.snapshot_focus();
         self.dirty = true;

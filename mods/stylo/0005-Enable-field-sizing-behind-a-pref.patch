@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 9 Nov 2026 23:17:56 +0100
+Subject: [PATCH] Enable `field-sizing` behind a pref
+
+field-sizing was Gecko's only, so Servo-mode engines dropped it at parse.
+It now parses, computes and serializes in Servo mode behind
+`layout.css.field-sizing.enabled`, off by default, as other properties an
+embedder implements first are, so that a form control's layout can read
+its computed value.
+---
+ style/properties/longhands.toml     | 2 +-
+ stylo_static_prefs/preferences.toml | 1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/style/properties/longhands.toml b/style/properties/longhands.toml
+index 96a1aca4e..2f7fb6502 100644
+--- a/style/properties/longhands.toml
++++ b/style/properties/longhands.toml
+@@ -4230,11 +4230,11 @@ initial = "computed::WindowShadow::Auto"
+ 
+ [field-sizing]
+ struct = "ui"
+-engine = "gecko"
+ spec = "https://drafts.csswg.org/css-ui/#field-sizing"
+ animation_type = "discrete"
+ affects = "layout"
+ gecko_pref = "layout.css.field-sizing.enabled"
++servo_pref = "layout.css.field-sizing.enabled"
+ type = "FieldSizing"
+ initial = "computed::FieldSizing::Fixed"
+ 
+diff --git a/stylo_static_prefs/preferences.toml b/stylo_static_prefs/preferences.toml
+index 4448bc2d0..8c481f789 100644
+--- a/stylo_static_prefs/preferences.toml
++++ b/stylo_static_prefs/preferences.toml
+@@ -24,6 +24,7 @@
+ "layout.css.display-grid-lanes.enabled" = false
+ "layout.css.dominant-baseline.enabled" = false
+ "layout.css.ellipse-corners.enabled" = false
++"layout.css.field-sizing.enabled" = false
+ "layout.css.first-line.enabled" = false
+ "layout.css.fit-content-function.enabled" = true
+ "layout.css.flexbox-balance.enabled" = false
+-- 
+2.56.0
+
