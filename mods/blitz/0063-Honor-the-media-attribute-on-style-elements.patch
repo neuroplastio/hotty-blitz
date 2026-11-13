@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
+Date: Mon, 27 Jul 2026 23:38:04 +0100
+Subject: [PATCH] Honor the media attribute on <style> elements
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Per HTML §the-style-element, a style element's sheet applies only
+while its media attribute matches the environment. Every style-element
+sheet was built with MediaList::empty() (= always applies), so
+media-bucketed rules leaked across breakpoints. Canonical repro:
+a CSS-in-JS library shipping a mobile off-canvas sidebar
+transform under <style media="(max-width:767px)">, which applied at
+every viewport width and hid the sidebar (translate3d(-100%)) plus the
+header search box.
+
+The attribute is parsed into the stylesheet's MediaList with a
+throwaway ParserContext, so stylo re-evaluates it against the device
+on every cascade (viewport changes included), exactly like a
+media-conditional linked sheet. The media list participates in the
+author-sheet cache key: the same CSS body under a different media
+attribute must not share a cache entry.
+
+<link rel=stylesheet media=...> has the same latent gap in net.rs; it
+is much rarer in the wild (bundlers emit unconditional links) and is
+left for a follow-up.
+---
+ packages/blitz-dom/src/document.rs | 21 +++++++++++++++++----
+ 1 file changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 4d84d758c..469bb1d1f 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1366,7 +1366,8 @@ impl BaseDocument {
+     pub fn process_style_element(&mut self, target_id: NodeId) {
+         let css = self.nodes[target_id].text_content();
+         let css = html_escape::decode_html_entities(&css);
+-        let sheet = self.make_stylesheet(&css, Origin::Author);
++        let media = self.nodes[target_id].attr(local_name!("media"));
++        let sheet = self.make_stylesheet_with_media(&css, Origin::Author, media);
+         self.add_stylesheet_for_node(sheet, target_id);
+     }
+ 
+@@ -1422,11 +1423,22 @@ impl BaseDocument {
+     }
+ 
+     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
++        self.make_stylesheet_with_media(css, origin, None)
++    }
++
++    fn make_stylesheet_with_media(&self, css: impl AsRef<str>, origin: Origin, media: Option<&str>) -> DocumentStyleSheet {
++        let url_data = self.url.url_extra_data();
++        let list = media.map(str::trim).filter(|m| !m.is_empty()).map(|media| {
++            let mut context = style::parser::ParserContext::new(origin, &url_data,
++                Some(style::stylesheets::CssRuleType::Media), style_traits::ParsingMode::DEFAULT,
++                QuirksMode::NoQuirks, Default::default(), None, None, Default::default());
++            MediaList::parse(&mut context, &mut cssparser::Parser::new(media))
++        }).unwrap_or_else(MediaList::empty);
+         let data = Stylesheet::from_str(
+             css.as_ref(),
+-            self.url.url_extra_data(),
++            url_data,
+             origin,
+-            ServoArc::new(self.guard.wrap(MediaList::empty())),
++            ServoArc::new(self.guard.wrap(list)),
+             self.guard.clone(),
+             Some(&StylesheetLoader {
+                 tx: self.tx.clone(),
+@@ -1446,7 +1458,8 @@ impl BaseDocument {
+ 
+     pub fn upsert_stylesheet_for_node(&mut self, node_id: NodeId) {
+         let raw_styles = self.nodes[node_id].text_content();
+-        let sheet = self.make_stylesheet(raw_styles, Origin::Author);
++        let media = self.nodes[node_id].attr(local_name!("media"));
++        let sheet = self.make_stylesheet_with_media(raw_styles, Origin::Author, media);
+         self.add_stylesheet_for_node(sheet, node_id);
+     }
+ 
