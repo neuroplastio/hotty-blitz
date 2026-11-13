@@ -5,9 +5,8 @@
 #
 # The fork lives next to the repo's worktrees, at ../stylo: Stylo at `base`
 # in mods/stylo/mod.md, the commit Blitz's Cargo.toml pins, branch `hotty`,
-# with mods/stylo/*.patch applied. Blitz pins it on nicoburns/stylo, where
-# no branch ends at it, so it is fetched by its id; origin is servo/stylo,
-# whose main the canary tries. It stays local like the Blitz fork.
+# with mods/stylo/*.patch applied. Its origin is servo/stylo, whose main
+# the canary tries. It stays local like the Blitz fork.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FORK="${HOTTY_STYLO:-$(dirname "$HERE")/stylo}"
@@ -34,7 +33,7 @@ fi
 
 git init -q "$FORK"
 git -C "$FORK" remote add origin https://github.com/servo/stylo
-git -C "$FORK" fetch -q https://github.com/nicoburns/stylo "$REV"
+git -C "$FORK" fetch -q origin "$REV"
 git -C "$FORK" checkout -q -b hotty "$REV"
 git -C "$FORK" am -q "$HERE"/mods/stylo/*.patch
 echo "stylo fork ready at $FORK"

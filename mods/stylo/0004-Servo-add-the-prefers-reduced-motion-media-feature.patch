@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 7 Nov 2026 18:39:26 +0100
-Subject: [PATCH] Servo: add the prefers-reduced-motion media feature
+Subject: [PATCH 4/5] Servo: add the prefers-reduced-motion media feature
 
 An embedder sets whether the user asked for less motion on the Device
 (MediaData::prefers_reduced_motion, Device::set_prefers_reduced_motion), as
@@ -111,6 +111,3 @@ index ba5267fee..e890c6ebe 100644
  print
  progress
  radio
--- 
-2.56.0
-

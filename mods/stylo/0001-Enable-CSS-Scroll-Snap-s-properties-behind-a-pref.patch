@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 16:07:28 +0100
-Subject: [PATCH] Enable CSS Scroll Snap's properties behind a pref
+Subject: [PATCH 1/5] Enable CSS Scroll Snap's properties behind a pref
 
 scroll-snap-type, scroll-snap-align, scroll-snap-stop, the eight
 scroll-padding longhands and the scroll-padding, scroll-padding-block and
@@ -193,6 +193,3 @@ index 1d534c87c..4448bc2d0 100644
  "layout.css.scroll-state.enabled" = false
  "layout.css.scrollbar-styling.enabled" = false
  "layout.css.starting-style-at-rules.enabled" = false
--- 
-2.56.0
-

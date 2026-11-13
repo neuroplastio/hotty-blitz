@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Tue, 3 Nov 2026 17:41:09 +0100
-Subject: [PATCH] Pass over an element without styles when viewport units are
- invalidated
+Subject: [PATCH 2/5] Pass over an element without styles when viewport units
+ are invalidated
 
 An element can carry style data before it has styles: an embedder may
 set up its data when it creates the element (Blitz does), and the
@@ -45,6 +45,3 @@ index 06faeb14c..4fc903578 100644
      let uses_viewport_units = usage != ViewportUnitUsage::None;
      if uses_viewport_units {
          debug!(
--- 
-2.56.0
-

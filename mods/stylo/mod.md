@@ -2,15 +2,13 @@
 upstream: Stylo
 url: https://github.com/servo/stylo
 license: MPL-2.0
-base: 78734bf554bb40af9dc11c0eedbe724f6055697c
+base: 2dca34592ced37c6aa01733e94206a767194cf9d
 builds: hotty-blitz
 public: true
 ---
 
 Blitz styles documents with Stylo, Servo's style engine, at the commit
-Blitz pins, which is our `base`: servo/stylo#504 on nicoburns/stylo, where
-Blitz stages the Stylo changes it needs (servo/stylo's `main` took it as
-890aa121c, with the same tree). In Servo mode Stylo leaves out properties
+Blitz pins, which is our `base`. In Servo mode Stylo leaves out properties
 only Gecko implements, and hotty-blitz needs CSS Scroll Snap's, so that a
 terminal program's list or file scrolls to rest on a row; and a resize
 must not panic over an element Blitz has not had styled yet; and an
@@ -22,8 +20,7 @@ Blitz builds with, until Stylo has it.
 
 In hotty-blitz, `make blitz`, which every build runs, sets up `../stylo`
 (`scripts/stylo-fork.sh`): Stylo at `base`, fetched by its id from
-nicoburns/stylo, where no branch ends at it, branch `hotty`, with the set
-applied. `Cargo.toml`'s `[patch."https://github.com/nicoburns/stylo"]`
+servo/stylo, branch `hotty`, with the set applied. `Cargo.toml`'s `[patch."https://github.com/servo/stylo"]`
 builds every package of that repository against it, so that the prefs
 Blitz sets are the ones Stylo reads. mods/blitz needs this set: its
 scroll-snap patch sets a pref only this set's Stylo has. `make mods`

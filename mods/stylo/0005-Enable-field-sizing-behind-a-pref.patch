@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Mon, 9 Nov 2026 23:17:56 +0100
-Subject: [PATCH] Enable `field-sizing` behind a pref
+Subject: [PATCH 5/5] Enable `field-sizing` behind a pref
 
 field-sizing was Gecko's only, so Servo-mode engines dropped it at parse.
 It now parses, computes and serializes in Servo mode behind
@@ -42,6 +42,3 @@ index 4448bc2d0..8c481f789 100644
  "layout.css.first-line.enabled" = false
  "layout.css.fit-content-function.enabled" = true
  "layout.css.flexbox-balance.enabled" = false
--- 
-2.56.0
-

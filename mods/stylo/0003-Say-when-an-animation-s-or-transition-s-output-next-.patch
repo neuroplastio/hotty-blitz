@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Wed, 4 Nov 2026 14:51:06 +0100
-Subject: [PATCH] Say when an animation's or transition's output next changes
+Subject: [PATCH 3/5] Say when an animation's or transition's output next
+ changes
 
 An embedder ticks CSS animations by resolving styles again while any
 animation or transition needs ticks, which in practice is every frame.
@@ -376,6 +377,3 @@ index a5bf56c10..a432925c7 100644
 +        near(set.next_change(0.25), 0.3);
 +    }
 +}
--- 
-2.56.0
-
