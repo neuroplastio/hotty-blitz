@@ -1,7 +1,7 @@
-From d403374abe9b4c14849e2594d17e56e59133bd59 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Fri, 16 Oct 2026 12:35:30 +0200
-Subject: [PATCH 1/4] parley: a cluster with emoji presentation takes a colour
+Subject: [PATCH 2/5] parley: a cluster with emoji presentation takes a colour
  font before a text font
 
 An emoji-presentation cluster (Emoji_Presentation, VS16, a keycap, a
@@ -111,6 +111,3 @@ index 060a32d..e12f048 100644
          self.query.matches_with(|font| {
              let Some(charmap) = font.charmap() else {
                  return fontique::QueryStatus::Continue;
--- 
-2.56.0
-

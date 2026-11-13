@@ -1,7 +1,7 @@
-From 30d6fcca5772db539c72a9d01032c639936ff7a3 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 23 Oct 2026 21:45:09 +0200
-Subject: [PATCH 2/4] Give inline boxes the wrap mode of their span
+Subject: [PATCH 1/5] Give inline boxes the wrap mode of their span
 
 The line breaker and the content widths measurer track `text_wrap_mode`
 from text clusters only, so an inline box took the mode of whatever text
@@ -282,6 +282,3 @@ index 67fc53a..367d48b 100644
 +        "all three boxes on the second line"
 +    );
 +}
--- 
-2.56.0
-

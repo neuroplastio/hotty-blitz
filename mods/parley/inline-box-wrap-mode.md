@@ -1,6 +1,6 @@
 ---
 title: "Inline boxes follow their span's white-space"
-patch: 0002-Give-inline-boxes-the-wrap-mode-of-their-span.patch
+patch: 0001-Give-inline-boxes-the-wrap-mode-of-their-span.patch
 upstream-fit: no
 ---
 

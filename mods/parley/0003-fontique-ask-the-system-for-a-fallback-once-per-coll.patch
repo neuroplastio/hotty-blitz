@@ -1,7 +1,7 @@
-From 29603002ebcb7982aba89fb7a1003f796c586d14 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 05:47:46 +0100
-Subject: [PATCH 3/4] fontique: ask the system for a fallback once per
+Subject: [PATCH 3/5] fontique: ask the system for a fallback once per
  collection
 
 A collection's clones share the system's fonts, but the fallback family
@@ -76,6 +76,3 @@ index 4fc5f60..b00ab15 100644
  }
  
  /// Common data for base and shared collections.
--- 
-2.56.0
-

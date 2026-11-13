@@ -1,7 +1,7 @@
-From 2a9774817c1edc05f6842153c28a63d8928e283c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 08:29:42 +0100
-Subject: [PATCH 4/4] fontique: a query keeps what the last one matched
+Subject: [PATCH 4/5] fontique: a query keeps what the last one matched
 
 Parley makes a query each time it shapes a text layout, and another for
 its line metrics, and each query began by clearing the collection's
@@ -421,6 +421,3 @@ index 35774fc..86c50d6 100644
 +        );
 +    }
 +}
--- 
-2.56.0
-
