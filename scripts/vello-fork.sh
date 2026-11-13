@@ -5,6 +5,10 @@ set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FORK="${HOTTY_VELLO_CPU:-$(dirname "$HERE")/vello_cpu}"
 REV="$(sed -n 's/^base:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$HERE/mods/vello_cpu/mod.md")"
+if [ -e "$FORK" ] && [ ! -f "$FORK/vello_cpu/Cargo.toml" ]; then
+  echo "fork at $FORK has the old single-package layout; move it aside and rerun make blitz to create the vello workspace" >&2
+  exit 1
+fi
 if [ -d "$FORK/.git" ]; then
   set -- "$HERE"/mods/vello_cpu/*.patch "$HERE"/mods/glifo/*.patch
   have=$(git -C "$FORK" rev-list --count "$REV..hotty" 2>/dev/null || echo 0)

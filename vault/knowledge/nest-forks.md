@@ -11,6 +11,9 @@ a patch added to `mods/` reaches the build only if the fork gets it too.
   whose commits match the first patches by subject (`parley-fork.sh`). The
   vello_cpu workspace applies the vello_cpu set followed by glifo's set;
   the separate glifo fork checks that set on its own.
+- An old single-package `../vello_cpu` or `../glifo` is not converted: move
+  it aside (for example `mv ../vello_cpu ../vello_cpu.old` and likewise for
+  glifo), then rerun `make blitz` to create the vello workspaces.
 - Blitz: the same, since 2026-11-04. Before that, `make blitz` only checked
   that `../blitz` existed, and `blitz-fork.sh` on an existing fork
   reported its count and changed nothing, so a new `mods/blitz` patch was
