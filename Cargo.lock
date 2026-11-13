@@ -1384,6 +1384,7 @@ dependencies = [
  "linebender_resource_handle",
  "parlance",
  "parley_engine",
+ "skrifa",
  "smallvec",
 ]
 
