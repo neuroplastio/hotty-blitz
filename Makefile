@@ -17,11 +17,11 @@ hotty:
 base = $(shell sed -n 's/^base:[[:space:]]*\([^[:space:]\#]*\).*/\1/p' mods/$(1)/mod.md)
 
 blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, glifo at ../glifo, Stylo at ../stylo
-	@test "$$(git -C ../blitz rev-list --count $(call base,blitz)..hotty 2>/dev/null)" = "$$(ls mods/blitz/*.patch | wc -l | tr -d ' ')" || scripts/blitz-fork.sh
-	@test "$$(git -C ../parley rev-list --count $(call base,parley)..hotty 2>/dev/null)" = "$$(ls mods/parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
-	@test -f ../vello_cpu/vello_cpu/Cargo.toml && test "$$(git -C ../vello_cpu rev-list --count $(call base,vello_cpu)..hotty 2>/dev/null)" = "$$(ls mods/vello_cpu/*.patch mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
-	@test -f ../glifo/glifo/Cargo.toml && test "$$(git -C ../glifo rev-list --count $(call base,glifo)..hotty 2>/dev/null)" = "$$(ls mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/glifo-fork.sh
-	@test "$$(git -C ../stylo rev-list --count $(call base,stylo)..hotty 2>/dev/null)" = "$$(ls mods/stylo/*.patch | wc -l | tr -d ' ')" || scripts/stylo-fork.sh
+	@git -C ../blitz merge-base --is-ancestor $(call base,blitz) hotty 2>/dev/null && test "$$(git -C ../blitz rev-list --count $(call base,blitz)..hotty 2>/dev/null)" = "$$(ls mods/blitz/*.patch | wc -l | tr -d ' ')" || scripts/blitz-fork.sh
+	@git -C ../parley merge-base --is-ancestor $(call base,parley) hotty 2>/dev/null && test "$$(git -C ../parley rev-list --count $(call base,parley)..hotty 2>/dev/null)" = "$$(ls mods/parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
+	@test -f ../vello_cpu/vello_cpu/Cargo.toml && git -C ../vello_cpu merge-base --is-ancestor $(call base,vello_cpu) hotty 2>/dev/null && test "$$(git -C ../vello_cpu rev-list --count $(call base,vello_cpu)..hotty 2>/dev/null)" = "$$(ls mods/vello_cpu/*.patch mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
+	@test -f ../glifo/glifo/Cargo.toml && git -C ../glifo merge-base --is-ancestor $(call base,glifo) hotty 2>/dev/null && test "$$(git -C ../glifo rev-list --count $(call base,glifo)..hotty 2>/dev/null)" = "$$(ls mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/glifo-fork.sh
+	@git -C ../stylo merge-base --is-ancestor $(call base,stylo) hotty 2>/dev/null && test "$$(git -C ../stylo rev-list --count $(call base,stylo)..hotty 2>/dev/null)" = "$$(ls mods/stylo/*.patch | wc -l | tr -d ' ')" || scripts/stylo-fork.sh
 
 mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the one we build with, and each set applies on it
 	@python3 scripts/mods.py check

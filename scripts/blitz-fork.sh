@@ -18,6 +18,10 @@ FORK="${HOTTY_BLITZ:-$(dirname "$HERE")/blitz}"
 REV="$(sed -n 's/^base:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$HERE/mods/blitz/mod.md")"
 
 if [ -d "$FORK/.git" ] || [ -f "$FORK/.git" ]; then
+  if ! git -C "$FORK" merge-base --is-ancestor "$REV" hotty 2>/dev/null; then
+    echo "blitz fork at $FORK is not based on $REV; move it aside and rerun make blitz" >&2
+    exit 1
+  fi
   have=$(git -C "$FORK" rev-list --count "$REV..hotty" 2>/dev/null || echo 0)
   set -- "$HERE"/mods/blitz/*.patch
   want=$#

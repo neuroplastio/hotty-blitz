@@ -14,6 +14,10 @@ a patch added to `mods/` reaches the build only if the fork gets it too.
 - An old single-package `../vello_cpu` or `../glifo` is not converted: move
   it aside (for example `mv ../vello_cpu ../vello_cpu.old` and likewise for
   glifo), then rerun `make blitz` to create the vello workspaces.
+- When a fork's `hotty` branch does not descend from the new set's base,
+  `make blitz` stops rather than applying patches to the wrong base. Move
+  that fork aside and rerun it. For the c27b4ca rebase, older Blitz and
+  Stylo forks need this too; a clean Parley 0.12 prefix can be caught up.
 - Blitz: the same, since 2026-11-04. Before that, `make blitz` only checked
   that `../blitz` existed, and `blitz-fork.sh` on an existing fork
   reported its count and changed nothing, so a new `mods/blitz` patch was

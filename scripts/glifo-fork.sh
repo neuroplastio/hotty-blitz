@@ -9,6 +9,10 @@ if [ -e "$FORK" ] && [ ! -f "$FORK/glifo/Cargo.toml" ]; then
   exit 1
 fi
 if [ -d "$FORK/.git" ]; then
+  if ! git -C "$FORK" merge-base --is-ancestor "$REV" hotty 2>/dev/null; then
+    echo "glifo fork at $FORK is not based on $REV; move it aside and rerun make blitz" >&2
+    exit 1
+  fi
   set -- "$HERE"/mods/glifo/*.patch
   have=$(git -C "$FORK" rev-list --count "$REV..hotty" 2>/dev/null || echo 0)
   want=$#
