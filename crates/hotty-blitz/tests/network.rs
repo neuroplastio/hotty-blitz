@@ -401,6 +401,48 @@ fn images_in_css_stylesheets_and_fonts_each_need_their_directive() {
     assert_eq!(paths, vec!["/bg.png", "/f.woff2", "/green.css"]);
 }
 
+#[test]
+fn linked_stylesheet_media_restricts_screen_styles() {
+    let srv = Server::start();
+    srv.route(
+        "/media.css",
+        Reply::Ok("text/css", b"#g { background: #0f0 }".to_vec()),
+    );
+    let policy = format!("style-src {}", srv.origin);
+    for (media, expected) in [("print", BLACK), ("screen", GREEN)] {
+        let (mut host, rx) = waking_host(&policy);
+        let head = format!(
+            "{}<link id=sheet rel=stylesheet media='{media}' href='{}'>",
+            meta(&policy),
+            srv.url("/media.css")
+        );
+        show(
+            &mut host,
+            "a",
+            &head,
+            "<div id=g style='width:20px;height:20px'></div>",
+        );
+        render(&mut host);
+        arrive(&mut host, &rx, 1);
+        assert_eq!(pixel(&host, "a", 10, 10), expected, "media={media}");
+        let next = if media == "print" { "screen" } else { "print" };
+        let next_expected = if media == "print" { GREEN } else { BLACK };
+        host.handle(&common::delta_cmd(
+            &[("s", "a"), ("q", "2")],
+            "attr",
+            Some("sheet"),
+            Some("media"),
+            next,
+        ));
+        render(&mut host);
+        assert_eq!(
+            pixel(&host, "a", 10, 10),
+            next_expected,
+            "media changed to {next}"
+        );
+    }
+}
+
 /// A stylesheet in `<head>` holds the first frame back until it arrives.
 fn pixel_or_black(h: &Host, s: &str, x: u32, y: u32) -> [u8; 3] {
     match h.frame(s) {
