@@ -1,12 +1,9 @@
-# Parked: shadow work
+# Shadow work
 
-Parked by gov R-22 on 2026-10-31 until hotty-surf's look has landed:
-
-- Two patches for `mods/blitz`, written and tested. They are correct, but
-  they change the look of every shadow. They would be 0048 and 0049, after
-  0047's inset ring.
-- An idea for vello_cpu, measured but not written: what a visible shadow
-  costs.
+The CSS blur width and scaled inset offset were later incorporated in the
+box-shadow mod, together with isolation and per-corner geometry. The older
+measurements below describe the change in shadow appearance. The vello_cpu
+optimization described below remains an idea, not a patch.
 
 ## The blur
 
