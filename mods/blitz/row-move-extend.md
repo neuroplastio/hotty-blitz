@@ -1,6 +1,6 @@
 ---
 title: "A row move can extend the selection"
-patch: 0028-blitz-dom-a-row-move-can-extend-the-selection.patch
+patch: 0024-blitz-dom-a-row-move-can-extend-the-selection.patch
 upstream-fit: yes
 ---
 

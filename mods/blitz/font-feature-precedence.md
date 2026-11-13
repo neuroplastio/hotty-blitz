@@ -1,6 +1,6 @@
 ---
 title: Preserve explicit font feature overrides
-patch: 0068-Preserve-explicit-font-feature-overrides.patch
+patch: 0031-Preserve-explicit-font-feature-overrides.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0051-Map-more-stylo-text-properties-onto-parley.patch
 ---

@@ -1,6 +1,6 @@
 ---
 title: "A scroll comes to rest at its snap position"
-patch: 0046-blitz-dom-a-scroll-comes-to-rest-at-its-snap-positio.patch
+patch: 0006-blitz-dom-a-scroll-comes-to-rest-at-its-snap-positio.patch
 upstream-fit: yes
 ---
 

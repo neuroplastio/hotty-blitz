@@ -1,6 +1,6 @@
 ---
 title: "An embedder can hide the caret, to blink it"
-patch: 0019-blitz-dom-blitz-paint-an-embedder-can-hide-the-caret.patch
+patch: 0012-blitz-dom-blitz-paint-an-embedder-can-hide-the-caret.patch
 upstream-fit: maybe
 ---
 

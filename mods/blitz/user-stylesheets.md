@@ -1,6 +1,6 @@
 ---
 title: "Stylesheets of the user origin"
-patch: 0015-blitz-dom-stylesheets-of-the-user-origin.patch
+patch: 0038-blitz-dom-stylesheets-of-the-user-origin.patch
 upstream-fit: yes
 ---
 

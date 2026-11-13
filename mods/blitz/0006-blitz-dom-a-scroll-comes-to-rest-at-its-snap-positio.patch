@@ -1,0 +1,949 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 31 Oct 2026 16:21:50 +0100
+Subject: [PATCH 06/62] blitz-dom: a scroll comes to rest at its snap position
+ (CSS Scroll Snap)
+
+scroll_snap.rs picks the snap position a scroll comes to rest at, from
+scroll-snap-type, scroll-snap-align, scroll-snap-stop and scroll-padding:
+mandatory and proximity (a third of the snapport), start, end and center,
+areas longer than the snapport valid wherever they cover it, unreachable
+positions clamped to the scroll range (below zero for a scroller whose
+content overflows the other way), and the intent of the scroll
+(ScrollSnapIntent: end position, into view, direction, page).
+
+scroll_to snaps as an end position, scroll_by as a direction,
+scroll_into_view keeps its element in view, and a scrollbar thumb let go
+snaps. scroll_to_with_snap and scroll_snap_position let an embedder say
+what a scroll meant, or that it has not come to rest yet (a wheel gesture
+under way). User scrolls through scroll_chain_by do not snap.
+
+Needs Stylo with these properties in Servo mode, behind
+`layout.css.scroll-snap.enabled`, which init_stylo_prefs sets.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs       |   1 +
+ packages/blitz-dom/src/events/pointer.rs |   7 +-
+ packages/blitz-dom/src/lib.rs            |   3 +
+ packages/blitz-dom/src/scroll_snap.rs    | 720 +++++++++++++++++++++++
+ packages/blitz-dom/src/scrolling.rs      |  47 +-
+ 5 files changed, 772 insertions(+), 6 deletions(-)
+ create mode 100644 packages/blitz-dom/src/scroll_snap.rs
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index d33ef0d65..f5b2274d4 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -96,6 +96,7 @@ pub(crate) fn init_stylo_prefs() {
+         style_config::set_pref!("layout.css.font-variations.enabled", true);
+         style_config::set_pref!("layout.css.text-indent-keywords.enabled", true);
+         style_config::set_pref!("layout.css.word-break.break-word.enabled", true);
++        style_config::set_pref!("layout.css.scroll-snap.enabled", true);
+         #[cfg(feature = "writing-mode")]
+         {
+             style_config::set_pref!("layout.css.writing-mode.enabled", true);
+diff --git a/packages/blitz-dom/src/events/pointer.rs b/packages/blitz-dom/src/events/pointer.rs
+index 9617ee683..c0a2097c8 100644
+--- a/packages/blitz-dom/src/events/pointer.rs
++++ b/packages/blitz-dom/src/events/pointer.rs
+@@ -20,7 +20,7 @@ use taffy::AbsoluteAxis;
+ use crate::{
+     BaseDocument,
+     node::{ScrollbarRef, SpecialElementData},
+-    scrolling::{FlingState, ScrollAnimationState},
++    scrolling::{FlingState, ScrollAnimationState, ScrollBehavior, ScrollTarget},
+ };
+ 
+ use super::focus::generate_focus_events;
+@@ -584,6 +584,11 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
+     if let DragMode::ScrollbarDrag(state) = &drag_mode {
+         doc.show_scrollbars(state.scrollbar.node_id);
+         doc.shell_provider.request_redraw();
++        // A thumb let go is a scroll that comes to rest where it was dragged to: in a snap
++        // container, at the nearest snap position.
++        let node_id = state.scrollbar.node_id;
++        let at = doc.scroll_state(ScrollTarget::Node(node_id), true).0;
++        doc.scroll_to(node_id, at.x, at.y, ScrollBehavior::Instant);
+     }
+ 
+     let time_ms = SystemTime::now()
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index cf4e592d5..0cc8e9040 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -56,6 +56,8 @@ mod query_selector;
+ mod resolve;
+ /// Computation of resolved CSS property values (`getComputedStyle()`)
+ mod resolved_style;
++/// Where a scroll comes to rest in a scroll container that snaps (CSS Scroll Snap).
++mod scroll_snap;
+ /// Scrolling of nodes and the viewport, and scroll animations.
+ mod scrolling;
+ mod selection;
+@@ -104,6 +106,7 @@ pub use markup5ever::{
+ pub use mutator::DocumentMutator;
+ pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, TextNodeData};
+ pub use parley::FontContext;
++pub use scroll_snap::ScrollSnapIntent;
+ pub use scrolling::{ScrollBehavior, ScrollLogicalPosition};
+ pub use tree::NodeTree;
+ 
+diff --git a/packages/blitz-dom/src/scroll_snap.rs b/packages/blitz-dom/src/scroll_snap.rs
+new file mode 100644
+index 000000000..f010a5c80
+--- /dev/null
++++ b/packages/blitz-dom/src/scroll_snap.rs
+@@ -0,0 +1,720 @@
++//! CSS Scroll Snap (<https://drafts.csswg.org/css-scroll-snap-1/>): where a scroll comes to
++//! rest in a scroll container whose `scroll-snap-type` is not `none`.
++//!
++//! A snap container's snap areas are the border boxes of the elements it scrolls whose
++//! `scroll-snap-align` is not `none`. Each gives a snap position along each axis the container
++//! snaps along: the scroll offset that aligns the area's start, end or centre with the
++//! container's snapport (its scrollport less `scroll-padding`), or, for an area longer than the
++//! snapport, every offset at which it covers the snapport ("Snapping Boxes that Overflow the
++//! Scrollport"), so that a mandatory snap never leaves part of it out of reach. A position the
++//! container cannot reach is the nearest it can ("Unreachable Snap Positions").
++//!
++//! When a scroll comes to rest, the snap position it rests at is chosen by what the scroll meant
++//! to do ([`ScrollSnapIntent`]), as "Choosing Snap Positions" tells scrolls apart, and only
++//! along an axis where one is near enough: always for `mandatory`, within a third of the
++//! snapport for `proximity`. A scroll with a direction stops at an area whose
++//! `scroll-snap-stop` is `always` rather than pass over it. Where no position qualifies, the
++//! scroll rests where it ended.
++//!
++//! A scroller whose content overflows the other way (`direction: rtl`, a reversed flex box)
++//! snaps within its range below zero. Not done: `scroll-margin` (areas are border boxes),
++//! writing modes and direction (the block axis is `y`, and `start` is the top or left edge
++//! whichever way content overflows), preferring the same area along both axes, and snapping
++//! again after layout changes.
++
++use blitz_traits::node_id::NodeId;
++use style::computed_values::position::T as Position;
++use style::properties::ComputedValues;
++use style::values::computed::length::CSSPixelLength;
++use style::values::computed::{
++    NonNegativeLengthPercentageOrAuto, Overflow, ScrollSnapAxis, ScrollSnapStop,
++    ScrollSnapStrictness,
++};
++use style::values::generics::length::GenericLengthPercentageOrAuto;
++use style::values::specified::box_::ScrollSnapAlignKeyword;
++use stylo_taffy::CopyStyleGetters;
++
++use crate::BaseDocument;
++use crate::local_name;
++use crate::scrolling::ScrollTarget;
++use crate::util::Point;
++
++/// What a scroll that comes to rest meant to do, as CSS Scroll Snap 1's "Choosing Snap
++/// Positions" tells scrolls apart. It decides which snap positions the scroll may rest at, and
++/// which of them it takes.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ScrollSnapIntent {
++    /// An intended end position: the snap position nearest to where the scroll ended, either
++    /// way. `scrollTo()`, Home and End, a scrollbar thumb let go.
++    EndPosition,
++    /// An end position that brings an element into view (`scrollIntoView()`, a fragment,
++    /// focus): as [`ScrollSnapIntent::EndPosition`], among the snap positions that keep the
++    /// element in the snapport, or as much of it as fits, where there are any.
++    IntoView(NodeId),
++    /// An intended direction and end position: a snap position past where the scroll began,
++    /// the nearest to where it ended. A line (an arrow key, a wheel's notch), `scrollBy()`, a
++    /// gesture that comes to rest.
++    Direction,
++    /// A page (Page Down, Space): as [`ScrollSnapIntent::Direction`], but at or short of where
++    /// it ended where it can be, so that it passes over no content.
++    Page,
++}
++
++/// Snap positions closer than this to a scroll's start, in CSS pixels, are where it began.
++const SLACK: f64 = 0.5;
++
++/// A snap area: its border box in the container's scrollport coordinates at scroll offset
++/// zero, (left, top, right, bottom); its alignment (block, inline); and `scroll-snap-stop`.
++struct SnapArea {
++    rect: [f64; 4],
++    align: (ScrollSnapAlignKeyword, ScrollSnapAlignKeyword),
++    always: bool,
++}
++
++/// The snap positions an area gives along one axis, from `lo` to `hi`: one where they are the
++/// same, every offset between where the area is longer than the snapport. And whether its
++/// `scroll-snap-stop` is `always`.
++#[derive(Clone, Copy, Debug, PartialEq)]
++struct Candidate {
++    lo: f64,
++    hi: f64,
++    always: bool,
++}
++
++impl Candidate {
++    #[cfg(test)]
++    fn at(at: f64) -> Self {
++        Candidate {
++            lo: at,
++            hi: at,
++            always: false,
++        }
++    }
++
++    /// Its position nearest to `at`.
++    fn nearest_to(&self, at: f64) -> f64 {
++        at.clamp(self.lo, self.hi)
++    }
++}
++
++/// One axis of a snap container, for choosing among its snap positions.
++struct Axis {
++    /// The scroll's start and end, and the container's scroll range: from a negative `min`
++    /// where its content overflows the other way (`direction: rtl`, a reversed flex box).
++    from: f64,
++    to: f64,
++    min: f64,
++    max: f64,
++    /// The scrollport's length, and the snapport's insets in it.
++    port: f64,
++    pad: (f64, f64),
++}
++
++impl Axis {
++    fn sign(&self) -> f64 {
++        match self.to - self.from {
++            d if d > 0.0 => 1.0,
++            d if d < 0.0 => -1.0,
++            _ => 0.0,
++        }
++    }
++
++    /// The snap positions that align `[start, end)` with the snapport as `align` says.
++    fn position(
++        &self,
++        align: ScrollSnapAlignKeyword,
++        start: f64,
++        end: f64,
++        always: bool,
++    ) -> Option<Candidate> {
++        let (p0, p1) = self.pad;
++        let at = match align {
++            ScrollSnapAlignKeyword::None => return None,
++            // Longer than the snapport: wherever it covers it.
++            _ if end - start > self.port - p0 - p1 => (start - p0, end - (self.port - p1)),
++            ScrollSnapAlignKeyword::Start => (start - p0, start - p0),
++            ScrollSnapAlignKeyword::End => (end - (self.port - p1), end - (self.port - p1)),
++            ScrollSnapAlignKeyword::Center => {
++                let at = (start + end) / 2.0 - (p0 + self.port - p1) / 2.0;
++                (at, at)
++            }
++        };
++        Some(Candidate {
++            lo: at.0.clamp(self.min, self.max),
++            hi: at.1.clamp(self.min, self.max),
++            always,
++        })
++    }
++
++    /// The part of `c` past where the scroll began, the scroll's way.
++    fn ahead(&self, c: &Candidate) -> Option<Candidate> {
++        let c = match self.sign() {
++            s if s > 0.0 => Candidate {
++                lo: c.lo.max(self.from + SLACK),
++                ..*c
++            },
++            s if s < 0.0 => Candidate {
++                hi: c.hi.min(self.from - SLACK),
++                ..*c
++            },
++            _ => return None,
++        };
++        (c.lo <= c.hi).then_some(c)
++    }
++
++    /// The farthest position of `c`, the scroll's way, at or short of where it ended.
++    fn short(&self, c: &Candidate) -> Option<f64> {
++        if self.sign() > 0.0 {
++            (c.lo <= self.to + SLACK).then(|| c.hi.min(self.to).max(c.lo))
++        } else {
++            (c.hi >= self.to - SLACK).then(|| c.lo.max(self.to).min(c.hi))
++        }
++    }
++
++    /// The first position of `c` the scroll's way.
++    fn entry(&self, c: &Candidate) -> f64 {
++        if self.sign() > 0.0 { c.lo } else { c.hi }
++    }
++
++    /// Of the positions `cands` give, the one nearest to the scroll's end. On a tie, the one
++    /// farther the scroll's way.
++    fn nearest<'a>(&self, cands: impl Iterator<Item = &'a Candidate>) -> Option<f64> {
++        let sign = self.sign();
++        cands.map(|c| c.nearest_to(self.to)).min_by(|a, b| {
++            let (da, db) = ((a - self.to).abs(), (b - self.to).abs());
++            da.total_cmp(&db).then((b * sign).total_cmp(&(a * sign)))
++        })
++    }
++
++    /// The snap position the scroll rests at along this axis, if any qualifies. `keep` is the
++    /// extent of the element an [`ScrollSnapIntent::IntoView`] brings into view.
++    fn choose(
++        &self,
++        cands: &[Candidate],
++        intent: ScrollSnapIntent,
++        keep: Option<(f64, f64)>,
++    ) -> Option<f64> {
++        let sign = self.sign();
++        let ahead: Vec<Candidate> = cands.iter().filter_map(|c| self.ahead(c)).collect();
++        let chosen = match intent {
++            ScrollSnapIntent::EndPosition => self.nearest(cands.iter()),
++            ScrollSnapIntent::IntoView(_) => {
++                let shown = keep.and_then(|(e0, e1)| {
++                    let (p0, p1) = self.pad;
++                    let need = (e1 - e0).min(self.port - p0 - p1) - SLACK;
++                    let shows = |c: &&Candidate| {
++                        let at = c.nearest_to(self.to);
++                        e1.min(at + self.port - p1) - e0.max(at + p0) >= need
++                    };
++                    self.nearest(cands.iter().filter(shows))
++                });
++                shown.or_else(|| self.nearest(cands.iter()))
++            }
++            _ if sign == 0.0 => None,
++            ScrollSnapIntent::Direction => self.nearest(ahead.iter()),
++            // The farthest that passes over nothing, or else the first past the end.
++            ScrollSnapIntent::Page => ahead
++                .iter()
++                .filter_map(|c| self.short(c))
++                .max_by(|a, b| (a * sign).total_cmp(&(b * sign)))
++                .or_else(|| self.nearest(ahead.iter())),
++        }?;
++        // A scroll with a direction passes over no area whose `scroll-snap-stop` is `always`.
++        let stop = match intent {
++            ScrollSnapIntent::Direction | ScrollSnapIntent::Page => ahead
++                .iter()
++                .filter(|c| c.always)
++                .map(|c| self.entry(c))
++                .filter(|at| (at - chosen) * sign < -SLACK)
++                .min_by(|a, b| (a * sign).total_cmp(&(b * sign))),
++            _ => None,
++        };
++        Some(stop.unwrap_or(chosen))
++    }
++}
++
++/// `scroll-padding` along one side, against the scrollport's length along its axis. `auto` is
++/// zero, as browsers have it.
++fn resolve_padding(value: &NonNegativeLengthPercentageOrAuto, basis: f64) -> f64 {
++    match value {
++        GenericLengthPercentageOrAuto::LengthPercentage(lp) => {
++            lp.0.resolve(CSSPixelLength::new(basis as f32)).px() as f64
++        }
++        GenericLengthPercentageOrAuto::Auto => 0.0,
++    }
++}
++
++/// Whether a box with these styles is a scroll container (CSS Overflow 3): it clips its
++/// overflow and can be scrolled, along either axis.
++fn clips_to_scroll(styles: &ComputedValues) -> bool {
++    let scrolls = |o| matches!(o, Overflow::Hidden | Overflow::Auto | Overflow::Scroll);
++    scrolls(styles.clone_overflow_x()) || scrolls(styles.clone_overflow_y())
++}
++
++impl BaseDocument {
++    /// Where a scroll of `node_id` (the root element for the viewport) that went from offset
++    /// `from` to offset `to` comes to rest, as its snap container's CSS Scroll Snap properties
++    /// and the scroll's `intent` choose: a snap position along each axis that snaps and where
++    /// one qualifies, and `to` along the others. `to` itself where the container does not snap.
++    pub fn scroll_snap_position(
++        &self,
++        node_id: NodeId,
++        from: Point<f64>,
++        to: Point<f64>,
++        intent: ScrollSnapIntent,
++    ) -> Point<f64> {
++        let target = self.canonical_scroll_target(ScrollTarget::Node(node_id));
++        self.snap_position(target, from, to, intent)
++    }
++
++    pub(crate) fn snap_position(
++        &self,
++        target: ScrollTarget,
++        from: Point<f64>,
++        to: Point<f64>,
++        intent: ScrollSnapIntent,
++    ) -> Point<f64> {
++        let container = match target {
++            ScrollTarget::Viewport => self.try_root_element().map(|n| n.id),
++            ScrollTarget::Node(id) => Some(id),
++        };
++        let Some(container) = container else {
++            return to;
++        };
++        let Some(styles) = self.nodes.get(container).and_then(|n| n.primary_styles()) else {
++            return to;
++        };
++        // The viewport's comes from the root element, not propagated from the body.
++        let snap_type = *styles.get_scroll_snap_type();
++        let (snap_x, snap_y) = match (snap_type.strictness, snap_type.axis) {
++            (ScrollSnapStrictness::None, _) => return to,
++            (_, ScrollSnapAxis::X | ScrollSnapAxis::Inline) => (true, false),
++            (_, ScrollSnapAxis::Y | ScrollSnapAxis::Block) => (false, true),
++            (_, ScrollSnapAxis::Both) => (true, true),
++        };
++        let proximity = snap_type.strictness == ScrollSnapStrictness::Proximity;
++        let (_, min, max) = self.scroll_state(target, true);
++        // A scroll with a direction snaps only the axes it moved along.
++        let directed = matches!(intent, ScrollSnapIntent::Direction | ScrollSnapIntent::Page);
++        let snap_x = snap_x && max.x > min.x && !(directed && from.x == to.x);
++        let snap_y = snap_y && max.y > min.y && !(directed && from.y == to.y);
++        if !(snap_x || snap_y) {
++            return to;
++        }
++
++        let (port_w, port_h) = self.scrollport_size(target);
++        let padding = styles.get_padding();
++        let axis_x = Axis {
++            from: from.x,
++            to: to.x,
++            min: min.x,
++            max: max.x,
++            port: port_w,
++            pad: (
++                resolve_padding(&padding.scroll_padding_left, port_w),
++                resolve_padding(&padding.scroll_padding_right, port_w),
++            ),
++        };
++        let axis_y = Axis {
++            from: from.y,
++            to: to.y,
++            min: min.y,
++            max: max.y,
++            port: port_h,
++            pad: (
++                resolve_padding(&padding.scroll_padding_top, port_h),
++                resolve_padding(&padding.scroll_padding_bottom, port_h),
++            ),
++        };
++        drop(styles);
++
++        let areas = self.snap_areas(target, container);
++        let keep = match intent {
++            ScrollSnapIntent::IntoView(id) => self.rect_in_scrollport(id, target, true),
++            _ => None,
++        };
++        let mut out = to;
++        for (snaps, axis, along_y) in [(snap_x, &axis_x, false), (snap_y, &axis_y, true)] {
++            if !snaps {
++                continue;
++            }
++            let cands: Vec<Candidate> = areas
++                .iter()
++                .filter_map(|a| {
++                    let [x0, y0, x1, y1] = a.rect;
++                    match along_y {
++                        true => axis.position(a.align.0, y0, y1, a.always),
++                        false => axis.position(a.align.1, x0, x1, a.always),
++                    }
++                })
++                .collect();
++            let keep = keep.map(|[x0, y0, x1, y1]| if along_y { (y0, y1) } else { (x0, x1) });
++            let Some(at) = axis.choose(&cands, intent, keep) else {
++                continue;
++            };
++            let (p0, p1) = axis.pad;
++            if proximity && (at - axis.to).abs() > (axis.port - p0 - p1).max(0.0) / 3.0 {
++                continue;
++            }
++            match along_y {
++                true => out.y = at,
++                false => out.x = at,
++            }
++        }
++        out
++    }
++
++    /// The size of a scroll target's scrollport, in CSS pixels: the window for the viewport,
++    /// and an element's padding box less its scrollbars.
++    fn scrollport_size(&self, target: ScrollTarget) -> (f64, f64) {
++        match target {
++            ScrollTarget::Viewport => {
++                let scale = self.viewport.scale() as f64;
++                (
++                    self.viewport.window_size.0 as f64 / scale,
++                    self.viewport.window_size.1 as f64 / scale,
++                )
++            }
++            ScrollTarget::Node(id) => self.nodes.get(id).map_or((0.0, 0.0), |n| {
++                (
++                    n.client_width().max(0.0) as f64,
++                    n.client_height().max(0.0) as f64,
++                )
++            }),
++        }
++    }
++
++    /// Whether `id` is a scroll container that holds its own snap areas: an element that clips
++    /// its overflow, but not the root (whose overflow is the viewport's) nor a body whose
++    /// overflow the viewport takes.
++    fn is_inner_scroll_container(&self, id: NodeId) -> bool {
++        let Some(node) = self.nodes.get(id) else {
++            return false;
++        };
++        let Some(styles) = node.primary_styles() else {
++            return false;
++        };
++        if !clips_to_scroll(&styles) {
++            return false;
++        }
++        let Some(root) = self.try_root_element() else {
++            return true;
++        };
++        if root.id == id {
++            return false;
++        }
++        let is_body = node.parent == Some(root.id)
++            && node.data.is_element_with_tag_name(&local_name!("body"));
++        let root_visible = root.primary_styles().is_some_and(|s| !clips_to_scroll(&s));
++        !(is_body && root_visible)
++    }
++
++    /// The border box of `id` in the scrollport coordinates of `target` (its content at
++    /// scroll offset zero), following its containing blocks up to it: none where they do not
++    /// lead there, pass through a fixed-position box, or, unless `through_scrollers`, pass
++    /// through another scroll container.
++    fn rect_in_scrollport(
++        &self,
++        id: NodeId,
++        target: ScrollTarget,
++        through_scrollers: bool,
++    ) -> Option<[f64; 4]> {
++        let node = self.nodes.get(id)?;
++        let fixed = |n: &crate::Node| {
++            n.primary_styles()
++                .is_some_and(|s| s.get_box().position == Position::Fixed)
++        };
++        if fixed(node) {
++            return None;
++        }
++        let l = node.final_layout();
++        let (w, h) = (l.size.width as f64, l.size.height as f64);
++        let (mut x, mut y) = (l.location.x as f64, l.location.y as f64);
++        let mut cb = node.containing_block();
++        for _ in 0..4096 {
++            match (cb, target) {
++                (Some(c), ScrollTarget::Node(t)) if c == t => {
++                    let b = self.nodes.get(t)?.final_layout().border;
++                    let (x, y) = (x - b.left as f64, y - b.top as f64);
++                    return Some([x, y, x + w, y + h]);
++                }
++                (None, ScrollTarget::Viewport) => return Some([x, y, x + w, y + h]),
++                (None, _) => return None,
++                (Some(c), _) => {
++                    let n = self.nodes.get(c)?;
++                    if fixed(n) || (!through_scrollers && self.is_inner_scroll_container(c)) {
++                        return None;
++                    }
++                    let l = n.final_layout();
++                    x += l.location.x as f64 - n.scroll_offset().x;
++                    y += l.location.y as f64 - n.scroll_offset().y;
++                    cb = n.containing_block();
++                }
++            }
++        }
++        None
++    }
++
++    /// The snap areas of the snap container `container`, which scrolls as `target`: the
++    /// elements under it, not under a scroll container inside it, whose `scroll-snap-align` is
++    /// not `none` and that are laid out.
++    fn snap_areas(&self, target: ScrollTarget, container: NodeId) -> Vec<SnapArea> {
++        let mut areas = Vec::new();
++        let Some(node) = self.nodes.get(container) else {
++            return areas;
++        };
++        let mut stack: Vec<NodeId> = node.children.iter().rev().copied().collect();
++        while let Some(id) = stack.pop() {
++            let Some(node) = self.nodes.get(id) else {
++                continue;
++            };
++            if !node.is_element() {
++                continue;
++            }
++            // An element under `display: none` has no styles.
++            let Some(styles) = node.primary_styles() else {
++                continue;
++            };
++            let display = styles.clone_display();
++            if display.is_none() {
++                continue;
++            }
++            let align = *styles.get_scroll_snap_align();
++            let always = *styles.get_scroll_snap_stop() == ScrollSnapStop::Always;
++            drop(styles);
++            let aligned = align.block != ScrollSnapAlignKeyword::None
++                || align.inline != ScrollSnapAlignKeyword::None;
++            if aligned && !display.is_contents() {
++                if let Some(rect) = self.rect_in_scrollport(id, target, false) {
++                    areas.push(SnapArea {
++                        rect,
++                        align: (align.block, align.inline),
++                        always,
++                    });
++                }
++            }
++            if !self.is_inner_scroll_container(id) {
++                stack.extend(node.children.iter().rev().copied());
++            }
++        }
++        areas
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn axis(from: f64, to: f64) -> Axis {
++        Axis {
++            from,
++            to,
++            min: 0.0,
++            max: 1000.0,
++            port: 610.0,
++            pad: (0.0, 0.0),
++        }
++    }
++
++    /// Rows of 20 px from 0 to 1000, aligned at their starts.
++    fn rows() -> Vec<Candidate> {
++        (0..=50).map(|i| Candidate::at(i as f64 * 20.0)).collect()
++    }
++
++    fn choose(from: f64, to: f64, c: &[Candidate], intent: ScrollSnapIntent) -> Option<f64> {
++        axis(from, to).choose(c, intent, None)
++    }
++
++    #[test]
++    fn a_line_rests_past_its_start_nearest_its_end() {
++        let c = rows();
++        // 40 px down: two rows. 15 px: one, the nearest ahead.
++        assert_eq!(
++            choose(0.0, 40.0, &c, ScrollSnapIntent::Direction),
++            Some(40.0)
++        );
++        assert_eq!(
++            choose(0.0, 15.0, &c, ScrollSnapIntent::Direction),
++            Some(20.0)
++        );
++        // Never back where it began, nor behind it.
++        assert_eq!(
++            choose(0.0, 3.0, &c, ScrollSnapIntent::Direction),
++            Some(20.0)
++        );
++        assert_eq!(
++            choose(100.0, 97.0, &c, ScrollSnapIntent::Direction),
++            Some(80.0)
++        );
++        // Nothing ahead: no snap.
++        assert_eq!(
++            choose(1000.0, 1000.0, &c, ScrollSnapIntent::Direction),
++            None
++        );
++        let one = [Candidate::at(0.0)];
++        assert_eq!(choose(0.0, 40.0, &one, ScrollSnapIntent::Direction), None);
++    }
++
++    #[test]
++    fn a_page_passes_over_nothing() {
++        // 7/8 of 610 px: the row at or short of 533.75.
++        let c = rows();
++        assert_eq!(choose(0.0, 533.75, &c, ScrollSnapIntent::Page), Some(520.0));
++        assert_eq!(choose(520.0, -13.75, &c, ScrollSnapIntent::Page), Some(0.0));
++        // Areas further apart than a page: the first past its end.
++        let far = [0.0, 800.0].map(Candidate::at);
++        assert_eq!(
++            choose(0.0, 533.75, &far, ScrollSnapIntent::Page),
++            Some(800.0)
++        );
++    }
++
++    #[test]
++    fn an_end_position_takes_the_nearest_either_way() {
++        let c = rows();
++        assert_eq!(
++            choose(0.0, 533.75, &c, ScrollSnapIntent::EndPosition),
++            Some(540.0)
++        );
++        assert_eq!(
++            choose(600.0, 9.0, &c, ScrollSnapIntent::EndPosition),
++            Some(0.0)
++        );
++        // A tie goes the scroll's way.
++        assert_eq!(
++            choose(0.0, 10.0, &c, ScrollSnapIntent::EndPosition),
++            Some(20.0)
++        );
++        assert_eq!(
++            choose(40.0, 30.0, &c, ScrollSnapIntent::EndPosition),
++            Some(20.0)
++        );
++    }
++
++    #[test]
++    fn into_view_keeps_the_element_in_the_snapport() {
++        // Row 30 (600 to 620) brought into view at the bottom of 610 px: 10 px, between rows
++        // 0 and 1, and only 20 shows all of it.
++        let c = rows();
++        let keep = Some((600.0, 620.0));
++        let intent = ScrollSnapIntent::IntoView(NodeId::from_u64(0));
++        assert_eq!(axis(0.0, 10.0).choose(&c, intent, keep), Some(20.0));
++        assert_eq!(axis(40.0, 10.0).choose(&c, intent, keep), Some(20.0));
++    }
++
++    #[test]
++    fn a_scroll_stops_at_an_area_that_says_always() {
++        let mut c = rows();
++        c[5].always = true;
++        assert_eq!(choose(0.0, 533.75, &c, ScrollSnapIntent::Page), Some(100.0));
++        // Not one it began at, nor one behind it.
++        assert_eq!(
++            choose(100.0, 633.75, &c, ScrollSnapIntent::Page),
++            Some(620.0)
++        );
++        assert_eq!(
++            choose(400.0, -133.75, &c, ScrollSnapIntent::Page),
++            Some(100.0)
++        );
++        // An end position may pass over it.
++        assert_eq!(
++            choose(0.0, 533.75, &c, ScrollSnapIntent::EndPosition),
++            Some(540.0)
++        );
++    }
++
++    #[test]
++    fn an_area_longer_than_the_snapport_snaps_wherever_it_covers_it() {
++        // Sections of 1000 px in a 610 px port: within one, any offset that keeps it over the
++        // whole port; past its end, the next.
++        let a = Axis {
++            max: 1390.0,
++            ..axis(0.0, 0.0)
++        };
++        let c: Vec<Candidate> = [0.0, 1000.0]
++            .iter()
++            .filter_map(|&s| a.position(ScrollSnapAlignKeyword::Start, s, s + 1000.0, false))
++            .collect();
++        assert_eq!(
++            c[0],
++            Candidate {
++                lo: 0.0,
++                hi: 390.0,
++                always: false
++            }
++        );
++        assert_eq!(
++            c[1],
++            Candidate {
++                lo: 1000.0,
++                hi: 1390.0,
++                always: false
++            }
++        );
++        let at = |from, to, intent| Axis { from, to, ..a }.choose(&c, intent, None);
++        assert_eq!(at(0.0, 40.0, ScrollSnapIntent::Direction), Some(40.0));
++        assert_eq!(at(0.0, 533.75, ScrollSnapIntent::Page), Some(390.0));
++        assert_eq!(at(390.0, 923.75, ScrollSnapIntent::Page), Some(1000.0));
++        assert_eq!(
++            at(1100.0, 1060.0, ScrollSnapIntent::Direction),
++            Some(1060.0)
++        );
++        assert_eq!(at(1000.0, 960.0, ScrollSnapIntent::Direction), Some(390.0));
++        assert_eq!(at(0.0, 600.0, ScrollSnapIntent::EndPosition), Some(390.0));
++    }
++
++    #[test]
++    fn alignment_and_padding_place_the_snap_position() {
++        let a = Axis {
++            from: 0.0,
++            to: 0.0,
++            min: 0.0,
++            max: 1000.0,
++            port: 100.0,
++            pad: (10.0, 20.0),
++        };
++        // An area from 200 to 240 in a 100 px port with a 70 px snapport from 10.
++        let at = |align, s, e| a.position(align, s, e, false).map(|c| (c.lo, c.hi));
++        assert_eq!(
++            at(ScrollSnapAlignKeyword::Start, 200.0, 240.0),
++            Some((190.0, 190.0))
++        );
++        assert_eq!(
++            at(ScrollSnapAlignKeyword::End, 200.0, 240.0),
++            Some((160.0, 160.0))
++        );
++        assert_eq!(
++            at(ScrollSnapAlignKeyword::Center, 200.0, 240.0),
++            Some((175.0, 175.0))
++        );
++        assert_eq!(
++            at(ScrollSnapAlignKeyword::Start, 5.0, 25.0),
++            Some((0.0, 0.0))
++        );
++        assert_eq!(at(ScrollSnapAlignKeyword::None, 5.0, 25.0), None);
++    }
++
++    #[test]
++    fn a_reversed_scroller_snaps_in_its_negative_range() {
++        // A `column-reverse` box whose content overflows upwards: offsets from -1000 to 0,
++        // rows of 20 px above its start.
++        let a = Axis {
++            min: -1000.0,
++            max: 0.0,
++            ..axis(0.0, 0.0)
++        };
++        let c: Vec<Candidate> = (0..=50)
++            .filter_map(|i| {
++                let s = -1000.0 + i as f64 * 20.0;
++                a.position(ScrollSnapAlignKeyword::Start, s, s + 20.0, false)
++            })
++            .collect();
++        let at = |from, to, intent| Axis { from, to, ..a }.choose(&c, intent, None);
++        assert_eq!(at(0.0, -40.0, ScrollSnapIntent::Direction), Some(-40.0));
++        assert_eq!(at(0.0, -533.75, ScrollSnapIntent::Page), Some(-520.0));
++        assert_eq!(at(-520.0, -9.0, ScrollSnapIntent::EndPosition), Some(0.0));
++        // A row whose start is past the range's end comes to rest at the end.
++        let past = a.position(ScrollSnapAlignKeyword::Start, -1100.0, -1080.0, false);
++        assert_eq!(past.map(|c| c.lo), Some(-1000.0));
++    }
++}
+diff --git a/packages/blitz-dom/src/scrolling.rs b/packages/blitz-dom/src/scrolling.rs
+index 1957daf94..d5189087b 100644
+--- a/packages/blitz-dom/src/scrolling.rs
++++ b/packages/blitz-dom/src/scrolling.rs
+@@ -8,6 +8,7 @@ use stylo_taffy::CopyStyleGetters;
+ use web_time::{SystemTime, UNIX_EPOCH};
+ 
+ use crate::BaseDocument;
++use crate::scroll_snap::ScrollSnapIntent;
+ use crate::util::Point;
+ 
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+@@ -77,6 +78,9 @@ pub(crate) struct ScrollRequest {
+     /// Whether to abort a smooth scroll in progress. Set for user-initiated scrolls, so that
+     /// an animation does not fight the user's input for the rest of its duration.
+     pub(crate) interrupt_animation: bool,
++    /// How the scroll comes to rest in a snap container (CSS Scroll Snap), if it does: a
++    /// clamped scroll ends where its snap position is. `None` for a scroll still under way.
++    pub(crate) snap: Option<ScrollSnapIntent>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq)]
+@@ -167,6 +171,12 @@ impl BaseDocument {
+             x: unclamped.x.clamp(min.x, max.x),
+             y: unclamped.y.clamp(min.y, max.y),
+         };
++        let end = match (request.snap, request.overflow) {
++            (Some(intent), ScrollOverflow::Clamp) => {
++                self.snap_position(target, current, end, intent)
++            }
++            _ => end,
++        };
+ 
+         if self.should_scroll_smoothly(target, request.behavior) {
+             self.start_scroll_animation(target, end);
+@@ -272,7 +282,7 @@ impl BaseDocument {
+ 
+     /// Resolve a scroll target to the scroller which actually moves: the root element scrolls
+     /// the viewport, per the CSS overflow propagation rules.
+-    fn canonical_scroll_target(&self, target: ScrollTarget) -> ScrollTarget {
++    pub(crate) fn canonical_scroll_target(&self, target: ScrollTarget) -> ScrollTarget {
+         match target {
+             ScrollTarget::Node(node_id)
+                 if self.try_root_element().is_some_and(|el| el.id == node_id) =>
+@@ -379,6 +389,7 @@ impl BaseDocument {
+                 source: ScrollSource::User,
+                 behavior: ScrollBehavior::Instant,
+                 interrupt_animation: false,
++                snap: None,
+             },
+             &mut dispatch_event,
+         )
+@@ -398,6 +409,7 @@ impl BaseDocument {
+                 source: ScrollSource::User,
+                 behavior: ScrollBehavior::Instant,
+                 interrupt_animation: false,
++                snap: None,
+             },
+             &mut |_| {},
+         )
+@@ -423,6 +435,7 @@ impl BaseDocument {
+                 // A user-initiated scroll aborts any smooth scroll in progress, so that the
+                 // two do not fight over the scroll offset for the rest of the animation.
+                 interrupt_animation: true,
++                snap: None,
+             },
+             dispatch_event,
+         )
+@@ -566,13 +579,34 @@ impl BaseDocument {
+     ///
+     /// Unlike a user-initiated scroll, a programmatic scroll targets exactly one scroller:
+     /// scroll the element cannot consume is discarded rather than transferred to an ancestor.
++    /// In a snap container it comes to rest at the snap position nearest to the offset
++    /// ([`ScrollSnapIntent::EndPosition`]), as `scrollTo()` does.
+     pub fn scroll_to(&mut self, node_id: NodeId, x: f64, y: f64, behavior: ScrollBehavior) {
+-        self.scroll_programmatically(node_id, ScrollAmount::To(Point { x, y }), behavior);
++        let snap = Some(ScrollSnapIntent::EndPosition);
++        self.scroll_programmatically(node_id, ScrollAmount::To(Point { x, y }), behavior, snap);
++    }
++
++    /// Scroll an element to the given absolute scroll offset in CSS pixels, coming to rest in
++    /// a snap container as `snap` says: [`BaseDocument::scroll_to`] with the embedder's
++    /// knowledge of what the scroll meant, or, with `None`, of a scroll still under way (a
++    /// gesture), which does not snap until it comes to rest.
++    pub fn scroll_to_with_snap(
++        &mut self,
++        node_id: NodeId,
++        x: f64,
++        y: f64,
++        behavior: ScrollBehavior,
++        snap: Option<ScrollSnapIntent>,
++    ) {
++        self.scroll_programmatically(node_id, ScrollAmount::To(Point { x, y }), behavior, snap);
+     }
+ 
+-    /// Scroll an element by the given relative offset in CSS pixels.
++    /// Scroll an element by the given relative offset in CSS pixels. In a snap container it
++    /// comes to rest at a snap position past where it began ([`ScrollSnapIntent::Direction`]),
++    /// as `scrollBy()` does.
+     pub fn scroll_by(&mut self, node_id: NodeId, x: f64, y: f64, behavior: ScrollBehavior) {
+-        self.scroll_programmatically(node_id, ScrollAmount::By(Point { x, y }), behavior);
++        let snap = Some(ScrollSnapIntent::Direction);
++        self.scroll_programmatically(node_id, ScrollAmount::By(Point { x, y }), behavior, snap);
+     }
+ 
+     fn scroll_programmatically(
+@@ -580,6 +614,7 @@ impl BaseDocument {
+         node_id: NodeId,
+         amount: ScrollAmount,
+         behavior: ScrollBehavior,
++        snap: Option<ScrollSnapIntent>,
+     ) {
+         if self.nodes.get(node_id).is_none() {
+             return;
+@@ -594,6 +629,7 @@ impl BaseDocument {
+                 source: ScrollSource::Programmatic,
+                 behavior,
+                 interrupt_animation: true,
++                snap,
+             },
+             &mut |_| {},
+         );
+@@ -664,7 +700,8 @@ impl BaseDocument {
+             target_size.height as f64,
+             vertical,
+         );
+-        self.scroll_to(root_id, x, y, behavior);
++        let snap = Some(ScrollSnapIntent::IntoView(node_id));
++        self.scroll_to_with_snap(root_id, x, y, behavior, snap);
+     }
+ 
+     /// Resolve a URL fragment (the `#...` part of a URL) to a scroll target.

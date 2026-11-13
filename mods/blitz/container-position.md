@@ -1,6 +1,6 @@
 ---
 title: Keep size containers from claiming positioned boxes
-patch: 0066-Stop-size-containers-from-claiming-out-of-flow-boxes.patch
+patch: 0009-Stop-size-containers-from-claiming-out-of-flow-boxes.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/stylo_taffy-0.3.0-beta.4/0002-Stop-size-containers-from-claiming-out-of-flow-boxes.patch
 ---

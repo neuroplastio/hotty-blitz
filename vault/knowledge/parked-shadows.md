@@ -4,6 +4,7 @@ The maintainer decided on 2026-11-13 to keep the blur-width correction:
 
 - The blur-width correction landed on the maintainer's word in `Correct CSS
   box-shadow blur widths` (`fdc7336`). It changes the look of every shadow.
+  Leg 0 folds that correction into the box-shadow mod without changing pixels.
 - The scaled inset-offset correction has landed in the box-shadow mod.
 - The vello_cpu idea below, measured but not written, stays parked.
 
@@ -90,7 +91,8 @@ dialog, and narrows it at 1.
 
 Commit `Correct CSS box-shadow blur widths` (`fdc7336`) carries the
 blur-width patch and `tests/shadow_blur.rs`; the maintainer decided to keep
-it on 2026-11-13. The inset-offset correction and its test landed with the
+it on 2026-11-13. The mod now includes the correction in its consolidated
+box-shadow patch. The inset-offset correction and its test landed with the
 other box-shadow geometry fixes. The original measurements came from
 hotty-perf's local `r22/shadow-sigma` branch. The vello_cpu idea is still
 parked.

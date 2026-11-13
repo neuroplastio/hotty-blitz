@@ -1,6 +1,6 @@
 ---
 title: "An unblurred inset box-shadow is one ring fill"
-patch: 0047-blitz-paint-draw-an-unblurred-inset-box-shadow-as-on.patch
+patch: 0014-blitz-paint-draw-an-unblurred-inset-box-shadow-as-on.patch
 upstream-fit: yes
 ---
 

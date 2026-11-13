@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
+Date: Thu, 30 Jul 2026 15:06:55 +0100
+Subject: [PATCH 51/62] Resolve container queries against laid-out container
+ sizes
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Expose each query container’s last content-box size to Stylo. After layout, restyle containers whose size changed and repeat layout up to eight passes so nested queries settle without an unbounded resolve.
+
+Co-authored-by: bpereira <bpereira@cloudflare.com>
+---
+ packages/blitz-dom/src/resolve.rs | 72 ++++++++++++++++++++++++++++++-
+ packages/blitz-dom/src/stylo.rs   | 13 +++++-
+ 2 files changed, 82 insertions(+), 3 deletions(-)
+
+diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
+index cc916a51d..9e38d1fab 100644
+--- a/packages/blitz-dom/src/resolve.rs
++++ b/packages/blitz-dom/src/resolve.rs
+@@ -35,6 +35,38 @@ use crate::{
+     node::TextBrush,
+ };
+ 
++fn container_sizes(doc: &BaseDocument) -> Vec<(NodeId, taffy::Size<f32>)> {
++    doc.nodes
++        .iter()
++        .filter_map(|(id, node)| {
++            if !node
++                .primary_styles()
++                .is_some_and(|s| !s.get_box().container_type.is_normal())
++            {
++                return None;
++            }
++            let layout = node.final_layout();
++            Some((
++                id,
++                taffy::Size {
++                    width: (layout.size.width
++                        - layout.padding.left
++                        - layout.padding.right
++                        - layout.border.left
++                        - layout.border.right)
++                        .max(0.0),
++                    height: (layout.size.height
++                        - layout.padding.top
++                        - layout.padding.bottom
++                        - layout.border.top
++                        - layout.border.bottom)
++                        .max(0.0),
++                },
++            ))
++        })
++        .collect()
++}
++
+ impl BaseDocument {
+     /// Restyle the tree and then relayout it
+     pub fn resolve(&mut self, current_time_for_animations: f64) {
+@@ -80,6 +112,8 @@ impl BaseDocument {
+         // accumulated since the last resolve as a single device rebuild.
+         self.flush_pending_device_changes();
+ 
++        let mut styled_sizes = container_sizes(self);
++
+         // we need to resolve stylist first since it will need to drive our layout bits
+         self.resolve_stylist(current_time_for_animations);
+         timer.record_time("style");
+@@ -112,6 +146,41 @@ impl BaseDocument {
+         // Next we resolve layout with the data resolved by stlist
+         self.resolve_layout();
+         timer.record_time("layout");
++
++        // Queries initially see the last layout. Restyle changed containers
++        // until nested queries have observed their ancestors' new sizes.
++        // Cap the passes in case styles oscillate in an unconstrained axis.
++        for _ in 0..8 {
++            let sizes = container_sizes(self);
++            let changed: Vec<_> = sizes
++                .iter()
++                .filter(|(id, size)| {
++                    styled_sizes
++                        .binary_search_by_key(id, |(old_id, _)| *old_id)
++                        .map_or(true, |index| styled_sizes[index].1 != *size)
++                })
++                .map(|(id, _)| *id)
++                .collect();
++            if changed.is_empty() {
++                break;
++            }
++            styled_sizes = sizes;
++            for id in changed {
++                self.nodes[id].set_restyle_hint(
++                    style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree(),
++                );
++            }
++            self.resolve_stylist(current_time_for_animations);
++            if !self.incremental_layout {
++                self.mark_all_damaged();
++            }
++            self.propagate_damage_flags(root_node_id);
++            self.resolve_layout_children();
++            self.resolve_deferred_tasks();
++            self.flush_pending_style_images();
++            self.flush_pending_placeholders();
++            self.resolve_layout();
++        }
+         self.nodes.bump_geometry_generation();
+ 
+         // Resolve transforms
+@@ -180,7 +249,8 @@ impl BaseDocument {
+ 
+         let scale = self.viewport.scale_f64();
+ 
+-        if !resolve_all && !self.geometry_changed.contains(&node_id)
++        if !resolve_all
++            && !self.geometry_changed.contains(&node_id)
+             && !self.nodes[node_id]
+                 .damage()
+                 .map(|d| d.contains(style::selector_parser::RestyleDamage::RECALCULATE_OVERFLOW))
+diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
+index c955d2f09..70ec68d9e 100644
+--- a/packages/blitz-dom/src/stylo.rs
++++ b/packages/blitz-dom/src/stylo.rs
+@@ -1437,8 +1437,17 @@ impl<'a> TElement for BlitzNode<'a> {
+         &self,
+         _display: &style::values::specified::Display,
+     ) -> euclid::default::Size2D<Option<app_units::Au>> {
+-        // FIXME: Implement container queries. For now this effectively disables them without panicking.
+-        Default::default()
++        // Content-box size from the last layout pass (cq units, size
++        // container queries). Blitz doesn't interleave style and
++        // layout, so the first cascade sees a zeroed layout; callers
++        // converge on the next restyle once the container is laid out.
++        let l = self.final_layout();
++        let w = l.size.width - l.padding.left - l.padding.right - l.border.left - l.border.right;
++        let h = l.size.height - l.padding.top - l.padding.bottom - l.border.top - l.border.bottom;
++        euclid::default::Size2D::new(
++            Some(app_units::Au::from_f32_px(w.max(0.0))),
++            Some(app_units::Au::from_f32_px(h.max(0.0))),
++        )
+     }
+ 
+     fn each_custom_state<F>(&self, _callback: F)

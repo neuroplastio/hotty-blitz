@@ -1,11 +1,8 @@
 ---
-title: Honour media attributes on style elements
-patch: 0063-Honor-the-media-attribute-on-style-elements.patch
+title: "Honor media attributes on style and link elements"
+patch: 0039-Honor-media-attributes-on-style-and-link-elements.patch
 upstream-fit: yes
-source: kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0014-Honor-the-media-attribute-on-style-elements.patch
+source: kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0014-Honor-the-media-attribute-on-style-elements.patch; kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0035-Scope-linked-stylesheets-to-their-media-attribute.patch
 ---
 
-Parse a style element's media attribute into the sheet's media list, so
-print and viewport-specific styles only apply when their media matches.
-Stylo then evaluates the list as the viewport changes. This HTML behavior
-belongs upstream. Adapted from kitesurf (Apache-2.0).
+Apply media attributes on inline and linked stylesheets, including attribute changes and changes made while a link is fetching. Stylo evaluates the media list against the current device. Hotty needs styles scoped to the viewport and theme; this HTML behaviour belongs upstream. Adapted from kitesurf (Apache-2.0).

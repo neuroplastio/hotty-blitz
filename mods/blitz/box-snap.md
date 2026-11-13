@@ -1,6 +1,6 @@
 ---
 title: "A box is painted on device pixels, and an inset ring is whole pixels wide"
-patch: 0050-blitz-paint-a-box-is-painted-on-device-pixels-and-an.patch
+patch: 0015-blitz-paint-a-box-is-painted-on-device-pixels-and-an.patch
 upstream-fit: yes
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Synthetic italic leans to the right
-patch: 0055-Lean-synthetic-italic-to-the-right-not-the-left.patch
+patch: 0061-Lean-synthetic-italic-to-the-right-not-the-left.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-paint-0.3.0-beta.4/0013-Lean-synthetic-italic-to-the-right-not-the-left.patch
 ---

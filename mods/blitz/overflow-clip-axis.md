@@ -1,6 +1,6 @@
 ---
 title: Overflow clipping follows each axis
-patch: 0057-Clip-only-the-clipped-axis-for-one-axis-overflow-cli.patch
+patch: 0008-Clip-only-the-clipped-axis-for-one-axis-overflow-cli.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-paint-0.3.0-beta.4/0024-Clip-only-the-clipped-axis-for-one-axis-overflow-cli.patch
 ---

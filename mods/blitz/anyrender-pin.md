@@ -1,6 +1,6 @@
 ---
 title: Pin the AnyRender workspace revision
-patch: 0070-Pin-the-AnyRender-workspace-to-the-resolved-revision.patch
+patch: 0043-Pin-the-AnyRender-workspace-to-the-resolved-revision.patch
 upstream-fit: no
 ---
 

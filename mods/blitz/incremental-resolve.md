@@ -1,6 +1,6 @@
 ---
 title: "A delta costs the change, not the document"
-patch: 0001-blitz-dom-patch-cost-proportional-to-depth-not-docum.patch
+patch: 0041-blitz-dom-patch-cost-proportional-to-depth-not-docum.patch
 upstream-fit: maybe
 ---
 

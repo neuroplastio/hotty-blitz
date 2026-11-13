@@ -1,6 +1,6 @@
 ---
 title: Pseudo-elements on nested inlines appear
-patch: 0056-Flush-nested-inline-pseudo-elements-child-display-no.patch
+patch: 0007-Flush-nested-inline-pseudo-elements-child-display-no.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0013-Flush-nested-inline-pseudo-elements-child-display-no.patch
 ---

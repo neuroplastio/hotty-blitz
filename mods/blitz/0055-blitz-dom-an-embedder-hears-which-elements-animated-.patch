@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sun, 1 Nov 2026 11:37:01 +0100
+Subject: [PATCH 55/62] blitz-dom: an embedder hears which elements' animated
+ styles moved
+
+A CSS animation or transition changes an element's computed style while
+nothing mutates it, and Blitz's restyle damage holds layout only, so an
+embedder that tracks its own damage (hotty-blitz repaints rectangles of
+its own choosing into a caller's buffer) would never hear that what the
+element paints, or where it lays out, has changed.
+
+The style traversal now collects the elements whose style moved under an
+animation (is_restyle and may_have_animations), with the ::before/::after
+boxes their style carries, and BaseDocument::take_animated_nodes hands
+the list over, emptied. has_active_animations says whether any such
+animation is still mid-flight, so an embedder can keep ticking frames
+and stop when the last one ends.
+---
+ packages/blitz-dom/src/document.rs | 33 ++++++++++++++++++++++++++++++
+ packages/blitz-dom/src/stylo.rs    | 21 +++++++++++++++++++
+ 2 files changed, 54 insertions(+)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index db4b9123e..05d6cb74f 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -470,6 +470,9 @@ pub struct BaseDocument {
+     /// Text fields whose placeholder needs laying out again because they were
+     /// built or restyled (see `flush_placeholder`).
+     pub(crate) pending_placeholder_nodes: Vec<NodeId>,
++    /// Elements whose animated style moved at the last resolve
++    /// (`RecalcStyle::animated_restyled`), for [`Self::take_animated_nodes`].
++    pub(crate) pending_animated_nodes: Vec<NodeId>,
+ 
+     // Tracks in-flight "critical" resources (e.g. stylesheets linked from the `<head>`),
+     // keyed by request id
+@@ -651,6 +654,7 @@ impl BaseDocument {
+             svg_images: HashMap::new(),
+             pending_style_image_nodes: Vec::new(),
+             pending_placeholder_nodes: Vec::new(),
++            pending_animated_nodes: Vec::new(),
+             pending_critical_resources: HashSet::new(),
+             controls_to_form: HashMap::new(),
+             net_provider,
+@@ -2456,6 +2460,35 @@ impl BaseDocument {
+             | self.scrollbars_animating()
+     }
+ 
++    /// Whether a CSS animation or transition is mid-flight, as the last
++    /// resolve left it: its keyframes or interpolation still move a style,
++    /// so the document wants a resolve again soon. Unlike
++    /// [`Self::is_animating`], this says nothing of scroll animations,
++    /// fading scrollbars or `<canvas>`.
++    pub fn has_active_animations(&self) -> bool {
++        self.has_active_animations
++    }
++
++    /// The elements whose animated style the last resolve moved, with the
++    /// `::before`/`::after` boxes their style carries: a CSS animation or
++    /// transition changed their computed style, so what they paint or where
++    /// they lay out may have changed with it, though nothing mutated them.
++    /// An embedder that tracks its own damage touches these, as it touches
++    /// the nodes a mutation changed; the list is empty again after.
++    pub fn take_animated_nodes(&mut self) -> Vec<NodeId> {
++        let mut out = std::mem::take(&mut self.pending_animated_nodes);
++        let owners = out.clone();
++        for id in owners {
++            if let Some(node) = self.nodes.get(id) {
++                out.extend(node.before());
++                out.extend(node.after());
++            }
++        }
++        out.sort_unstable();
++        out.dedup();
++        out
++    }
++
+     /// Record pending [`DeviceChanges`] and request a redraw so that they are
+     /// flushed (via [`Self::flush_pending_device_changes`]) on the next resolve.
+     pub(crate) fn queue_device_changes(&mut self, changes: DeviceChanges) {
+diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
+index c327d3a04..31e042b89 100644
+--- a/packages/blitz-dom/src/stylo.rs
++++ b/packages/blitz-dom/src/stylo.rs
+@@ -167,6 +167,8 @@ impl crate::document::BaseDocument {
+                 std::mem::take(traverser.nodes_needing_style_image_flush.get_mut().unwrap());
+             self.pending_placeholder_nodes
+                 .append(traverser.text_fields_restyled.get_mut().unwrap());
++            self.pending_animated_nodes
++                .append(traverser.animated_restyled.get_mut().unwrap());
+         }
+         self.pending_style_image_nodes
+             .extend(nodes_needing_style_image_flush);
+@@ -1553,6 +1555,12 @@ pub struct RecalcStyle<'a> {
+     /// Text fields restyled in this traversal, whose `::placeholder` style
+     /// may have changed with their own (see `flush_placeholder`).
+     text_fields_restyled: Mutex<Vec<NodeId>>,
++    /// Elements whose animated style moved in this traversal: a CSS
++    /// animation or transition changed their computed style, so what they
++    /// paint or where they lay out may have changed with it. An embedder
++    /// that tracks its own damage touches these, as it touches the nodes a
++    /// mutation changed.
++    animated_restyled: Mutex<Vec<NodeId>>,
+ }
+ 
+ impl<'a> RecalcStyle<'a> {
+@@ -1561,6 +1569,7 @@ impl<'a> RecalcStyle<'a> {
+             context,
+             nodes_needing_style_image_flush: Mutex::new(Vec::new()),
+             text_fields_restyled: Mutex::new(Vec::new()),
++            animated_restyled: Mutex::new(Vec::new()),
+         }
+     }
+ }
+@@ -1598,6 +1607,18 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
+                         .unwrap()
+                         .push(el.id);
+                 }
++
++                // An animated style moved: say so, for an embedder's damage
++                // tracker. Nothing mutated the element; its style moved under
++                // it, and Blitz's damage holds layout only, so a paint-only
++                // move (a colour) would otherwise go unsaid.
++                if data.is_restyle()
++                    && el
++                        .element_data()
++                        .is_some_and(|el| el.may_have_animations.load(Ordering::Relaxed))
++                {
++                    self.animated_restyled.lock().unwrap().push(el.id);
++                }
+             }
+ 
+             if data.is_restyle()

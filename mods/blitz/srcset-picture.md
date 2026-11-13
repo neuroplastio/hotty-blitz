@@ -1,19 +1,7 @@
 ---
-title: "An img shows the source that srcset, sizes and picture choose"
-patch: 0007-blitz-dom-an-img-shows-the-source-srcset-sizes-and-p.patch
+title: "Select image sources and update them when the device changes"
+patch: 0035-Select-image-sources-and-update-them-when-the-device.patch
 upstream-fit: yes
 ---
 
-**What it changes:** Blitz loaded an `<img>`'s `src` and nothing else.
-`BaseDocument::image_source` now selects a source as HTML does: the first
-`<source>` of its `<picture>` whose `type` this build decodes and whose
-`media` matches the device, else its own `srcset`, else its `src`. Of a
-`srcset`, it takes the candidate with the smallest density at or above the
-device's, else the densest; a `w` candidate's density is its width over
-the size `sizes` gives it, with Stylo's `SourceSizeList`. Changing the
-attributes loads the image again.
-
-**Why we carry it:** hotty surfaces are drawn at the terminal's scale and
-theme, and programs send images for each.
-
-**For upstream:** yes. It is HTML's image source selection.
+An img selects a source from srcset, sizes and picture for the current device, then chooses again when its attributes, viewport, scale, colour scheme or media type change. The old image stays until its replacement arrives, and a late response for an outdated choice is ignored. Hotty needs images suited to its terminal scale and theme; HTML source selection is useful upstream.

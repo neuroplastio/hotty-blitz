@@ -1,6 +1,6 @@
 ---
 title: "Outlines take outline-offset and every border style"
-patch: 0003-blitz-paint-outlines-take-outline-offset-and-every-b.patch
+patch: 0010-blitz-paint-outlines-take-outline-offset-and-every-b.patch
 upstream-fit: yes
 ---
 

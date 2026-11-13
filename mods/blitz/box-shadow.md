@@ -1,14 +1,8 @@
 ---
-title: Box shadows retain their shape and background
-patch: 0058-Fix-box-shadow-isolation-corner-radii-and-blur-size.patch
+title: "Fix box-shadow isolation, corner radii and blur size"
+patch: 0016-Fix-box-shadow-isolation-corner-radii-and-blur-size.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-paint-0.3.0-beta.4/0007-Fix-box-shadow-isolation-corner-radii-and-blur-size.patch
 ---
 
-Inset shadow compositing isolates its destructive blend, and its offset is
-scaled to device pixels. Outset shadow spread keeps each corner's radius;
-blurred nonuniform corners are drawn in quadrants. The existing snapped
-inset-ring path is retained for
-unblurred zero-offset shadows. Hotty needs stable backgrounds, correct
-shadows at terminal scales and independently rounded corners; these are
-general rendering fixes for Blitz. The source patch is Apache-2.0.
+Inset shadow compositing isolates destructive blending and scales its offset. Outset spread preserves each corner radius, with blurred nonuniform corners drawn in quadrants; the snapped inset ring remains for unblurred zero-offset shadows. Both shadow types use CSS Gaussian blur width at device scale. Hotty needs stable backgrounds and correct shadows at terminal scales; these are general Blitz rendering fixes. Adapted from kitesurf (Apache-2.0).

@@ -1,6 +1,6 @@
 ---
 title: "An inline svg's currentColor is written as rgb()"
-patch: 0027-blitz-dom-an-inline-svg-s-currentColor-is-written-as.patch
+patch: 0036-blitz-dom-an-inline-svg-s-currentColor-is-written-as.patch
 upstream-fit: yes
 ---
 
