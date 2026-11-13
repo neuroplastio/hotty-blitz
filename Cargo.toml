@@ -23,8 +23,8 @@ blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "c27b4ca14158
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "c27b4ca14158dc457f35c78eb32b8c4fec906b7e" }
 # The version Blitz pins (its workspace), for the fonts a host ships (fonts.rs).
 parley = { version = "0.12", default-features = false, features = ["std"] }
-anyrender = { git = "https://github.com/DioxusLabs/anyrender", branch = "main" }
-anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/anyrender", branch = "main", default-features = false, features = ["filters", "multithreading"] }
+anyrender = { git = "https://github.com/DioxusLabs/anyrender", rev = "3e7fc16bc0223aaf0f053f1162b36146070e2f75" }
+anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/anyrender", rev = "3e7fc16bc0223aaf0f053f1162b36146070e2f75", default-features = false, features = ["filters", "multithreading"] }
 
 base64 = "0.22"
 unicode-segmentation = "1.13"
