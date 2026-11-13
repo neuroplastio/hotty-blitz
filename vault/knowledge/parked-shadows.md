@@ -1,9 +1,13 @@
-# Shadow work
+# Parked: shadow work
 
-The CSS blur width and scaled inset offset were later incorporated in the
-box-shadow mod, together with isolation and per-corner geometry. The older
-measurements below describe the change in shadow appearance. The vello_cpu
-optimization described below remains an idea, not a patch.
+Parked by gov R-22 on 2026-10-31 until hotty-surf's look has landed:
+
+- The blur-width correction stays parked until the maintainer decides:
+  it changes the look of every shadow. A separate trailing patch is being
+  prepared so it can be reviewed or dropped independently.
+- The scaled inset-offset correction has landed in the box-shadow mod.
+- An idea for vello_cpu, measured but not written: what a visible shadow
+  costs.
 
 ## The blur
 
@@ -44,7 +48,7 @@ Outset offsets are scaled, as are inset spreads and blurs. For
 - Blitz: 8.00 and 5.00.
 - Patched: 8.00 and 8.12, the unblurred hole's edge on a pixel centre.
 
-The patch multiplies the two offsets by the scale. Its test checks the
+The landed box-shadow mod multiplies the two offsets by the scale. Its test checks the
 band at the top and the left for `inset 8px 8px 0`, at 1 and 1.6, to a
 device pixel. surf's `.u-chrome` edge (`inset -1px 0 0`) goes at 1.6 from
 one device pixel to one and a part, as Chromium draws it.
