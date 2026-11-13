@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
+Date: Mon, 28 Sep 2026 19:24:35 +0100
+Subject: [PATCH] Apply inline-box opacity to text and span decorations
+
+A non-atomic inline box paints no layer of its own, so its opacity
+never took effect: `<span style="opacity:0">` painted fully opaque. The
+glyphs, text decorations and span backgrounds and borders now take the
+product of the opacities of the inline ancestors below the inline root,
+whose own opacity is already a layer.
+
+Text that fades by animating per-character span opacity showed every
+state on top of each other without this.
+---
+ packages/blitz-paint/src/text.rs | 33 +++++++++++++++++++++++++++++---
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
+index e61c89c1f..c8bd2c12b 100644
+--- a/packages/blitz-paint/src/text.rs
++++ b/packages/blitz-paint/src/text.rs
+@@ -23,6 +23,19 @@ fn hint_glyphs(scale: f64) -> bool {
+     !FONT_EMBOLDEN_ENABLED && scale <= 1.0
+ }
+ 
++fn inline_opacity(doc: &BaseDocument, node_id: NodeId, inline_root_id: NodeId) -> f32 {
++    let mut opacity = 1.0;
++    let mut current = Some(node_id);
++    while let Some(id) = current.filter(|&id| id != inline_root_id) {
++        let Some(node) = doc.get_node(id) else { break };
++        if let Some(styles) = node.primary_styles() {
++            opacity *= styles.get_effects().opacity;
++        }
++        current = node.parent;
++    }
++    opacity
++}
++
+ /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
+ ///
+ /// Each glyph run carries the node id of the innermost inline element it belongs to
+@@ -62,7 +75,8 @@ pub(crate) fn draw_inline_backgrounds<'a>(
+                 .get_background()
+                 .background_color
+                 .resolve_to_absolute(&current_color)
+-                .as_srgb_color();
++                .as_srgb_color()
++                .multiply_alpha(inline_opacity(doc, node_id, inline_root_id));
+             if bg_color == Color::TRANSPARENT {
+                 continue;
+             }
+@@ -159,6 +173,7 @@ struct ResolvedDecoration {
+ struct DecorationStackEntry {
+     node_id: NodeId,
+     visible: bool,
++    opacity: f32,
+     /// This node's (inherited) text fill colour, used for the glyphs of runs whose
+     /// innermost node is this one.
+     fill_color: Color,
+@@ -178,6 +193,7 @@ fn resolve_decoration_entry(
+         return DecorationStackEntry {
+             node_id,
+             visible: true,
++            opacity: 1.0,
+             fill_color: Color::BLACK,
+             decoration: None,
+         };
+@@ -228,6 +244,7 @@ fn resolve_decoration_entry(
+     DecorationStackEntry {
+         node_id,
+         visible: styles.get_inherited_box().visibility == Visibility::Visible,
++        opacity: styles.get_effects().opacity,
+         fill_color,
+         decoration,
+     }
+@@ -763,7 +780,16 @@ pub(crate) fn stroke_text<'a>(
+                     .count();
+                 stack.truncate(shared);
+                 for &node_id in &path_scratch[shared..] {
+-                    stack.push(resolve_decoration_entry(doc, node_id, selected));
++                    let mut entry = resolve_decoration_entry(doc, node_id, selected);
++                    entry.opacity = if node_id == inline_root_id {
++                        1.0
++                    } else {
++                        stack.last().map_or(1.0, |parent| parent.opacity) * entry.opacity
++                    };
++                    if let Some(decoration) = &mut entry.decoration {
++                        decoration.color = decoration.color.multiply_alpha(entry.opacity);
++                    }
++                    stack.push(entry);
+                 }
+ 
+                 if stack.last().is_some_and(|entry| !entry.visible) {
+@@ -771,7 +797,8 @@ pub(crate) fn stroke_text<'a>(
+                 }
+ 
+                 let fill_color = brush_override
+-                    .unwrap_or_else(|| stack.last().map(|e| e.fill_color).unwrap_or(Color::BLACK));
++                    .unwrap_or_else(|| stack.last().map(|e| e.fill_color).unwrap_or(Color::BLACK))
++                    .multiply_alpha(stack.last().map_or(1.0, |e| e.opacity));
+ 
+                 let embolden = if FONT_EMBOLDEN_ENABLED {
+                     font_embolden(font_size as f64, fill_color, transform)
