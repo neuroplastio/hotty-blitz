@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bpereira <bpereira@cloudflare.com>
 Date: Mon, 10 Aug 2026 06:22:54 +0100
-Subject: [PATCH] Damage box-shadow as repaint instead of rebuilding the box
+Subject: [PATCH 5/9] Damage box-shadow as repaint instead of rebuilding the
+ box
 
 box-shadow sets no servo_restyle_damage, so it inherits the
 "rebuild_box" default and every change to a shadow reports RELAYOUT. A

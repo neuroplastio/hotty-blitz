@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
 Date: Tue, 13 Oct 2026 16:53:52 +0100
-Subject: [PATCH] Retain forwards-filling animations after they finish
+Subject: [PATCH 7/9] Retain forwards-filling animations after they finish
 
 Keep a finished animation while its fill contributes, and mark cancellation dirty so its contribution is removed. Finished fills do not request animation ticks.
 ---

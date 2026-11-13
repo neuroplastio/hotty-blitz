@@ -1,6 +1,6 @@
 ---
 title: Clip remains non-scrollable beside a scrollable axis
-patch: 0006-Stop-escalating-a-clip-overflow-axis-to-hidden.patch
+patch: 0003-Stop-escalating-a-clip-overflow-axis-to-hidden.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/stylo-0.22.0/0011-Stop-escalating-a-clip-overflow-axis-to-hidden.patch
 ---

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Tue, 15 Sep 2026 21:19:03 +0100
-Subject: [PATCH] Enable container query syntax in Servo
+Subject: [PATCH 4/9] Enable container query syntax in Servo
 
 ---
  style/properties/shorthands.rs      |  5 ++---

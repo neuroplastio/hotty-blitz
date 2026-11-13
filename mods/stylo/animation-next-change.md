@@ -1,6 +1,6 @@
 ---
 title: "An animation says when its output next changes"
-patch: 0003-Say-when-an-animation-s-or-transition-s-output-next-.patch
+patch: 0006-Say-when-an-animation-s-or-transition-s-output-next-.patch
 upstream-fit: yes
 ---
 
