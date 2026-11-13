@@ -1,14 +1,11 @@
-# Parked: shadow work
+# Shadow work
 
-Parked by gov R-22 on 2026-10-31 pending the maintainer's decision:
+The maintainer decided on 2026-11-13 to keep the blur-width correction:
 
-- The blur-width correction stays parked until the maintainer decides:
-  it changes the look of every shadow. The trailing commit `Correct CSS
-  box-shadow blur widths` carries the correction separately so it can be
-  reviewed or dropped independently.
+- The blur-width correction landed on the maintainer's word in `Correct CSS
+  box-shadow blur widths` (`fdc7336`). It changes the look of every shadow.
 - The scaled inset-offset correction has landed in the box-shadow mod.
-- An idea for vello_cpu, measured but not written: what a visible shadow
-  costs.
+- The vello_cpu idea below, measured but not written, stays parked.
 
 ## The blur
 
@@ -91,9 +88,9 @@ dialog, and narrows it at 1.
 
 ## Where the patches are
 
-The trailing commit `Correct CSS box-shadow blur widths` carries the
-blur-width patch and `tests/shadow_blur.rs` for review. The correction stays
-parked until the maintainer decides; dropping that one commit restores the
-previous width. The inset-offset correction and its test have landed with
-the other box-shadow geometry fixes. The original measurements came from
-hotty-perf's local `r22/shadow-sigma` branch.
+Commit `Correct CSS box-shadow blur widths` (`fdc7336`) carries the
+blur-width patch and `tests/shadow_blur.rs`; the maintainer decided to keep
+it on 2026-11-13. The inset-offset correction and its test landed with the
+other box-shadow geometry fixes. The original measurements came from
+hotty-perf's local `r22/shadow-sigma` branch. The vello_cpu idea is still
+parked.
