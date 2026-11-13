@@ -8,7 +8,9 @@ a patch added to `mods/` reaches the build only if the fork gets it too.
 - parley, vello_cpu, glifo and Stylo: `make blitz` compares the fork's
   commits on its base with the set's patch count and runs the fork script
   when they differ. The script applies the missing patches to a clean fork
-  whose commits match the first patches by subject (`parley-fork.sh`).
+  whose commits match the first patches by subject (`parley-fork.sh`). The
+  vello_cpu workspace applies the vello_cpu set followed by glifo's set;
+  the separate glifo fork checks that set on its own.
 - Blitz: the same, since 2026-11-04. Before that, `make blitz` only checked
   that `../blitz` existed, and `blitz-fork.sh` on an existing fork
   reported its count and changed nothing, so a new `mods/blitz` patch was

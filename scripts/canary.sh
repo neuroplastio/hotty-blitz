@@ -2,9 +2,7 @@
 # Applies each set in mods/ (gov P-7) to its upstream, in a throwaway
 # worktree of its fork, and says whether it applies. Changes nothing else.
 #
-#   scripts/canary.sh          # upstream's latest: Blitz's, parley's and Stylo's
-#                              # main, vello_cpu's and glifo's newest release
-#                              # on crates.io
+#   scripts/canary.sh          # each upstream's latest main branch
 #   scripts/canary.sh base     # each set's base, exactly (make mods)
 #
 # The forks are the ones make blitz sets up, at ../blitz, ../parley,
@@ -51,33 +49,13 @@ git_set blitz "$(dirname "$HERE")/blitz"
 git_set parley "$(dirname "$HERE")/parley"
 git_set stylo "$(dirname "$HERE")/stylo"
 
-# crate_set SET: a set on a package published on crates.io, whose name is
-# the set's: the fork's `published` commit is base. Its newest release goes
-# on a commit of its own after that one, so a three-way merge finds base's
-# files; an empty one while base is newest.
-crate_set() {
-  s=$1 fork="$(dirname "$HERE")/$1"
-  if [ "$AT" = base ]; then
-    try "$s" "$fork" published "base $(base "$s")"
-    return
-  fi
-  v=$(curl -sf -A 'hotty-blitz canary (https://github.com/neuroplastio/hotty-blitz)' "https://crates.io/api/v1/crates/$s" |
-    sed -n 's/.*"max_stable_version":"\([^"]*\)".*/\1/p')
-  pkg="$(mktemp -d)"
-  curl -sfL "https://static.crates.io/crates/$s/$s-$v.crate" | tar -xz -C "$pkg" --strip-components 1
-  up="$(mktemp -d)"
-  git -C "$fork" worktree add -q --detach "$up" published
-  git -C "$up" rm -q -r .
-  cp -R "$pkg"/. "$up"/
-  git -C "$up" add -A
-  git -C "$up" commit -q --allow-empty -m "$s $v as published on crates.io"
-  rev=$(git -C "$up" rev-parse HEAD)
-  git -C "$fork" worktree remove --force "$up"
-  rm -rf "$pkg"
-  try "$s" "$fork" "$rev" "$v, the newest release (base $(base "$s"))"
-}
-
-crate_set vello_cpu
-crate_set glifo
+# Both sets target a Git revision of the same upstream vello workspace.
+if [ "$AT" = base ]; then
+  try vello_cpu "$(dirname "$HERE")/vello_cpu" "$(base vello_cpu)" "base $(base vello_cpu)"
+  try glifo "$(dirname "$HERE")/glifo" "$(base glifo)" "base $(base glifo)"
+else
+  git_set vello_cpu "$(dirname "$HERE")/vello_cpu"
+  git_set glifo "$(dirname "$HERE")/glifo"
+fi
 
 exit $red

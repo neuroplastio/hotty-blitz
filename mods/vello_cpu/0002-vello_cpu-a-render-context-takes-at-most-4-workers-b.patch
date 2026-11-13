@@ -14,13 +14,13 @@ idle spinning to every small paint.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/render.rs | 5 ++++-
+ vello_cpu/src/render.rs | 5 ++++-
  1 file changed, 4 insertions(+), 1 deletion(-)
 
-diff --git a/src/render.rs b/src/render.rs
-index ef6f07a..47c3785 100644
---- a/src/render.rs
-+++ b/src/render.rs
+diff --git a/vello_cpu/src/render.rs b/vello_cpu/src/render.rs
+index ef6f07a2..47c37850 100644
+--- a/vello_cpu/src/render.rs
++++ b/vello_cpu/src/render.rs
 @@ -179,12 +179,15 @@ impl Default for RenderSettings {
      fn default() -> Self {
          Self {
@@ -38,6 +38,3 @@ index ef6f07a..47c3785 100644
              #[cfg(not(feature = "multithreading"))]
              num_threads: 0,
          }
--- 
-2.56.0
-

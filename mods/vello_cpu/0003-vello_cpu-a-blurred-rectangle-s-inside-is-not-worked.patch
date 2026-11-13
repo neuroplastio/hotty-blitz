@@ -19,13 +19,13 @@ transforms, a rotation among them.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/fine/common/rounded_blurred_rect.rs | 156 ++++++++++++++++++++++++
+ .../src/fine/common/rounded_blurred_rect.rs   | 156 ++++++++++++++++++
  1 file changed, 156 insertions(+)
 
-diff --git a/src/fine/common/rounded_blurred_rect.rs b/src/fine/common/rounded_blurred_rect.rs
-index 5a66904..b23ba53 100644
---- a/src/fine/common/rounded_blurred_rect.rs
-+++ b/src/fine/common/rounded_blurred_rect.rs
+diff --git a/vello_cpu/src/fine/common/rounded_blurred_rect.rs b/vello_cpu/src/fine/common/rounded_blurred_rect.rs
+index 5a66904c..b23ba531 100644
+--- a/vello_cpu/src/fine/common/rounded_blurred_rect.rs
++++ b/vello_cpu/src/fine/common/rounded_blurred_rect.rs
 @@ -45,6 +45,7 @@ impl<S: Simd> BlurredRoundedRectFiller<S> {
                      rect.x_advance,
                      rect.y_advance,
@@ -227,6 +227,3 @@ index 5a66904..b23ba53 100644
 +        });
 +    }
 +}
--- 
-2.56.0
-

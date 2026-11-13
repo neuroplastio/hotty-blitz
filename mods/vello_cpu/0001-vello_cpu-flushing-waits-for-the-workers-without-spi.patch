@@ -18,13 +18,13 @@ changing a frame, 8 workers), the painting thread's instructions fell by
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/dispatch/multi_threaded.rs | 14 +++++++++++++-
+ vello_cpu/src/dispatch/multi_threaded.rs | 14 +++++++++++++-
  1 file changed, 13 insertions(+), 1 deletion(-)
 
-diff --git a/src/dispatch/multi_threaded.rs b/src/dispatch/multi_threaded.rs
-index 3a7803b..28a796e 100644
---- a/src/dispatch/multi_threaded.rs
-+++ b/src/dispatch/multi_threaded.rs
+diff --git a/vello_cpu/src/dispatch/multi_threaded.rs b/vello_cpu/src/dispatch/multi_threaded.rs
+index 3a7803b6..28a796e8 100644
+--- a/vello_cpu/src/dispatch/multi_threaded.rs
++++ b/vello_cpu/src/dispatch/multi_threaded.rs
 @@ -302,7 +302,19 @@ impl MultiThreadedDispatcher {
  
      fn record_finished_commands(&mut self, abort_empty: bool) {
@@ -46,6 +46,3 @@ index 3a7803b..28a796e 100644
                  Ok(mut task) => {
                      let num_tasks = task.allocation_group.recorded_commands.len();
                      for cmd in task.allocation_group.recorded_commands.drain(0..num_tasks) {
--- 
-2.56.0
-

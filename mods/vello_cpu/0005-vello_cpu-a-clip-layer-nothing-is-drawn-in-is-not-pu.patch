@@ -17,13 +17,13 @@ the layer to be pushed at all.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/render.rs | 206 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ vello_cpu/src/render.rs | 206 +++++++++++++++++++++++++++++++++++++++-
  1 file changed, 201 insertions(+), 5 deletions(-)
 
-diff --git a/src/render.rs b/src/render.rs
-index 54f0bf6..72cb57e 100644
---- a/src/render.rs
-+++ b/src/render.rs
+diff --git a/vello_cpu/src/render.rs b/vello_cpu/src/render.rs
+index 54f0bf68..72cb57ed 100644
+--- a/vello_cpu/src/render.rs
++++ b/vello_cpu/src/render.rs
 @@ -163,6 +163,23 @@ pub struct RenderContext {
      )]
      pub(crate) render_settings: RenderSettings,
@@ -356,6 +356,3 @@ index 54f0bf6..72cb57e 100644
      #[cfg(feature = "multithreading")]
      #[test]
      fn multithreaded_drop_with_pending_tasks() {
--- 
-2.56.0
-

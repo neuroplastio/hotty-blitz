@@ -1,53 +1,28 @@
 #!/bin/sh
-# Sets up the vello_cpu fork that Cargo.toml patches in (mods/vello_cpu/,
-# gov P-7).
-#
-#   scripts/vello-fork.sh
-#
-# The fork lives next to the repo's worktrees, at ../vello_cpu: the vello_cpu
-# package as published on crates.io (`base` in mods/vello_cpu/mod.md),
-# checked against the checksum Cargo.lock had for it, as the commit tagged
-# `published` on branch `hotty`, with mods/vello_cpu/*.patch applied. The published package rather than the vello
-# repository: its dependencies are the crates.io ones anyrender_vello_cpu
-# builds against, where the repository's would be its own path crates.
+# Materialize both patched crates in one vello workspace so their shared
+# vello_common dependency has one Cargo identity.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FORK="${HOTTY_VELLO_CPU:-$(dirname "$HERE")/vello_cpu}"
-VERSION="$(sed -n 's/^base:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$HERE/mods/vello_cpu/mod.md")"
-# The checksum of base's .crate: a new base needs its own.
-SHA256=ed1fec424fbba6acf6cbc78bb526447eb77590d95f40419d598870fe37535212
-
+REV="$(sed -n 's/^base:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$HERE/mods/vello_cpu/mod.md")"
 if [ -d "$FORK/.git" ]; then
-  have=$(git -C "$FORK" rev-list --count published..hotty 2>/dev/null || echo 0)
-  set -- "$HERE"/mods/vello_cpu/*.patch
+  set -- "$HERE"/mods/vello_cpu/*.patch "$HERE"/mods/glifo/*.patch
+  have=$(git -C "$FORK" rev-list --count "$REV..hotty" 2>/dev/null || echo 0)
   want=$#
-  # Behind, clean, and its commits are the first patches: apply the rest.
-  # Anything else is someone's work in progress: say where it stands, change
-  # nothing.
-  if [ "$have" -lt "$want" ] && [ -z "$(git -C "$FORK" status --porcelain)" ] &&
-    [ "$(git -C "$FORK" log --reverse --format=%s published..hotty)" = \
+  if [ "$have" -le "$want" ] && [ "$(git -C "$FORK" branch --show-current)" = hotty ] &&
+    [ -z "$(git -C "$FORK" status --porcelain)" ] &&
+    [ "$(git -C "$FORK" log --reverse --format=%s "$REV..hotty")" = \
       "$(for p in "$@"; do git mailinfo /dev/null /dev/null <"$p" | sed -n 's/^Subject: //p'; done | head -n "$have")" ]; then
     shift "$have"
-    git -C "$FORK" am -q "$@"
-    echo "vello_cpu fork at $FORK: $# patch(es) applied"
+    if [ "$#" -gt 0 ]; then git -C "$FORK" am -q "$@"; fi
+    echo "fork ready at $FORK"
     exit 0
   fi
-  echo "vello_cpu fork at $FORK: $have commit(s) on $VERSION, $want patch(es) in mods/vello_cpu/"
-  exit 0
-fi
-
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-curl -sfL "https://static.crates.io/crates/vello_cpu/vello_cpu-$VERSION.crate" -o "$TMP/crate"
-sum=$( (sha256sum "$TMP/crate" 2>/dev/null || shasum -a 256 "$TMP/crate") | cut -d' ' -f1)
-if [ "$sum" != "$SHA256" ]; then
-  echo "vello_cpu-$VERSION.crate: sha256 $sum, expected $SHA256" >&2
+  echo "fork at $FORK is not a clean prefix of the patch series" >&2
   exit 1
 fi
-mkdir -p "$FORK"
-tar -xzf "$TMP/crate" -C "$FORK" --strip-components 1
-git -C "$FORK" init -q -b hotty
-git -C "$FORK" add -A
-git -C "$FORK" commit -q -m "vello_cpu $VERSION as published on crates.io"
-git -C "$FORK" tag published
+git clone -q https://github.com/DioxusLabs/vello "$FORK"
+git -C "$FORK" checkout -q -b hotty "$REV"
 git -C "$FORK" am -q "$HERE"/mods/vello_cpu/*.patch
-echo "vello_cpu fork ready at $FORK"
+git -C "$FORK" am -q "$HERE"/mods/glifo/*.patch
+echo "vello workspace ready at $FORK"

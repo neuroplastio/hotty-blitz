@@ -17,8 +17,9 @@ for the hotty repository.
   (branch `hotty` in `../blitz`), export the patch again with `git
   format-patch` into `mods/blitz/`. parley is modded the same way: the
   revision Blitz pins plus `mods/parley/*.patch`, at `../parley`. vello_cpu
-  is the published package plus `mods/vello_cpu/*.patch`, at `../vello_cpu`,
-  and so is glifo, its glyph renderer, at `../glifo`.
+  and glifo are modded on the DioxusLabs vello revision Blitz pins. The
+  `../vello_cpu` workspace carries both sets so the crates share vello_common;
+  `../glifo` checks the glifo set independently.
   Stylo is the commit Blitz pins plus `mods/stylo/*.patch`, at `../stylo`;
   mods/blitz builds only with it.
   Each set's `mod.md` holds its `base` and the commands.
