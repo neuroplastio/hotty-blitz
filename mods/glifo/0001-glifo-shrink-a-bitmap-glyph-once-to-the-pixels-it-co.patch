@@ -25,16 +25,16 @@ components in one u64 in the columns' pass. For Noto Color Emoji's strike
 it costs about half of what decoding the strike's PNG does, which glifo
 does for every bitmap glyph it does not find in the atlas.
 ---
- src/glyph.rs  |  14 ++-
- src/lib.rs    |   1 +
- src/shrink.rs | 238 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ glifo/src/glyph.rs  |  14 ++-
+ glifo/src/lib.rs    |   1 +
+ glifo/src/shrink.rs | 238 ++++++++++++++++++++++++++++++++++++++++++++
  3 files changed, 252 insertions(+), 1 deletion(-)
- create mode 100644 src/shrink.rs
+ create mode 100644 glifo/src/shrink.rs
 
-diff --git a/src/glyph.rs b/src/glyph.rs
-index e2f826e..3edfe39 100644
---- a/src/glyph.rs
-+++ b/src/glyph.rs
+diff --git a/glifo/src/glyph.rs b/glifo/src/glyph.rs
+index 128585d1..8e89b2d3 100644
+--- a/glifo/src/glyph.rs
++++ b/glifo/src/glyph.rs
 @@ -23,6 +23,7 @@ use crate::kurbo::Vec2;
  use crate::kurbo::{self, Affine, BezPath, Diagonal2, Join, Line, ParamCurve as _, PathSeg, Shape};
  use crate::peniko::FontData;
@@ -43,7 +43,7 @@ index e2f826e..3edfe39 100644
  use crate::util::AffineExt;
  use alloc::boxed::Box;
  use alloc::sync::Arc;
-@@ -652,6 +653,13 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+@@ -655,6 +656,13 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
                      &bitmap_glyph,
                      is_apple_color_emoji,
                  );
@@ -57,7 +57,7 @@ index e2f826e..3edfe39 100644
  
                  // Bitmaps are not hinted and have no sub-pixel offset or
                  // context color; variation coords are irrelevant for fixed strikes.
-@@ -659,7 +667,7 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+@@ -662,7 +670,7 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
                      font_id: font_info.id,
                      font_index: font_info.index,
                      glyph_id: glyph.id,
@@ -66,7 +66,7 @@ index e2f826e..3edfe39 100644
                      hinted: false,
                      subpixel_x: SUBPIXEL_BITMAP,
                      context_color: BLACK,
-@@ -685,6 +693,10 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+@@ -688,6 +696,10 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
                  }
  
                  // Cache miss — wrap the decoded pixmap for rendering.
@@ -77,10 +77,10 @@ index e2f826e..3edfe39 100644
                  let glyph_type = create_bitmap_glyph(pixmap);
  
                  let prepared_glyph = PreparedGlyph {
-diff --git a/src/lib.rs b/src/lib.rs
-index 0abad7e..847400e 100644
---- a/src/lib.rs
-+++ b/src/lib.rs
+diff --git a/glifo/src/lib.rs b/glifo/src/lib.rs
+index 0abad7ec..847400e4 100644
+--- a/glifo/src/lib.rs
++++ b/glifo/src/lib.rs
 @@ -52,6 +52,7 @@ mod colr;
  mod glyph;
  mod interface;
@@ -89,11 +89,11 @@ index 0abad7e..847400e 100644
  mod util;
  
  pub use atlas::{
-diff --git a/src/shrink.rs b/src/shrink.rs
+diff --git a/glifo/src/shrink.rs b/glifo/src/shrink.rs
 new file mode 100644
-index 0000000..86f568d
+index 00000000..86f568d9
 --- /dev/null
-+++ b/src/shrink.rs
++++ b/glifo/src/shrink.rs
 @@ -0,0 +1,238 @@
 +// Copyright 2026 the Vello Authors
 +// SPDX-License-Identifier: Apache-2.0 OR MIT
@@ -333,6 +333,3 @@ index 0000000..86f568d
 +        assert!(Shrink::new(&Affine::scale_non_uniform(-0.5, 0.5), &pixmap).is_none());
 +    }
 +}
--- 
-2.56.0
-
