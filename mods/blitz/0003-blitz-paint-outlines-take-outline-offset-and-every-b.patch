@@ -1,7 +1,7 @@
-From b09cb9be2c4d243fc0e3c6eb14ace5a5059bd79a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 10:39:40 +0200
-Subject: [PATCH 03/45] blitz-paint: outlines take outline-offset and every
+Subject: [PATCH 03/54] blitz-paint: outlines take outline-offset and every
  border style
 
 An outline was always drawn solid, just outside the border box:
@@ -30,7 +30,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  4 files changed, 119 insertions(+), 75 deletions(-)
 
 diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-paint/src/kurbo_css/css_box.rs
-index 321077fe0..d5b923478 100644
+index 211bf9d2f..cb608f590 100644
 --- a/packages/blitz-paint/src/kurbo_css/css_box.rs
 +++ b/packages/blitz-paint/src/kurbo_css/css_box.rs
 @@ -8,32 +8,29 @@ use super::{Corner, CssBoxKind, Direction, Edge, add_insets, get_corner_insets};
@@ -146,7 +146,7 @@ index 321077fe0..d5b923478 100644
      }
  
      /// Construct a bezpath drawing the frame border
-@@ -324,7 +337,6 @@ impl CssBox {
+@@ -337,7 +350,6 @@ impl CssBox {
  
      fn corner(&self, corner: Corner, css_box: CssBoxKind) -> Point {
          let Rect { x0, y0, x1, y1 } = match css_box {
@@ -154,7 +154,7 @@ index 321077fe0..d5b923478 100644
              CssBoxKind::BorderBox => self.border_box,
              CssBoxKind::PaddingBox => self.padding_box,
              CssBoxKind::ContentBox => self.content_box,
-@@ -506,7 +518,6 @@ impl CssBox {
+@@ -519,7 +531,6 @@ impl CssBox {
          }
  
          let css_box: Insets = match side {
@@ -162,7 +162,7 @@ index 321077fe0..d5b923478 100644
              BorderBox => return false,
              PaddingBox => self.border_width,
              ContentBox => add_insets(self.border_width, self.padding_width),
-@@ -565,7 +576,6 @@ impl CssBox {
+@@ -578,7 +589,6 @@ impl CssBox {
  
          let radii: Vec2 = match side {
              BorderBox => corner_radii,
@@ -183,7 +183,7 @@ index 099cc0f38..f9ec91941 100644
      PaddingBox,
      ContentBox,
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 709627b69..46b132262 100644
+index a32aa3072..e3dd31a37 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
 @@ -585,7 +585,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
@@ -355,6 +355,3 @@ index 83c7d122f..db2248b48 100644
 +        );
      }
  }
--- 
-2.56.0
-

@@ -1,6 +1,6 @@
 ---
 title: "A textarea with field-sizing: content is as tall as its text"
-patch: 0054-blitz-dom-a-textarea-with-field-sizing-content-is-as.patch
+patch: 0053-blitz-dom-a-textarea-with-field-sizing-content-is-as.patch
 upstream-fit: maybe
 ---
 

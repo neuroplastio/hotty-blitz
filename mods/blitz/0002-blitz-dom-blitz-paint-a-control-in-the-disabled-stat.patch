@@ -1,7 +1,7 @@
-From cef5d292e593db099e54b96afd7f02ca318f3dc7 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 11:23:56 +0200
-Subject: [PATCH 02/45] blitz-dom, blitz-paint: a control in the disabled state
+Subject: [PATCH 02/54] blitz-dom, blitz-paint: a control in the disabled state
  acts disabled
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -63,7 +63,7 @@ index 9617ee683..5ff01105e 100644
              }
  
 diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
-index 6b5bdef57..ca190097f 100644
+index e183aa3f3..8dbce272a 100644
 --- a/packages/blitz-dom/src/node/element.rs
 +++ b/packages/blitz-dom/src/node/element.rs
 @@ -509,6 +509,15 @@ impl ElementData {
@@ -95,6 +95,3 @@ index 2ec0b7436..a76f73921 100644
  
          // TODO this should be coming from css accent-color, but I couldn't find how to retrieve it
          let accent_color = if disabled {
--- 
-2.56.0
-

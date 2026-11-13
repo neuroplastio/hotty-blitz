@@ -2,7 +2,7 @@
 upstream: Blitz
 url: https://github.com/DioxusLabs/blitz
 license: MIT OR Apache-2.0
-base: e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc
+base: c27b4ca14158dc457f35c78eb32b8c4fec906b7e
 builds: hotty-blitz
 public: true
 ---

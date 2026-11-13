@@ -1,7 +1,7 @@
-From 5d8d98f68fa318a1043b0fb22ccdd42400bdc54c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Fri, 9 Oct 2026 22:37:46 +0200
-Subject: [PATCH 25/45] blitz-dom: speculative relayout leaves nodes out of the
+Subject: [PATCH 25/54] blitz-dom: speculative relayout leaves nodes out of the
  layout tree alone
 
 speculate_layout went through every node whose cache damage cleared,
@@ -107,6 +107,3 @@ index 18cff533e..87bcfa956 100644
      }
  
      fn box_depth(&self, id: NodeId) -> usize {
--- 
-2.56.0
-

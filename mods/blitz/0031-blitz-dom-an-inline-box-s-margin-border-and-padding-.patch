@@ -1,7 +1,7 @@
-From 6ae96c66f0cd620cb9c36dd395902584b2a7d53a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 22 Oct 2026 10:46:13 +0200
-Subject: [PATCH 31/45] blitz-dom: an inline box's margin, border and padding
+Subject: [PATCH 31/54] blitz-dom: an inline box's margin, border and padding
  take their space
 
 A non-atomic inline box (a span in a line of text) went into its inline
@@ -65,7 +65,7 @@ index 7be7c20d7..1f6ec8f96 100644
      };
  
 diff --git a/packages/blitz-dom/src/layout/inline/build.rs b/packages/blitz-dom/src/layout/inline/build.rs
-index b45e5dcc8..c4fb31a4b 100644
+index 040afd8b9..7ad999e2b 100644
 --- a/packages/blitz-dom/src/layout/inline/build.rs
 +++ b/packages/blitz-dom/src/layout/inline/build.rs
 @@ -21,6 +21,8 @@ use crate::{
@@ -77,7 +77,7 @@ index b45e5dcc8..c4fb31a4b 100644
  pub(crate) fn build_inline_layout_into(
      nodes: &crate::NodeTree,
      layout_ctx: &mut LayoutContext<TextBrush>,
-@@ -117,6 +119,23 @@ pub(crate) fn build_inline_layout_into(
+@@ -118,6 +120,23 @@ pub(crate) fn build_inline_layout_into(
      text_layout.text = builder.build_into(&mut text_layout.layout);
      return;
  
@@ -101,7 +101,7 @@ index b45e5dcc8..c4fb31a4b 100644
      fn build_inline_layout_recursive(
          builder: &mut TreeBuilder<TextBrush>,
          text_transformer: &mut TextTransformer,
-@@ -230,8 +249,16 @@ pub(crate) fn build_inline_layout_into(
+@@ -231,8 +250,16 @@ pub(crate) fn build_inline_layout_into(
                                      white_space_collapse: WhiteSpaceCollapse::Collapse,
                                      ..Default::default()
                                  });
@@ -118,7 +118,7 @@ index b45e5dcc8..c4fb31a4b 100644
  
                              if let Some(before_id) = node.before() {
                                  build_inline_layout_recursive(
-@@ -262,6 +289,9 @@ pub(crate) fn build_inline_layout_into(
+@@ -263,6 +290,9 @@ pub(crate) fn build_inline_layout_into(
                                  );
                              }
  
@@ -129,7 +129,7 @@ index b45e5dcc8..c4fb31a4b 100644
                          }
                      }
 diff --git a/packages/blitz-dom/src/layout/inline/layout.rs b/packages/blitz-dom/src/layout/inline/layout.rs
-index 9914e5355..7cf998021 100644
+index 3cf4be5ed..92fbb0684 100644
 --- a/packages/blitz-dom/src/layout/inline/layout.rs
 +++ b/packages/blitz-dom/src/layout/inline/layout.rs
 @@ -1,5 +1,5 @@
@@ -139,7 +139,7 @@ index 9914e5355..7cf998021 100644
  use style::values::specified::box_::{DisplayInside, DisplayOutside};
  use style::values::{
      computed::{BaselineSource, CSSPixelLength, Contain},
-@@ -24,6 +24,12 @@ use stylo_taffy::StyleFlags;
+@@ -26,6 +26,12 @@ use stylo_taffy::StyleFlags;
  use crate::layout::LayoutPassState;
  use crate::layout::resolve_calc_value;
  use crate::stylo_to_parley;
@@ -152,7 +152,7 @@ index 9914e5355..7cf998021 100644
  
  /// Subtract a child's margins from the definite axes of the available space it is laid out in.
  /// Taffy's convention is that the parent subtracts a child's margins from the available space
-@@ -407,6 +413,23 @@ impl LayoutPassState<'_> {
+@@ -514,6 +520,23 @@ impl LayoutPassState<'_> {
  
          // Update inline boxes
          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -176,7 +176,7 @@ index 9914e5355..7cf998021 100644
              let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
              let margin = style
                  .margin()
-@@ -523,6 +546,9 @@ impl LayoutPassState<'_> {
+@@ -628,6 +651,9 @@ impl LayoutPassState<'_> {
                      AvailableSpace::MinContent => {
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -186,7 +186,7 @@ index 9914e5355..7cf998021 100644
                              let (is_floated, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -558,6 +584,9 @@ impl LayoutPassState<'_> {
+@@ -665,6 +691,9 @@ impl LayoutPassState<'_> {
                          let mut right_band: f32 = 0.0;
                          let mut width: f32 = 0.0;
                          for ibox in inline_layout.layout.inline_boxes_mut() {
@@ -196,9 +196,9 @@ index 9914e5355..7cf998021 100644
                              let (float, clear, margin) = {
                                  let style =
                                      self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
-@@ -936,6 +965,9 @@ impl LayoutPassState<'_> {
-         for line in lines.into_iter().flatten() {
-             for item in line.items() {
+@@ -1119,6 +1148,9 @@ impl LayoutPassState<'_> {
+                     line_has_in_flow_content |= run.advance() > 0.0;
+                 }
                  if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
 +                    if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) {
 +                        continue;
@@ -206,7 +206,7 @@ index 9914e5355..7cf998021 100644
                      let order = ibox_order;
                      ibox_order += 1;
                      if inputs.run_mode == RunMode::PerformLayout {
-@@ -1202,3 +1234,109 @@ impl LayoutPassState<'_> {
+@@ -1390,3 +1422,109 @@ impl LayoutPassState<'_> {
  fn f32_max(a: f32, b: f32) -> f32 {
      a.max(b)
  }
@@ -326,10 +326,10 @@ index 4fe031b4c..11a7c2cc2 100644
  pub(crate) use build::build_inline_layout_into;
 +pub(crate) use layout::{InlineBoxId, inline_edge_size, inline_edges};
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index 2e0a526bf..e1971d894 100644
+index 85a01c081..a70d28b63 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
-@@ -1817,6 +1817,7 @@ impl Node {
+@@ -1822,6 +1822,7 @@ impl Node {
      ///
      /// Returns `None` for nodes that have their own layout box.
      pub fn inline_fragment_boxes(&self) -> Option<impl Iterator<Item = taffy::Rect<f32>> + '_> {
@@ -337,7 +337,7 @@ index 2e0a526bf..e1971d894 100644
          use parley::PositionedLayoutItem;
  
          if !self.is_non_atomic_inline() {
-@@ -1891,18 +1892,36 @@ impl Node {
+@@ -1896,18 +1897,36 @@ impl Node {
                          union(&mut line_rect, x0, y0, x1, y1);
                      }
                      PositionedLayoutItem::InlineBox(inline_box) => {
@@ -384,6 +384,3 @@ index 2e0a526bf..e1971d894 100644
                      }
                  }
              }
--- 
-2.56.0
-

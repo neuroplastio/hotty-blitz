@@ -1,7 +1,7 @@
-From 199aa7081a0cf0a561cdc38c5f6d1fbba79e5516 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 29 Oct 2026 23:45:09 +0100
-Subject: [PATCH 39/45] blitz-dom: an inline svg is drawn with the styles the
+Subject: [PATCH 39/54] blitz-dom: an inline svg is drawn with the styles the
  document gives it
 
 An inline svg is drawn from one usvg parse of its markup, and usvg reads
@@ -42,10 +42,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 packages/blitz-dom/src/node/svg_source.rs
 
 diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
-index a2d363adc..4be7df5a0 100644
+index 59bbf3575..ecf2eae83 100644
 --- a/packages/blitz-dom/src/mutator.rs
 +++ b/packages/blitz-dom/src/mutator.rs
-@@ -6,7 +6,7 @@ use std::ops::{Deref, DerefMut, Range};
+@@ -10,7 +10,7 @@ use std::ops::{Deref, DerefMut, Range};
  
  use crate::layout::damage::{ALL_DAMAGE, ONLY_RELAYOUT};
  use crate::net::{ImageHandler, ResourceHandler, StylesheetHandler};
@@ -54,7 +54,7 @@ index a2d363adc..4be7df5a0 100644
  use crate::stylo_device::DeviceChanges;
  use crate::util::ImageType;
  use crate::{
-@@ -158,6 +158,7 @@ impl DocumentMutator<'_> {
+@@ -180,6 +180,7 @@ impl DocumentMutator<'_> {
      pub fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>) -> NodeId {
          let mut data = ElementData::new(name, attrs);
          data.flush_style_attribute(self.doc.guard(), &self.doc.url.url_extra_data());
@@ -62,7 +62,7 @@ index a2d363adc..4be7df5a0 100644
  
          let id = self.doc.create_node(NodeData::Element(Box::new(data)));
          let node = self.doc.get_node_mut(id).unwrap();
-@@ -343,6 +344,10 @@ impl DocumentMutator<'_> {
+@@ -400,6 +401,10 @@ impl DocumentMutator<'_> {
              element.flush_open_state();
          }
  
@@ -73,7 +73,7 @@ index a2d363adc..4be7df5a0 100644
          let tag = &element.name.local;
          let attr = &name.local;
  
-@@ -508,6 +513,10 @@ impl DocumentMutator<'_> {
+@@ -580,6 +585,10 @@ impl DocumentMutator<'_> {
              element.flush_open_state();
          }
  
@@ -85,7 +85,7 @@ index a2d363adc..4be7df5a0 100644
          if name.local == local_name!("value") {
              if let Some(input_data) = element.text_input_data_mut() {
 diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
-index ca190097f..808119e96 100644
+index 8dbce272a..fc586e0bb 100644
 --- a/packages/blitz-dom/src/node/element.rs
 +++ b/packages/blitz-dom/src/node/element.rs
 @@ -69,6 +69,11 @@ pub struct ElementData {
@@ -162,7 +162,7 @@ index ca190097f..808119e96 100644
      pub fn flush_style_attribute(&mut self, guard: &SharedRwLock, url_extra_data: &UrlExtraData) {
          self.style_attribute = self.attr(local_name!("style")).map(|style_str| {
              ServoArc::new(guard.wrap(parse_style_attribute(
-@@ -1150,3 +1196,25 @@ mod tests {
+@@ -1154,3 +1200,25 @@ mod tests {
          assert_eq!(bubbled, -50.0);
      }
  }
@@ -556,7 +556,7 @@ index 000000000..18fea5990
 +    }
 +}
 diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
-index 4e0d17fc0..106dd02cb 100644
+index 18a342c63..6cdd443fa 100644
 --- a/packages/blitz-dom/src/stylo.rs
 +++ b/packages/blitz-dom/src/stylo.rs
 @@ -934,6 +934,15 @@ impl<'a> TElement for BlitzNode<'a> {
@@ -575,6 +575,3 @@ index 4e0d17fc0..106dd02cb 100644
          let mut push_style = |decl: PropertyDeclaration| {
              hints.push(ApplicableDeclarationBlock::from_declarations(
                  Arc::new(
--- 
-2.56.0
-

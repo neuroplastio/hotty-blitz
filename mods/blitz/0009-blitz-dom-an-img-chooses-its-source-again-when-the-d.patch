@@ -1,7 +1,7 @@
-From 475c0f313fe5c16299157511f39329ba582f0388 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 20:28:34 +0200
-Subject: [PATCH 09/45] blitz-dom: an <img> chooses its source again when the
+Subject: [PATCH 09/54] blitz-dom: an <img> chooses its source again when the
  device changes
 
 0008 chose an <img>'s source from its srcset, sizes and <picture> when
@@ -29,10 +29,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 89 insertions(+), 1 deletion(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 6fdf0243e..582e8abac 100644
+index 671013073..136f86187 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -439,6 +439,10 @@ pub struct BaseDocument {
+@@ -442,6 +442,10 @@ pub struct BaseDocument {
      /// Value is a list of (node_id, image_type) pairs waiting for the image.
      pub(crate) pending_images: HashMap<String, Vec<(NodeId, ImageType)>>,
  
@@ -43,7 +43,7 @@ index 6fdf0243e..582e8abac 100644
      /// What inline SVG `<image>` elements refer to, by resolved URL
      /// (svg_image.rs).
      #[cfg(feature = "svg")]
-@@ -589,6 +593,7 @@ impl BaseDocument {
+@@ -624,6 +628,7 @@ impl BaseDocument {
              deferred_construction_nodes: Vec::new(),
              image_cache: HashMap::new(),
              pending_images: HashMap::new(),
@@ -51,7 +51,7 @@ index 6fdf0243e..582e8abac 100644
              #[cfg(feature = "svg")]
              svg_images: HashMap::new(),
              pending_style_image_nodes: Vec::new(),
-@@ -1521,6 +1526,10 @@ impl BaseDocument {
+@@ -1586,6 +1591,10 @@ impl BaseDocument {
  
              match image_type {
                  ImageType::Image => {
@@ -62,7 +62,7 @@ index 6fdf0243e..582e8abac 100644
                      let element = node.element_data_mut().unwrap();
                      #[cfg(feature = "custom-widget")]
                      if element.custom_widget_data().is_some() {
-@@ -2254,6 +2263,17 @@ impl BaseDocument {
+@@ -2321,6 +2330,17 @@ impl BaseDocument {
          ));
          self.scroll_viewport_by(0.0, 0.0); // Clamp scroll offset
  
@@ -78,8 +78,8 @@ index 6fdf0243e..582e8abac 100644
 +        }
 +
          // Text is shaped at a specific scale factor, so cached inline layouts
-         // must be invalidated when the scale changes.
-         if changes.contains(DeviceChanges::SCALE) {
+         // must be invalidated when the scale changes, as must every node's
+         // transform and scrollable overflow (kept in device pixels).
 diff --git a/packages/blitz-dom/src/image_source.rs b/packages/blitz-dom/src/image_source.rs
 index de1dfef42..bf8fa1e51 100644
 --- a/packages/blitz-dom/src/image_source.rs
@@ -159,23 +159,21 @@ index de1dfef42..bf8fa1e51 100644
      /// `<img>`'s, counts as a 1x candidate when no other is 1x.
      fn pick(&self, node: &Node, src: Option<&str>) -> Option<String> {
 diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
-index b2a3f3b28..bb9b2aee5 100644
+index 54ca89bd9..306c2f6c9 100644
 --- a/packages/blitz-dom/src/mutator.rs
 +++ b/packages/blitz-dom/src/mutator.rs
-@@ -1321,11 +1321,12 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1463,12 +1463,13 @@ impl<'doc> DocumentMutator<'doc> {
          self.doc.stylesheet_generation += 1;
      }
  
 -    fn load_image(&mut self, target_id: NodeId) {
 +    pub(crate) fn load_image(&mut self, target_id: NodeId) {
          if let Some(raw_src) = self.doc.image_source(target_id) {
-             if !raw_src.is_empty() {
-                 let src = self.doc.resolve_url(&raw_src);
+             if !raw_src.is_empty()
+                 && let Some(src) = self.doc.resolve_url(&raw_src)
+             {
                  let src_string = src.as_str();
 +                self.doc.image_source_loading(target_id, src_string);
  
                  // Check cache first
                  if let Some(cached_image) = self.doc.image_cache.get(src_string) {
--- 
-2.56.0
-

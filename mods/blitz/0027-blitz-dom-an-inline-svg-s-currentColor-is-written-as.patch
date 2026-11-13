@@ -1,7 +1,7 @@
-From a8126279e706496c483f5a4951d9b0807e2a3a13 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Sat, 10 Oct 2026 15:52:24 +0200
-Subject: [PATCH 27/45] blitz-dom: an inline svg's currentColor is written as
+Subject: [PATCH 27/54] blitz-dom: an inline svg's currentColor is written as
  rgb()
 
 A colour that computes to anything but legacy sRGB (color-mix(), oklab,
@@ -28,6 +28,3 @@ index d8919a73b..71b6dd570 100644
  
          match &self.data {
              NodeData::Document(_) => {}
--- 
-2.56.0
-

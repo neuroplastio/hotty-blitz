@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 16:21:50 +0100
-Subject: [PATCH] blitz-dom: a scroll comes to rest at its snap position (CSS
- Scroll Snap)
+Subject: [PATCH 46/54] blitz-dom: a scroll comes to rest at its snap position
+ (CSS Scroll Snap)
 
 scroll_snap.rs picks the snap position a scroll comes to rest at, from
 scroll-snap-type, scroll-snap-align, scroll-snap-stop and scroll-padding:
@@ -32,10 +32,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 packages/blitz-dom/src/scroll_snap.rs
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index b7217c1c4..4dc4c9759 100644
+index 9a21b6de8..4b9daef1f 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -95,6 +95,7 @@ pub(crate) fn init_stylo_prefs() {
+@@ -96,6 +96,7 @@ pub(crate) fn init_stylo_prefs() {
          style_config::set_pref!("layout.css.font-variations.enabled", true);
          style_config::set_pref!("layout.css.text-indent-keywords.enabled", true);
          style_config::set_pref!("layout.css.word-break.break-word.enabled", true);
@@ -947,6 +947,3 @@ index 1957daf94..d5189087b 100644
      }
  
      /// Resolve a URL fragment (the `#...` part of a URL) to a scroll target.
--- 
-2.56.0
-

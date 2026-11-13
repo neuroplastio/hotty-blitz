@@ -1,7 +1,7 @@
-From 3dff66693fbba89d002c6c693fea9caf7dd4b359 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 00:29:49 +0100
-Subject: [PATCH 43/45] blitz-dom: a border keeps the device pixels Stylo
+Subject: [PATCH 43/54] blitz-dom: a border keeps the device pixels Stylo
  snapped it to
 
 Stylo snaps a border's width to whole device pixels ("snap as a border
@@ -67,6 +67,3 @@ index 24045c457..e2c81e736 100644
              self.geometry_changed(dom_node_id(node_id));
          }
      }
--- 
-2.56.0
-

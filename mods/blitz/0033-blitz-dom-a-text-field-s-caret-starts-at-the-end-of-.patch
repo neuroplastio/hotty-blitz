@@ -1,7 +1,7 @@
-From d5a61cb21f8fa73ffdec11c8925dc72f68ee6c9e Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 22 Oct 2026 11:20:17 +0200
-Subject: [PATCH 33/45] blitz-dom: a text field's caret starts at the end of
+Subject: [PATCH 33/54] blitz-dom: a text field's caret starts at the end of
  its value
 
 A new text input or textarea, and one whose value a script or the value
@@ -42,10 +42,10 @@ index d9524399c..61f57f9c7 100644
      text_input_data.set_password(
          &mut doc.font_ctx.lock().unwrap(),
 diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
-index 5378d4768..d3c367d03 100644
+index 2c87b052a..3c7a9e92d 100644
 --- a/packages/blitz-dom/src/node/text.rs
 +++ b/packages/blitz-dom/src/node/text.rs
-@@ -216,6 +216,8 @@ impl TextInputData {
+@@ -225,6 +225,8 @@ impl TextInputData {
          Some((layout.height(), layout.lines().next()?.metrics().baseline))
      }
  
@@ -54,7 +54,7 @@ index 5378d4768..d3c367d03 100644
      pub fn set_text(
          &mut self,
          font_ctx: &mut FontContext,
-@@ -226,11 +228,11 @@ impl TextInputData {
+@@ -235,11 +237,11 @@ impl TextInputData {
              if value != text {
                  *value = text.to_string();
                  self.editor.set_text(&mask(char_len(text)));
@@ -68,6 +68,3 @@ index 5378d4768..d3c367d03 100644
          }
      }
  
--- 
-2.56.0
-

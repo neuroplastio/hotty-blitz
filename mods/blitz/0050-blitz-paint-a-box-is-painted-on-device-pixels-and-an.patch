@@ -1,8 +1,8 @@
-From feef31e027eb0614e8d86a88da1adc2657d0383f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Wed, 4 Nov 2026 11:26:23 +0100
-Subject: [PATCH] blitz-paint: a box is painted on device pixels, and an inset
- ring's spread is whole
+Subject: [PATCH 50/54] blitz-paint: a box is painted on device pixels, and an
+ inset ring's spread is whole
 
 At a fractional scale a box laid out on whole CSS pixels sits at a
 fraction of a device pixel: at 1.6 a box 4 CSS px in starts 6.4 device
@@ -27,7 +27,7 @@ beside it: 1 device pixel for 1px at 1, 1.25, 1.5 and 1.6, 2 at 2 and
  3 files changed, 50 insertions(+), 1 deletion(-)
 
 diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-paint/src/kurbo_css/css_box.rs
-index d5b923478..69810ef6f 100644
+index cb608f590..ac9530961 100644
 --- a/packages/blitz-paint/src/kurbo_css/css_box.rs
 +++ b/packages/blitz-paint/src/kurbo_css/css_box.rs
 @@ -222,6 +222,40 @@ impl CssBox {
@@ -72,7 +72,7 @@ index d5b923478..69810ef6f 100644
      pub fn border_box_path(&self) -> BezPath {
          let mut path = BezPath::new();
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 861805740..f0caeee87 100644
+index f7c0439a5..af89b1c97 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
 @@ -767,6 +767,14 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
@@ -117,6 +117,3 @@ index a746bb425..e168362d9 100644
                  let snap = |v: f64, t: f64| (v + t - 0.5).ceil() - t;
                  let hole = Rect::new(
                      snap(hole.x0, tx),
--- 
-2.56.0
-

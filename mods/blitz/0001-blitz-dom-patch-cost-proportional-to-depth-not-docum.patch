@@ -1,7 +1,7 @@
-From 14baf04b46e4bc4c239fdef3c57cc12f9fc1774c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Tue, 29 Sep 2026 11:03:38 +0200
-Subject: [PATCH 01/45] blitz-dom: patch cost proportional to depth, not
+Subject: [PATCH 01/54] blitz-dom: patch cost proportional to depth, not
  document size
 
 Four changes to make an incremental resolve cost what the change touches:
@@ -49,10 +49,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 packages/blitz-dom/src/layout/speculate.rs
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index c23f0c92c..c78f6fc3d 100644
+index 317b87171..281eda603 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -299,6 +299,21 @@ pub struct BaseDocument {
+@@ -302,6 +302,21 @@ pub struct BaseDocument {
      /// every node is treated as damaged on every `resolve`, so the same damage
      /// pipeline reconstructs and relays out the whole tree.
      pub(crate) incremental_layout: bool,
@@ -74,8 +74,8 @@ index c23f0c92c..c78f6fc3d 100644
      /// How deeply this document is nested within other documents
      /// (0 for a root document). Used to limit `<iframe>` nesting depth.
      pub(crate) subdocument_depth: usize,
-@@ -524,6 +539,12 @@ impl BaseDocument {
-             pending_device_changes: DeviceChanges::empty(),
+@@ -559,6 +574,12 @@ impl BaseDocument {
+             flags: DocumentFlags::empty(),
              style_threading: config.style_threading,
              incremental_layout: config.incremental.unwrap_or(true),
 +            round_dirty: Vec::new(),
@@ -431,10 +431,10 @@ index 3ebe0e7e9..f15e5445e 100644
      /// mode). Iterates the node slotmap directly rather than walking the tree,
      /// which is cheaper and also reaches pseudo-elements and anonymous boxes
 diff --git a/packages/blitz-dom/src/layout/inline/layout.rs b/packages/blitz-dom/src/layout/inline/layout.rs
-index 2f05a084f..9914e5355 100644
+index 9d68d9e5e..3cf4be5ed 100644
 --- a/packages/blitz-dom/src/layout/inline/layout.rs
 +++ b/packages/blitz-dom/src/layout/inline/layout.rs
-@@ -95,6 +95,12 @@ impl LayoutPassState<'_> {
+@@ -202,6 +202,12 @@ impl LayoutPassState<'_> {
              run_mode,
              ..
          } = inputs;
@@ -873,7 +873,7 @@ index 000000000..18cff533e
 +    }
 +}
 diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
-index f0ac2dc22..6b5bdef57 100644
+index 98eadb9a7..e183aa3f3 100644
 --- a/packages/blitz-dom/src/node/element.rs
 +++ b/packages/blitz-dom/src/node/element.rs
 @@ -1,3 +1,4 @@
@@ -922,7 +922,7 @@ index dfc9153e9..8b521ae7b 100644
      SpecialElementType, Status,
  };
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index 81e57baa0..c2d70eead 100644
+index b77ea5acc..39aa42ba1 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
 @@ -36,7 +36,9 @@ use style_dom::ElementState;
@@ -952,10 +952,10 @@ index 81e57baa0..c2d70eead 100644
      }
  
 diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
-index c5c420a22..1b68a2853 100644
+index 424042c2a..ff0eed838 100644
 --- a/packages/blitz-dom/src/resolve.rs
 +++ b/packages/blitz-dom/src/resolve.rs
-@@ -257,6 +257,20 @@ impl BaseDocument {
+@@ -261,6 +261,20 @@ impl BaseDocument {
                  return;
              }
  
@@ -976,7 +976,7 @@ index c5c420a22..1b68a2853 100644
              let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
              let _flags = doc.nodes[node_id].flags;
  
-@@ -267,7 +281,13 @@ impl BaseDocument {
+@@ -271,7 +285,13 @@ impl BaseDocument {
                  // previous construction round. They live only in the slab, so
                  // reconstructing without freeing them would leak a slab entry per
                  // anonymous block per reconstruction.
@@ -990,7 +990,7 @@ index c5c420a22..1b68a2853 100644
                  for anon_id in old_anonymous_blocks {
                      doc.deallocate_anonymous_block(anon_id);
                  }
-@@ -290,6 +310,14 @@ impl BaseDocument {
+@@ -294,6 +314,14 @@ impl BaseDocument {
                      }
                  }
  
@@ -1005,7 +1005,7 @@ index c5c420a22..1b68a2853 100644
                  *doc.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
                  // *doc.nodes[node_id].paint_children.borrow_mut() = Some(layout_children);
  
-@@ -442,6 +470,7 @@ impl BaseDocument {
+@@ -446,6 +474,7 @@ impl BaseDocument {
  
          // println!("\n\nRESOLVE LAYOUT\n===========\n");
  
@@ -1013,7 +1013,7 @@ index c5c420a22..1b68a2853 100644
          let mut state = LayoutPassState::new(self);
          #[cfg(feature = "writing-mode")]
          let available_space = {
-@@ -454,9 +483,14 @@ impl BaseDocument {
+@@ -458,9 +487,14 @@ impl BaseDocument {
          };
          taffy::compute_root_layout(&mut state, root_element_id, available_space);
          #[cfg(feature = "writing-mode")]
@@ -1030,6 +1030,3 @@ index c5c420a22..1b68a2853 100644
  
          // println!("\n\n");
          // taffy::print_tree(self, root_node_id)
--- 
-2.56.0
-

@@ -1,7 +1,7 @@
-From 5d4727a19289da7bb61c1100b76fb92f50210357 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 22:49:07 +0200
-Subject: [PATCH 15/45] blitz-dom: stylesheets of the user origin
+Subject: [PATCH 15/54] blitz-dom: stylesheets of the user origin
 
 DocumentConfig::user_stylesheets and BaseDocument::add_user_stylesheet
 and remove_user_stylesheet: a user stylesheet wins over the user agent's
@@ -16,10 +16,10 @@ as :where() and still override the user agent stylesheet's.
  3 files changed, 97 insertions(+)
 
 diff --git a/packages/blitz-dom/src/config.rs b/packages/blitz-dom/src/config.rs
-index 68ce79701..04ba5b770 100644
+index 65f4359f7..f08bf6074 100644
 --- a/packages/blitz-dom/src/config.rs
 +++ b/packages/blitz-dom/src/config.rs
-@@ -37,6 +37,9 @@ pub struct DocumentConfig {
+@@ -39,6 +39,9 @@ pub struct DocumentConfig {
      /// The list is used as given, so replacing it removes the default sheet unless it is
      /// included, e.g. `vec![UserAgentStylesheet::default_sheet(), custom]`.
      pub ua_stylesheets: Vec<UserAgentStylesheet>,
@@ -29,7 +29,7 @@ index 68ce79701..04ba5b770 100644
      /// Net provider to handle network requests for resources
      pub net_provider: Option<Arc<dyn NetProvider>>,
      /// Navigation provider to handle link clicks and form submissions
-@@ -74,6 +77,7 @@ impl Default for DocumentConfig {
+@@ -79,6 +82,7 @@ impl Default for DocumentConfig {
              viewport: None,
              base_url: None,
              ua_stylesheets: vec![UserAgentStylesheet::default_sheet()],
@@ -38,10 +38,10 @@ index 68ce79701..04ba5b770 100644
              navigation_provider: None,
              shell_provider: None,
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index e0a35278a..ef89fe240 100644
+index e0b3a6c95..f6dbf9da7 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -414,6 +414,8 @@ pub struct BaseDocument {
+@@ -417,6 +417,8 @@ pub struct BaseDocument {
      /// added, replaced or removed), so that CSSOM wrappers can detect that
      /// their cached rule data is stale.
      pub(crate) stylesheet_generation: u64,
@@ -50,7 +50,7 @@ index e0a35278a..ef89fe240 100644
      /// Map from form control node ID's to their associated forms node ID's
      pub(crate) controls_to_form: HashMap<NodeId, NodeId>,
      /// Nodes that contain sub documents
-@@ -567,6 +569,7 @@ impl BaseDocument {
+@@ -602,6 +604,7 @@ impl BaseDocument {
              subdocument_depth: config.subdocument_depth,
              devtool_settings: DevtoolSettings::default(),
              url: base_url,
@@ -58,7 +58,7 @@ index e0a35278a..ef89fe240 100644
              nodes_to_stylesheet: BTreeMap::new(),
              stylesheet_generation: 0,
              font_ctx,
-@@ -625,6 +628,9 @@ impl BaseDocument {
+@@ -665,6 +668,9 @@ impl BaseDocument {
          for sheet in config.ua_stylesheets {
              doc.add_user_agent_stylesheet(sheet);
          }
@@ -68,7 +68,7 @@ index e0a35278a..ef89fe240 100644
  
          // Stylo data on the root node container is needed to render the node
          let stylo_element_data = StyloElementData {
-@@ -1292,6 +1298,25 @@ impl BaseDocument {
+@@ -1357,6 +1363,25 @@ impl BaseDocument {
          self.stylist.append_stylesheet(sheet.0, &self.guard.read());
      }
  
@@ -94,8 +94,8 @@ index e0a35278a..ef89fe240 100644
      pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
          let data = Stylesheet::from_str(
              css.as_ref(),
-@@ -3856,3 +3881,70 @@ mod font_face_override_tests {
-         );
+@@ -3977,3 +4002,70 @@ mod change_tracking_tests {
+         assert!(doc.has_changes());
      }
  }
 +
@@ -166,7 +166,7 @@ index e0a35278a..ef89fe240 100644
 +    }
 +}
 diff --git a/packages/blitz-dom/src/iframe.rs b/packages/blitz-dom/src/iframe.rs
-index 97c5ae91c..ae6a04861 100644
+index ef6035f9f..d694e24b7 100644
 --- a/packages/blitz-dom/src/iframe.rs
 +++ b/packages/blitz-dom/src/iframe.rs
 @@ -58,6 +58,7 @@ impl BaseDocument {
@@ -177,6 +177,3 @@ index 97c5ae91c..ae6a04861 100644
              net_provider: Some(self.net_provider.clone()),
              navigation_provider: Some(Arc::new(IframeNavigationProvider {
                  node_id,
--- 
-2.56.0
-

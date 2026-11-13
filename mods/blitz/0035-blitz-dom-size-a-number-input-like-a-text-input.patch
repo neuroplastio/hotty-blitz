@@ -1,7 +1,7 @@
-From b2b34b786cb4425e8cdb6512414974b0000f98a1 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 23 Oct 2026 17:17:41 +0200
-Subject: [PATCH 35/45] blitz-dom: size a number input like a text input
+Subject: [PATCH 35/54] blitz-dom: size a number input like a text input
 
 A number input fell through to the generic leaf layout, which sizes a
 control by its content, so an empty one was as wide as its padding and
@@ -31,6 +31,3 @@ index 36610baa9..0a5d1b606 100644
                              // Chromium adds the widest glyph less one character,
                              // as Internet Explorer did.
                              let size = control_count(element_data.attr(local_name!("size")), 20);
--- 
-2.56.0
-

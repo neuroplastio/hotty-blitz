@@ -1,7 +1,7 @@
-From 56a174cc0eadead7a15056342d64e4248a0b597a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 18:50:54 +0200
-Subject: [PATCH 06/45] blitz-traits, blitz-dom: a request carries its
+Subject: [PATCH 06/54] blitz-traits, blitz-dom: a request carries its
  destination
 
 A NetProvider got a URL and nothing about what it was for, so it could
@@ -32,10 +32,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  8 files changed, 68 insertions(+), 13 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 2bfeeec4a..2f57998f6 100644
+index dffd4110e..876608ab9 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -671,8 +671,12 @@ impl BaseDocument {
+@@ -735,8 +735,12 @@ impl BaseDocument {
  
      /// Wrapper around [`crate::net::stamped_request`]. Use the free function
      /// when `&self` would conflict with a held `&mut` borrow on a field.
@@ -50,8 +50,8 @@ index 2bfeeec4a..2f57998f6 100644
      }
  
      pub fn favicon_url(&self) -> Option<String> {
-@@ -1208,7 +1212,10 @@ impl BaseDocument {
-                         let resolved_href = self.resolve_url(href);
+@@ -1273,7 +1277,10 @@ impl BaseDocument {
+                     {
                          self.net_provider.fetch(
                              self.id(),
 -                            self.build_request(resolved_href.clone()),
@@ -63,7 +63,7 @@ index 2bfeeec4a..2f57998f6 100644
                                  self.tx.clone(),
                                  self.id,
 diff --git a/packages/blitz-dom/src/iframe.rs b/packages/blitz-dom/src/iframe.rs
-index c439fa827..97c5ae91c 100644
+index 566ce00a7..ef6035f9f 100644
 --- a/packages/blitz-dom/src/iframe.rs
 +++ b/packages/blitz-dom/src/iframe.rs
 @@ -4,7 +4,7 @@ use std::sync::Arc;
@@ -75,7 +75,7 @@ index c439fa827..97c5ae91c 100644
  use blitz_traits::node_id::NodeId;
  use blitz_traits::shell::ShellProvider;
  
-@@ -134,7 +134,7 @@ impl BaseDocument {
+@@ -137,7 +137,7 @@ impl BaseDocument {
          let signal = self.new_iframe_generation(node_id, Some(handler.request_id()));
          self.net_provider.fetch(
              self.id(),
@@ -97,10 +97,10 @@ index f15e5445e..29ddb609b 100644
                              ),
                              ResourceHandler::boxed(
 diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
-index e3b437a67..8336375bf 100644
+index 33879a74b..c0a9b8f8e 100644
 --- a/packages/blitz-dom/src/mutator.rs
 +++ b/packages/blitz-dom/src/mutator.rs
-@@ -1257,7 +1257,8 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1393,7 +1393,8 @@ impl<'doc> DocumentMutator<'doc> {
  
          self.doc.net_provider.fetch(
              self.doc.id(),
@@ -110,7 +110,7 @@ index e3b437a67..8336375bf 100644
              Box::new(handler),
          );
      }
-@@ -1317,7 +1318,8 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1460,7 +1461,8 @@ impl<'doc> DocumentMutator<'doc> {
  
                  self.doc.net_provider.fetch(
                      self.doc.id(),
@@ -121,10 +121,10 @@ index e3b437a67..8336375bf 100644
                          self.doc.tx.clone(),
                          self.doc.id(),
 diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
-index 68b42f35c..fef145a12 100644
+index cd8715265..6cb3c31bf 100644
 --- a/packages/blitz-dom/src/net.rs
 +++ b/packages/blitz-dom/src/net.rs
-@@ -19,15 +19,19 @@ use style::{
+@@ -21,15 +21,19 @@ use style::{
      values::{CssUrl, SourceLocation},
  };
  
@@ -147,7 +147,7 @@ index 68b42f35c..fef145a12 100644
      if let Some(sig) = signal {
          req = req.signal(sig.clone());
      }
-@@ -228,7 +232,11 @@ impl ServoStylesheetLoader for StylesheetLoader {
+@@ -227,7 +231,11 @@ impl ServoStylesheetLoader for StylesheetLoader {
          let import = ServoArc::new(lock.wrap(import));
          self.net_provider.fetch(
              self.doc_id,
@@ -160,8 +160,8 @@ index 68b42f35c..fef145a12 100644
              ResourceHandler::boxed(
                  self.tx.clone(),
                  self.doc_id,
-@@ -509,7 +517,7 @@ pub(crate) fn fetch_font_face_rules<'a>(
-             if let Some((url, format)) = preferred_source {
+@@ -437,7 +445,7 @@ pub(crate) fn fetch_font_face_rules<'a>(
+             if let Some((url, format)) = preferred_font_source(source_list) {
                  network_provider.fetch(
                      doc_id,
 -                    stamped_request(url, abort_signal),
@@ -238,7 +238,7 @@ index 52a552f20..9a09a3a22 100644
  
  #[derive(Debug, Clone)]
 diff --git a/packages/blitz/src/lib.rs b/packages/blitz/src/lib.rs
-index 90b846169..157cfe9bb 100644
+index 6f213fc17..c0ae52efa 100644
 --- a/packages/blitz/src/lib.rs
 +++ b/packages/blitz/src/lib.rs
 @@ -63,7 +63,12 @@ pub fn launch_url(url: &str) {
@@ -253,8 +253,5 @@ index 90b846169..157cfe9bb 100644
 +            ),
 +        )
          .unwrap();
-     let html = std::str::from_utf8(bytes.as_ref()).unwrap();
+     let html = String::from_utf8_lossy(bytes.as_ref());
  
--- 
-2.56.0
-

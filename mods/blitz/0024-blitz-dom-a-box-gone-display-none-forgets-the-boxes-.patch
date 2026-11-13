@@ -1,7 +1,7 @@
-From f3a911500f11ae5aa195cd384998d2e88b8e3f46 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Fri, 9 Oct 2026 22:37:46 +0200
-Subject: [PATCH 24/45] blitz-dom: a box gone display: none forgets the boxes
+Subject: [PATCH 24/54] blitz-dom: a box gone display: none forgets the boxes
  built under it
 
 A box that goes display: none gets no construction of its own: its
@@ -119,6 +119,3 @@ index 29ddb609b..7be7c20d7 100644
      /// Whether this resolve keeps evicted layout caches for
      /// `speculate_layout`: only incremental relayouts of a laid-out tree,
      /// in horizontal writing modes alone (`layout::round` is not built
--- 
-2.56.0
-

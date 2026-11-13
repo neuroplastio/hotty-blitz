@@ -1,7 +1,7 @@
-From a139be4e68ce70b89f61ded60b9433144ffa3f82 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 14:51:15 +0200
-Subject: [PATCH 11/45] blitz-dom: text controls are as wide as size and cols,
+Subject: [PATCH 11/54] blitz-dom: text controls are as wide as size and cols,
  as tall as rows
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -35,10 +35,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  2 files changed, 147 insertions(+), 25 deletions(-)
 
 diff --git a/packages/blitz-dom/src/font_metrics.rs b/packages/blitz-dom/src/font_metrics.rs
-index 5273cdfaf..726752a55 100644
+index 25dc98330..10cd137c4 100644
 --- a/packages/blitz-dom/src/font_metrics.rs
 +++ b/packages/blitz-dom/src/font_metrics.rs
-@@ -34,6 +34,90 @@ fn query_for_font_styles<'a>(
+@@ -36,6 +36,90 @@ fn query_for_font_styles<'a>(
      query
  }
  
@@ -70,7 +70,7 @@ index 5273cdfaf..726752a55 100644
 +    let mut font_ctx = font_ctx.lock().unwrap();
 +    let font_ctx = &mut *font_ctx;
 +    let mut query = query_for_font_styles(font_ctx, font_styles);
-+    let variations = stylo_to_parley::font_variations(&font_styles.font_variation_settings);
++    let variations = stylo_to_parley::font_variations(font_styles, font_size);
 +
 +    let mut found = None;
 +    query.matches_with(|font| {
@@ -266,6 +266,3 @@ index db5e37557..cd66fb3ad 100644
                              );
                          }
                          _ => {}
--- 
-2.56.0
-

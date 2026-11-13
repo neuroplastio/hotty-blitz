@@ -1,7 +1,7 @@
-From 1aa50393066efaa8480d17b641ac743eceda8fe0 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 13:11:00 +0100
-Subject: [PATCH 45/45] blitz-dom: an inline's client rects skip the text of
+Subject: [PATCH 44/54] blitz-dom: an inline's client rects skip the text of
  freed nodes
 
 Node::inline_fragment_boxes walks the inline root's text layout and, for
@@ -21,10 +21,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  2 files changed, 43 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 2b7fb38d3..609cbef98 100644
+index e1ca26cb3..7fa8cc60c 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -4164,3 +4164,42 @@ mod focus_visible_tests {
+@@ -4285,3 +4285,42 @@ mod focus_visible_tests {
          assert!(!ring(&doc, button), "a button clicked shows none");
      }
  }
@@ -68,10 +68,10 @@ index 2b7fb38d3..609cbef98 100644
 +    }
 +}
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index 932de7744..a110b95b3 100644
+index beb4b2658..de2158b5d 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
-@@ -1844,7 +1844,9 @@ impl Node {
+@@ -1849,7 +1849,9 @@ impl Node {
          let scale = layout.scale();
  
          // Walk up the DOM parent chain from `id` to check whether it is (or is
@@ -82,7 +82,7 @@ index 932de7744..a110b95b3 100644
          let inline_root_id = inline_root.id;
          let is_in_target = move |mut id: NodeId| -> bool {
              loop {
-@@ -1854,7 +1856,7 @@ impl Node {
+@@ -1859,7 +1861,7 @@ impl Node {
                  if id == inline_root_id {
                      return false;
                  }
@@ -91,6 +91,3 @@ index 932de7744..a110b95b3 100644
                      Some(parent) => id = parent,
                      None => return false,
                  }
--- 
-2.56.0
-

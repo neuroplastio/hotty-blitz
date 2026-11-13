@@ -1,7 +1,7 @@
-From 81cca721c31f4a656ebf313229a7dc69204b30f8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 10:51:07 +0100
-Subject: [PATCH 41/45] blitz-paint: limit the layers open at once, not the
+Subject: [PATCH 41/54] blitz-paint: limit the layers open at once, not the
  layers painted
 
 LayerManager counted every layer it pushed in a paint against
@@ -49,6 +49,3 @@ index 17764ca84..8f4c6d98f 100644
              manager.maybe_with_layer(
                  &mut scene,
                  condition,
--- 
-2.56.0
-

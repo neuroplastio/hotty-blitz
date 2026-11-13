@@ -1,7 +1,7 @@
-From a2e8f5ec7a2ade243561b1086c3d5e7404c7213a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 19:09:44 +0200
-Subject: [PATCH 13/45] blitz-dom, blitz-paint: a document can lock scrolling
+Subject: [PATCH 13/54] blitz-dom, blitz-paint: a document can lock scrolling
  along an axis
 
 An embedder that shows a document in an area of a fixed size, and
@@ -24,10 +24,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 54 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index ab7c8d387..e0a35278a 100644
+index 4daf2caec..e0b3a6c95 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -387,6 +387,9 @@ pub struct BaseDocument {
+@@ -390,6 +390,9 @@ pub struct BaseDocument {
      /// When each scroll container's overlay scrollbars were last shown
      /// (scrolled, or the pointer left the thumb); drives their fade-out
      pub(crate) scrollbar_activity: HashMap<NodeId, Instant>,
@@ -37,15 +37,15 @@ index ab7c8d387..e0a35278a 100644
      /// Whether and what kind of scroll animation is currently in progress
      pub(crate) scroll_animation: ScrollAnimationState,
  
-@@ -610,6 +613,7 @@ impl BaseDocument {
+@@ -649,6 +652,7 @@ impl BaseDocument {
              drag_mode: DragMode::None,
              hovered_scrollbar: None,
              scrollbar_activity: HashMap::new(),
 +            scroll_axes: (true, true),
              scroll_animation: ScrollAnimationState::None,
              text_selection: TextSelection::default(),
-         };
-@@ -1999,7 +2003,7 @@ impl BaseDocument {
+             scratch: DocumentScratch::default(),
+@@ -2066,7 +2070,7 @@ impl BaseDocument {
          let hit = self
              .root_element()
              .hit_inner(x, y, self.viewport().scale_f64(), &mut scrollbar);
@@ -54,7 +54,7 @@ index ab7c8d387..e0a35278a 100644
      }
  
      pub fn set_hover_to(&mut self, x: f32, y: f32) -> bool {
-@@ -2447,6 +2451,39 @@ impl BaseDocument {
+@@ -2518,6 +2522,39 @@ impl BaseDocument {
          self.nodes.set_viewport_scroll(scroll);
      }
  
@@ -121,7 +121,7 @@ index 7de35eee0..1957daf94 100644
          match self.canonical_scroll_target(target) {
              ScrollTarget::Viewport => {
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 46b132262..a1eb42444 100644
+index e3dd31a37..542a1eef3 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
 @@ -904,7 +904,7 @@ impl ElementCx<'_, '_> {
@@ -133,6 +133,3 @@ index 46b132262..a1eb42444 100644
                  continue;
              }
              let Some(thumb) = self.node.scrollbar_thumb(axis) else {
--- 
-2.56.0
-

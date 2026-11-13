@@ -1,7 +1,7 @@
-From d15e2f7e5d377596478fac6466935be0852fee99 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 23:00:08 +0200
-Subject: [PATCH 17/45] blitz-dom, blitz-paint: selected text takes the colours
+Subject: [PATCH 17/54] blitz-dom, blitz-paint: selected text takes the colours
  of its ::selection
 
 Selections were painted in a fixed highlight, with the text in its own
@@ -19,7 +19,7 @@ inputs do the same with their editor's selection.
  3 files changed, 111 insertions(+), 30 deletions(-)
 
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index ed4644bf1..2e0a526bf 100644
+index 21423da18..85a01c081 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
 @@ -23,7 +23,7 @@ use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
@@ -46,7 +46,7 @@ index ed4644bf1..2e0a526bf 100644
      ///
      /// Panics if the node has no computed styles: layout always runs after
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index a1eb42444..211648fba 100644
+index 542a1eef3..bf3808a9b 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
 @@ -379,6 +379,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
@@ -57,7 +57,7 @@ index a1eb42444..211648fba 100644
                  );
              }
          }
-@@ -998,14 +999,16 @@ impl ElementCx<'_, '_> {
+@@ -1000,14 +1001,16 @@ impl ElementCx<'_, '_> {
              );
  
              // Render text selection highlight (if any) using cached selection ranges
@@ -82,7 +82,7 @@ index a1eb42444..211648fba 100644
              }
  
              // Render text
-@@ -1021,10 +1024,52 @@ impl ElementCx<'_, '_> {
+@@ -1023,10 +1026,52 @@ impl ElementCx<'_, '_> {
                  },
                  self.node.id,
                  &mut draw_text_context,
@@ -135,7 +135,7 @@ index a1eb42444..211648fba 100644
      fn draw_text_input_text(&self, scene: &mut impl PaintScene, pos: Point) {
          // Render the text in text inputs
          if let Some(input_data) = self.text_input {
-@@ -1049,16 +1094,14 @@ impl ElementCx<'_, '_> {
+@@ -1052,16 +1097,14 @@ impl ElementCx<'_, '_> {
              let transform = self.transform
                  * Affine::translate((pos.x * self.scale - scroll_x, pos.y * self.scale - scroll_y));
  
@@ -157,7 +157,7 @@ index a1eb42444..211648fba 100644
                  }
                  if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
                      let color = self.style.get_inherited_text().color;
-@@ -1090,7 +1133,27 @@ impl ElementCx<'_, '_> {
+@@ -1093,7 +1136,27 @@ impl ElementCx<'_, '_> {
                  },
                  self.node.id,
                  &mut draw_text_context,
@@ -185,7 +185,7 @@ index a1eb42444..211648fba 100644
          }
      }
  
-@@ -1148,6 +1211,7 @@ impl ElementCx<'_, '_> {
+@@ -1152,6 +1215,7 @@ impl ElementCx<'_, '_> {
                  },
                  self.node.id,
                  &mut draw_text_context,
@@ -194,7 +194,7 @@ index a1eb42444..211648fba 100644
          }
      }
 diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
-index 0dc6f2a3e..75a290f92 100644
+index f0fa23622..fb1eacd8c 100644
 --- a/packages/blitz-paint/src/text.rs
 +++ b/packages/blitz-paint/src/text.rs
 @@ -11,8 +11,8 @@ use style::values::computed::{
@@ -265,7 +265,7 @@ index 0dc6f2a3e..75a290f92 100644
                  }
  
                  let fill_color = brush_override
-@@ -745,21 +755,21 @@ pub(crate) fn stroke_text<'a>(
+@@ -748,23 +758,23 @@ pub(crate) fn stroke_text<'a>(
      }
  }
  
@@ -294,6 +294,5 @@ index 0dc6f2a3e..75a290f92 100644
      });
 +    area
  }
--- 
-2.56.0
-
+ 
+ /// Approximates macOS font smoothing (stem dilation). CoreGraphics dilates each side by an amount

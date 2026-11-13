@@ -1,6 +1,6 @@
 ---
 title: "A viewport carries prefers-reduced-motion"
-patch: 0053-blitz-traits-blitz-dom-a-viewport-carries-prefers-re.patch
+patch: 0052-blitz-traits-blitz-dom-a-viewport-carries-prefers-re.patch
 upstream-fit: yes
 ---
 

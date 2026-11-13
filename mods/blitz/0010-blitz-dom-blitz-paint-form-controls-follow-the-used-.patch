@@ -1,7 +1,7 @@
-From bf28a2ac0d3c9a61fbe4408b9ae2ed8c24ec0ffc Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 14:51:15 +0200
-Subject: [PATCH 10/45] blitz-dom, blitz-paint: form controls follow the used
+Subject: [PATCH 10/54] blitz-dom, blitz-paint: form controls follow the used
  color scheme
 
 Fields were white and buttons light grey on every page, and checkboxes and
@@ -35,7 +35,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 143 insertions(+), 63 deletions(-)
 
 diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
-index 83455e96f..b9fb51e59 100644
+index 2747653c3..a368c8bda 100644
 --- a/packages/blitz-dom/assets/default.css
 +++ b/packages/blitz-dom/assets/default.css
 @@ -59,25 +59,37 @@ input[type="hidden" i] {
@@ -85,7 +85,7 @@ index 83455e96f..b9fb51e59 100644
  }
  
  input,
-@@ -99,11 +111,11 @@ button,
+@@ -125,11 +137,11 @@ button,
  input[type="submit"],
  input[type="reset"],
  input[type="button"] {
@@ -101,10 +101,10 @@ index 83455e96f..b9fb51e59 100644
      display: inline-block;
  }
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 582e8abac..6cf2883c0 100644
+index 136f86187..cf70ff6f4 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -24,7 +24,7 @@ use blitz_traits::events::{DomEvent, HitResult, UiEvent};
+@@ -25,7 +25,7 @@ use blitz_traits::events::{DomEvent, HitResult, UiEvent};
  use blitz_traits::navigation::{DummyNavigationProvider, NavigationProvider};
  use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request};
  use blitz_traits::node_id::NodeId;
@@ -113,7 +113,7 @@ index 582e8abac..6cf2883c0 100644
  use cursor_icon::CursorIcon;
  use linebender_resource_handle::Blob;
  use markup5ever::{LocalName, local_name};
-@@ -2164,6 +2164,25 @@ impl BaseDocument {
+@@ -2231,6 +2231,25 @@ impl BaseDocument {
          &self.viewport
      }
  
@@ -341,6 +341,3 @@ index a76f73921..f2415c02c 100644
 +        scene.fill(Fill::NonZero, transform, colors.accent, None, &dot);
      }
  }
--- 
-2.56.0
-

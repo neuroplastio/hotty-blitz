@@ -1,7 +1,7 @@
-From 236afe902c58208de1b2fa2702f9b323779c0883 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 23 Oct 2026 17:17:54 +0200
-Subject: [PATCH 36/45] blitz-dom, blitz-paint: draw a text field's placeholder
+Subject: [PATCH 36/54] blitz-dom, blitz-paint: draw a text field's placeholder
 
 An empty input or textarea showed nothing for its `placeholder`. It now
 shows the attribute's text in the field's `::placeholder` style, which
@@ -38,10 +38,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  10 files changed, 235 insertions(+), 15 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index ef23d42e2..384be5a34 100644
+index f01ce5020..eb28b875e 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -460,6 +460,10 @@ pub struct BaseDocument {
+@@ -463,6 +463,10 @@ pub struct BaseDocument {
      /// the style traversal and by pseudo-element box construction).
      pub(crate) pending_style_image_nodes: Vec<NodeId>,
  
@@ -52,7 +52,7 @@ index ef23d42e2..384be5a34 100644
      // Tracks in-flight "critical" resources (e.g. stylesheets linked from the `<head>`),
      // keyed by request id
      pub(crate) pending_critical_resources: HashSet<usize>,
-@@ -606,6 +610,7 @@ impl BaseDocument {
+@@ -641,6 +645,7 @@ impl BaseDocument {
              #[cfg(feature = "svg")]
              svg_images: HashMap::new(),
              pending_style_image_nodes: Vec::new(),
@@ -272,10 +272,10 @@ index 8b521ae7b..1e1a944a7 100644
 -pub use text::{GeneratedTextInputEvent, TextBrush, TextInputData, TextLayout};
 +pub use text::{GeneratedTextInputEvent, Placeholder, TextBrush, TextInputData, TextLayout};
 diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
-index d3c367d03..c4b05f109 100644
+index 3c7a9e92d..ea5c5009e 100644
 --- a/packages/blitz-dom/src/node/text.rs
 +++ b/packages/blitz-dom/src/node/text.rs
-@@ -76,6 +76,15 @@ pub struct TextInputData {
+@@ -84,6 +84,15 @@ pub struct TextInputData {
      /// [`PASSWORD_MASK`] per character, and each edit of the mask is made
      /// to the value too. `None` for any other text field.
      password: Option<String>,
@@ -291,19 +291,19 @@ index d3c367d03..c4b05f109 100644
  }
  
  /// What a password field shows for each character of its value, as Chrome.
-@@ -117,6 +126,7 @@ impl TextInputData {
-             is_multiline,
+@@ -126,6 +135,7 @@ impl TextInputData {
              scroll_offset: 0.0,
+             content_box_subpixel_offset: taffy::Point::ZERO,
              password: None,
 +            placeholder: None,
          }
      }
  
 diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
-index 23a121445..6ee3a2181 100644
+index 9620cf3cf..4f50dbdf6 100644
 --- a/packages/blitz-dom/src/resolve.rs
 +++ b/packages/blitz-dom/src/resolve.rs
-@@ -106,6 +106,7 @@ impl BaseDocument {
+@@ -107,6 +107,7 @@ impl BaseDocument {
          // nodes whose style changed (queued by the style traversal and by
          // pseudo-element box construction), fetching any not-yet-loaded images.
          self.flush_pending_style_images();
@@ -312,7 +312,7 @@ index 23a121445..6ee3a2181 100644
  
          // Next we resolve layout with the data resolved by stlist
 diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
-index 5a6712dc0..4e0d17fc0 100644
+index 3831752d2..18a342c63 100644
 --- a/packages/blitz-dom/src/stylo.rs
 +++ b/packages/blitz-dom/src/stylo.rs
 @@ -165,6 +165,8 @@ impl crate::document::BaseDocument {
@@ -324,7 +324,7 @@ index 5a6712dc0..4e0d17fc0 100644
          }
          self.pending_style_image_nodes
              .extend(nodes_needing_style_image_flush);
-@@ -1362,6 +1364,9 @@ pub struct RecalcStyle<'a> {
+@@ -1529,6 +1531,9 @@ pub struct RecalcStyle<'a> {
      /// dedicated storage on the node (see `flush_image_layers_from_style`)
      /// because their style changed during this traversal.
      nodes_needing_style_image_flush: Mutex<Vec<NodeId>>,
@@ -334,7 +334,7 @@ index 5a6712dc0..4e0d17fc0 100644
  }
  
  impl<'a> RecalcStyle<'a> {
-@@ -1369,6 +1374,7 @@ impl<'a> RecalcStyle<'a> {
+@@ -1536,6 +1541,7 @@ impl<'a> RecalcStyle<'a> {
          RecalcStyle {
              context,
              nodes_needing_style_image_flush: Mutex::new(Vec::new()),
@@ -342,7 +342,7 @@ index 5a6712dc0..4e0d17fc0 100644
          }
      }
  }
-@@ -1408,6 +1414,14 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
+@@ -1575,6 +1581,14 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
                  }
              }
  
@@ -358,10 +358,10 @@ index 5a6712dc0..4e0d17fc0 100644
              el.unset_dirty_descendants();
          }
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index ab0140fff..89a910cc7 100644
+index 2fe9afe7a..e91090ed0 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
-@@ -1073,6 +1073,39 @@ impl ElementCx<'_, '_> {
+@@ -1075,6 +1075,39 @@ impl ElementCx<'_, '_> {
      fn draw_text_input_text(&self, scene: &mut impl PaintScene, pos: Point) {
          // Render the text in text inputs
          if let Some(input_data) = self.text_input {
@@ -402,10 +402,10 @@ index ab0140fff..89a910cc7 100644
              // within the content box of it's node.
              let y_offset = self.node.text_input_v_centering_offset(self.scale);
 diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
-index 75a290f92..59c433d51 100644
+index fb1eacd8c..e2ed667f3 100644
 --- a/packages/blitz-paint/src/text.rs
 +++ b/packages/blitz-paint/src/text.rs
-@@ -755,6 +755,54 @@ pub(crate) fn stroke_text<'a>(
+@@ -758,6 +758,54 @@ pub(crate) fn stroke_text<'a>(
      }
  }
  
@@ -460,6 +460,3 @@ index 75a290f92..59c433d51 100644
  /// The area the given byte range of a layout covers, in the layout's
  /// coordinates. Uses Parley's Selection type for accurate geometry calculation.
  pub(crate) fn text_selection_area(
--- 
-2.56.0
-

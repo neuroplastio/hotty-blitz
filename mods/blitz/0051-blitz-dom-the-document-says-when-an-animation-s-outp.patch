@@ -1,8 +1,8 @@
-From 6a84cfe8e352f87191675f418e1746b1d667e0f8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Wed, 4 Nov 2026 14:51:12 +0100
-Subject: [PATCH] blitz-dom: the document says when an animation's output next
- changes
+Subject: [PATCH 51/54] blitz-dom: the document says when an animation's output
+ next changes
 
 `has_active_animations` holds while any CSS animation or transition
 needs ticks, so an embedder that resolves only when something changes
@@ -24,10 +24,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  2 files changed, 19 insertions(+)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 28d11f9d3..e8fe598d6 100644
+index 848a2c9e9..eecae7198 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -405,6 +405,9 @@ pub struct BaseDocument {
+@@ -408,6 +408,9 @@ pub struct BaseDocument {
      // TODO: collapse animating state into a bitflags
      /// Whether there are active CSS animations/transitions (so we should re-render every frame)
      pub(crate) has_active_animations: bool,
@@ -37,7 +37,7 @@ index 28d11f9d3..e8fe598d6 100644
      /// Whether there is a `<canvas>` element in the DOM (so we should re-render every frame)
      pub(crate) has_canvas: bool,
      /// Whether there are subdocuments that are animating (so we should re-render every frame)
-@@ -600,6 +603,7 @@ impl BaseDocument {
+@@ -635,6 +638,7 @@ impl BaseDocument {
              active_node_id: None,
              mousedown_node_id: None,
              has_active_animations: false,
@@ -45,7 +45,7 @@ index 28d11f9d3..e8fe598d6 100644
              subdoc_is_animating: false,
              has_canvas: false,
              sub_document_nodes: HashSet::new(),
-@@ -2354,6 +2358,17 @@ impl BaseDocument {
+@@ -2421,6 +2425,17 @@ impl BaseDocument {
          self.has_active_animations
      }
  
@@ -64,7 +64,7 @@ index 28d11f9d3..e8fe598d6 100644
      /// `::before`/`::after` boxes their style carries: a CSS animation or
      /// transition changed their computed style, so what they paint or where
 diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
-index a0d1152c5..0138d7b4c 100644
+index ef3e4ef6a..20fc541ea 100644
 --- a/packages/blitz-dom/src/stylo.rs
 +++ b/packages/blitz-dom/src/stylo.rs
 @@ -211,6 +211,10 @@ impl crate::document::BaseDocument {
@@ -78,6 +78,3 @@ index a0d1152c5..0138d7b4c 100644
  
          // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
          self.stylist.rule_tree().maybe_gc();
--- 
-2.56.0
-

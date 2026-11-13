@@ -1,7 +1,7 @@
-From 3bd331ca75494aeb9c3bf86607b1a971d3344f1b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 20:28:00 +0200
-Subject: [PATCH 08/45] blitz-dom: an inline SVG's <image> draws what the
+Subject: [PATCH 08/54] blitz-dom: an inline SVG's <image> draws what the
  document fetches for it
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -42,10 +42,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 packages/blitz-dom/src/svg_image.rs
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 2f57998f6..6fdf0243e 100644
+index 876608ab9..671013073 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -439,6 +439,11 @@ pub struct BaseDocument {
+@@ -442,6 +442,11 @@ pub struct BaseDocument {
      /// Value is a list of (node_id, image_type) pairs waiting for the image.
      pub(crate) pending_images: HashMap<String, Vec<(NodeId, ImageType)>>,
  
@@ -57,7 +57,7 @@ index 2f57998f6..6fdf0243e 100644
      /// Nodes whose `background-image`/`mask-image` layers need flushing to
      /// dedicated storage on the node because their style changed (populated by
      /// the style traversal and by pseudo-element box construction).
-@@ -584,6 +589,8 @@ impl BaseDocument {
+@@ -619,6 +624,8 @@ impl BaseDocument {
              deferred_construction_nodes: Vec::new(),
              image_cache: HashMap::new(),
              pending_images: HashMap::new(),
@@ -66,7 +66,7 @@ index 2f57998f6..6fdf0243e 100644
              pending_style_image_nodes: Vec::new(),
              pending_critical_resources: HashSet::new(),
              controls_to_form: HashMap::new(),
-@@ -1199,6 +1206,8 @@ impl BaseDocument {
+@@ -1263,6 +1270,8 @@ impl BaseDocument {
      }
  
      pub fn reload_resource_by_href(&mut self, href_to_reload: &str) {
@@ -75,7 +75,7 @@ index 2f57998f6..6fdf0243e 100644
          for &node_id in self.nodes_to_stylesheet.keys() {
              let node = &self.nodes[node_id];
              let Some(element) = node.element_data() else {
-@@ -1432,6 +1441,12 @@ impl BaseDocument {
+@@ -1497,6 +1506,12 @@ impl BaseDocument {
  
                  self.apply_loaded_image(url, image);
              }
@@ -116,10 +116,10 @@ index caf512ab0..475cff092 100644
  /// Versioned storage for the nodes of the DOM tree.
  mod tree;
 diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
-index fc8e22700..b2a3f3b28 100644
+index 450fcced8..54ca89bd9 100644
 --- a/packages/blitz-dom/src/mutator.rs
 +++ b/packages/blitz-dom/src/mutator.rs
-@@ -36,6 +36,8 @@ pub enum AppendTextErr {
+@@ -51,6 +51,8 @@ pub enum AppendTextErr {
  /// function for borrow-checker reasons.
  enum SpecialOp {
      LoadImage(NodeId),
@@ -128,7 +128,7 @@ index fc8e22700..b2a3f3b28 100644
      LoadIframe(NodeId),
      LoadStylesheet(NodeId),
      UnloadStylesheet(NodeId),
-@@ -403,6 +405,13 @@ impl DocumentMutator<'_> {
+@@ -466,6 +468,13 @@ impl DocumentMutator<'_> {
              if let Some(img) = img {
                  self.load_image(img);
              }
@@ -142,7 +142,7 @@ index fc8e22700..b2a3f3b28 100644
          } else if (tag, attr) == tag_and_attr!("canvas", "src") {
              self.load_custom_paint_src(node_id);
          } else if (tag, attr) == tag_and_attr!("link", "href")
-@@ -1067,6 +1076,8 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1200,6 +1209,8 @@ impl<'doc> DocumentMutator<'doc> {
          for op in ops.drain(0..) {
              match op {
                  SpecialOp::LoadImage(node_id) => self.load_image(node_id),
@@ -151,7 +151,7 @@ index fc8e22700..b2a3f3b28 100644
                  SpecialOp::LoadIframe(node_id) => self.load_iframe(node_id),
                  SpecialOp::LoadStylesheet(node_id) => self.load_linked_stylesheet(node_id),
                  SpecialOp::UnloadStylesheet(node_id) => self.unload_stylesheet(node_id),
-@@ -1114,6 +1125,10 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1247,6 +1258,10 @@ impl<'doc> DocumentMutator<'doc> {
                  _ if has_custom_widget => {}
                  "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
                  "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
@@ -163,10 +163,10 @@ index fc8e22700..b2a3f3b28 100644
                  "canvas" => self
                      .eager_op_queue
 diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
-index fef145a12..622341591 100644
+index 6cb3c31bf..93e0e08e4 100644
 --- a/packages/blitz-dom/src/net.rs
 +++ b/packages/blitz-dom/src/net.rs
-@@ -69,6 +69,10 @@ pub enum Resource {
+@@ -71,6 +71,10 @@ pub enum Resource {
      Font(Bytes, FontFaceOverrides),
      /// HTML fetched for an `<iframe>` element's `src`
      DocumentSrc(String),
@@ -177,7 +177,7 @@ index fef145a12..622341591 100644
      None,
  }
  
-@@ -563,6 +567,20 @@ impl NetHandler for ResourceHandler<DocumentSrcHandler> {
+@@ -591,6 +595,20 @@ impl NetHandler for ResourceHandler<DocumentSrcHandler> {
      }
  }
  
@@ -457,6 +457,3 @@ index e6e4d3056..7dbc8d338 100644
      #[test]
      fn non_numeric_dimensions_are_not_intrinsic() {
          let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="auto" height="foo" viewBox="0 0 200 100"></svg>"#;
--- 
-2.56.0
-

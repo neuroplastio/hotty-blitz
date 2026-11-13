@@ -1,8 +1,8 @@
-From 682d720828b0c48bdf9a2a7b49f47988e0f7eefd Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Tue, 10 Nov 2026 14:07:27 +0100
-Subject: [PATCH] blitz-dom: a textarea sized to its text does not follow its
- caret when it is laid out
+Subject: [PATCH 54/54] blitz-dom: a textarea sized to its text does not follow
+ its caret when it is laid out
 
 Laying out a textarea with field-sizing: content clamped its scroll offset
 with clamp_scroll_offset, which also scrolls the caret into view: an
@@ -33,6 +33,3 @@ index 8de6fe6c3..6951bc3dd 100644
                              }
                              if let Some(placeholder) = &mut input.placeholder {
                                  placeholder.editor.set_width(Some(content_width * scale));
--- 
-2.56.0
-

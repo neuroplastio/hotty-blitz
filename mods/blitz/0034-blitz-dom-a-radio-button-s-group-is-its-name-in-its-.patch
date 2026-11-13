@@ -1,7 +1,7 @@
-From 45744a218c6899594d85fc31349ac3c7f9b1c7f8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 22 Oct 2026 12:06:00 +0200
-Subject: [PATCH 34/45] blitz-dom: a radio button's group is its name in its
+Subject: [PATCH 34/54] blitz-dom: a radio button's group is its name in its
  form
 
 toggle_radio unchecked every radio button of the name in the document.
@@ -14,10 +14,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 7 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index edd0ddc30..ef23d42e2 100644
+index b5fe30dbe..f01ce5020 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -812,14 +812,19 @@ impl BaseDocument {
+@@ -876,14 +876,19 @@ impl BaseDocument {
      }
  
      pub fn toggle_radio(&mut self, radio_set_name: String, target_radio_id: NodeId) {
@@ -39,6 +39,3 @@ index edd0ddc30..ef23d42e2 100644
              })
              .collect();
  
--- 
-2.56.0
-

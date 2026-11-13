@@ -1,6 +1,6 @@
 ---
 title: "A textarea sized to its text does not follow its caret when laid out"
-patch: 0055-blitz-dom-a-textarea-sized-to-its-text-does-not-foll.patch
+patch: 0054-blitz-dom-a-textarea-sized-to-its-text-does-not-foll.patch
 upstream-fit: no
 ---
 

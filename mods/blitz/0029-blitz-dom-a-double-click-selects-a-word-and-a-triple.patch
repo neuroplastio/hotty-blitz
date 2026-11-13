@@ -1,7 +1,7 @@
-From 979a4a2f0d6f031178703809b292e624c22f1096 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Wed, 14 Oct 2026 00:24:08 +0200
-Subject: [PATCH 29/45] blitz-dom: a double click selects a word and a triple
+Subject: [PATCH 29/54] blitz-dom: a double click selects a word and a triple
  click its block
 
 As a browser does in a page's text: Selection::word_from_point for a
@@ -15,10 +15,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  2 files changed, 43 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 3cbfffe87..deee42087 100644
+index 5b03c037c..f18f1b5b2 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -2863,6 +2863,42 @@ impl BaseDocument {
+@@ -2934,6 +2934,42 @@ impl BaseDocument {
          Some((inline_root.id, byte_offset))
      }
  
@@ -81,6 +81,3 @@ index 7b72dacf1..d5e503a8b 100644
                  doc.set_text_selection(inline_root_id, byte_offset, inline_root_id, byte_offset);
                  doc.shell_provider.request_redraw();
              } else {
--- 
-2.56.0
-

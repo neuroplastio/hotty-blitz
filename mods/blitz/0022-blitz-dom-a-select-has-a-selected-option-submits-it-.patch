@@ -1,7 +1,7 @@
-From 33928ee0c54d93e56ba02a2c855e52e522067b0b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Fri, 9 Oct 2026 12:37:22 +0200
-Subject: [PATCH 22/45] blitz-dom: a select has a selected option, submits it,
+Subject: [PATCH 22/54] blitz-dom: a select has a selected option, submits it,
  and draws closed
 
 An option's selectedness is its ElementState::CHECKED bit, as in Gecko,
@@ -32,10 +32,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 packages/blitz-dom/src/select.rs
 
 diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
-index b9fb51e59..afdcb6d3f 100644
+index a368c8bda..ee47bef98 100644
 --- a/packages/blitz-dom/assets/default.css
 +++ b/packages/blitz-dom/assets/default.css
-@@ -159,6 +159,42 @@ option {
+@@ -185,6 +185,42 @@ option {
      display: none;
  }
  
@@ -79,10 +79,10 @@ index b9fb51e59..afdcb6d3f 100644
      display: none;
  }
 diff --git a/packages/blitz-dom/src/form.rs b/packages/blitz-dom/src/form.rs
-index 82eb6ea56..8c52a22d9 100644
+index ac77f1e0d..be4248ce2 100644
 --- a/packages/blitz-dom/src/form.rs
 +++ b/packages/blitz-dom/src/form.rs
-@@ -267,11 +267,19 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
+@@ -269,11 +269,19 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
              continue;
          };
  
@@ -116,10 +116,10 @@ index 475cff092..054931dbd 100644
  /// Implementations that interact with servo's style engine
  mod stylo;
 diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
-index bb9b2aee5..78eed7a91 100644
+index 306c2f6c9..d0755d04f 100644
 --- a/packages/blitz-dom/src/mutator.rs
 +++ b/packages/blitz-dom/src/mutator.rs
-@@ -59,6 +59,12 @@ pub struct DocumentMutator<'doc> {
+@@ -74,6 +74,12 @@ pub struct DocumentMutator<'doc> {
      title_node: Option<NodeId>,
      style_nodes: HashSet<NodeId>,
      form_nodes: HashSet<NodeId>,
@@ -132,7 +132,7 @@ index bb9b2aee5..78eed7a91 100644
  
      /// Whether an element/attribute that affect animation status has been seen
      recompute_is_animating: bool,
-@@ -88,6 +94,9 @@ impl DocumentMutator<'_> {
+@@ -108,6 +114,9 @@ impl DocumentMutator<'_> {
              title_node: None,
              style_nodes: HashSet::new(),
              form_nodes: HashSet::new(),
@@ -142,7 +142,7 @@ index bb9b2aee5..78eed7a91 100644
              recompute_is_animating: false,
              mutations_occurred: false,
              #[cfg(feature = "autofocus")]
-@@ -276,6 +285,9 @@ impl DocumentMutator<'_> {
+@@ -324,6 +333,9 @@ impl DocumentMutator<'_> {
  
      pub fn set_attribute(&mut self, node_id: NodeId, name: QualName, value: &str) {
          let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
@@ -152,7 +152,7 @@ index bb9b2aee5..78eed7a91 100644
          if node_is_in_document {
              self.doc.snapshot_node(node_id, &name.local);
  
-@@ -427,6 +439,9 @@ impl DocumentMutator<'_> {
+@@ -490,6 +502,9 @@ impl DocumentMutator<'_> {
  
      pub fn clear_attribute(&mut self, node_id: NodeId, name: QualName) {
          let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
@@ -162,7 +162,7 @@ index bb9b2aee5..78eed7a91 100644
          if node_is_in_document {
              self.doc.snapshot_node(node_id, &name.local);
  
-@@ -1055,6 +1070,17 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1180,6 +1195,17 @@ impl<'doc> DocumentMutator<'doc> {
              self.doc.reset_form_owner(id);
          }
  
@@ -180,7 +180,7 @@ index bb9b2aee5..78eed7a91 100644
          #[cfg(feature = "autofocus")]
          if let Some(node_id) = self.node_to_autofocus.take() {
              if self.doc.get_node(node_id).is_some() {
-@@ -1093,6 +1119,36 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1226,6 +1252,36 @@ impl<'doc> DocumentMutator<'doc> {
          self.eager_op_queue = ops;
      }
  
@@ -217,7 +217,7 @@ index bb9b2aee5..78eed7a91 100644
      fn process_added_subtree(&mut self, node_id: NodeId) {
          self.doc.iter_subtree_mut(node_id, |node_id, doc| {
              let node = &mut doc.nodes[node_id];
-@@ -1104,6 +1160,19 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1237,6 +1293,19 @@ impl<'doc> DocumentMutator<'doc> {
                  doc.add_to_id_map(&id_attr, node_id);
              }
  
@@ -237,7 +237,7 @@ index bb9b2aee5..78eed7a91 100644
              let node = &mut doc.nodes[node_id];
              let NodeData::Element(ref mut element) = node.data else {
                  return;
-@@ -1160,6 +1229,9 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1293,6 +1362,9 @@ impl<'doc> DocumentMutator<'doc> {
      }
  
      fn process_removed_subtree(&mut self, node_id: NodeId) {
@@ -442,6 +442,3 @@ index 000000000..bc6da1741
 +        changed
 +    }
 +}
--- 
-2.56.0
-

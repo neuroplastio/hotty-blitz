@@ -1,7 +1,7 @@
-From 66167a18e7a82948b93a274fd430df738fcd303f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 00:00:51 +0100
-Subject: [PATCH 40/45] blitz-dom: Tab passes over a control that is not
+Subject: [PATCH 40/54] blitz-dom: Tab passes over a control that is not
  rendered
 
 Tab and Shift+Tab stepped to every focusable element, a hidden one too.
@@ -16,10 +16,10 @@ visible (`visibility: hidden` or `collapse`), by its resolved styles.
  create mode 100644 tests/blitz-tests/tests/tab_skips_unrendered.rs
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 384be5a34..c1c248069 100644
+index eb28b875e..666460929 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -1848,7 +1848,9 @@ impl BaseDocument {
+@@ -1913,7 +1913,9 @@ impl BaseDocument {
  
      pub fn focus_next_node(&mut self) -> Option<NodeId> {
          let focussed_node_id = self.get_focussed_node_id()?;
@@ -30,7 +30,7 @@ index 384be5a34..c1c248069 100644
          self.set_focus_to(id);
          Some(id)
      }
-@@ -1856,7 +1858,9 @@ impl BaseDocument {
+@@ -1921,7 +1923,9 @@ impl BaseDocument {
      /// Move focus to the previous focussable node in the document
      pub fn focus_prev_node(&mut self) -> Option<NodeId> {
          let focussed_node_id = self.get_focussed_node_id()?;
@@ -42,7 +42,7 @@ index 384be5a34..c1c248069 100644
          Some(id)
      }
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index e1971d894..932de7744 100644
+index a70d28b63..beb4b2658 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
 @@ -580,6 +580,20 @@ impl Node {
@@ -133,6 +133,3 @@ index 000000000..89adbd8e5
 +    }
 +    assert_eq!(back, ["z", "shown", "a"]);
 +}
--- 
-2.56.0
-

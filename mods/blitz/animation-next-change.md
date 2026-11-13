@@ -1,6 +1,6 @@
 ---
 title: "The document says when an animation's output next changes"
-patch: 0052-blitz-dom-the-document-says-when-an-animation-s-outp.patch
+patch: 0051-blitz-dom-the-document-says-when-an-animation-s-outp.patch
 upstream-fit: maybe
 ---
 

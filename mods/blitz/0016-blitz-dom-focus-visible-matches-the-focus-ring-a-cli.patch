@@ -1,7 +1,7 @@
-From 2a3dddfa692b6b1f880fcca8c602207ddace9015 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 22:49:59 +0200
-Subject: [PATCH 16/45] blitz-dom: :focus-visible matches the focus ring; a
+Subject: [PATCH 16/54] blitz-dom: :focus-visible matches the focus ring; a
  click shows it only on text fields
 
 :focus-visible matched nothing. It now matches what has the focus ring
@@ -16,10 +16,10 @@ field, as browsers do: a button or a link clicked shows none.
  3 files changed, 89 insertions(+), 5 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index ef89fe240..9403e01f2 100644
+index f6dbf9da7..ded0bc70a 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -1916,6 +1916,27 @@ impl BaseDocument {
+@@ -1983,6 +1983,27 @@ impl BaseDocument {
          true
      }
  
@@ -47,7 +47,7 @@ index ef89fe240..9403e01f2 100644
      pub fn active_node(&mut self) -> bool {
          let Some(hover_node_id) = self.get_hover_node_id() else {
              return false;
-@@ -3948,3 +3969,64 @@ mod user_stylesheet_tests {
+@@ -4069,3 +4090,64 @@ mod user_stylesheet_tests {
          assert_eq!(red(&doc, div), 2);
      }
  }
@@ -153,7 +153,7 @@ index 5ff01105e..7b72dacf1 100644
                                  dispatch_event,
                              );
 diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
-index 30881e586..5a6712dc0 100644
+index 9849ea54e..3831752d2 100644
 --- a/packages/blitz-dom/src/stylo.rs
 +++ b/packages/blitz-dom/src/stylo.rs
 @@ -510,7 +510,9 @@ impl selectors::Element for BlitzNode<'_> {
@@ -167,6 +167,3 @@ index 30881e586..5a6712dc0 100644
              NonTSPseudoClass::Fullscreen => false,
              NonTSPseudoClass::Hover => self.element_state().contains(ElementState::HOVER),
              NonTSPseudoClass::Indeterminate => false,
--- 
-2.56.0
-

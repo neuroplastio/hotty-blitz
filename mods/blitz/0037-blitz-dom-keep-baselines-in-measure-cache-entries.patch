@@ -1,7 +1,7 @@
-From 74a2a29567a6949a362d9cd089f87fd8aeacc16a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 23 Oct 2026 22:28:22 +0200
-Subject: [PATCH 37/45] blitz-dom: keep baselines in measure cache entries
+Subject: [PATCH 37/54] blitz-dom: keep baselines in measure cache entries
 
 A measure entry of the layout cache kept only the size, as taffy's Cache
 does, so a hit answered with no baselines. Inline layout places an
@@ -137,6 +137,3 @@ index a3c444afa..90f0a2218 100644
              Answer::Layout(old) => output == old,
          }
      }
--- 
-2.56.0
-

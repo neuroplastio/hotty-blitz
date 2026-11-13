@@ -1,6 +1,6 @@
 ---
 title: Glyphs are not hinted above a scale of 1
-patch: 0050-blitz-paint-glyphs-are-not-hinted-above-a-scale-of-1.patch
+patch: 0049-blitz-paint-glyphs-are-not-hinted-above-a-scale-of-1.patch
 upstream-fit: maybe
 ---
 

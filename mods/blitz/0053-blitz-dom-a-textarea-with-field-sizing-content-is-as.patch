@@ -1,8 +1,8 @@
-From 9193286ddcb9f644aac950b864cb68fc803b0027 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Tue, 10 Nov 2026 00:16:43 +0100
-Subject: [PATCH] blitz-dom: a textarea with `field-sizing: content` is as tall
- as its text
+Subject: [PATCH 53/54] blitz-dom: a textarea with `field-sizing: content` is
+ as tall as its text
 
 A textarea was always `rows` lines tall. With `field-sizing: content` it
 is now as tall as its text wrapped at the width it gets, bounded by
@@ -18,10 +18,10 @@ mode) parses the property only behind it.
  3 files changed, 64 insertions(+), 12 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index e8fe598d6..764e0d154 100644
+index eecae7198..4d84d758c 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -96,6 +96,7 @@ pub(crate) fn init_stylo_prefs() {
+@@ -97,6 +97,7 @@ pub(crate) fn init_stylo_prefs() {
          style_config::set_pref!("layout.css.text-indent-keywords.enabled", true);
          style_config::set_pref!("layout.css.word-break.break-word.enabled", true);
          style_config::set_pref!("layout.css.scroll-snap.enabled", true);
@@ -123,10 +123,10 @@ index e2c81e736..8de6fe6c3 100644
                                  placeholder.editor.set_width(Some(content_width * scale));
                                  placeholder.editor.refresh_layout(
 diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
-index 9b33275ba..36eb95135 100644
+index 5c5ecd55a..ed54f128c 100644
 --- a/packages/blitz-dom/src/node/text.rs
 +++ b/packages/blitz-dom/src/node/text.rs
-@@ -82,6 +82,10 @@ pub struct TextInputData {
+@@ -90,6 +90,10 @@ pub struct TextInputData {
      password: Option<String>,
      /// What the field shows while it is empty, if it has a `placeholder`.
      pub placeholder: Option<Placeholder>,
@@ -137,15 +137,15 @@ index 9b33275ba..36eb95135 100644
  }
  
  /// A text field's `placeholder`, laid out in the field's `::placeholder`
-@@ -131,6 +135,7 @@ impl TextInputData {
-             scroll_offset: 0.0,
+@@ -140,6 +144,7 @@ impl TextInputData {
+             content_box_subpixel_offset: taffy::Point::ZERO,
              password: None,
              placeholder: None,
 +            sizes_to_text: false,
          }
      }
  
-@@ -220,10 +225,11 @@ impl TextInputData {
+@@ -229,10 +234,11 @@ impl TextInputData {
      /// The height of a single-line field's text and the baseline of its
      /// line, as laid out, in device pixels: what the field's baseline is
      /// worked out from, so an edit that changes them (a fallback font's
@@ -160,6 +160,3 @@ index 9b33275ba..36eb95135 100644
              return None;
          }
          let layout = self.editor.try_layout()?;
--- 
-2.56.0
-

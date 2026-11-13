@@ -1,8 +1,8 @@
-From cac19aa169f59bcf98ea1857272e0bbe44acae35 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 19:23:06 +0100
-Subject: [PATCH] blitz-paint: draw an unblurred inset box-shadow as one ring
- fill
+Subject: [PATCH 47/54] blitz-paint: draw an unblurred inset box-shadow as one
+ ring fill
 
 An inset box-shadow without blur or offset, such as `inset 0 0 0 1px`,
 a common way to draw a hairline inside a box, was painted as two layers
@@ -89,6 +89,3 @@ index d0d0fac76..a746bb425 100644
              scene.draw_box_shadow(
                  transform,
                  hole,
--- 
-2.56.0
-

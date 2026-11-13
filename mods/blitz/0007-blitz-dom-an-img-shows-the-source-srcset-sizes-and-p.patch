@@ -1,7 +1,7 @@
-From 869d9fb989ccf34059d67fc638c1b5f95396a190 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 19:50:31 +0200
-Subject: [PATCH 07/45] blitz-dom: an <img> shows the source srcset, sizes and
+Subject: [PATCH 07/54] blitz-dom: an <img> shows the source srcset, sizes and
  <picture> choose
 
 Blitz loaded an <img>'s src and nothing else: a srcset was ignored, and
@@ -305,10 +305,10 @@ index cf4e592d5..caf512ab0 100644
  mod layout;
  mod mutator;
 diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
-index 8336375bf..fc8e22700 100644
+index c0a9b8f8e..450fcced8 100644
 --- a/packages/blitz-dom/src/mutator.rs
 +++ b/packages/blitz-dom/src/mutator.rs
-@@ -377,8 +377,32 @@ impl DocumentMutator<'_> {
+@@ -440,8 +440,32 @@ impl DocumentMutator<'_> {
  
          if (tag, attr) == tag_and_attr!("input", "checked") {
              set_input_checked_state(element, value.to_string());
@@ -342,19 +342,16 @@ index 8336375bf..fc8e22700 100644
          } else if (tag, attr) == tag_and_attr!("canvas", "src") {
              self.load_custom_paint_src(node_id);
          } else if (tag, attr) == tag_and_attr!("link", "href")
-@@ -1283,10 +1307,9 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1425,10 +1449,9 @@ impl<'doc> DocumentMutator<'doc> {
      }
  
      fn load_image(&mut self, target_id: NodeId) {
 -        let node = &self.doc.nodes[target_id];
 -        if let Some(raw_src) = node.attr(local_name!("src")) {
 +        if let Some(raw_src) = self.doc.image_source(target_id) {
-             if !raw_src.is_empty() {
--                let src = self.doc.resolve_url(raw_src);
-+                let src = self.doc.resolve_url(&raw_src);
+             if !raw_src.is_empty()
+-                && let Some(src) = self.doc.resolve_url(raw_src)
++                && let Some(src) = self.doc.resolve_url(&raw_src)
+             {
                  let src_string = src.as_str();
  
-                 // Check cache first
--- 
-2.56.0
-

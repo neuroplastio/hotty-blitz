@@ -1,7 +1,8 @@
-From c179bcae3123bb5864ae81858eda9eecd5c6d32f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 13:46:18 +0100
-Subject: [PATCH] blitz-dom: a node construction passes over is built afresh
+Subject: [PATCH 45/54] blitz-dom: a node construction passes over is built
+ afresh
 
 Construction builds no box for some nodes: an inline that its inline
 root's layout takes in, a table's row, a child of a table that is not a
@@ -33,10 +34,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  6 files changed, 195 insertions(+), 8 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 609cbef98..b7217c1c4 100644
+index 7fa8cc60c..9a21b6de8 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -4203,3 +4203,142 @@ mod inline_rects_before_resolve_tests {
+@@ -4324,3 +4324,142 @@ mod inline_rects_before_resolve_tests {
          assert_eq!(doc.get_client_bounding_rect(em), before);
      }
  }
@@ -301,7 +302,7 @@ index 50ae6f01d..d92a3fa7b 100644
          }
      }
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index a110b95b3..3a9ed2b2a 100644
+index de2158b5d..2ded74f0f 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
 @@ -62,6 +62,9 @@ bitflags! {
@@ -323,10 +324,10 @@ index a110b95b3..3a9ed2b2a 100644
  }
  
 diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
-index 6ee3a2181..c4c88703c 100644
+index 4f50dbdf6..387bbf19f 100644
 --- a/packages/blitz-dom/src/resolve.rs
 +++ b/packages/blitz-dom/src/resolve.rs
-@@ -264,16 +264,33 @@ impl BaseDocument {
+@@ -267,16 +267,33 @@ impl BaseDocument {
              // children (and their `layout_parent`s) it was given last time.
              // Anonymous boxes are always walked, as `propagate_damage_flags`
              // does, because damage marking bypasses them.
@@ -360,6 +361,3 @@ index 6ee3a2181..c4c88703c 100644
              let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
              let _flags = doc.nodes[node_id].flags;
  
--- 
-2.56.0
-

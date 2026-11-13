@@ -1,8 +1,8 @@
-From 2256dd8da930336728a40d20fee5b802adcbf6c5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sun, 1 Nov 2026 11:37:01 +0100
-Subject: [PATCH] blitz-dom: an embedder hears which elements' animated styles
- moved
+Subject: [PATCH 48/54] blitz-dom: an embedder hears which elements' animated
+ styles moved
 
 A CSS animation or transition changes an element's computed style while
 nothing mutates it, and Blitz's restyle damage holds layout only, so an
@@ -22,10 +22,10 @@ and stop when the last one ends.
  2 files changed, 54 insertions(+)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 4dc4c9759..28d11f9d3 100644
+index 4b9daef1f..848a2c9e9 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -467,6 +467,9 @@ pub struct BaseDocument {
+@@ -470,6 +470,9 @@ pub struct BaseDocument {
      /// Text fields whose placeholder needs laying out again because they were
      /// built or restyled (see `flush_placeholder`).
      pub(crate) pending_placeholder_nodes: Vec<NodeId>,
@@ -35,7 +35,7 @@ index 4dc4c9759..28d11f9d3 100644
  
      // Tracks in-flight "critical" resources (e.g. stylesheets linked from the `<head>`),
      // keyed by request id
-@@ -616,6 +619,7 @@ impl BaseDocument {
+@@ -651,6 +654,7 @@ impl BaseDocument {
              svg_images: HashMap::new(),
              pending_style_image_nodes: Vec::new(),
              pending_placeholder_nodes: Vec::new(),
@@ -43,7 +43,7 @@ index 4dc4c9759..28d11f9d3 100644
              pending_critical_resources: HashSet::new(),
              controls_to_form: HashMap::new(),
              net_provider,
-@@ -2341,6 +2345,35 @@ impl BaseDocument {
+@@ -2408,6 +2412,35 @@ impl BaseDocument {
              | self.scrollbars_animating()
      }
  
@@ -80,7 +80,7 @@ index 4dc4c9759..28d11f9d3 100644
      /// flushed (via [`Self::flush_pending_device_changes`]) on the next resolve.
      pub(crate) fn queue_device_changes(&mut self, changes: DeviceChanges) {
 diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
-index cce7e65a8..a0d1152c5 100644
+index 32e6512ff..ef3e4ef6a 100644
 --- a/packages/blitz-dom/src/stylo.rs
 +++ b/packages/blitz-dom/src/stylo.rs
 @@ -167,6 +167,8 @@ impl crate::document::BaseDocument {
@@ -92,7 +92,7 @@ index cce7e65a8..a0d1152c5 100644
          }
          self.pending_style_image_nodes
              .extend(nodes_needing_style_image_flush);
-@@ -1377,6 +1379,12 @@ pub struct RecalcStyle<'a> {
+@@ -1544,6 +1546,12 @@ pub struct RecalcStyle<'a> {
      /// Text fields restyled in this traversal, whose `::placeholder` style
      /// may have changed with their own (see `flush_placeholder`).
      text_fields_restyled: Mutex<Vec<NodeId>>,
@@ -105,7 +105,7 @@ index cce7e65a8..a0d1152c5 100644
  }
  
  impl<'a> RecalcStyle<'a> {
-@@ -1385,6 +1393,7 @@ impl<'a> RecalcStyle<'a> {
+@@ -1552,6 +1560,7 @@ impl<'a> RecalcStyle<'a> {
              context,
              nodes_needing_style_image_flush: Mutex::new(Vec::new()),
              text_fields_restyled: Mutex::new(Vec::new()),
@@ -113,7 +113,7 @@ index cce7e65a8..a0d1152c5 100644
          }
      }
  }
-@@ -1422,6 +1431,18 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
+@@ -1589,6 +1598,18 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
                          .unwrap()
                          .push(el.id);
                  }
@@ -132,6 +132,3 @@ index cce7e65a8..a0d1152c5 100644
              }
  
              if data.is_restyle()
--- 
-2.56.0
-

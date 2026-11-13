@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 7 Nov 2026 18:39:37 +0100
-Subject: [PATCH] blitz-traits, blitz-dom: a viewport carries
+Subject: [PATCH 52/54] blitz-traits, blitz-dom: a viewport carries
  prefers-reduced-motion
 
 Viewport::reduced_motion goes to Stylo's Device as the colour scheme does, a
@@ -14,10 +14,10 @@ parent. Viewport::new keeps its signature; the field defaults to false.
  3 files changed, 11 insertions(+)
 
 diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
-index c4c88703c..3be0537b6 100644
+index 387bbf19f..aa1486d68 100644
 --- a/packages/blitz-dom/src/resolve.rs
 +++ b/packages/blitz-dom/src/resolve.rs
-@@ -151,6 +151,7 @@ impl BaseDocument {
+@@ -154,6 +154,7 @@ impl BaseDocument {
                  sub_viewport.hidpi_scale = self.viewport.hidpi_scale;
                  sub_viewport.zoom = self.viewport.zoom;
                  sub_viewport.color_scheme = self.viewport.color_scheme;
@@ -26,10 +26,10 @@ index c4c88703c..3be0537b6 100644
                  let viewport_scale = self.viewport.scale();
                  sub_viewport.window_size = (
 diff --git a/packages/blitz-dom/src/stylo_device.rs b/packages/blitz-dom/src/stylo_device.rs
-index a6e1c0219..5cedf9d3d 100644
+index ec31ceba5..cb3647fd9 100644
 --- a/packages/blitz-dom/src/stylo_device.rs
 +++ b/packages/blitz-dom/src/stylo_device.rs
-@@ -39,6 +39,8 @@ bitflags! {
+@@ -40,6 +40,8 @@ bitflags! {
          const COLOR_SCHEME = 0b0000_0100;
          /// The media type (e.g. screen/print) changed.
          const MEDIA_TYPE = 0b0000_1000;
@@ -38,7 +38,7 @@ index a6e1c0219..5cedf9d3d 100644
      }
  }
  
-@@ -56,6 +58,9 @@ impl DeviceChanges {
+@@ -57,6 +59,9 @@ impl DeviceChanges {
          if old.color_scheme != new.color_scheme {
              changes |= Self::COLOR_SCHEME;
          }
@@ -48,7 +48,7 @@ index a6e1c0219..5cedf9d3d 100644
          changes
      }
  }
-@@ -83,6 +88,7 @@ pub(crate) fn make_device(
+@@ -84,6 +89,7 @@ pub(crate) fn make_device(
                  ColorScheme::Light => PrefersColorScheme::Light,
                  ColorScheme::Dark => PrefersColorScheme::Dark,
              },
@@ -57,10 +57,10 @@ index a6e1c0219..5cedf9d3d 100644
              all_pointer_capabilities: PointerCapabilities::default(),
          },
 diff --git a/packages/blitz-traits/src/shell.rs b/packages/blitz-traits/src/shell.rs
-index 16722f9df..b8b2fb023 100644
+index f92d7326e..00526f32a 100644
 --- a/packages/blitz-traits/src/shell.rs
 +++ b/packages/blitz-traits/src/shell.rs
-@@ -78,6 +78,8 @@ pub enum ColorScheme {
+@@ -83,6 +83,8 @@ pub enum ColorScheme {
  #[derive(Debug, Clone, PartialEq)]
  pub struct Viewport {
      pub color_scheme: ColorScheme,
@@ -69,7 +69,7 @@ index 16722f9df..b8b2fb023 100644
      pub window_size: (u32, u32),
      pub hidpi_scale: f32,
      pub zoom: f32,
-@@ -90,6 +92,7 @@ impl Default for Viewport {
+@@ -95,6 +97,7 @@ impl Default for Viewport {
              hidpi_scale: 1.0,
              zoom: 1.0,
              color_scheme: ColorScheme::Light,
@@ -77,7 +77,7 @@ index 16722f9df..b8b2fb023 100644
          }
      }
  }
-@@ -106,6 +109,7 @@ impl Viewport {
+@@ -111,6 +114,7 @@ impl Viewport {
              hidpi_scale: scale_factor,
              zoom: 1.0,
              color_scheme,
@@ -85,6 +85,3 @@ index 16722f9df..b8b2fb023 100644
          }
      }
  
--- 
-2.56.0
-

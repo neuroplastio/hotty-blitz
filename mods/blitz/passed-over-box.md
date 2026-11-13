@@ -1,6 +1,6 @@
 ---
 title: "A node construction passes over is built afresh"
-patch: 0046-blitz-dom-a-node-construction-passes-over-is-built-a.patch
+patch: 0045-blitz-dom-a-node-construction-passes-over-is-built-a.patch
 upstream-fit: yes
 ---
 

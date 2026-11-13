@@ -1,7 +1,7 @@
-From 3e0d203c9173343b93ed84b8d731eaaa73e6be36 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 00:08:11 +0100
-Subject: [PATCH 42/45] blitz-dom: an item resized by its own style lays its
+Subject: [PATCH 42/54] blitz-dom: an item resized by its own style lays its
  container out again
 
 Speculative relayout keeps a flex or grid container's old layout when
@@ -27,10 +27,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  4 files changed, 37 insertions(+), 7 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index c1c248069..2b7fb38d3 100644
+index 666460929..e1ca26cb3 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -312,6 +312,9 @@ pub struct BaseDocument {
+@@ -315,6 +315,9 @@ pub struct BaseDocument {
      pub(crate) invalidated: Vec<NodeId>,
      /// Nodes whose own content or style needs relayout (not only a child's).
      pub(crate) own_relayout: HashSet<NodeId>,
@@ -40,7 +40,7 @@ index c1c248069..2b7fb38d3 100644
      /// Nodes whose layout children changed in this resolve's construction.
      pub(crate) restructured: HashSet<NodeId>,
      /// Nodes whose final layout changed since `resolve_transforms` last ran,
-@@ -570,6 +573,7 @@ impl BaseDocument {
+@@ -605,6 +608,7 @@ impl BaseDocument {
              evicted_caches: HashMap::new(),
              invalidated: Vec::new(),
              own_relayout: HashSet::new(),
@@ -148,7 +148,7 @@ index 87bcfa956..18e7677f8 100644
              };
              if !settled {
 diff --git a/packages/blitz-dom/src/stylo.rs b/packages/blitz-dom/src/stylo.rs
-index 106dd02cb..cce7e65a8 100644
+index 6cdd443fa..32e6512ff 100644
 --- a/packages/blitz-dom/src/stylo.rs
 +++ b/packages/blitz-dom/src/stylo.rs
 @@ -7,7 +7,7 @@ use std::sync::Mutex;
@@ -160,7 +160,7 @@ index 106dd02cb..cce7e65a8 100644
  use crate::node::Node;
  use crate::node::NodeData;
  use markup5ever::{LocalName, LocalNameStaticSet, Namespace, NamespaceStaticSet, local_name, ns};
-@@ -1305,7 +1305,8 @@ impl<'a> TElement for BlitzNode<'a> {
+@@ -1472,7 +1472,8 @@ impl<'a> TElement for BlitzNode<'a> {
      }
  
      fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues) -> RestyleDamage {
@@ -170,6 +170,3 @@ index 106dd02cb..cce7e65a8 100644
          // ALL_DAMAGE
      }
  
--- 
-2.56.0
-

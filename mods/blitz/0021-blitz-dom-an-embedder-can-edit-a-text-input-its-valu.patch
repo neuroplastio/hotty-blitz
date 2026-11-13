@@ -1,7 +1,7 @@
-From 4a1b29590674f90b7eaeb057f1ac5b086683dd77 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Thu, 8 Oct 2026 23:19:17 +0200
-Subject: [PATCH 21/45] blitz-dom: an embedder can edit a text input: its
+Subject: [PATCH 21/54] blitz-dom: an embedder can edit a text input: its
  value, its selection, its rows
 
 An embedder that has its own keymap for text fields (HOTTY's data-keys)
@@ -15,10 +15,10 @@ many rows the field shows, for a page.
  2 files changed, 134 insertions(+)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 4df2f3406..59643f969 100644
+index 3afcf7a18..cf29835a2 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -2761,6 +2761,62 @@ impl BaseDocument {
+@@ -2832,6 +2832,62 @@ impl BaseDocument {
          }
      }
  
@@ -82,10 +82,10 @@ index 4df2f3406..59643f969 100644
      /// remains visible within the input's content box.
      pub(crate) fn clamp_text_input_scroll(&mut self, node_id: NodeId) {
 diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
-index 67be31525..d7689f132 100644
+index 6f45855ad..df6396759 100644
 --- a/packages/blitz-dom/src/node/text.rs
 +++ b/packages/blitz-dom/src/node/text.rs
-@@ -221,6 +221,84 @@ impl TextInputData {
+@@ -230,6 +230,84 @@ impl TextInputData {
          }
      }
  
@@ -170,6 +170,3 @@ index 67be31525..d7689f132 100644
      /// Recompute [`Self::scroll_offset`] so that the caret stays visible within the input's
      /// content box.
      ///
--- 
-2.56.0
-

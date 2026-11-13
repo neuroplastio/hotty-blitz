@@ -1,7 +1,7 @@
-From ef4214ec1e8ce75949190089d1b9b745e6a498b9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Tue, 3 Nov 2026 17:53:13 +0100
-Subject: [PATCH] blitz-paint: glyphs are not hinted above a scale of 1
+Subject: [PATCH 49/54] blitz-paint: glyphs are not hinted above a scale of 1
 
 blitz-paint asks for vertical hinting wherever it does not embolden, so
 on Linux and Windows glyphs are hinted at any scale. Hinting snaps a
@@ -17,7 +17,7 @@ Hint only at a scale of 1 or less, as before there.
  1 file changed, 10 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
-index 0538fecf4..911032efd 100644
+index fdd58bcd1..16260081d 100644
 --- a/packages/blitz-paint/src/text.rs
 +++ b/packages/blitz-paint/src/text.rs
 @@ -14,6 +14,14 @@ use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecor
@@ -35,16 +35,16 @@ index 0538fecf4..911032efd 100644
  /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
  ///
  /// Each glyph run carries the node id of the innermost inline element it belongs to
-@@ -763,7 +771,7 @@ pub(crate) fn stroke_text<'a>(
-                 scene.draw_glyphs(
-                     font,
-                     font_size,
--                    !FONT_EMBOLDEN_ENABLED, // hint
-+                    hint_glyphs(scale),
-                     normalized_coords,
-                     embolden,
-                     Fill::NonZero,
-@@ -872,7 +880,7 @@ pub(crate) fn fill_text<'a>(
+@@ -765,7 +773,7 @@ pub(crate) fn stroke_text<'a>(
+                     scene.draw_glyphs(
+                         font,
+                         font_size,
+-                        !FONT_EMBOLDEN_ENABLED, // hint
++                        hint_glyphs(scale),
+                         normalized_coords,
+                         embolden,
+                         Fill::NonZero,
+@@ -875,7 +883,7 @@ pub(crate) fn fill_text<'a>(
              scene.draw_glyphs(
                  run.font(),
                  font_size,
@@ -53,6 +53,3 @@ index 0538fecf4..911032efd 100644
                  normalized_coords,
                  embolden,
                  Fill::NonZero,
--- 
-2.56.0
-

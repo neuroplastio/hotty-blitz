@@ -1,7 +1,7 @@
-From 92975820a9b72bb489983e1802141f73aa8c816b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 24 Oct 2026 22:10:45 +0200
-Subject: [PATCH 38/45] Implement `text-overflow: ellipsis`
+Subject: [PATCH 38/54] Implement `text-overflow: ellipsis`
 
 Stylo computes `text-overflow`, but nothing drew it, so a line of a box
 that clips its overflow was cut mid-glyph at the edge and showed no
@@ -31,7 +31,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  4 files changed, 194 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/layout/inline/build.rs b/packages/blitz-dom/src/layout/inline/build.rs
-index c4fb31a4b..5f8699682 100644
+index 7ad999e2b..39372c230 100644
 --- a/packages/blitz-dom/src/layout/inline/build.rs
 +++ b/packages/blitz-dom/src/layout/inline/build.rs
 @@ -8,6 +8,7 @@ use style::{
@@ -42,7 +42,7 @@ index c4fb31a4b..5f8699682 100644
      },
  };
  use stylo_taffy::CopyStyleGetters;
-@@ -117,6 +118,23 @@ pub(crate) fn build_inline_layout_into(
+@@ -118,6 +119,23 @@ pub(crate) fn build_inline_layout_into(
      }
  
      text_layout.text = builder.build_into(&mut text_layout.layout);
@@ -67,13 +67,13 @@ index c4fb31a4b..5f8699682 100644
  
      /// A box for the margin, border and padding at the start or end of a non-atomic inline
 diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
-index c4b05f109..9b33275ba 100644
+index ea5c5009e..5c5ecd55a 100644
 --- a/packages/blitz-dom/src/node/text.rs
 +++ b/packages/blitz-dom/src/node/text.rs
-@@ -33,6 +33,10 @@ pub struct TextLayout {
-     /// containing block (as `SPAN_*_CB` flags). The inline root claims those boxes in its place.
-     /// Set by each `RunMode::PerformLayout` run of inline layout.
-     pub span_cb_flags: stylo_taffy::StyleFlags,
+@@ -37,6 +37,10 @@ pub struct TextLayout {
+     /// `final_layout`. Paint draws text from the unrounded origin so that it keeps its sub-pixel
+     /// position while box edges stay snapped. Set by the `writing-mode` layout pass; zero otherwise.
+     pub content_box_subpixel_offset: taffy::Point<f32>,
 +    /// What `text-overflow` shows at the end edge of a line it cuts (an
 +    /// ellipsis, or the element's string), laid out on one line in the
 +    /// root's style. `None` when the end edge clips.
@@ -82,7 +82,7 @@ index c4b05f109..9b33275ba 100644
  
  impl TextLayout {
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 89a910cc7..861805740 100644
+index e91090ed0..f7c0439a5 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
 @@ -18,7 +18,7 @@ use crate::filters::convert_filters;
@@ -106,7 +106,7 @@ index 89a910cc7..861805740 100644
                              },
                          );
  
-@@ -1048,6 +1050,87 @@ impl ElementCx<'_, '_> {
+@@ -1050,6 +1052,87 @@ impl ElementCx<'_, '_> {
          }
      }
  
@@ -195,7 +195,7 @@ index 89a910cc7..861805740 100644
      /// `::selection` background or the default one, and whether a
      /// `::selection` style colours the text itself. A `::selection` that
 diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
-index 59c433d51..0538fecf4 100644
+index e2ed667f3..fdd58bcd1 100644
 --- a/packages/blitz-paint/src/text.rs
 +++ b/packages/blitz-paint/src/text.rs
 @@ -1,7 +1,7 @@
@@ -301,6 +301,3 @@ index 59c433d51..0538fecf4 100644
  #[allow(clippy::too_many_arguments)]
  pub(crate) fn stroke_text<'a>(
      scene: &mut impl PaintScene,
--- 
-2.56.0
-

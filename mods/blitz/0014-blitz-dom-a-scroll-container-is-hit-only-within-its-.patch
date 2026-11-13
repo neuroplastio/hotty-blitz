@@ -1,7 +1,7 @@
-From 8084681a2d365dd9e9a2356f73a480cc834a407c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 22:26:46 +0200
-Subject: [PATCH 14/45] blitz-dom: a scroll container is hit only within its
+Subject: [PATCH 14/54] blitz-dom: a scroll container is hit only within its
  box, its content within its clip
 
 hit_inner added a node's own scroll offset to the point before testing it
@@ -24,7 +24,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 40 insertions(+), 14 deletions(-)
 
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index c2d70eead..ed4644bf1 100644
+index 39aa42ba1..21423da18 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
 @@ -1453,22 +1453,24 @@ impl Node {
@@ -52,8 +52,8 @@ index c2d70eead..ed4644bf1 100644
 -            || y < self.scroll_offset().y as f32
 -            || y > size.height + self.scroll_offset().y as f32);
 +        // ...and in its content's, which its own scroll offset moves.
-+        let mut x = bx + self.scroll_offset().x as f32;
-+        let mut y = by + self.scroll_offset().y as f32;
++        let x = bx + self.scroll_offset().x as f32;
++        let y = by + self.scroll_offset().y as f32;
  
          let layout = self.final_layout();
 +        let size = layout.size;
@@ -86,8 +86,8 @@ index c2d70eead..ed4644bf1 100644
          let matches_hoisted_content = match &self.stacking_context {
              Some(sc) => {
                  // Both the point (after the scroll adjustment above) and the
-@@ -1546,7 +1565,7 @@ impl Node {
-         }
+@@ -1552,7 +1571,7 @@ impl Node {
+         };
  
          // Positive z_index hoisted children
 -        if matches_hoisted_content {
@@ -95,7 +95,7 @@ index c2d70eead..ed4644bf1 100644
              if let Some(hoisted) = &self.stacking_context {
                  for hoisted_child in hoisted.pos_z_hoisted_children().rev() {
                      let Some(child) = self.tree().get(hoisted_child.node_id) else {
-@@ -1563,7 +1582,14 @@ impl Node {
+@@ -1569,7 +1588,14 @@ impl Node {
          }
  
          // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
@@ -111,7 +111,7 @@ index c2d70eead..ed4644bf1 100644
              let Some(child) = self.tree().get(*child_id) else {
                  continue;
              };
-@@ -1595,7 +1621,7 @@ impl Node {
+@@ -1598,7 +1624,7 @@ impl Node {
          }
  
          // Negative z_index hoisted children
@@ -120,15 +120,12 @@ index c2d70eead..ed4644bf1 100644
              if let Some(hoisted) = &self.stacking_context {
                  for hoisted_child in hoisted.neg_z_hoisted_children().rev() {
                      let Some(child) = self.tree().get(hoisted_child.node_id) else {
-@@ -1612,7 +1638,7 @@ impl Node {
+@@ -1615,7 +1641,7 @@ impl Node {
          }
  
          // Inline children
 -        if self.flags.is_inline_root() {
 +        if self.flags.is_inline_root() && !content_clipped {
+             let x = x - content_box_offset.x;
+             let y = y - content_box_offset.y;
              let element_data = &self.element_data().unwrap();
-             if let Some(ild) = element_data.inline_layout_data.as_ref() {
-                 let layout = &ild.layout;
--- 
-2.56.0
-

@@ -36,11 +36,11 @@ keyboard-types = "0.8"
 # The shared monotonic clock and thread ids of trace.rs's stamps (gov R-22):
 # the version the lockfile already holds.
 libc = "0.2"
-stylo_static_prefs = { git = "https://github.com/nicoburns/stylo", rev = "78734bf554bb40af9dc11c0eedbe724f6055697c" }
+stylo_static_prefs = { git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
 # Element states (focus, disabled), as Blitz keeps them: the version Blitz brings.
-stylo_dom = { git = "https://github.com/nicoburns/stylo", rev = "78734bf554bb40af9dc11c0eedbe724f6055697c" }
+stylo_dom = { git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
 # Computed styles (user-select, SPEC §11), as Blitz computes them: the version Blitz brings.
-stylo = { git = "https://github.com/nicoburns/stylo", rev = "78734bf554bb40af9dc11c0eedbe724f6055697c" }
+stylo = { git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
 kurbo = "0.13.1"
 # Which glyphs draw nothing (paint.rs, `Ink`): the version Blitz brings.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
