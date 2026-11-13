@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ruskin Constant <ruskin@cloudflare.com>
+Date: Wed, 16 Sep 2026 11:50:12 +0100
+Subject: [PATCH] Stop escalating a clip overflow axis to hidden
+
+css-overflow-3 pairs a scrollable axis with a clip axis into a
+single-axis scroll container; only a visible axis escalates to auto.
+adjust_for_overflow instead ran both axes through to_scrollable(),
+which maps clip to hidden too (an older draft's wording), so
+'overflow: hidden clip' became 'hidden hidden' and both axes picked the
+same scrollport.
+
+WPT css/css-position/sticky/position-sticky-single-axis-used-values.html
+covers this: the inner scroller's overflow-y: clip must stay
+non-scrollable so sticky vertical insets keep walking out to the next
+real scroll container.
+---
+ style/style_adjuster.rs | 18 +++++++-----------
+ 1 file changed, 7 insertions(+), 11 deletions(-)
+
+diff --git a/style/style_adjuster.rs b/style/style_adjuster.rs
+index abb1f0171..b2fbfa0b7 100644
+--- a/style/style_adjuster.rs
++++ b/style/style_adjuster.rs
+@@ -406,22 +406,18 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
+         }
+     }
+ 
+-    /// CSS overflow-x and overflow-y require some fixup as well in some cases.
++    /// Adjust visible to auto when the opposite axis is scrollable.
++    /// A clip axis stays non-scrollable, allowing single-axis scroll containers.
+     /// https://drafts.csswg.org/css-overflow-3/#overflow-properties
+-    /// "Computed value: as specified, except with `visible`/`clip` computing to
+-    /// `auto`/`hidden` (respectively) if one of `overflow-x` or `overflow-y` is
+-    /// neither `visible` nor `clip`."
+     fn adjust_for_overflow(&mut self) {
++        use crate::values::specified::box_::Overflow;
+         let overflow_x = *self.style.get_box().get_overflow_x();
+         let overflow_y = *self.style.get_box().get_overflow_y();
+-        if overflow_x == overflow_y {
+-            return; // optimization for the common case
++        if overflow_x == Overflow::Visible && overflow_y.is_scrollable() {
++            self.style.mutate_box().set_overflow_x(Overflow::Auto);
+         }
+-
+-        if overflow_x.is_scrollable() != overflow_y.is_scrollable() {
+-            let box_style = self.style.mutate_box();
+-            box_style.set_overflow_x(overflow_x.to_scrollable());
+-            box_style.set_overflow_y(overflow_y.to_scrollable());
++        if overflow_y == Overflow::Visible && overflow_x.is_scrollable() {
++            self.style.mutate_box().set_overflow_y(Overflow::Auto);
+         }
+     }
+ 

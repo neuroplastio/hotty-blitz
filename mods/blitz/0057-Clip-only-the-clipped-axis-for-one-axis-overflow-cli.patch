@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
+Date: Fri, 9 Oct 2026 19:22:51 +0100
+Subject: [PATCH] Clip only the clipped axis for one-axis overflow: clip
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`overflow: clip` is the one overflow value that leaves the other axis
+`visible`; hidden, scroll and auto all turn it into `auto`. Paint
+clipped both axes whenever either one was not visible, so a page
+shell with `overflow-x: clip` cut off everything below its own
+height. radar.cloudflare.com lost its footer this way.
+
+The visible axis of the clip rect and of the descendants' cull rect
+now opens out. Replaced content, text inputs and paint containment
+still clip both axes.
+
+beep-boop-🤖
+---
+ packages/blitz-paint/src/render.rs | 63 ++++++++++++++++++++----------
+ 1 file changed, 43 insertions(+), 20 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index af89b1c97..a9b103b05 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -321,6 +321,46 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+                 || !matches!(box_style.overflow_y, Overflow::Visible))
+     }
+ 
++    /// Clip a single `clip` axis without clipping the visible axis.
++    fn overflow_clip_path(
++        &self,
++        node: &Node,
++        styles: &ComputedValues,
++        frame: &CssBox,
++    ) -> kurbo::BezPath {
++        let element = node.element_data();
++        if element.and_then(|e| e.text_input_data()).is_some() {
++            return frame.text_input_clip_path();
++        }
++        let box_style = styles.get_box();
++        let display = styles.clone_display();
++        let is_internal_table_box_other_than_cell = display.outside()
++            == DisplayOutside::InternalTable
++            && display.inside() != DisplayInside::TableCell;
++        let contain_paint = box_style.slow_clone_contain().contains(Contain::PAINT)
++            && !display.is_inline_flow()
++            && !is_internal_table_box_other_than_cell;
++        let forced = contain_paint
++            || element.and_then(|e| e.raster_image_data()).is_some()
++            || element.and_then(|e| e.sub_doc_data()).is_some();
++        let open_x = !forced && box_style.overflow_x == Overflow::Visible;
++        let open_y = !forced && box_style.overflow_y == Overflow::Visible;
++        if !open_x && !open_y {
++            return frame.padding_box_path();
++        }
++        let mut rect = frame.padding_box_path().bounding_box();
++        const REACH: f64 = 1.0e6;
++        if open_x {
++            rect.x0 -= REACH;
++            rect.x1 += REACH;
++        }
++        if open_y {
++            rect.y0 -= REACH;
++            rect.y1 += REACH;
++        }
++        rect.to_path(0.1)
++    }
++
+     fn draw_text_mask(
+         &self,
+         scene: &mut impl PaintScene,
+@@ -342,11 +382,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             return;
+         }
+         let cx = self.element_cx(node, *node.final_layout(), transform, None);
+-        let clip = if cx.text_input.is_some() {
+-            cx.frame.text_input_clip_path()
+-        } else {
+-            cx.frame.padding_box_path()
+-        };
++        let clip = self.overflow_clip_path(node, &styles, &cx.frame);
+         let pushed = self.layer_manager.maybe_push_layer(
+             scene,
+             self.should_clip_node(node, &styles),
+@@ -444,11 +480,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+         let has_opacity = opacity < 1.0;
+ 
+         let should_clip = self.should_clip_node(node, &styles);
+-        let is_text_input = node
+-            .element_data()
+-            .and_then(|el| el.text_input_data())
+-            .is_some();
+-
+         // Apply padding/border offset to inline root
+         let taffy::Layout {
+             size,
+@@ -530,11 +561,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+         // scrolled out of view is culled rather than drawn and clipped away. The box used
+         // here matches the clip applied to the content below.
+         let child_clip_rect = if should_clip {
+-            let clip_box = if is_text_input {
+-                cx.frame.text_input_clip_path()
+-            } else {
+-                cx.frame.padding_box_path()
+-            };
++            let clip_box = self.overflow_clip_path(node, &styles, &cx.frame);
+             clip_rect.intersect(screen_transform.transform_rect_bbox(clip_box.bounding_box()))
+         } else {
+             clip_rect
+@@ -654,11 +681,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+                         cx.stroke_devtools(scene);
+ 
+                         // TODO: allow layers with opacity to be unclipped (overflow: visible)
+-                        let clip = if is_text_input {
+-                            &cx.frame.text_input_clip_path()
+-                        } else {
+-                            &cx.frame.padding_box_path()
+-                        };
++                        let clip = &self.overflow_clip_path(node, &styles, &cx.frame);
+ 
+                         // Clip layer if box requires clipping. Opacity set to 1.0
+                         self.layer_manager.maybe_with_layer(
