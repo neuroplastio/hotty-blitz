@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 13 Nov 2026 22:38:20 +0100
+Subject: [PATCH] Correct CSS box-shadow blur widths
+
+---
+ packages/blitz-paint/src/render/box_shadow.rs | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render/box_shadow.rs b/packages/blitz-paint/src/render/box_shadow.rs
+index 2d6033b0f..7562f4028 100644
+--- a/packages/blitz-paint/src/render/box_shadow.rs
++++ b/packages/blitz-paint/src/render/box_shadow.rs
+@@ -68,6 +68,12 @@ fn snap_out(rect: Rect, grid: Vec2) -> Rect {
+     )
+ }
+ 
++/// CSS uses a Gaussian deviation of half the blur radius; vello's erf(d / std_dev)
++/// requires that deviation multiplied by sqrt(2) (css-backgrounds-3, "Blurring Shadow Edges").
++fn vello_std_dev(blur_radius: f64) -> f64 {
++    blur_radius * 0.5 * std::f64::consts::SQRT_2
++}
++
+ impl ElementCx<'_, '_> {
+     pub(super) fn draw_outset_box_shadow(&self, scene: &mut impl PaintScene) {
+         let box_shadow = &self.style.get_effects().box_shadow.0;
+@@ -124,7 +130,7 @@ impl ElementCx<'_, '_> {
+                         });
+ 
+                         let spread = shadow.spread.px() as f64 * self.scale;
+-                        let std_dev = shadow.base.blur.px() as f64;
++                        let std_dev = vello_std_dev(shadow.base.blur.px() as f64 * self.scale);
+                         self.draw_outset_shadow_shape(
+                             scene,
+                             transform,
+@@ -333,7 +339,7 @@ impl ElementCx<'_, '_> {
+                 hole,
+                 Color::WHITE,
+                 radius,
+-                shadow.base.blur.px() as f64 * self.scale,
++                vello_std_dev(shadow.base.blur.px() as f64 * self.scale),
+             );
+ 
+             scene.pop_layer();
