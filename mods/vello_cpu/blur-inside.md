@@ -1,6 +1,6 @@
 ---
 title: "A blurred rectangle's inside is not worked out pixel by pixel"
-patch: 0003-vello_cpu-a-blurred-rectangle-s-inside-is-not-worked.patch
+patch: 0001-vello_cpu-a-blurred-rectangle-s-inside-is-not-worked.patch
 upstream-fit: yes
 ---
 

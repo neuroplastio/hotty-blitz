@@ -1,6 +1,6 @@
 ---
 title: "Flushing waits for the workers without spinning"
-patch: 0001-vello_cpu-flushing-waits-for-the-workers-without-spi.patch
+patch: 0002-vello_cpu-flushing-waits-for-the-workers-without-spi.patch
 upstream-fit: yes
 ---
 

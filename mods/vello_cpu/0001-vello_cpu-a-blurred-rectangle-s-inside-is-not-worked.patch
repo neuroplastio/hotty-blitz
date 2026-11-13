@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 10:03:16 +0100
-Subject: [PATCH 3/5] vello_cpu: a blurred rectangle's inside is not worked out
+Subject: [PATCH 1/5] vello_cpu: a blurred rectangle's inside is not worked out
  pixel by pixel
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

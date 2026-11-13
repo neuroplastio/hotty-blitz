@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Sat, 10 Oct 2026 19:04:22 +0200
-Subject: [PATCH 1/5] vello_cpu: flushing waits for the workers without
+Subject: [PATCH 2/5] vello_cpu: flushing waits for the workers without
  spinning
 
 `MultiThreadedDispatcher::flush` drains the recorded commands with
