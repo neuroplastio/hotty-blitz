@@ -64,7 +64,10 @@ fn at(from: [u8; 3], to: [u8; 3], p: f64) -> [u8; 3] {
 fn between(got: [u8; 3], from: [u8; 3], to: [u8; 3], lo: f64, hi: f64) {
     let (a, b) = (at(from, to, lo), at(from, to, hi));
     for c in 0..3 {
-        let (x, y) = (a[c].min(b[c]).saturating_sub(1), a[c].max(b[c]) + 1);
+        let (x, y) = (
+            a[c].min(b[c]).saturating_sub(1),
+            a[c].max(b[c]).saturating_add(1),
+        );
         assert!(
             got[c] >= x && got[c] <= y,
             "channel {c} is {}, between {x} and {y} (at {lo}..={hi} of the way)",
