@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
+Date: Tue, 13 Oct 2026 16:53:52 +0100
+Subject: [PATCH] Retain forwards-filling animations after they finish
+
+Keep a finished animation while its fill contributes, and mark cancellation dirty so its contribution is removed. Finished fills do not request animation ticks.
+---
+ style/matching.rs        |  7 ++++---
+ style/servo/animation.rs | 11 +++++++----
+ 2 files changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/style/matching.rs b/style/matching.rs
+index a6335e948..8ac331e32 100644
+--- a/style/matching.rs
++++ b/style/matching.rs
+@@ -768,9 +768,10 @@ trait PrivateMatchMethods: TElement {
+             .transitions
+             .retain(|transition| transition.state != AnimationState::Finished);
+ 
+-        animation_set
+-            .animations
+-            .retain(|animation| animation.state != AnimationState::Finished);
++        // A forwards fill remains in the cascade after the animation ends.
++        animation_set.animations.retain(|animation| {
++            animation.state != AnimationState::Finished || animation.fills_forwards()
++        });
+ 
+         // If the ElementAnimationSet is empty, and don't store it in order to
+         // save memory and to avoid extra processing later.
+diff --git a/style/servo/animation.rs b/style/servo/animation.rs
+index a432925c7..10ff6bc7f 100644
+--- a/style/servo/animation.rs
++++ b/style/servo/animation.rs
+@@ -616,6 +616,11 @@ impl Animation {
+         new_ui.animation_duration_mod(index).seconds() == 0.
+     }
+ 
++    /// Whether the animation keeps applying its final keyframe after it ends.
++    pub fn fills_forwards(&self) -> bool {
++        matches!(self.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both)
++    }
++
+     /// Given the current time, advances this animation to the next iteration,
+     /// updates times, and then toggles the direction if appropriate. Otherwise
+     /// does nothing. Returns true if this animation has iterated.
+@@ -960,10 +965,7 @@ impl Animation {
+         {
+             return;
+         }
+-        if self.has_ended(now)
+-            && self.fill_mode != AnimationFillMode::Forwards
+-            && self.fill_mode != AnimationFillMode::Both
+-        {
++        if self.has_ended(now) && !self.fills_forwards() {
+             return;
+         }
+ 
+@@ -1408,6 +1410,7 @@ impl ElementAnimationSet {
+         for animation in self.animations.iter_mut() {
+             if animation.is_cancelled_in_new_style(new_style) {
+                 animation.state = AnimationState::Canceled;
++                self.dirty = true;
+             }
+         }
+ 

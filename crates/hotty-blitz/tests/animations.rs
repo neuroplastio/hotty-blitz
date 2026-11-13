@@ -298,3 +298,50 @@ fn a_class_change_after_idle_transitions_from_now() {
     let slack = (after - before).as_secs_f64() / 0.4;
     between(pixel(&h, "x", 10, 10), RED, BLUE, 0.5, 0.55 + slack);
 }
+
+#[test]
+fn forwards_fill_survives_restyle_and_is_removed_when_canceled() {
+    let mut h = host();
+    animated(&mut h, "go 1s linear forwards");
+    let start = h.next_frame().expect("animation starts");
+    h.animate(start + Duration::from_secs(2));
+    render(&mut h);
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        BLUE,
+        "finished animation fills forwards"
+    );
+    assert!(
+        h.next_frame().is_none(),
+        "a finished fill does not request frames"
+    );
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("n", "1")],
+        "attr",
+        Some("a"),
+        Some("style"),
+        &format!(
+            "{BOX}background:rgb(0,128,0);animation:go 1s linear forwards;border:1px solid white"
+        ),
+    ));
+    render(&mut h);
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        BLUE,
+        "unrelated restyle must retain the fill"
+    );
+    assert!(
+        h.next_frame().is_none(),
+        "restyling a finished fill does not restart it"
+    );
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("n", "2")],
+        "attr",
+        Some("a"),
+        Some("style"),
+        &format!("{BOX}background:rgb(0,128,0);animation:none;border:1px solid white"),
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), GREEN, "canceling removes the fill");
+    assert!(h.next_frame().is_none());
+}
