@@ -213,7 +213,13 @@ fn a_steps_animation_asks_for_a_frame_at_each_step() {
 #[test]
 fn a_linear_animation_asks_for_every_frame() {
     let mut h = host();
-    animated(&mut h, "go 10s linear");
+    animated(&mut h, "go 120s linear");
+    // A resolve advances the surface tick to at least the real clock. Put
+    // the sampled second well ahead of it so rendering time cannot overtake
+    // the test's synthetic deadlines and make frames appear to be skipped.
+    let future = h.next_frame().expect("the animation wants frames") + Duration::from_secs(30);
+    h.animate(future);
+    render(&mut h);
     let (asked, drawn) = frames_in_a_second(&mut h);
     assert!((59..=61).contains(&asked), "{asked} frames asked for");
     assert!((59..=61).contains(&drawn), "{drawn} frames drawn");
