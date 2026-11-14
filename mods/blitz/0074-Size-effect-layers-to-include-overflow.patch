@@ -1,0 +1,42 @@
+From 00fbb6d76d4e94189cd3564a04ab713a2db9f4b0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
+Date: Sat, 14 Nov 2026 17:05:55 +0100
+Subject: [PATCH] Size effect layers to include overflow
+
+Union the current node overflow before filter expansion so layers include their painted overflow. Containing-block hoists are already included in the current overflow calculation.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ packages/blitz-paint/src/render.rs | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index 94d0bc4e2..f17559ada 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -666,14 +666,20 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+                     .map(|f| f.expansion_rect())
+                     .unwrap_or(Rect::ZERO);
+ 
+-                let mut effect_layer_clip = cx.frame.border_box_path().bounding_box();
++                // Effects cover the painted subtree, including overflow and
++                // positioned descendants accounted for by the containing block.
++                let mut effect_layer_clip = cx
++                    .frame
++                    .border_box_path()
++                    .bounding_box()
++                    .union(*cx.node.scrollable_overflow());
+                 effect_layer_clip.x0 += filter_expansion_area.x0;
+                 effect_layer_clip.y0 += filter_expansion_area.y0;
+                 effect_layer_clip.x1 += filter_expansion_area.x1;
+                 effect_layer_clip.y1 += filter_expansion_area.y1;
+ 
+                 // Opacity/Filter layer if box has opacity or a filter.
+-                // Clipped to border-box as it needs to include the background and borders.
++                // Expand the complete subtree after unioning overflow, so blur can bleed beyond it.
+                 self.layer_manager.maybe_with_layer(
+                     scene,
+                     has_opacity || filter.is_some() || backdrop_filter.is_some(),
+-- 
+2.56.0
+
