@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 14:06:04 +0100
+Subject: [PATCH 7/7] Fix SIMD argument order in blurred rectangle tests
+
+The vello 0.4 SIMD constructor takes the vector backend first. The carried interior-shortcut tests still use the old argument order, so the renderer library tests do not compile.
+---
+ vello_cpu/src/fine/common/rounded_blurred_rect.rs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/vello_cpu/src/fine/common/rounded_blurred_rect.rs b/vello_cpu/src/fine/common/rounded_blurred_rect.rs
+index 3570ec1a..5ad40a55 100644
+--- a/vello_cpu/src/fine/common/rounded_blurred_rect.rs
++++ b/vello_cpu/src/fine/common/rounded_blurred_rect.rs
+@@ -623,7 +623,7 @@ mod tests {
+                 start,
+                 e.x_advance,
+                 e.y_advance,
+-                SimdRoundedBlurredRect::new(&e, simd),
++                SimdRoundedBlurredRect::new(simd, &e),
+                 Inside::new(&e),
+                 simd,
+             );
+@@ -631,7 +631,7 @@ mod tests {
+                 start,
+                 e.x_advance,
+                 e.y_advance,
+-                SimdRoundedBlurredRect::new(&e, simd),
++                SimdRoundedBlurredRect::new(simd, &e),
+                 None,
+                 simd,
+             );
