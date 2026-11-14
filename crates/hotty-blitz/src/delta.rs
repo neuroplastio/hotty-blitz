@@ -666,3 +666,40 @@ mod style_delta_tests {
         assert!(!doc.relative_selector_invalidation_pending());
     }
 }
+
+#[cfg(test)]
+mod taffy_baseline_tests {
+    use blitz_dom::DocumentConfig;
+    use blitz_html::HtmlDocument;
+    use blitz_traits::shell::{ColorScheme, Viewport};
+
+    #[test]
+    fn inline_blocks_use_the_last_baseline_of_nested_block_content() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0;font:20px/20px sans-serif} span{display:inline-block}</style><div><span id=direct>one<br>two</span><span id=nested><div>one<br>two</div></span></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let direct = doc
+            .get_client_bounding_rect(doc.get_element_by_id("direct").unwrap())
+            .unwrap();
+        let nested = doc
+            .get_client_bounding_rect(doc.get_element_by_id("nested").unwrap())
+            .unwrap();
+        assert_eq!(direct.y, nested.y);
+        assert_eq!(direct.height, nested.height);
+
+        let nested_id = doc.get_element_by_id("nested").unwrap();
+        doc.mutate().set_attribute(
+            nested_id,
+            blitz_dom::qual_name!("style"),
+            "position:relative;top:10px",
+        );
+        doc.resolve(0.0);
+        let moved = doc.get_client_bounding_rect(nested_id).unwrap();
+        assert_eq!(moved.y - direct.y, 10.0);
+    }
+}
