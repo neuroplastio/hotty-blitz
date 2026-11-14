@@ -4298,3 +4298,68 @@ fn empty_clip_path_hides_its_element() {
     assert_ne!(paint("60%"), [255, 0, 0]);
     assert_eq!(paint("20%"), [255, 0, 0]);
 }
+
+#[test]
+fn has_selector_updates_for_deep_attribute_changes() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0} #box{width:40px;height:40px;background:red} #box:has(.active){background:lime}</style><div id=box><div><span id=target></span></div></div>",
+        "4",
+    );
+    assert_eq!(pixel(&h, "x", 20, 20), [255, 0, 0]);
+    h.handle(&op_cmd(
+        &[("op", "attr"), ("t", "target"), ("k", "class")],
+        "active",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 20, 20), [0, 255, 0]);
+    h.handle(&op_cmd(
+        &[("op", "unattr"), ("t", "target"), ("k", "class")],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 20, 20), [255, 0, 0]);
+    h.handle(&op_cmd(
+        &[("op", "append"), ("t", "target")],
+        "<i id=new class=active></i>",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 20, 20), [0, 255, 0]);
+    h.handle(&op_cmd(&[("op", "remove"), ("t", "new")], ""));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 20, 20), [255, 0, 0]);
+}
+
+#[test]
+fn has_selector_updates_for_sibling_attributes_and_focus() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0} #box{width:40px;height:40px;background:red} #box:has(+ .active), #box:has(:focus){background:lime} input{width:10px;height:10px}</style><div id=box><input id=input></div><div id=neighbor></div>",
+        "4",
+    );
+    assert_eq!(pixel(&h, "x", 30, 30), [255, 0, 0]);
+    h.handle(&op_cmd(
+        &[("op", "attr"), ("t", "neighbor"), ("k", "class")],
+        "active",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 30, 30), [0, 255, 0]);
+    h.handle(&op_cmd(
+        &[("op", "unattr"), ("t", "neighbor"), ("k", "class")],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 30, 30), [255, 0, 0]);
+    click(&mut h, "x", 5.0, 5.0);
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 30, 30), [0, 255, 0]);
+    h.blur("x");
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 30, 30), [255, 0, 0]);
+}

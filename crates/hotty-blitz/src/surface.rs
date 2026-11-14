@@ -1062,6 +1062,11 @@ impl Surface {
     }
 
     fn resolve(&mut self) {
+        // Relative selectors can restyle an ancestor or sibling outside the
+        // touched node's damage. Keep the old and new appearance correct.
+        if self.doc.relative_selector_invalidation_pending() {
+            self.damage.full = true;
+        }
         self.doc.handle_messages();
         // The document's time is `tick`, which `advance` moves; a test
         // moves it to any moment it names. A resolve outside a render (a
