@@ -1,0 +1,138 @@
+From bacf053d43351d974f08e9fa276e4923b6db78f8 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 15:22:55 +0100
+Subject: [PATCH] Handle unresolved anchors in Stylo to Taffy conversion
+
+Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+---
+ packages/stylo_taffy/src/convert.rs | 82 +++++++++++++++++++++++------
+ 1 file changed, 66 insertions(+), 16 deletions(-)
+
+diff --git a/packages/stylo_taffy/src/convert.rs b/packages/stylo_taffy/src/convert.rs
+index d0f1b96c4..9e059a533 100644
+--- a/packages/stylo_taffy/src/convert.rs
++++ b/packages/stylo_taffy/src/convert.rs
+@@ -120,9 +120,13 @@ pub fn dimension(val: &stylo::Size) -> taffy::Dimension {
+         stylo::Size::Stretch => taffy::Dimension::stretch(),
+         stylo::Size::WebkitFillAvailable => taffy::Dimension::stretch(),
+ 
+-        // Anchor positioning will be flagged off for time being
+-        stylo::Size::AnchorSizeFunction(_) => unreachable!(),
+-        stylo::Size::AnchorContainingCalcFunction(_) => unreachable!(),
++        // Taffy does not resolve anchor-dependent values yet. Keep the CSSOM
++        // value in Stylo, but use the property's unresolved auto behavior.
++        stylo::Size::AnchorSizeFunction(anchor) => anchor
++            .fallback
++            .as_ref()
++            .map_or(taffy::Dimension::AUTO, dimension),
++        stylo::Size::AnchorContainingCalcFunction(_) => taffy::Dimension::AUTO,
+     }
+ }
+ 
+@@ -140,9 +144,11 @@ pub fn min_size(val: &stylo::Size) -> taffy::LengthPercentageAuto {
+         stylo::Size::Stretch => taffy::LengthPercentageAuto::AUTO,
+         stylo::Size::WebkitFillAvailable => taffy::LengthPercentageAuto::AUTO,
+ 
+-        // Anchor positioning will be flagged off for time being
+-        stylo::Size::AnchorSizeFunction(_) => unreachable!(),
+-        stylo::Size::AnchorContainingCalcFunction(_) => unreachable!(),
++        stylo::Size::AnchorSizeFunction(anchor) => anchor
++            .fallback
++            .as_ref()
++            .map_or(taffy::LengthPercentageAuto::AUTO, min_size),
++        stylo::Size::AnchorContainingCalcFunction(_) => taffy::LengthPercentageAuto::AUTO,
+     }
+ }
+ 
+@@ -160,9 +166,11 @@ pub fn max_size(val: &stylo::MaxSize) -> taffy::LengthPercentageAuto {
+         stylo::MaxSize::Stretch => taffy::LengthPercentageAuto::AUTO,
+         stylo::MaxSize::WebkitFillAvailable => taffy::LengthPercentageAuto::AUTO,
+ 
+-        // Anchor positioning will be flagged off for time being
+-        stylo::MaxSize::AnchorSizeFunction(_) => unreachable!(),
+-        stylo::MaxSize::AnchorContainingCalcFunction(_) => unreachable!(),
++        stylo::MaxSize::AnchorSizeFunction(anchor) => anchor
++            .fallback
++            .as_ref()
++            .map_or(taffy::LengthPercentageAuto::AUTO, max_size),
++        stylo::MaxSize::AnchorContainingCalcFunction(_) => taffy::LengthPercentageAuto::AUTO,
+     }
+ }
+ 
+@@ -172,9 +180,13 @@ pub fn margin(val: &stylo::MarginVal) -> taffy::LengthPercentageAuto {
+         stylo::MarginVal::Auto => taffy::LengthPercentageAuto::AUTO,
+         stylo::MarginVal::LengthPercentage(val) => length_percentage(val).into(),
+ 
+-        // Anchor positioning will be flagged off for time being
+-        stylo::MarginVal::AnchorSizeFunction(_) => unreachable!(),
+-        stylo::MarginVal::AnchorContainingCalcFunction(_) => unreachable!(),
++        stylo::MarginVal::AnchorSizeFunction(anchor) => anchor
++            .fallback
++            .as_ref()
++            .map_or(taffy::LengthPercentageAuto::length(0.0), margin),
++        stylo::MarginVal::AnchorContainingCalcFunction(_) => {
++            taffy::LengthPercentageAuto::length(0.0)
++        },
+     }
+ }
+ 
+@@ -195,10 +207,15 @@ pub fn inset(val: &stylo::InsetVal) -> taffy::LengthPercentageAuto {
+         stylo::InsetVal::Auto => taffy::LengthPercentageAuto::AUTO,
+         stylo::InsetVal::LengthPercentage(val) => length_percentage(val).into(),
+ 
+-        // Anchor positioning will be flagged off for time being
+-        stylo::InsetVal::AnchorSizeFunction(_) => unreachable!(),
+-        stylo::InsetVal::AnchorFunction(_) => unreachable!(),
+-        stylo::InsetVal::AnchorContainingCalcFunction(_) => unreachable!(),
++        stylo::InsetVal::AnchorSizeFunction(anchor) => anchor
++            .fallback
++            .as_ref()
++            .map_or(taffy::LengthPercentageAuto::AUTO, inset),
++        stylo::InsetVal::AnchorFunction(anchor) => anchor
++            .fallback
++            .as_ref()
++            .map_or(taffy::LengthPercentageAuto::AUTO, inset),
++        stylo::InsetVal::AnchorContainingCalcFunction(_) => taffy::LengthPercentageAuto::AUTO,
+     }
+ }
+ 
+@@ -1102,3 +1119,36 @@ pub fn to_taffy_style(style: &stylo::ComputedValues) -> taffy::Style<Atom> {
+         },
+     }
+ }
++
++#[cfg(test)]
++mod anchor_fallback_tests {
++    use super::*;
++    use style::values::DashedIdent;
++    use style::values::generics::Optional;
++    use style::values::generics::length::{AnchorSizeKeyword, GenericAnchorSizeFunction};
++    use style::values::generics::position::TreeScoped;
++
++    #[test]
++    fn unresolved_anchor_size_uses_explicit_fallback() {
++        use style::values::computed::{Length, LengthPercentage};
++        let fallback = stylo::Size::LengthPercentage(stylo::NonNegative(
++            LengthPercentage::new_length(Length::new(24.0)),
++        ));
++        let value = stylo::Size::AnchorSizeFunction(Box::new(GenericAnchorSizeFunction {
++            target_element: TreeScoped::with_default_level(DashedIdent::empty()),
++            size: AnchorSizeKeyword::None,
++            fallback: Optional::Some(fallback.clone()),
++        }));
++        assert_eq!(dimension(&value), dimension(&fallback));
++    }
++
++    #[test]
++    fn unresolved_anchor_size_uses_auto() {
++        let value = stylo::Size::AnchorSizeFunction(Box::new(GenericAnchorSizeFunction {
++            target_element: TreeScoped::with_default_level(DashedIdent::empty()),
++            size: AnchorSizeKeyword::None,
++            fallback: Optional::None,
++        }));
++        assert_eq!(dimension(&value), taffy::Dimension::AUTO);
++    }
++}
+-- 
+2.56.0
+
