@@ -1,0 +1,119 @@
+From 7fd142103654069432905bec2e98eb5b4bfbd881 Mon Sep 17 00:00:00 2001
+From: Celso Martinho <celso@cloudflare.com>
+Date: Sat, 14 Nov 2026 16:59:17 +0100
+Subject: [PATCH] Propagate text decorations into in-flow block children
+
+Carry the decorating-box path across in-flow block roots; stop at atomic, floated and out-of-flow boundaries and let ancestor paint layers supply their opacity.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ packages/blitz-paint/src/text.rs | 49 ++++++++++++++++++++++++++++----
+ 1 file changed, 43 insertions(+), 6 deletions(-)
+
+diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
+index d458401ba..16866d7ef 100644
+--- a/packages/blitz-paint/src/text.rs
++++ b/packages/blitz-paint/src/text.rs
+@@ -5,14 +5,16 @@ use kurbo::{Affine, BezPath, Rect, Shape as _, Vec2};
+ use parley::{Affinity, Cursor, GlyphRun, Layout, Line, PositionedLayoutItem, Selection};
+ use peniko::Fill;
+ use std::sync::Arc;
++use style::computed_values::position::T as Position;
+ use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
++use style::values::specified::box_::{DisplayInside, DisplayOutside};
+ 
++use crate::FONT_EMBOLDEN_ENABLED;
+ use crate::color::{Color, ToColorColor as _};
+ use crate::text_decorations::{
+     DecorationRunGeometry, DecorationStackEntry, LineDecoration, ResolvedTextShadow,
+     WinAscentCache, draw_line_text_shadows, flush_line_decorations, resolve_decoration_entry,
+ };
+-use crate::FONT_EMBOLDEN_ENABLED;
+ 
+ fn inline_opacity(doc: &BaseDocument, node_id: NodeId, inline_root_id: NodeId) -> f32 {
+     let mut opacity = 1.0;
+@@ -224,6 +226,29 @@ pub(crate) fn stroke_text<'a>(
+     deco_boxes.clear();
+     run_records.clear();
+ 
++    // Decorations cross in-flow block roots but not atomic, floated or
++    // out-of-flow boxes. Each ancestor's paint layer supplies its opacity.
++    let mut ancestors = Vec::new();
++    let mut walk_id = inline_root_id;
++    while let Some(node) = doc.get_node(walk_id) {
++        if let Some(styles) = node.primary_styles() {
++            let display = styles.clone_display();
++            if (display.outside() == DisplayOutside::Inline
++                && display.inside() != DisplayInside::Flow)
++                || styles.clone_float().is_floating()
++                || matches!(
++                    styles.get_box().position,
++                    Position::Absolute | Position::Fixed
++                )
++            {
++                break;
++            }
++        }
++        let Some(parent) = node.parent else { break };
++        ancestors.push(parent);
++        walk_id = parent;
++    }
++
+     // Persistent stack mirroring the ancestor path (inline root -> current run's
+     // node) as we walk the runs. The `text-decoration-*` properties are *not*
+     // inherited; instead a decoration set on an ancestor is propagated to the
+@@ -267,6 +292,7 @@ pub(crate) fn stroke_text<'a>(
+                 }
+                 walk_id = doc.get_node(node_id).and_then(|node| node.parent);
+             }
++            path_scratch.extend(ancestors.iter().copied());
+             path_scratch.reverse();
+ 
+             let shared = stack
+@@ -276,8 +302,11 @@ pub(crate) fn stroke_text<'a>(
+                 .count();
+             stack.truncate(shared);
+             for &node_id in &path_scratch[shared..] {
+-                let mut entry = resolve_decoration_entry(doc, node_id, stack.last(), scale, selected);
+-                entry.apply_inline_opacity(inline_opacity(doc, node_id, inline_root_id));
++                let mut entry =
++                    resolve_decoration_entry(doc, node_id, stack.last(), scale, selected);
++                if stack.len() >= ancestors.len() {
++                    entry.apply_inline_opacity(inline_opacity(doc, node_id, inline_root_id));
++                }
+                 stack.push(entry);
+             }
+ 
+@@ -289,10 +318,12 @@ pub(crate) fn stroke_text<'a>(
+                 .last()
+                 .map(|e| (e.fill_color, e.text_shadows.clone()))
+                 .unwrap_or((Color::BLACK, None));
+-            let visible = doc.get_node(style.brush.id)
++            let visible = doc
++                .get_node(style.brush.id)
+                 .and_then(|node| node.primary_styles())
+                 .is_none_or(|styles| styles.get_inherited_box().visibility == Visibility::Visible);
+-            let fill_color = brush_override.unwrap_or(fill_color)
++            let fill_color = brush_override
++                .unwrap_or(fill_color)
+                 .multiply_alpha(inline_opacity(doc, style.brush.id, inline_root_id));
+             let shadows = shadows.filter(|_| visible && brush_override.is_none());
+             line_has_shadows |= shadows.is_some();
+@@ -460,7 +491,13 @@ pub(crate) fn glyph_run_rect(glyph_run: &GlyphRun<'_, TextBrush>) -> Rect {
+ }
+ 
+ /// The area covered by a selection in layout coordinates.
+-pub(crate) fn fill_text<'a>(scene: &mut impl PaintScene, lines: impl Iterator<Item = Line<'a, TextBrush>>, transform: Affine, scale: f64, color: Color) {
++pub(crate) fn fill_text<'a>(
++    scene: &mut impl PaintScene,
++    lines: impl Iterator<Item = Line<'a, TextBrush>>,
++    transform: Affine,
++    scale: f64,
++    color: Color,
++) {
+     for line in lines {
+         for run in glyph_runs(&line) {
+             draw_glyph_run(scene, &run, color, transform, scale);
+-- 
+2.56.0
+
