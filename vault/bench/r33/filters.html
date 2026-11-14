@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSS filter paint fixture</title>
+<style>
+  body { margin: 0; background: #20242c; color: white; font: 18px sans-serif }
+  main { display: flex; flex-wrap: wrap; gap: 18px; padding: 24px }
+  div { width: 190px; height: 130px; padding: 16px; background: linear-gradient(135deg, #e65353, #3278d0); border-radius: 12px }
+  .blur { filter: blur(4px) }
+  .shadow { filter: drop-shadow(10px 8px 4px black) }
+  .invert { filter: invert(1) }
+  .brightness { filter: brightness(.6) contrast(.8) }
+</style>
+<main><div class="blur">Blur</div><div class="shadow">Drop shadow</div><div class="invert">Invert</div><div class="brightness">Color matrices</div></main>
