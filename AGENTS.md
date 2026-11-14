@@ -9,7 +9,7 @@ for the hotty repository.
   from the hotty checkout), clippy with `-D warnings`, the pty test and the
   fuzz test. It needs a hotty checkout (`HOTTY_DIR`, or next to this
   repository) and sets up the forks at `../blitz`, `../parley`,
-  `../vello_cpu`, `../glifo`, `../stylo` and `../resvg` when missing.
+  `../vello_cpu`, `../glifo`, `../stylo`, `../resvg` and `../taffy` when missing.
 - **Release builds only for numbers.** A debug build of Stylo is orders of
   magnitude slower.
 - **Blitz stays upstream code, modded (gov P-7):** a pinned commit plus
@@ -22,7 +22,8 @@ for the hotty repository.
   `../glifo` checks the glifo set independently.
   Stylo is the commit Blitz pins plus `mods/stylo/*.patch`, at `../stylo`;
   mods/blitz builds only with it. usvg is the release revision Blitz pins plus
-  `mods/usvg/*.patch`, in `../resvg/crates/usvg`.
+  `mods/usvg/*.patch`, in `../resvg/crates/usvg`. Taffy is the Git revision
+  Blitz pins plus `mods/taffy/*.patch`, at `../taffy`.
   Each set's `mod.md` holds its `base` and the commands.
 - **Every patch has its `.md`**, written in the same commit: `title`,
   `patch`, `upstream-fit` (`yes`, `maybe` or `no`), and a body of at most

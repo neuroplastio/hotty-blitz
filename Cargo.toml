@@ -52,6 +52,10 @@ stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 # vello_cpu and glifo use the linebender vello release revision Blitz uses.
 # The vello_cpu workspace carries both sets and their shared vello_common;
 # ../glifo separately materializes the glifo set for checking.
+# Taffy is built from the Git revision Blitz pins plus mods/taffy.
+[patch."https://github.com/DioxusLabs/taffy"]
+taffy = { path = "../taffy" }
+
 [patch.crates-io]
 # usvg 0.50.0 is built from the resvg release revision in mods/usvg.
 usvg = { path = "../resvg/crates/usvg" }
