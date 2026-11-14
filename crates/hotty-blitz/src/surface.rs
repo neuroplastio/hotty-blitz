@@ -252,6 +252,11 @@ pub(crate) struct Surface {
     pub redeliver: bool,
     pub frame: Frame,
     scratch: Vec<u8>,
+    /// The previous painted frame contained a filter; start the next one on
+    /// the zero-worker renderer and update the hint after its rectangles.
+    last_filtered: bool,
+    #[cfg(test)]
+    paint_modes: Vec<bool>,
     /// What to repaint at the next render (paint.rs).
     damage: paint::Tracker,
     viewport: (u32, u32, f32, bool, bool),
@@ -784,6 +789,9 @@ impl Surface {
                 timings: Timings::default(),
             },
             scratch: Vec::new(),
+            last_filtered: false,
+            #[cfg(test)]
+            paint_modes: Vec::new(),
             damage: paint::Tracker::full(),
             viewport: (w, h, m.scale, dark, reduced_motion),
             reduced_motion,
@@ -1275,9 +1283,21 @@ impl Surface {
             self.frame.width = w;
             self.frame.height = h;
         }
+        #[cfg(test)]
+        self.paint_modes.clear();
+        let mut frame_filtered = false;
         for r in &rects {
-            self.paint_rect(*r, scale, w, h, renderers);
+            let filtered = self.paint_rect(
+                *r,
+                scale,
+                w,
+                h,
+                renderers,
+                self.last_filtered || frame_filtered,
+            );
+            frame_filtered |= filtered;
         }
+        self.last_filtered = frame_filtered;
         let t3 = std::time::Instant::now();
         if trace::on() {
             let px: u64 = rects.iter().map(|r| r.w as u64 * r.h as u64).sum();
@@ -1416,7 +1436,15 @@ impl Surface {
     }
 
     /// Paints rectangle `r` of the surface into the frame.
-    fn paint_rect(&mut self, r: Rect, scale: f64, w: u32, h: u32, renderers: &mut Renderers) {
+    fn paint_rect(
+        &mut self,
+        r: Rect,
+        scale: f64,
+        w: u32,
+        h: u32,
+        renderers: &mut Renderers,
+        prefer_single: bool,
+    ) -> bool {
         // Render into a context of the rectangle's size rounded up to 64 px,
         // reused across frames; only `r` is copied out.
         let bucket = (r.w.div_ceil(64) * 64, r.h.div_ceil(64) * 64);
@@ -1443,7 +1471,10 @@ impl Surface {
         );
         // Paint directly in the normal renderer. Only scenes that actually
         // contain a filter need a second pass in the zero-worker renderer.
-        for single in [false, true] {
+        let mut saw_filter = false;
+        for single in [prefer_single, true] {
+            #[cfg(test)]
+            self.paint_modes.push(single);
             if single {
                 self.scratch.fill(0);
             }
@@ -1496,6 +1527,7 @@ impl Surface {
                 );
                 doc.set_viewport_scroll(saved);
             }
+            saw_filter |= filtered;
             if !filtered || single {
                 break;
             }
@@ -1515,6 +1547,7 @@ impl Surface {
             self.frame.rgba[dst..dst + row]
                 .copy_from_slice(&self.scratch[y * src_stride..y * src_stride + row]);
         }
+        saw_filter
     }
 
     /// Applies a delta's ops in order (SPEC §6.1), the whole delta having
@@ -4266,6 +4299,56 @@ fn unpremultiply(buf: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::Renderers;
+
+    #[test]
+    fn filter_hint_reuses_single_threaded_paints_until_a_filter_free_frame() {
+        let metrics = crate::Metrics {
+            cell_w: 10,
+            cell_h: 20,
+            scale: 1.0,
+        };
+        let mut host = crate::Host::new(crate::Config {
+            metrics,
+            ..Default::default()
+        });
+        let command = |pairs: &[(&str, &str)], payload: &str| {
+            hotty::Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+        };
+        host.handle(&command(
+            &[("a", "doc"), ("s", "x")],
+            "<div id='box' style='width:80px;height:80px;background:red;filter:invert(1)'></div>",
+        ));
+        host.handle(&command(
+            &[("a", "place"), ("s", "x"), ("c", "80"), ("r", "30")],
+            "",
+        ));
+        host.render_dirty(&mut |_, _, _| {});
+        assert_eq!(host.surfaces["x"].paint_modes, [false, true]);
+        for _ in 0..3 {
+            host.repaint();
+            host.render_dirty(&mut |_, _, _| {});
+            assert_eq!(host.surfaces["x"].paint_modes, [true]);
+        }
+        host.surfaces
+            .get_mut("x")
+            .unwrap()
+            .apply(
+                &[hotty::Op {
+                    op: "attr".into(),
+                    target: "box".into(),
+                    key: "style".into(),
+                    value: Some("width:80px;height:80px;background:red".into()),
+                }],
+                &metrics,
+            )
+            .unwrap();
+        host.repaint();
+        host.render_dirty(&mut |_, _, _| {});
+        assert_eq!(host.surfaces["x"].paint_modes, [true]);
+        host.repaint();
+        host.render_dirty(&mut |_, _, _| {});
+        assert_eq!(host.surfaces["x"].paint_modes, [false]);
+    }
 
     /// `Renderers::get` on bucket sizes alone: whether each was kept.
     fn run(seq: &[(u32, u32)]) -> (Vec<(u32, u32)>, Vec<bool>) {
