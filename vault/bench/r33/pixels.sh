@@ -29,7 +29,9 @@ diff)
   for a in "$2"/*.png; do
     n=$(basename "$a" .png) b="$3/$n.png"
     [ -f "$b" ] || { echo "| $n | missing | |"; continue; }
-    ae=$(magick compare -metric AE "$a" "$b" null: 2>&1 | cut -d' ' -f1 || true)
+    # Count pixels with any changed RGB channel; compare -metric AE can
+    # report a fractional normalized value with HDRI ImageMagick builds.
+    ae=$(magick "$a" "$b" -compose difference -composite -alpha off -colorspace gray -threshold 0 -format '%[fx:round(mean*w*h)]' info:)
     # The largest per-channel difference, 0-255.
     mx=$(magick "$a" "$b" -compose difference -composite -separate -evaluate-sequence max -format '%[fx:round(maxima*255)]' info: 2>/dev/null || echo '?')
     echo "| $n | $ae | $mx |"
