@@ -691,6 +691,26 @@ mod taffy_baseline_tests {
     }
 
     #[test]
+    fn bidi_controls_alone_do_not_make_a_line_box() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0;font:20px/20px sans-serif}.abs{position:absolute}.box{display:inline-block;width:5px;height:5px}</style><div id=empty><span dir=ltr>&#x2066;&#x2069;</span></div><div id=absolute><span dir=rtl>&#x202a;<i class=abs></i>&#x202c;</span></div><div id=withbox><span dir=ltr><i class=box></i></span></div><div id=withtext><span dir=rtl>x</span></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = |id| {
+            doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                .unwrap()
+        };
+        assert_eq!(rect("empty").height, 0.0);
+        assert_eq!(rect("absolute").height, 0.0);
+        assert!(rect("withbox").height > 0.0);
+        assert_eq!(rect("withtext").height, 20.0);
+    }
+
+    #[test]
     fn block_replaced_elements_avoid_floats() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0}.outer{width:200px}.float{float:left;width:120px;height:100px}canvas{display:block;width:80px;height:50px}</style><div class=outer><div class=float></div><canvas id=image width=80 height=50></canvas></div>",

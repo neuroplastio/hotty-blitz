@@ -1,0 +1,55 @@
+From 830326686ed853b7f7aab84d94fea398f1b4fd06 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
+Date: Sat, 14 Nov 2026 17:08:38 +0100
+Subject: [PATCH] Give bidi-control-only inlines no line box
+
+Treat bidi formatting characters alone as empty for inline height, while preserving real text and in-flow boxes.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ .../blitz-dom/src/layout/inline/layout.rs     | 20 ++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/inline/layout.rs b/packages/blitz-dom/src/layout/inline/layout.rs
+index f3ebee481..fc7bd1db2 100644
+--- a/packages/blitz-dom/src/layout/inline/layout.rs
++++ b/packages/blitz-dom/src/layout/inline/layout.rs
+@@ -476,9 +476,15 @@ impl LayoutPassState<'_> {
+             overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+         drop(style);
+ 
++        // Bidi formatting controls do not create line content on their own.
++        let text_is_only_bidi_controls = inline_layout
++            .text
++            .chars()
++            .all(|c| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'));
++
+         // Short circuit if inline context contains no text or inline boxes
+         if !has_styles_preventing_being_collapsed_through
+-            && inline_layout.text.is_empty()
++            && text_is_only_bidi_controls
+             && inline_layout.layout.inline_boxes().len() == 0
+         {
+             // Put layout back
+@@ -1101,8 +1107,16 @@ impl LayoutPassState<'_> {
+         // Parley lays out empty text as a single strut-height line (text-editor semantics),
+         // but a line box containing no text, inline boxes or other in-flow content is a
+         // zero-height line box in CSS (CSS2 §9.4.2).
+-        let has_inline_content =
+-            !inline_layout.text.is_empty() || inline_layout.layout.inline_boxes().len() > 0;
++        let has_inline_content = if !text_is_only_bidi_controls {
++            true
++        } else if inline_layout.text.is_empty() {
++            inline_layout.layout.inline_boxes().len() > 0
++        } else {
++            inline_layout
++                .layout
++                .inline_boxes()
++                .any(|inline_box| inline_box.kind == parley::InlineBoxKind::InFlow)
++        };
+ 
+         let mut height = if has_inline_content {
+             inline_layout.layout.height()
+-- 
+2.56.0
+
