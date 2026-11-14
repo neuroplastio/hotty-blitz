@@ -217,3 +217,107 @@ fn a_restyle_of_a_span_s_margin_lays_the_line_out_again() {
         );
     }
 }
+
+/// The topmost red pixel identifies the line containing the marked text.
+fn red_y(h: &Host) -> u32 {
+    let f = h.frame("x").unwrap();
+    (0..f.height)
+        .find(|&y| {
+            (0..f.width).any(|x| {
+                let i = ((y * f.width + x) * 4) as usize;
+                f.rgba[i] > 128 && f.rgba[i + 1] < 64 && f.rgba[i + 2] < 64
+            })
+        })
+        .expect("something red")
+}
+
+#[test]
+fn whitespace_collapses_across_each_kind_of_inline_edge() {
+    for edge in [
+        "margin-left:10px",
+        "padding-left:10px",
+        "border-left:10px solid",
+        "margin-right:10px",
+        "padding-right:10px",
+        "border-right:10px solid",
+    ] {
+        let spaced = format!("<div>A <i style='{edge}'> B </i> <r>X</r></div>");
+        let canonical = format!("<div>A <i style='{edge}'>B </i><r>X</r></div>");
+        let no_edge = "<div>A <i>B </i><r>X</r></div>";
+        assert_eq!(red_x(&show(&spaced)), red_x(&show(&canonical)), "{edge}");
+        assert_eq!(shift(&spaced, no_edge), 10, "{edge}");
+    }
+}
+
+#[test]
+fn inline_edges_keep_their_current_wrap_opportunities() {
+    let line = |width, edge: &str| {
+        format!("<div style='width:{width}px'>A <i style='{edge}'> B </i> <r>X</r></div>")
+    };
+    for width in [30, 40, 50, 60] {
+        let plain = show(&line(width, ""));
+        for edge in [
+            "margin-left:0px",
+            "padding-left:0px",
+            "border-left:0px solid",
+        ] {
+            let zero = show(&line(width, edge));
+            assert_eq!(
+                (red_x(&zero), red_y(&zero)),
+                (red_x(&plain), red_y(&plain)),
+                "{edge} width {width}"
+            );
+        }
+    }
+    for edge in [
+        "margin-left:10px",
+        "padding-left:10px",
+        "border-left:10px solid",
+    ] {
+        let wrapped = show(&line(50, edge));
+        let unwrapped = show(&line(60, edge));
+        assert!(
+            red_y(&wrapped) > red_y(&unwrapped),
+            "{edge}: edge makes the marked text wrap"
+        );
+        assert_eq!(red_y(&wrapped), red_y(&show(&line(40, ""))), "{edge}");
+        assert_eq!(red_y(&unwrapped), red_y(&show(&line(50, ""))), "{edge}");
+    }
+}
+
+#[test]
+fn inline_selects_survive_layout_and_option_changes() {
+    for select_style in ["", "margin:4px;padding:3px;border:2px solid"] {
+        let select = |chosen: &str| {
+            format!(
+                "<select id=s style='{select_style}'><option{}>Alpha</option><option{}>Beta</option></select>",
+                if chosen == "Alpha" { " selected" } else { "" },
+                if chosen == "Beta" { " selected" } else { "" },
+            )
+        };
+        let page = |chosen| {
+            format!(
+                "<div>A <i style='padding:3px'>{}</i> <r>X</r></div>",
+                select(chosen)
+            )
+        };
+        let mut h = show(&page("Alpha"));
+        h.handle(&delta_cmd(
+            &[("s", "x"), ("q", "2")],
+            "morph",
+            Some("s"),
+            None,
+            &select("Beta"),
+        ));
+        render(&mut h);
+        let changed = h.frame("x").unwrap().rgba.clone();
+        h.repaint();
+        render(&mut h);
+        assert_eq!(changed, h.frame("x").unwrap().rgba, "{select_style}");
+        assert_eq!(
+            changed,
+            show(&page("Beta")).frame("x").unwrap().rgba,
+            "{select_style}"
+        );
+    }
+}
