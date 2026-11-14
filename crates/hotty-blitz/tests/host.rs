@@ -4283,3 +4283,18 @@ fn body_overflow_propagates_to_the_viewport() {
     assert_ne!(paint("hidden", ""), [255, 0, 0]);
     assert_ne!(paint("visible", "contain:paint"), [255, 0, 0]);
 }
+
+#[test]
+fn empty_clip_path_hides_its_element() {
+    let paint = |inset: &str| {
+        let mut h = host();
+        let html = format!(
+            "<style>body{{margin:0}} #box{{width:40px;height:40px;background:red;clip-path:inset({inset})}}</style><div id=box></div>"
+        );
+        doc_at(&mut h, "x", &[], &html, "4");
+        pixel(&h, "x", 20, 20)
+    };
+    assert_ne!(paint("50%"), [255, 0, 0]);
+    assert_ne!(paint("60%"), [255, 0, 0]);
+    assert_eq!(paint("20%"), [255, 0, 0]);
+}

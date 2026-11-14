@@ -1,0 +1,67 @@
+From 80b821e5e8290ae558361c76d4804f8a071cf228 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 15:44:11 +0100
+Subject: [PATCH] Treat empty clip paths as empty regions
+
+Co-authored-by: bpereira <bpereira@cloudflare.com>
+---
+ packages/blitz-paint/src/render.rs           | 15 ++++++++++++++-
+ packages/blitz-paint/src/render/clip_path.rs |  9 +++------
+ 2 files changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index 4b5e12d8b..e58f37c9d 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -572,6 +572,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+         // Compute clip-path (if any) and wrap all rendering in a clip layer
+         let clip_path_shape = cx.clip_path_shape();
+         let has_clip_path = clip_path_shape.is_some();
++        let clipped_away = clip_path_shape
++            .as_ref()
++            .is_some_and(|path| path.bounding_box().is_zero_area());
+         let default_clip = cx.frame.border_box_path();
+         let mut clip_path_for_layer = clip_path_shape.unwrap_or(default_clip);
+         clip_path_for_layer.apply_affine(Affine::scale(self.scale));
+@@ -619,7 +622,17 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             cx.draw_outset_box_shadow(scene);
+         }
+ 
+-        // clip-path clip ayer
++        // Outset shadows and outlines remain outside the clip-path layer here.
++        if clipped_away {
++            cx.draw_outline(scene);
++            self.layer_manager
++                .maybe_pop_layer(scene, blend_layer_pushed);
++            self.layer_manager
++                .maybe_pop_layer(scene, css_clip_layer_pushed);
++            return;
++        }
++
++        // clip-path clip layer
+         self.layer_manager.maybe_with_layer(
+             scene,
+             has_clip_path,
+diff --git a/packages/blitz-paint/src/render/clip_path.rs b/packages/blitz-paint/src/render/clip_path.rs
+index cc05075b0..663cba869 100644
+--- a/packages/blitz-paint/src/render/clip_path.rs
++++ b/packages/blitz-paint/src/render/clip_path.rs
+@@ -160,12 +160,9 @@ impl ElementCx<'_, '_> {
+ 
+                 let x0 = ox + left;
+                 let y0 = oy + top;
+-                let x1 = ox + w - right;
+-                let y1 = oy + h - bottom;
+-
+-                if x1 <= x0 || y1 <= y0 {
+-                    return None;
+-                }
++                // Crossing or meeting insets are an empty clip, not no clip.
++                let x1 = (ox + w - right).max(x0);
++                let y1 = (oy + h - bottom).max(y0);
+ 
+                 // TODO: Support border-radius on inset()
+                 Some(kurbo::Rect::new(x0, y0, x1, y1).into_path(0.1))
+-- 
+2.56.0
+
