@@ -691,6 +691,83 @@ mod taffy_baseline_tests {
     }
 
     #[test]
+    fn counters_generate_content_and_reversed_list_values() {
+        use blitz_dom::node::Marker;
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{counter-reset:n 3}.item:before{counter-increment:n;content:counter(n) ':'}</style><div id=a class=item>A</div><div id=b class=item>B</div><ol reversed><li id=c>C</li><li id=d>D</li></ol><ol start=0><li id=z>Z</li></ol>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let before = |doc: &HtmlDocument, id| {
+            let node = doc.get_node(doc.get_element_by_id(id).unwrap()).unwrap();
+            doc.get_node(node.before().unwrap()).unwrap().text_content()
+        };
+        let marker = |doc: &HtmlDocument, id| {
+            let node = doc.get_node(doc.get_element_by_id(id).unwrap()).unwrap();
+            match &node
+                .element_data()
+                .unwrap()
+                .list_item_data
+                .as_ref()
+                .unwrap()
+                .marker
+            {
+                Marker::String(text) => text.clone(),
+                other => panic!("unexpected marker {other:?}"),
+            }
+        };
+        assert_eq!(before(&doc, "a"), "4:");
+        assert_eq!(before(&doc, "b"), "5:");
+        assert_eq!(marker(&doc, "c"), "2. ");
+        assert_eq!(marker(&doc, "d"), "1. ");
+        assert_eq!(marker(&doc, "z"), "0. ");
+        let a = doc.get_element_by_id("a").unwrap();
+        doc.mutate()
+            .set_attribute(a, blitz_dom::qual_name!("class"), "");
+        doc.resolve(0.0);
+        assert_eq!(before(&doc, "b"), "4:");
+    }
+
+    #[test]
+    fn ordered_list_values_and_counters_follow_deltas() {
+        use blitz_dom::node::Marker;
+        let mut doc = HtmlDocument::from_html(
+            "<ol start=3><li id=a>one</li><li id=b value=8>two</li><li id=c>three</li></ol>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let marker = |doc: &HtmlDocument, id| {
+            let node = doc.get_node(doc.get_element_by_id(id).unwrap()).unwrap();
+            match &node
+                .element_data()
+                .unwrap()
+                .list_item_data
+                .as_ref()
+                .unwrap()
+                .marker
+            {
+                Marker::String(text) => text.clone(),
+                other => panic!("unexpected marker {other:?}"),
+            }
+        };
+        assert_eq!(marker(&doc, "a"), "3. ");
+        assert_eq!(marker(&doc, "b"), "8. ");
+        assert_eq!(marker(&doc, "c"), "9. ");
+        let b = doc.get_element_by_id("b").unwrap();
+        doc.mutate()
+            .set_attribute(b, blitz_dom::qual_name!("value"), "4");
+        doc.resolve(0.0);
+        assert_eq!(marker(&doc, "b"), "4. ");
+        assert_eq!(marker(&doc, "c"), "5. ");
+    }
+
+    #[test]
     fn webkit_box_layout_and_legacy_line_clamp() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0;font:20px/20px sans-serif}.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;width:100px}.flex{display:-webkit-box;-webkit-box-orient:horizontal}.item{width:30px;height:10px}</style><div id=clamp class=clamp>one<br>two<br>three</div><div id=plain style='display:block;-webkit-line-clamp:1'>one<br>two<br>three</div><div class=flex><div id=a class=item></div><div id=b class=item></div></div><div style='display:-webkit-box;-webkit-box-orient:vertical'><div id=c class=item></div><div id=d class=item></div></div>",
