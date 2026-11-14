@@ -1,0 +1,78 @@
+From 5e50c44ccbaed2f58affc3fe5973c89c2cbcd975 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 18:15:13 +0100
+Subject: [PATCH] Preserve the outer collapsed border from cells
+
+The current table layout stores the collapsed frame in track gutters, not layout.border. Use those gutters when cells supply the table frame, while keeping authored table borders with their existing painter.
+---
+ packages/blitz-paint/src/render/border.rs | 39 +++++++++++++----------
+ 1 file changed, 22 insertions(+), 17 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/src/render/border.rs
+index 31e368792..42292769e 100644
+--- a/packages/blitz-paint/src/render/border.rs
++++ b/packages/blitz-paint/src/render/border.rs
+@@ -586,8 +586,6 @@ impl ElementCx<'_, '_> {
+             return;
+         }
+ 
+-        let layout = self.node.final_layout();
+-
+         // The borders are laid out as the gutters between the tracks, and as the border
+         // of the table around them. Track positions are relative to the table's border box.
+         let mut fill = |x0: f64, y0: f64, x1: f64, y1: f64| {
+@@ -674,29 +672,36 @@ impl ElementCx<'_, '_> {
+             }
+         }
+ 
+-        // The table's own border band: only drawn here when the table's border-style is
+-        // `none` (the band came from the cells). Otherwise `draw_border` owns it.
++        // This Taffy base represents collapsed outer cell borders in the
++        // track gutters, not in `layout.border`. Keep using those gutters for
++        // the frame when the table itself has no authored border.
++        let gap = table.style.gap.map(|gap| gap.into_raw().value() as f64);
++        let left = cols.origin() as f64 - gap.width;
++        let right = (cols.origin() + cols.span()) as f64 + gap.width;
++        let top = rows.origin() as f64 - gap.height;
++        let bottom = (rows.origin() + rows.span()) as f64 + gap.height;
+         let ours = |style: BorderStyle| style == BorderStyle::None;
+-        let x0 = 0.0;
+-        let y0 = 0.0;
+-        let x1 = (layout.border.left + layout.padding.left) as f64
+-            + cols.span() as f64
+-            + (layout.padding.right + layout.border.right) as f64;
+-        let y1 = (layout.border.top + layout.padding.top) as f64
+-            + rows.span() as f64
+-            + (layout.padding.bottom + layout.border.bottom) as f64;
+-
+         if ours(outer_border_style.border_top_style) {
+-            fill(x0, y0, x1, y0 + layout.border.top as f64);
++            fill(left, top, right, top + gap.height);
+         }
+         if ours(outer_border_style.border_bottom_style) {
+-            fill(x0, y1 - layout.border.bottom as f64, x1, y1);
++            fill(left, bottom - gap.height, right, bottom);
+         }
+         if ours(outer_border_style.border_left_style) {
+-            fill(x0, y0, x0 + layout.border.left as f64, y1);
++            fill(
++                left,
++                top + gap.height,
++                left + gap.width,
++                bottom - gap.height,
++            );
+         }
+         if ours(outer_border_style.border_right_style) {
+-            fill(x1 - layout.border.right as f64, y0, x1, y1);
++            fill(
++                right - gap.width,
++                top + gap.height,
++                right,
++                bottom - gap.height,
++            );
+         }
+     }
+ 
+-- 
+2.56.0
+

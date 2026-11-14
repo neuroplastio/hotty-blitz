@@ -32,6 +32,16 @@ fn collapsed_border_does_not_cross_a_spanning_cell() {
         [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]]
     };
     assert_eq!(
+        pixel(50, 1),
+        [255, 0, 0],
+        "cell borders form the outer top edge"
+    );
+    assert_eq!(
+        pixel(1, 20),
+        [255, 0, 0],
+        "cell borders form the outer left edge"
+    );
+    assert_eq!(
         pixel(100, 20),
         [255, 255, 255],
         "no vertical border inside colspan"
