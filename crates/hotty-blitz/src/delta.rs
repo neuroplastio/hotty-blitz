@@ -674,6 +674,40 @@ mod taffy_baseline_tests {
     use blitz_traits::shell::{ColorScheme, Viewport};
 
     #[test]
+    fn cleared_sibling_stays_below_float_in_collapsed_first_child() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0}.parent{width:200px}.child{margin-top:30px}.float{float:left;width:80px;height:50px}.next{clear:left;height:10px}</style><div id=parent class=parent><div id=child class=child><div id=float class=float></div></div><div id=next class=next></div></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = |id| {
+            doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                .unwrap()
+        };
+        assert_eq!(rect("next").y, rect("float").y + rect("float").height);
+    }
+
+    #[test]
+    fn block_replaced_elements_avoid_floats() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0}.outer{width:200px}.float{float:left;width:120px;height:100px}canvas{display:block;width:80px;height:50px}</style><div class=outer><div class=float></div><canvas id=image width=80 height=50></canvas></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let image = doc
+            .get_client_bounding_rect(doc.get_element_by_id("image").unwrap())
+            .unwrap();
+        assert_eq!(image.x, 120.0);
+        assert_eq!(image.y, 0.0);
+    }
+
+    #[test]
     fn authored_replaced_sizes_overflow_and_survive_zero_height_parent() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0}.outer{width:200px}.ratio{height:0}.ratio svg{width:100%;height:auto}</style><div class=outer><canvas id=canvas width=400 height=300></canvas><div class=ratio><svg id=svg width=400 height=200 viewBox='0 0 400 200'></svg></div></div>",

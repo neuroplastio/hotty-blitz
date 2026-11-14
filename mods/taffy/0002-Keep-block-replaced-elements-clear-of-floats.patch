@@ -1,0 +1,29 @@
+From 70f407fb7f055cb06368ec2c5e376e3b70de665f Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
+Date: Sat, 14 Nov 2026 16:57:35 +0100
+Subject: [PATCH] Keep block replaced elements clear of floats
+
+Route replaced block items through float avoidance. Upstream f6b87ac4 already includes the float height inset; its newer clearance handling also makes the older collapsed-margin position change inappropriate.
+
+Co-authored-by: bpereira <bpereira@cloudflare.com>
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ src/compute/block.rs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/compute/block.rs b/src/compute/block.rs
+index 6e591054..9810930a 100644
+--- a/src/compute/block.rs
++++ b/src/compute/block.rs
+@@ -979,6 +979,7 @@ fn generate_item_list(
+ 
+             let is_in_same_bfc: bool = is_block
+                 && !is_table
++                && !is_compressible_replaced
+                 && !position.is_out_of_flow()
+                 && is_not_floated
+                 && !is_scroll_container
+-- 
+2.56.0
+
