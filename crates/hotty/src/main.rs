@@ -19,6 +19,8 @@ hotty — hotty on Blitz: render, show, and `hotty run`, the kitty graphics poly
 
 usage:
   hotty render <file.html> [-o out.png] [--cols N] [--rows N|auto] [--cell WxH] [--scale S] [--font F] [--time]
+              [--repeat N [--wheel DY --at X,Y] [--samples FILE]]
+                                              time N more paints (full, or wheel steps)
   hotty show   <file.html> [--cols N] [--rows N|auto] [--scale S] [--font F]
   hotty run    [--transport shm|direct] [--frames on|off] [--scale S] [--font F] [--net POLICY] -- <program> [args…]
                                               --net: what surfaces may fetch, in CSP syntax
@@ -191,10 +193,13 @@ fn cmd_render(args: &[String], show: bool) -> i32 {
     let t0 = Instant::now();
     let mut host = Host::new(config);
     let t_host = t0.elapsed();
+    // `--wheel` times a document that scrolls (SPEC §5.1), on both axes.
+    let mut doc_keys = vec![("a", "doc"), ("s", "main"), ("q", "1")];
+    if f.get("wheel").is_some() {
+        doc_keys.push(("scroll", "3"));
+    }
     let mut effects = host.handle(&Message::new(
-        [("a", "doc"), ("s", "main"), ("q", "1")]
-            .into_iter()
-            .collect(),
+        doc_keys.into_iter().collect(),
         html.into_bytes(),
     ));
     let t_doc = t0.elapsed();
@@ -247,6 +252,9 @@ fn cmd_render(args: &[String], show: bool) -> i32 {
             rows
         );
     }
+    if let Some(n) = f.get("repeat").and_then(|s| s.parse::<usize>().ok()) {
+        repeat_paints(&mut host, &f, n);
+    }
     if show {
         let mut out = Vec::new();
         let mut k = kitty::Kitty::new(kitty::Transport::Direct, false);
@@ -275,6 +283,67 @@ fn cmd_render(args: &[String], show: bool) -> i32 {
             1
         }
     }
+}
+
+/// `render --repeat N`: after the first frame, N more paints of the placed
+/// document, timed. Full repaints by default; with `--wheel DY` (device px)
+/// at `--at X,Y`, each frame is instead one wheel step, alternating down and
+/// up, so a scroll box's partial paint is what is timed. One line goes to
+/// stderr with the median and spread of the paint stage (scene + raster),
+/// the resolve stage and the whole frame; `--samples FILE` appends every
+/// frame's numbers as TSV (frame, resolve_us, paint_us, wall_us, damaged px).
+fn repeat_paints(host: &mut Host, f: &Flags, n: usize) {
+    let wheel: Option<f32> = f.get("wheel").and_then(|s| s.parse().ok());
+    let (ax, ay) = f
+        .get("at")
+        .and_then(|s| s.split_once(','))
+        .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
+        .unwrap_or((10.0f32, 10.0f32));
+    let mut rows: Vec<[u64; 4]> = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = Instant::now();
+        match wheel {
+            Some(dy) => {
+                let dy = if i % 2 == 0 { dy } else { -dy };
+                host.wheel("main", ax, ay, 0.0, dy, hotty_blitz::Mods::default());
+            }
+            None => host.repaint(),
+        }
+        let mut tm = hotty_blitz::Timings::default();
+        let mut area = 0u64;
+        host.render_dirty(&mut |_, fr, d| {
+            tm = fr.timings;
+            area += match d {
+                hotty_blitz::Damage::Full => fr.width as u64 * fr.height as u64,
+                hotty_blitz::Damage::Rects(rs) => rs.iter().map(|r| r.w as u64 * r.h as u64).sum(),
+            };
+        });
+        let wall = t.elapsed().as_micros() as u64;
+        rows.push([tm.resolve_us as u64, tm.paint_us as u64, wall, area]);
+    }
+    if let Some(path) = f.get("samples") {
+        let mut s = String::new();
+        for (i, r) in rows.iter().enumerate() {
+            s.push_str(&format!("{i}\t{}\t{}\t{}\t{}\n", r[0], r[1], r[2], r[3]));
+        }
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut o| o.write_all(s.as_bytes()));
+    }
+    let stat = |k: usize| {
+        let mut v: Vec<f64> = rows.iter().map(|r| r[k] as f64 / 1000.0).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        (q(0.5), q(0.1), q(0.9))
+    };
+    let (p, r, w) = (stat(1), stat(0), stat(2));
+    let damaged = rows.iter().map(|r| r[3]).max().unwrap_or(0);
+    eprintln!(
+        "repeat {n}: paint {:.2} ms (p10 {:.2}, p90 {:.2}), resolve {:.2} ms (p10 {:.2}, p90 {:.2}), frame {:.2} ms (p10 {:.2}, p90 {:.2}); damaged up to {damaged} px",
+        p.0, p.1, p.2, r.0, r.1, r.2, w.0, w.1, w.2
+    );
 }
 
 fn ms(d: Duration) -> f64 {
