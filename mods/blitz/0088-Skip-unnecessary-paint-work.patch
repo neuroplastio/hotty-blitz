@@ -1,0 +1,89 @@
+From 0d96af2a627bb81e6a9105869dae53a212cae433 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
+Date: Sat, 14 Nov 2026 17:55:16 +0100
+Subject: [PATCH] Skip unnecessary paint work
+
+Avoid constructing unused clip paths and resolving border colors for zero-width borders. Current upstream already skips empty background image layers and avoids eagerly allocating the fallback style.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ packages/blitz-paint/src/render.rs        | 25 ++++++++++++++---------
+ packages/blitz-paint/src/render/border.rs |  5 +++++
+ 2 files changed, 20 insertions(+), 10 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index f17559ada..b82859bf8 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -575,9 +575,13 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+         let clipped_away = clip_path_shape
+             .as_ref()
+             .is_some_and(|path| path.bounding_box().is_zero_area());
+-        let default_clip = cx.frame.border_box_path();
+-        let mut clip_path_for_layer = clip_path_shape.unwrap_or(default_clip);
+-        clip_path_for_layer.apply_affine(Affine::scale(self.scale));
++        let clip_path_for_layer = if has_clip_path {
++            let mut path = clip_path_shape.unwrap_or_else(|| cx.frame.border_box_path());
++            path.apply_affine(Affine::scale(self.scale));
++            path
++        } else {
++            kurbo::BezPath::new()
++        };
+ 
+         // CSS 2 `clip` property (absolutely positioned elements only). Applies to the whole of
+         // the element's rendering (including outlines and shadows), so it is the outermost layer.
+@@ -668,11 +672,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+ 
+                 // Effects cover the painted subtree, including overflow and
+                 // positioned descendants accounted for by the containing block.
+-                let mut effect_layer_clip = cx
+-                    .frame
+-                    .border_box_path()
+-                    .bounding_box()
+-                    .union(*cx.node.scrollable_overflow());
++                let mut effect_layer_clip =
++                    cx.frame.border_box.union(*cx.node.scrollable_overflow());
+                 effect_layer_clip.x0 += filter_expansion_area.x0;
+                 effect_layer_clip.y0 += filter_expansion_area.y0;
+                 effect_layer_clip.x1 += filter_expansion_area.x1;
+@@ -702,7 +703,11 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+                         cx.stroke_devtools(scene);
+ 
+                         // TODO: allow layers with opacity to be unclipped (overflow: visible)
+-                        let clip = &self.overflow_clip_path(node, &styles, &cx.frame);
++                        let clip = if should_clip {
++                            self.overflow_clip_path(node, &styles, &cx.frame)
++                        } else {
++                            kurbo::BezPath::new()
++                        };
+ 
+                         // Clip layer if box requires clipping. Opacity set to 1.0
+                         self.layer_manager.maybe_with_layer(
+@@ -711,7 +716,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+                             BlendMode::default(),
+                             1.0, // opacity
+                             cx.transform,
+-                            clip,
++                            &clip,
+                             None,
+                             None,
+                             |scene| {
+diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/src/render/border.rs
+index 8e0a6a016..cf758eb9b 100644
+--- a/packages/blitz-paint/src/render/border.rs
++++ b/packages/blitz-paint/src/render/border.rs
+@@ -148,6 +148,11 @@ fn sample_points_along_path(path: &BezPath, spacing: f64, count: usize) -> Vec<P
+ impl ElementCx<'_, '_> {
+     /// Draw all borders for a node
+     pub(crate) fn draw_border(&self, scene: &mut impl PaintScene) {
++        let widths = self.frame.border_width;
++        if widths.x0 == 0.0 && widths.y0 == 0.0 && widths.x1 == 0.0 && widths.y1 == 0.0 {
++            return;
++        }
++
+         let style = &*self.style;
+         let border = style.get_border();
+         let current_color = style.clone_color();
+-- 
+2.56.0
+
