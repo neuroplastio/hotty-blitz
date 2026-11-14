@@ -1,0 +1,95 @@
+From 46352e6a7a66ad038a3ecc9a294800917bbc7310 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 15:31:38 +0100
+Subject: [PATCH] Coalesce style element replacements until resolve
+
+Co-authored-by: bpereira <bpereira@cloudflare.com>
+---
+ packages/blitz-dom/src/document.rs | 16 ++++++++++++++++
+ packages/blitz-dom/src/mutator.rs  |  8 +++++++-
+ packages/blitz-dom/src/resolve.rs  |  2 ++
+ 3 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 04d064235..e43ac89c7 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -338,6 +338,8 @@ pub struct BaseDocument {
+     /// added, replaced or removed), so that CSSOM wrappers can detect that
+     /// their cached rule data is stale.
+     pub(crate) stylesheet_generation: u64,
++    /// Registered style elements awaiting one replacement parse at resolve.
++    pub(crate) pending_style_nodes: HashSet<NodeId>,
+     /// Stylesheets of the user origin, where the key is the CSS
+     pub(crate) user_stylesheets: HashMap<String, DocumentStyleSheet>,
+     /// Map from form control node ID's to their associated forms node ID's
+@@ -536,6 +538,7 @@ impl BaseDocument {
+             user_stylesheets: HashMap::new(),
+             nodes_to_stylesheet: BTreeMap::new(),
+             stylesheet_generation: 0,
++            pending_style_nodes: HashSet::new(),
+             font_ctx,
+             #[cfg(feature = "parallel-construct")]
+             thread_font_contexts: ThreadLocal::new(),
+@@ -1287,6 +1290,19 @@ impl BaseDocument {
+         }
+     }
+ 
++    /// Parse the latest text of registered style elements once per resolve.
++    pub(crate) fn process_pending_style_elements(&mut self) {
++        for id in std::mem::take(&mut self.pending_style_nodes) {
++            if self.nodes.get(id).is_some_and(|node| {
++                node.flags.is_in_document()
++                    && node.data.is_element_with_tag_name(&local_name!("style"))
++            }) && self.nodes_to_stylesheet.contains_key(&id)
++            {
++                self.process_style_element(id);
++            }
++        }
++    }
++
+     pub fn process_style_element(&mut self, target_id: NodeId) {
+         let css = self.nodes[target_id].text_content();
+         let css = html_escape::decode_html_entities(&css);
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index 3f8e27eab..4b3c08f09 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -1227,7 +1227,12 @@ impl<'doc> DocumentMutator<'doc> {
+ 
+         // Add/Update inline stylesheets (<style> elements)
+         for id in self.style_nodes.drain() {
+-            self.doc.process_style_element(id);
++            if self.doc.nodes_to_stylesheet.contains_key(&id) {
++                self.doc.pending_style_nodes.insert(id);
++            } else {
++                // First registration starts imports and font loads immediately.
++                self.doc.process_style_element(id);
++            }
+         }
+ 
+         for id in self.form_nodes.drain() {
+@@ -1550,6 +1555,7 @@ impl<'doc> DocumentMutator<'doc> {
+     }
+ 
+     fn unload_stylesheet(&mut self, node_id: NodeId) {
++        self.doc.pending_style_nodes.remove(&node_id);
+         let node = &mut self.doc.nodes[node_id];
+         let Some(element) = node.element_data_mut() else {
+             unreachable!();
+diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
+index e6525c730..2aa4aca3d 100644
+--- a/packages/blitz-dom/src/resolve.rs
++++ b/packages/blitz-dom/src/resolve.rs
+@@ -74,6 +74,8 @@ impl BaseDocument {
+             return;
+         }
+ 
++        self.process_pending_style_elements();
++
+         // Process messages that have been sent to our message channel (e.g. loaded resource)
+         self.handle_messages();
+ 
+-- 
+2.56.0
+

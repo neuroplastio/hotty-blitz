@@ -545,3 +545,80 @@ pub fn morph_children(
         }
     }
 }
+
+#[cfg(test)]
+mod style_delta_tests {
+    use super::*;
+    use blitz_dom::DocumentConfig;
+    use blitz_html::HtmlDocument;
+
+    #[test]
+    fn style_text_deltas_reparse_once_per_resolve() {
+        let mut doc = HtmlDocument::from_html(
+            "<html><body><style id=s>body { width: 10px }</style></body></html>",
+            DocumentConfig::default(),
+        );
+        doc.resolve(0.0);
+        let style = doc.get_element_by_id("s").unwrap();
+        let generation = doc.stylesheet_generation();
+        let mut scratch = BaseDocument::new(DocumentConfig::default());
+        for width in [20, 30, 40] {
+            apply(
+                &mut doc,
+                &mut scratch,
+                "text",
+                Some("s"),
+                None,
+                &format!("body {{ width: {width}px }}"),
+                &mut |_, _| {},
+                &mut Vec::new(),
+            )
+            .unwrap();
+        }
+        assert_eq!(doc.stylesheet_generation(), generation);
+        doc.resolve(0.0);
+        assert_eq!(doc.stylesheet_generation(), generation + 1);
+        assert_eq!(doc.stylesheet_rule_count(style, &[]), Some(1));
+        assert!(
+            doc.stylesheet_rule_info(style, &[0])
+                .unwrap()
+                .css_text
+                .contains("40px")
+        );
+    }
+
+    #[test]
+    fn removed_style_does_not_reappear_at_resolve() {
+        let mut doc = HtmlDocument::from_html(
+            "<html><body><style id=s>body { width: 10px }</style></body></html>",
+            DocumentConfig::default(),
+        );
+        doc.resolve(0.0);
+        let style = doc.get_element_by_id("s").unwrap();
+        let mut scratch = BaseDocument::new(DocumentConfig::default());
+        apply(
+            &mut doc,
+            &mut scratch,
+            "text",
+            Some("s"),
+            None,
+            "body { width: 20px }",
+            &mut |_, _| {},
+            &mut Vec::new(),
+        )
+        .unwrap();
+        apply(
+            &mut doc,
+            &mut scratch,
+            "remove",
+            Some("s"),
+            None,
+            "",
+            &mut |_, _| {},
+            &mut Vec::new(),
+        )
+        .unwrap();
+        doc.resolve(0.0);
+        assert!(!doc.node_has_stylesheet(style));
+    }
+}
