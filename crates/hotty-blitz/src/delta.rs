@@ -621,4 +621,48 @@ mod style_delta_tests {
         doc.resolve(0.0);
         assert!(!doc.node_has_stylesheet(style));
     }
+
+    #[test]
+    fn relative_selector_pending_clears_after_hover_resolve() {
+        stylo_static_prefs::set_pref!("layout.css.has-selector.enabled", true);
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0} #outer{width:80px;height:80px} #outer:has(:hover){background:red} #inner{width:40px;height:40px}</style><div id=outer><div id=inner></div></div>",
+            DocumentConfig {
+                viewport: Some(blitz_traits::shell::Viewport::new(
+                    400,
+                    300,
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Light,
+                )),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        assert!(!doc.relative_selector_invalidation_pending());
+        assert!(doc.set_hover_to(10.0, 10.0), "hover did not change");
+        assert!(doc.relative_selector_invalidation_pending());
+        doc.resolve(0.0);
+        assert!(!doc.relative_selector_invalidation_pending());
+        doc.set_hover_to(10.0, 10.0);
+        assert!(!doc.relative_selector_invalidation_pending());
+        doc.resolve(0.0);
+        assert!(!doc.relative_selector_invalidation_pending());
+    }
+
+    #[test]
+    fn relative_selector_pending_clears_after_focus_resolve() {
+        stylo_static_prefs::set_pref!("layout.css.has-selector.enabled", true);
+        let mut doc = HtmlDocument::from_html(
+            "<style>#outer:has(:focus){background:red}</style><div id=outer><input id=field></div>",
+            DocumentConfig::default(),
+        );
+        doc.resolve(0.0);
+        let field = doc.get_element_by_id("field").unwrap();
+        assert!(doc.set_focus_to(field));
+        assert!(doc.relative_selector_invalidation_pending());
+        doc.resolve(0.0);
+        assert!(!doc.relative_selector_invalidation_pending());
+        doc.resolve(0.0);
+        assert!(!doc.relative_selector_invalidation_pending());
+    }
 }

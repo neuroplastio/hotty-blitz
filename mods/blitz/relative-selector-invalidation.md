@@ -9,6 +9,9 @@ Drive Stylo's relative-selector invalidator for attribute and state snapshots
 and for linked tree insertions and removals. Both old and new selector keys
 are consulted, so a removed match invalidates as well as an added match.
 Host tests cover deep changes, insertion, removal, sibling matching and
-focus. The host conservatively repaints the full surface when a pending
-relative invalidation may change an ancestor or sibling outside ordinary
-delta damage; the DOM invalidation itself is suitable upstream.
+focus. The host deliberately falls back to a full-surface repaint when a
+pending relative invalidation may change an ancestor or sibling outside
+ordinary delta damage. Targeted damage is a follow-up. Snapshots are cleared
+on resolve, so a stable hover or focus does not cause this on every frame;
+a new state or tree change can request it again. The DOM invalidation itself
+is suitable upstream.
