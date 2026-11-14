@@ -142,4 +142,5 @@ fn shared_translucent_collapsed_border_is_painted_once() {
         outer,
         "shared horizontal edge is painted once"
     );
+    assert_eq!(pixel(100, 44), outer, "the shared junction is painted once");
 }
