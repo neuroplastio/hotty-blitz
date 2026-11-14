@@ -1,0 +1,162 @@
+From 70a2d1d6862f3d10559fb8882adc051c0c29e94f Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 15:35:44 +0100
+Subject: [PATCH] Keep root-fixed boxes pinned while scrolling
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-authored-by: bpereira <bpereira@cloudflare.com>
+Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
+Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+---
+ packages/blitz-dom/src/document.rs          | 78 +++++++++++++++++++++
+ packages/blitz-dom/src/layout/paint_tree.rs |  9 ++-
+ packages/blitz-dom/src/node/node.rs         |  9 ++-
+ 3 files changed, 93 insertions(+), 3 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index e43ac89c7..9171b6e6c 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -2709,6 +2709,22 @@ impl BaseDocument {
+             pos.x += node.unrounded_layout().location.x - node.scroll_offset().x as f32;
+             pos.y += node.unrounded_layout().location.y - node.scroll_offset().y as f32;
+             current = node.containing_block();
++            // A fixed box contained by the root element is positioned against
++            // the viewport and does not scroll with it: cancel the root and viewport
++            // scroll the walk (and the caller's viewport-relative conversion) applies,
++            // as paint and hit-testing do (`hoisted_child_position`). Otherwise
++            // getBoundingClientRect on a fixed header drifts up by the page scroll.
++            if node.taffy_position() == taffy::Position::Fixed
++                && let Some(cb) = current.and_then(|cb| self.nodes.get(cb))
++                && cb
++                    .containing_block()
++                    .and_then(|id| self.nodes.get(id))
++                    .is_none_or(|parent| matches!(parent.data, NodeData::Document(_)))
++            {
++                let viewport_scroll = self.viewport_scroll();
++                pos.x += cb.scroll_offset().x as f32 + viewport_scroll.x as f32;
++                pos.y += cb.scroll_offset().y as f32 + viewport_scroll.y as f32;
++            }
+         }
+         (pos, *self.nodes[node_id].unrounded_layout())
+     }
+@@ -4532,3 +4548,65 @@ mod detached_layout_parent_tests {
+         assert_eq!(doc.nodes[layout_child].layout_parent.get(), None);
+     }
+ }
++
++#[cfg(test)]
++mod fixed_scroll_tests {
++    use super::*;
++    use crate::layout::paint_tree::hoisted_child_position;
++    use crate::qual_name;
++
++    fn document() -> (BaseDocument, NodeId, NodeId) {
++        let mut doc = BaseDocument::new(DocumentConfig::default());
++        let document = doc.root_node().id;
++        let mut m = doc.mutate();
++        let html = m.create_element(qual_name!("html", html), vec![]);
++        let body = m.create_element(qual_name!("body", html), vec![]);
++        let fixed = m.create_element(qual_name!("div", html), vec![]);
++        m.append_children(document, &[html]);
++        m.append_children(html, &[body]);
++        m.append_children(body, &[fixed]);
++        m.set_attribute(html, qual_name!("style"), "height: 1000px");
++        m.set_attribute(body, qual_name!("style"), "height: 1000px");
++        m.set_attribute(
++            fixed,
++            qual_name!("style"),
++            "position: fixed; left: 10px; top: 12px; width: 20px; height: 20px; z-index: 1",
++        );
++        drop(m);
++        doc.resolve(0.0);
++        (doc, html, fixed)
++    }
++
++    #[test]
++    fn fixed_client_rect_stays_pinned_when_viewport_scrolls() {
++        let (mut doc, _, fixed) = document();
++        let before = doc.get_client_bounding_rect(fixed).unwrap();
++        doc.set_viewport_scroll(crate::Point { x: 0.0, y: 100.0 });
++        let after = doc.get_client_bounding_rect(fixed).unwrap();
++        assert_eq!(before.y, after.y);
++    }
++
++    #[test]
++    fn fixed_box_remains_hittable_after_viewport_scroll() {
++        let (mut doc, _, fixed) = document();
++        doc.mutate().set_attribute(
++            fixed,
++            qual_name!("style"),
++            "position: fixed; left: 10px; top: 12px; width: 20px; height: 20px",
++        );
++        doc.resolve(0.0);
++        assert_eq!(doc.hit(15.0, 15.0).map(|hit| hit.node_id), Some(fixed));
++        doc.set_viewport_scroll(crate::Point { x: 0.0, y: 100.0 });
++        // `hit` takes document coordinates; pointer dispatch adds viewport scroll.
++        assert_eq!(doc.hit(15.0, 115.0).map(|hit| hit.node_id), Some(fixed));
++    }
++
++    #[test]
++    fn hoisted_fixed_box_cancels_viewport_scroll() {
++        let (mut doc, html, fixed) = document();
++        let before = hoisted_child_position(&doc.nodes, html, fixed);
++        doc.set_viewport_scroll(crate::Point { x: 0.0, y: 100.0 });
++        let after = hoisted_child_position(&doc.nodes, html, fixed);
++        assert_eq!(after.y - before.y, 100.0);
++    }
++}
+diff --git a/packages/blitz-dom/src/layout/paint_tree.rs b/packages/blitz-dom/src/layout/paint_tree.rs
+index 0d127b307..7f49a2e51 100644
+--- a/packages/blitz-dom/src/layout/paint_tree.rs
++++ b/packages/blitz-dom/src/layout/paint_tree.rs
+@@ -16,7 +16,7 @@ use thin_vec::ThinVec;
+ 
+ use crate::layout::damage::ALL_DAMAGE;
+ use crate::tree::NodeTree;
+-use crate::{BaseDocument, Node};
++use crate::{BaseDocument, Node, NodeData};
+ use style::properties::generated::longhands::position::computed_value::T as Position;
+ use style::selector_parser::RestyleDamage;
+ use style::values::computed::Float;
+@@ -40,9 +40,14 @@ pub fn hoisted_child_position(tree: &NodeTree, sc_root_id: NodeId, child_id: Nod
+     // positioned against the viewport and does not scroll with it: cancel the
+     // scroll the walk below (or the stacking-context root itself) applies.
+     // A fixed box contained by a transformed ancestor scrolls with it.
++    // The root element is a layout child of the Document node, so it is
++    // recognised by its containing block being the Document, not `None`.
+     if child.taffy_position() == taffy::Position::Fixed
+         && let Some(cb) = current.and_then(|id| tree.get(id))
+-        && cb.containing_block().is_none()
++        && cb
++            .containing_block()
++            .and_then(|id| tree.get(id))
++            .is_none_or(|parent| matches!(parent.data, NodeData::Document(_)))
+     {
+         let scroll_offset = *cb.scroll_offset();
+         let viewport_scroll = tree.viewport_scroll();
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 0f2415f5e..abbab1044 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1673,7 +1673,14 @@ impl Node {
+                 // against the viewport and do not scroll with it. (A fixed box
+                 // whose containing block is a transformed ancestor scrolls with
+                 // that ancestor like any other out-of-flow box.)
+-                if child_position == taffy::Position::Fixed && self.containing_block().is_none() {
++                // The root element is a layout child of the Document
++                // node, so recognise it by that, not by a `None` containing block.
++                if child_position == taffy::Position::Fixed
++                    && self
++                        .containing_block()
++                        .map(|id| self.with(id))
++                        .is_none_or(|parent| matches!(parent.data, NodeData::Document(_)))
++                {
+                     child_x -= self.scroll_offset().x as f32;
+                     child_y -= self.scroll_offset().y as f32;
+                     let viewport_scroll = self.tree().viewport_scroll();
+-- 
+2.56.0
+
