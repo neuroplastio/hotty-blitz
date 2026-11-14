@@ -1,0 +1,39 @@
+From da589e7e8c46cc72367f2121a54d02bb8f439a74 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 18:27:14 +0100
+Subject: [PATCH] Paint overlapping collapsed borders once
+
+---
+ packages/blitz-paint/src/render/border.rs | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/src/render/border.rs
+index 0237b6841..a55f1c5e8 100644
+--- a/packages/blitz-paint/src/render/border.rs
++++ b/packages/blitz-paint/src/render/border.rs
+@@ -588,9 +588,13 @@ impl ElementCx<'_, '_> {
+ 
+         // The borders are laid out as the gutters between the tracks, and as the border
+         // of the table around them. Track positions are relative to the table's border box.
++        // Neighbouring cells contribute the same shared edge. Union the
++        // rectangles in one nonzero fill so alpha and antialiasing are applied
++        // once even when edges or corners overlap.
++        let mut edges = BezPath::new();
+         let mut fill = |x0: f64, y0: f64, x1: f64, y1: f64| {
+             let shape = Rect::new(x0, y0, x1, y1).scale_from_origin(self.scale);
+-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
++            edges.extend(shape.path_elements(0.1));
+         };
+ 
+         // Paint each cell's own edges. Sweeping every grid line through the
+@@ -711,6 +715,7 @@ impl ElementCx<'_, '_> {
+                 bottom - gap.height,
+             );
+         }
++        scene.fill(Fill::NonZero, self.transform, border_color, None, &edges);
+     }
+ 
+     /// Draw the outline: the border of a box `outline-offset` outside the border
+-- 
+2.56.0
+
