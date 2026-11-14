@@ -1,6 +1,6 @@
 ---
 title: "A small render context draws without workers"
-patch: 0004-vello_cpu-a-small-render-context-draws-without-worke.patch
+patch: 0003-vello_cpu-a-small-render-context-draws-without-worke.patch
 upstream-fit: maybe
 ---
 

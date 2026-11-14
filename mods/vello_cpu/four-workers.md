@@ -1,6 +1,6 @@
 ---
 title: "A render context takes at most 4 workers by default"
-patch: 0003-vello_cpu-a-render-context-takes-at-most-4-workers-b.patch
+patch: 0001-vello_cpu-a-render-context-takes-at-most-4-workers-b.patch
 upstream-fit: maybe
 ---
 

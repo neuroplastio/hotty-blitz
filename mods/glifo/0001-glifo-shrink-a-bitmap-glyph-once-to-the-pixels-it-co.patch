@@ -32,7 +32,7 @@ does for every bitmap glyph it does not find in the atlas.
  create mode 100644 glifo/src/shrink.rs
 
 diff --git a/glifo/src/glyph.rs b/glifo/src/glyph.rs
-index 128585d1..8e89b2d3 100644
+index b0bea9fb..9516dfe6 100644
 --- a/glifo/src/glyph.rs
 +++ b/glifo/src/glyph.rs
 @@ -23,6 +23,7 @@ use crate::kurbo::Vec2;

@@ -1,6 +1,6 @@
 ---
 title: "A clip layer nothing is drawn in is not pushed"
-patch: 0005-vello_cpu-a-clip-layer-nothing-is-drawn-in-is-not-pu.patch
+patch: 0004-vello_cpu-a-clip-layer-nothing-is-drawn-in-is-not-pu.patch
 upstream-fit: yes
 ---
 

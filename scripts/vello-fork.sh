@@ -29,7 +29,7 @@ if [ -d "$FORK/.git" ]; then
   echo "fork at $FORK is not a clean prefix of the patch series" >&2
   exit 1
 fi
-git clone -q https://github.com/DioxusLabs/vello "$FORK"
+git clone -q https://github.com/linebender/vello "$FORK"
 git -C "$FORK" checkout -q -b hotty "$REV"
 git -C "$FORK" am -q "$HERE"/mods/vello_cpu/*.patch
 git -C "$FORK" am -q "$HERE"/mods/glifo/*.patch

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 21:08:36 +0100
-Subject: [PATCH 4/5] vello_cpu: a small render context draws without workers
+Subject: [PATCH 3/4] vello_cpu: a small render context draws without workers
 
 RenderContext::new now gives a context of fewer than 256 K pixels no
 workers (num_threads 0), so it draws on the calling thread. A caller
@@ -14,10 +14,10 @@ workers have taken much of it. new_with still takes any count.
  1 file changed, 25 insertions(+), 1 deletion(-)
 
 diff --git a/vello_cpu/src/render.rs b/vello_cpu/src/render.rs
-index 47c37850..54f0bf68 100644
+index 5b6ab49a..59a478a5 100644
 --- a/vello_cpu/src/render.rs
 +++ b/vello_cpu/src/render.rs
-@@ -194,10 +194,22 @@ impl Default for RenderSettings {
+@@ -175,10 +175,22 @@ impl Default for RenderSettings {
      }
  }
  
@@ -41,7 +41,7 @@ index 47c37850..54f0bf68 100644
      }
  
      /// Create a new render context with specific settings.
-@@ -1435,6 +1447,18 @@ mod tests {
+@@ -1423,6 +1435,18 @@ mod tests {
          ctx.reset();
      }
  
