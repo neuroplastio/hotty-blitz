@@ -1,9 +1,9 @@
-From a8bd9a9d9b2cc2690791dfadda91930bf350097b Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 826634b355e7e18753d33d732cb5d151d9c1b4da Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:41:55 +0100
 Subject: [PATCH] Propagate eligible body overflow to the viewport
 
-Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-dom/src/document.rs | 50 ++++++++++++++++++++++++++++++
  packages/blitz-paint/src/render.rs |  5 +--

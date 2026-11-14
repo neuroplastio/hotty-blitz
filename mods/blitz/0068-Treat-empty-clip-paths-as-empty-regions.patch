@@ -1,9 +1,9 @@
-From 80b821e5e8290ae558361c76d4804f8a071cf228 Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From c26e5b47e997b2ae8bab6b483f68a90cb15a147d Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:44:11 +0100
 Subject: [PATCH] Treat empty clip paths as empty regions
 
-Co-authored-by: bpereira <bpereira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-paint/src/render.rs           | 15 ++++++++++++++-
  packages/blitz-paint/src/render/clip_path.rs |  9 +++------

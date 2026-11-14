@@ -1,9 +1,9 @@
-From 46352e6a7a66ad038a3ecc9a294800917bbc7310 Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From cf474b3d54946bc06ea6eda62297bad74bad5cf4 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:31:38 +0100
 Subject: [PATCH] Coalesce style element replacements until resolve
 
-Co-authored-by: bpereira <bpereira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-dom/src/document.rs | 16 ++++++++++++++++
  packages/blitz-dom/src/mutator.rs  |  8 +++++++-

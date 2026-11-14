@@ -1,9 +1,9 @@
-From c6a476542b39c494e286af1329de55857648f377 Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 8c490533f06c60262b97bd035a1d251f3a32cc95 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:20:45 +0100
 Subject: [PATCH] Keep computed calc trees correct and panic-free
 
-Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  style/values/computed/length_percentage.rs | 49 +++++++++++-----------
  style/values/generics/calc.rs              | 44 ++++++++++++-------

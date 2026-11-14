@@ -1,9 +1,9 @@
-From bacf053d43351d974f08e9fa276e4923b6db78f8 Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 57b86a7094890d1ebc2e5e0c4aa9ff2b076917f7 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:22:55 +0100
 Subject: [PATCH] Handle unresolved anchors in Stylo to Taffy conversion
 
-Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/stylo_taffy/src/convert.rs | 82 +++++++++++++++++++++++------
  1 file changed, 66 insertions(+), 16 deletions(-)

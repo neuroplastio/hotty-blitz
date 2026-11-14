@@ -1,14 +1,11 @@
-From bd36029174b437b38e9e22371dcc4922cc709fdc Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From fbbf257ab6fee0614e9c740d7c24634761fccb96 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
 Date: Sat, 14 Nov 2026 16:18:19 +0100
 Subject: [PATCH] Resolve inline SVG references across the document
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 Track external sprite targets so an embedder can rebuild only the SVGs affected by a source mutation. Preserve currentColor at each use site.
 
-Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-dom/src/document.rs         |  67 ++++++++++++
  packages/blitz-dom/src/layout/construct.rs | 113 ++++++++++++++++++++-

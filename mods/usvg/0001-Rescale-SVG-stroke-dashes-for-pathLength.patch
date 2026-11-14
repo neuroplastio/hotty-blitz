@@ -1,12 +1,9 @@
-From ddd0f607fec3fe0a7af13a2c51d3f8d362bbc3d6 Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 35659d93ca73140068711acda845bb5a91ffcc9d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
 Date: Sat, 14 Nov 2026 16:02:48 +0100
 Subject: [PATCH] Rescale SVG stroke dashes for pathLength
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  crates/usvg/src/parser/converter.rs | 75 +++++++++++++++++++++++++++++
  crates/usvg/src/parser/text.rs      | 57 +---------------------

@@ -1,14 +1,14 @@
-From 70a2d1d6862f3d10559fb8882adc051c0c29e94f Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 9af06ca12625436b4976b071e9161f7701412678 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:35:44 +0100
 Subject: [PATCH] Keep root-fixed boxes pinned while scrolling
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-authored-by: bpereira <bpereira@cloudflare.com>
 Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
 Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-dom/src/document.rs          | 78 +++++++++++++++++++++
  packages/blitz-dom/src/layout/paint_tree.rs |  9 ++-

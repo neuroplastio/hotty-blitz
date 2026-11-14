@@ -1,12 +1,9 @@
-From adfe07ead80dc80905d9b65c69e08091eb9f7f25 Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 7c173b8b23b1f0fa91ab1ed9371e55997237c636 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:17:51 +0100
 Subject: [PATCH] Clear surviving children when a layout parent is removed
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-dom/src/document.rs | 41 ++++++++++++++++++++++++++++++
  1 file changed, 41 insertions(+)

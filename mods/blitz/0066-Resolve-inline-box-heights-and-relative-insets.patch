@@ -1,9 +1,9 @@
-From 98f36c91506a9f9cd07d87b70338672219b0743a Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 2d42b5e1489e3222c7ac69715c126461afed57b9 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:39:09 +0100
 Subject: [PATCH] Resolve inline box heights and relative insets
 
-Co-authored-by: bpereira <bpereira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-dom/src/document.rs            |  69 ++++++++++++
  .../blitz-dom/src/layout/inline/layout.rs     | 100 ++++++++++++++++--

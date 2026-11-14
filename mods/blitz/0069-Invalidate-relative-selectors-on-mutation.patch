@@ -1,9 +1,9 @@
-From 4704e5f8de58e1100f2c3934e50098557c024bcc Mon Sep 17 00:00:00 2001
-From: hotty Agent <hotty@neuroplast.io>
+From 16cc76d0996816f1758c11b9ce57b67b8e8b0f10 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
 Date: Sat, 14 Nov 2026 15:53:39 +0100
 Subject: [PATCH] Invalidate relative selectors on DOM and state changes
 
-Co-authored-by: bpereira <bpereira@cloudflare.com>
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
 ---
  packages/blitz-dom/src/document.rs        |   5 +-
  packages/blitz-dom/src/mutator.rs         |  19 ++
