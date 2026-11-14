@@ -1,0 +1,86 @@
+use hotty::Message;
+use hotty_blitz::{Config, Host, Metrics};
+
+#[test]
+fn collapsed_border_does_not_cross_a_spanning_cell() {
+    let mut host = Host::new(Config {
+        metrics: Metrics {
+            cell_w: 10,
+            cell_h: 20,
+            scale: 1.0,
+        },
+        ..Config::default()
+    });
+    let cmd = |pairs: &[(&str, &str)], payload: &str| {
+        Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+    };
+    host.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], "<style>body{margin:0;background:white}table{border-collapse:collapse;table-layout:fixed;width:200px}td{border:4px solid red;height:40px;padding:0}</style><table><tr><td colspan=2></td></tr><tr><td></td><td></td></tr></table>"));
+    host.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "25"),
+            ("r", "6"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    host.render_dirty(&mut |_, _, _| {});
+    let f = host.frame("x").unwrap();
+    let pixel = |x, y| {
+        let i = ((y * f.width + x) * 4) as usize;
+        [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]]
+    };
+    assert_eq!(
+        pixel(100, 20),
+        [255, 255, 255],
+        "no vertical border inside colspan"
+    );
+    assert_eq!(
+        pixel(100, 60),
+        [255, 0, 0],
+        "the second row keeps its shared border"
+    );
+}
+
+#[test]
+fn collapsed_border_does_not_cross_a_row_spanning_cell() {
+    let mut host = Host::new(Config {
+        metrics: Metrics {
+            cell_w: 10,
+            cell_h: 20,
+            scale: 1.0,
+        },
+        ..Config::default()
+    });
+    let cmd = |pairs: &[(&str, &str)], payload: &str| {
+        Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+    };
+    host.handle(&cmd(&[("a", "doc"), ("s", "x"), ("q", "2")], "<style>body{margin:0;background:white}table{border-collapse:collapse;table-layout:fixed;width:200px}td{border:4px solid red;height:40px;padding:0}</style><table><tr><td rowspan=2></td><td></td></tr><tr><td></td></tr></table>"));
+    host.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "25"),
+            ("r", "6"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    host.render_dirty(&mut |_, _, _| {});
+    let f = host.frame("x").unwrap();
+    let pixel = |x, y| {
+        let i = ((y * f.width + x) * 4) as usize;
+        [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]]
+    };
+    assert_eq!(
+        pixel(50, 40),
+        [255, 255, 255],
+        "no horizontal border inside rowspan"
+    );
+    assert_eq!(
+        pixel(150, 40),
+        [255, 0, 0],
+        "the adjacent cells keep their shared border"
+    );
+}
