@@ -4267,3 +4267,19 @@ fn a_field_puts_the_caret_after_the_text_it_puts_in() {
     type_text(&mut h, " ");
     assert_eq!(h.text_field("f", "q"), Some(("Split ".into(), 6)));
 }
+
+#[test]
+fn body_overflow_propagates_to_the_viewport() {
+    let paint = |root_overflow: &str, body_contain: &str| {
+        let mut h = host();
+        let html = format!(
+            "<style>html{{overflow:{root_overflow}}} body{{margin:0;height:30px;overflow:hidden;position:relative;{body_contain}}} \
+             #popup{{position:absolute;top:60px;left:10px;width:20px;height:20px;background:red}}</style><div id=popup></div>"
+        );
+        doc_at(&mut h, "x", &[], &html, "8");
+        pixel(&h, "x", 15, 65)
+    };
+    assert_eq!(paint("visible", ""), [255, 0, 0]);
+    assert_ne!(paint("hidden", ""), [255, 0, 0]);
+    assert_ne!(paint("visible", "contain:paint"), [255, 0, 0]);
+}

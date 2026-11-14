@@ -1,0 +1,91 @@
+From a8bd9a9d9b2cc2690791dfadda91930bf350097b Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 15:41:55 +0100
+Subject: [PATCH] Propagate eligible body overflow to the viewport
+
+Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+---
+ packages/blitz-dom/src/document.rs | 50 ++++++++++++++++++++++++++++++
+ packages/blitz-paint/src/render.rs |  5 +--
+ 2 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index f7e5fd75a..10c490ac5 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -977,6 +977,56 @@ impl BaseDocument {
+         self.try_root_element().unwrap()
+     }
+ 
++    /// Whether `node_id`'s overflow belongs to the viewport rather than its
++    /// own box. CSS Overflow 3 §3.3: when the root `html` element is
++    /// `overflow: visible` in both axes, the first `<body>` child that is not
++    /// `display: none` hands its overflow to the viewport and itself uses
++    /// `visible`. Scroll locks (Base UI, Radix, MUI) set `overflow: hidden`
++    /// on body while a modal popup is open, and clipping body to its own box
++    /// cut every portalled popup off at the body's height.
++    pub fn propagates_overflow_to_viewport(&self, node_id: NodeId) -> bool {
++        use style::values::computed::Overflow;
++        // Paint asks this of every element, so turn away non-body first.
++        let Some(node) = self.nodes.get(node_id) else {
++            return false;
++        };
++        if !node
++            .element_data()
++            .is_some_and(|el| el.name.local == local_name!("body"))
++        {
++            return false;
++        }
++        let Some(root) = node.parent.and_then(|id| self.nodes.get(id)) else {
++            return false;
++        };
++        if !root
++            .element_data()
++            .is_some_and(|el| el.name.local == local_name!("html"))
++            || self.try_root_element().is_none_or(|el| el.id != root.id)
++        {
++            return false;
++        }
++        let root_visible = root.primary_styles().is_some_and(|styles| {
++            let b = styles.get_box();
++            matches!(b.overflow_x, Overflow::Visible) && matches!(b.overflow_y, Overflow::Visible)
++        });
++        if !root_visible {
++            return false;
++        }
++        root.children
++            .iter()
++            .filter_map(|&id| self.nodes.get(id))
++            .find(|child| {
++                child
++                    .element_data()
++                    .is_some_and(|el| el.name.local == local_name!("body"))
++                    && child
++                        .primary_styles()
++                        .is_some_and(|styles| !styles.clone_display().is_none())
++            })
++            .is_some_and(|body| body.id == node_id)
++    }
++
+     pub fn create_node(&mut self, node_data: NodeData) -> NodeId {
+         let tree_ptr = self.nodes.as_mut() as *mut NodeTree;
+         let guard = self.guard.clone();
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index da0f497b6..4b5e12d8b 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -316,8 +316,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+                 || element.and_then(|e| e.sub_doc_data()).is_some()
+                 || element.and_then(|e| e.text_input_data()).is_some()
+                 || contain_paint
+-                || !matches!(box_style.overflow_x, Overflow::Visible)
+-                || !matches!(box_style.overflow_y, Overflow::Visible))
++                || (!self.dom.as_ref().propagates_overflow_to_viewport(node.id)
++                    && (!matches!(box_style.overflow_x, Overflow::Visible)
++                        || !matches!(box_style.overflow_y, Overflow::Visible))))
+     }
+ 
+     /// Clip a single `clip` axis without clipping the visible axis.
+-- 
+2.56.0
+
