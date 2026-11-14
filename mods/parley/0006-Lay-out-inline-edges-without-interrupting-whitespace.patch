@@ -5,11 +5,11 @@ Subject: [PATCH 6/6] Lay out inline edges without interrupting whitespace
 
 Non-atomic span edges need width and conditional wrap opportunities without inserting an object replacement character into the shaped text. Keep them at text boundaries through whitespace processing, then account for their width during measurement, line breaking and positioning.
 ---
- parley/src/inline_box.rs        |  3 +++
- parley/src/layout/data.rs       | 22 ++++++++++++++--
- parley/src/layout/line.rs       |  7 ++++-
- parley/src/layout/line_break.rs | 46 ++++++++++++++++++++++++++++++++-
- 4 files changed, 74 insertions(+), 4 deletions(-)
+ parley/src/inline_box.rs        |  3 ++
+ parley/src/layout/data.rs       | 19 +++++++-
+ parley/src/layout/line.rs       |  7 ++-
+ parley/src/layout/line_break.rs | 78 ++++++++++++++++++++++++++++++++-
+ 4 files changed, 103 insertions(+), 4 deletions(-)
 
 diff --git a/parley/src/inline_box.rs b/parley/src/inline_box.rs
 index 711cddc..3617b52 100644
@@ -26,10 +26,10 @@ index 711cddc..3617b52 100644
      /// do not take up space in the layout.
      ///
 diff --git a/parley/src/layout/data.rs b/parley/src/layout/data.rs
-index 9ad4278..c236d4e 100644
+index 9ad4278..a5016a8 100644
 --- a/parley/src/layout/data.rs
 +++ b/parley/src/layout/data.rs
-@@ -632,8 +632,26 @@ impl ContentWidthsMeasurer {
+@@ -632,8 +632,23 @@ impl ContentWidthsMeasurer {
                          );
                      }
                  }
@@ -40,10 +40,7 @@ index 9ad4278..c236d4e 100644
 +                    if edge.inline_box.kind == crate::InlineBoxKind::InlineEdge
 +                        && edge.inline_box.width > 0.0
 +                    {
-+                        let wraps = layout_data.styles[edge.parent_style_index as usize]
-+                            .text_wrap_mode
-+                            == TextWrapMode::Wrap;
-+                        if wraps {
++                        if self.text_wrap_mode == TextWrapMode::Wrap {
 +                            self.soft_break(self.line_has_content);
 +                        }
 +                        self.running_hanging_whitespace = 0.0;
@@ -77,10 +74,10 @@ index 6867030..55b5857 100644
                  LineItem::Run(run) => {
                      // TODO: style indices are taken from the atom's first character, matching
 diff --git a/parley/src/layout/line_break.rs b/parley/src/layout/line_break.rs
-index 140ea23..afe54a2 100644
+index 140ea23..cb67553 100644
 --- a/parley/src/layout/line_break.rs
 +++ b/parley/src/layout/line_break.rs
-@@ -1124,6 +1124,45 @@ impl<'a, B: Brush> BreakLines<'a, B> {
+@@ -1124,6 +1124,77 @@ impl<'a, B: Brush> BreakLines<'a, B> {
  
                      // If the box is a `CustomOutOfFlow` box then we yield control flow back to the caller.
                      // It is then the caller's responsibility to handle placement of the box.
@@ -92,7 +89,39 @@ index 140ea23..afe54a2 100644
 +                            let wraps = self.layout.data.styles[style_index as usize]
 +                                .text_wrap_mode
 +                                == TextWrapMode::Wrap;
-+                            if wraps && self.state.line.x != 0.0 {
++                            // A break before an edge follows the preceding
++                            // content; a break after follows the edge span.
++                            let wraps_before = self.layout.data.items[..self.state.item_idx]
++                                .iter()
++                                .rev()
++                                .find_map(|previous| match previous.kind {
++                                    LayoutItemKind::TextRun => self
++                                        .layout
++                                        .data
++                                        .shaped_text
++                                        .run_slice(previous.index as u32)
++                                        .shaped_clusters()
++                                        .last()
++                                        .map(|cluster| {
++                                            self.layout.data.styles[cluster.style_index as usize]
++                                                .text_wrap_mode
++                                                == TextWrapMode::Wrap
++                                        }),
++                                    LayoutItemKind::OutOfFlowBox => {
++                                        let previous =
++                                            &self.layout.data.inline_boxes[previous.index];
++                                        (previous.inline_box.kind == InlineBoxKind::InlineEdge
++                                            && previous.inline_box.width > 0.0)
++                                            .then(|| {
++                                                self.layout.data.styles
++                                                    [previous.parent_style_index as usize]
++                                                    .text_wrap_mode
++                                                    == TextWrapMode::Wrap
++                                            })
++                                    }
++                                })
++                                .unwrap_or(wraps);
++                            if wraps_before && self.state.line.x != 0.0 {
 +                                self.state.mark_line_break_opportunity();
 +                            }
 +                            let next_x = self.state.line.x + width;
@@ -126,7 +155,7 @@ index 140ea23..afe54a2 100644
                      if inline_box.kind == InlineBoxKind::CustomOutOfFlow {
                          return Some(YieldData::InlineBoxBreak(BoxBreakData {
                              inline_box_id: inline_box.id,
-@@ -1901,7 +1940,12 @@ fn expand_line_tabs<B: Brush>(layout: &mut Layout<B>, line_items: &[LineItemData
+@@ -1901,7 +1972,12 @@ fn expand_line_tabs<B: Brush>(layout: &mut Layout<B>, line_items: &[LineItemData
      for line_item in line_items {
          match line_item.kind {
              // An in-flow box is an inline-object text run in Parley 0.13.

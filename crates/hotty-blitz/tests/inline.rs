@@ -321,3 +321,21 @@ fn inline_selects_survive_layout_and_option_changes() {
         );
     }
 }
+
+#[test]
+fn wrapping_text_can_break_before_a_nowrap_span_with_an_inline_start_edge() {
+    let first_line = red_y(&show("<div style='width:50px'><r>A</r></div>"));
+    for edge in [
+        "margin-left:12px",
+        "padding-left:12px",
+        "border-left:12px solid",
+    ] {
+        let line = format!(
+            "<div style='width:50px'>A<i style='{edge};white-space:nowrap'><r>BC</r></i>DE</div>"
+        );
+        assert!(
+            red_y(&show(&line)) > first_line,
+            "{edge}: wrap before the span"
+        );
+    }
+}
