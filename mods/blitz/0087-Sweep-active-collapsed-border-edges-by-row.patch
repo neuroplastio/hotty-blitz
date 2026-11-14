@@ -1,0 +1,103 @@
+From 52624019f3d3ac3ae2f4cf0fc44a1bfb2e5a2415 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 19:28:52 +0100
+Subject: [PATCH] Sweep active collapsed border edges by row
+
+---
+ packages/blitz-paint/src/render/border.rs | 49 +++++++++++------------
+ 1 file changed, 23 insertions(+), 26 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/src/render/border.rs
+index 4cd97aec7..8e0a6a016 100644
+--- a/packages/blitz-paint/src/render/border.rs
++++ b/packages/blitz-paint/src/render/border.rs
+@@ -1,6 +1,6 @@
+ use anyrender::PaintScene;
+-use blitz_dom::node::SpecialElementData;
+ use blitz_dom::CopyStyleGetters;
++use blitz_dom::node::SpecialElementData;
+ use kurbo::{BezPath, Cap, Circle, Insets, Join, PathEl, Point, Rect, Shape as _, Stroke, Vec2};
+ use peniko::{Color, Fill};
+ use smallvec::SmallVec;
+@@ -10,7 +10,7 @@ use style::{
+ };
+ 
+ use crate::{
+-    color::{contrast_ratio, ToColorColor as _},
++    color::{ToColorColor as _, contrast_ratio},
+     kurbo_css::Edge,
+     render::{ElementCx, PhysicalTracks},
+ };
+@@ -629,22 +629,12 @@ impl ElementCx<'_, '_> {
+             let y0 = row_positions[r0].start;
+             let y1 = row_positions[r1 - 1].end;
+ 
+-            let physical_c0 = physical_cols
+-                .iter()
+-                .position(|track| track.start == x0)
+-                .unwrap();
+-            let physical_c1 = physical_cols
+-                .iter()
+-                .position(|track| track.end == x1)
+-                .unwrap();
+-            let physical_r0 = physical_rows
+-                .iter()
+-                .position(|track| track.start == y0)
+-                .unwrap();
+-            let physical_r1 = physical_rows
+-                .iter()
+-                .position(|track| track.end == y1)
+-                .unwrap();
++            // Tracks are already in physical order. Find the first matching
++            // boundary without scanning all rows for every cell.
++            let physical_c0 = physical_cols.partition_point(|track| track.start < x0);
++            let physical_c1 = physical_cols.partition_point(|track| track.end < x1);
++            let physical_r0 = physical_rows.partition_point(|track| track.start < y0);
++            let physical_r1 = physical_rows.partition_point(|track| track.end < y1);
+ 
+             let has_left = physical_c0 > 0;
+             let has_right = physical_c1 + 1 < physical_cols.len();
+@@ -720,17 +710,24 @@ impl ElementCx<'_, '_> {
+         let mut ys: Vec<f64> = rectangles.iter().flat_map(|r| [r.y0, r.y1]).collect();
+         ys.sort_by(f64::total_cmp);
+         ys.dedup();
++        rectangles.sort_by(|a, b| a.y0.total_cmp(&b.y0));
++        let mut active = Vec::new();
++        let mut next = 0;
+         let mut edges = BezPath::new();
++        let mut spans = Vec::new();
++        let mut merged: Vec<(f64, f64)> = Vec::new();
+         for band in ys.windows(2) {
+             let (y0, y1) = (band[0], band[1]);
+-            let mut spans: Vec<(f64, f64)> = rectangles
+-                .iter()
+-                .filter(|r| r.y0 < y1 && r.y1 > y0)
+-                .map(|r| (r.x0, r.x1))
+-                .collect();
++            active.retain(|r: &Rect| r.y1 > y0);
++            while next < rectangles.len() && rectangles[next].y0 <= y0 {
++                active.push(rectangles[next]);
++                next += 1;
++            }
++            spans.clear();
++            spans.extend(active.iter().map(|r| (r.x0, r.x1)));
+             spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+-            let mut merged: Vec<(f64, f64)> = Vec::new();
+-            for (x0, x1) in spans {
++            merged.clear();
++            for &(x0, x1) in &spans {
+                 if let Some(last) = merged.last_mut() {
+                     if x0 <= last.1 {
+                         last.1 = last.1.max(x1);
+@@ -739,7 +736,7 @@ impl ElementCx<'_, '_> {
+                 }
+                 merged.push((x0, x1));
+             }
+-            for (x0, x1) in merged {
++            for &(x0, x1) in &merged {
+                 edges.extend(Rect::new(x0, y0, x1, y1).path_elements(0.1));
+             }
+         }
+-- 
+2.56.0
+
