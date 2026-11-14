@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Mon, 9 Nov 2026 23:17:56 +0100
-Subject: [PATCH 2/9] Enable `field-sizing` behind a pref
+Subject: [PATCH 05/10] Enable `field-sizing` behind a pref
 
 field-sizing was Gecko's only, so Servo-mode engines dropped it at parse.
 It now parses, computes and serializes in Servo mode behind
@@ -14,10 +14,10 @@ its computed value.
  2 files changed, 2 insertions(+), 1 deletion(-)
 
 diff --git a/style/properties/longhands.toml b/style/properties/longhands.toml
-index 96a1aca4e..2f7fb6502 100644
+index 48d415336..9dce3bce7 100644
 --- a/style/properties/longhands.toml
 +++ b/style/properties/longhands.toml
-@@ -4230,11 +4230,11 @@ initial = "computed::WindowShadow::Auto"
+@@ -4249,11 +4249,11 @@ initial = "computed::WindowShadow::Auto"
  
  [field-sizing]
  struct = "ui"
@@ -31,10 +31,10 @@ index 96a1aca4e..2f7fb6502 100644
  initial = "computed::FieldSizing::Fixed"
  
 diff --git a/stylo_static_prefs/preferences.toml b/stylo_static_prefs/preferences.toml
-index 4448bc2d0..8c481f789 100644
+index bb7d68048..b46471599 100644
 --- a/stylo_static_prefs/preferences.toml
 +++ b/stylo_static_prefs/preferences.toml
-@@ -24,6 +24,7 @@
+@@ -25,6 +25,7 @@
  "layout.css.display-grid-lanes.enabled" = false
  "layout.css.dominant-baseline.enabled" = false
  "layout.css.ellipse-corners.enabled" = false

@@ -1,6 +1,6 @@
 ---
 title: "A viewport resize passes over an element without styles"
-patch: 0009-Pass-over-an-element-without-styles-when-viewport-un.patch
+patch: 0002-Pass-over-an-element-without-styles-when-viewport-un.patch
 upstream-fit: yes
 ---
 

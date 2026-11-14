@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Ruskin Constant <ruskin@cloudflare.com>
 Date: Wed, 16 Sep 2026 11:50:12 +0100
-Subject: [PATCH 3/9] Stop escalating a clip overflow axis to hidden
+Subject: [PATCH 06/10] Stop escalating a clip overflow axis to hidden
 
 css-overflow-3 pairs a scrollable axis with a clip axis into a
 single-axis scroll container; only a visible axis escalates to auto.
@@ -19,7 +19,7 @@ real scroll container.
  1 file changed, 7 insertions(+), 11 deletions(-)
 
 diff --git a/style/style_adjuster.rs b/style/style_adjuster.rs
-index abb1f0171..b2fbfa0b7 100644
+index 9aa2eee2d..547a6eee3 100644
 --- a/style/style_adjuster.rs
 +++ b/style/style_adjuster.rs
 @@ -406,22 +406,18 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {

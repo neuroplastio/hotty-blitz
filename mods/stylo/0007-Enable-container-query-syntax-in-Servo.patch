@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Tue, 15 Sep 2026 21:19:03 +0100
-Subject: [PATCH 4/9] Enable container query syntax in Servo
+Subject: [PATCH 07/10] Enable container query syntax in Servo
 
 ---
  style/properties/shorthands.rs      |  5 ++---
@@ -12,7 +12,7 @@ Subject: [PATCH 4/9] Enable container query syntax in Servo
  5 files changed, 10 insertions(+), 12 deletions(-)
 
 diff --git a/style/properties/shorthands.rs b/style/properties/shorthands.rs
-index 0945ffa58..554324773 100644
+index 35c75eaf0..875a04e3b 100644
 --- a/style/properties/shorthands.rs
 +++ b/style/properties/shorthands.rs
 @@ -542,7 +542,6 @@ pub mod border {
@@ -36,7 +36,7 @@ index 0945ffa58..554324773 100644
              Ok(())
          }
 diff --git a/style/properties/shorthands.toml b/style/properties/shorthands.toml
-index 016774da7..64707398c 100644
+index e11ed0805..b9e67e02e 100644
 --- a/style/properties/shorthands.toml
 +++ b/style/properties/shorthands.toml
 @@ -209,7 +209,6 @@ spec = "https://wicg.github.io/overscroll-behavior/#overscroll-behavior-properti
@@ -61,7 +61,7 @@ index f66271806..36e841443 100644
              "keyframes" => Self::Keyframes(None),
              "-webkit-keyframes" => Self::Keyframes(Some(VendorPrefix::WebKit)),
 diff --git a/style/values/specified/length.rs b/style/values/specified/length.rs
-index 4d547730a..41a0f4bec 100644
+index 3be1ecfcf..ea6816b6c 100644
 --- a/style/values/specified/length.rs
 +++ b/style/values/specified/length.rs
 @@ -188,12 +188,12 @@ impl LengthUnit {
@@ -84,10 +84,10 @@ index 4d547730a..41a0f4bec 100644
          })
      }
 diff --git a/stylo_static_prefs/preferences.toml b/stylo_static_prefs/preferences.toml
-index 8c481f789..70fbd986c 100644
+index b46471599..c18d0160e 100644
 --- a/stylo_static_prefs/preferences.toml
 +++ b/stylo_static_prefs/preferences.toml
-@@ -14,7 +14,7 @@
+@@ -15,7 +15,7 @@
  "layout.css.color-mix-multi-color.enabled" = true
  "layout.css.columns.enabled" = false
  "layout.css.contain.enabled" = false

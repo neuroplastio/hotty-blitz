@@ -1,6 +1,6 @@
 ---
 title: Enable container query syntax in Servo
-patch: 0004-Enable-container-query-syntax-in-Servo.patch
+patch: 0007-Enable-container-query-syntax-in-Servo.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/stylo-0.22.0/0005-Enable-container-queries-cq-units-and-anchor-parsing.patch
 ---

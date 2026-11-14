@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bpereira <bpereira@cloudflare.com>
 Date: Mon, 10 Aug 2026 06:22:54 +0100
-Subject: [PATCH 5/9] Damage box-shadow as repaint instead of rebuilding the
+Subject: [PATCH 08/10] Damage box-shadow as repaint instead of rebuilding the
  box
 
 box-shadow sets no servo_restyle_damage, so it inherits the
@@ -19,10 +19,10 @@ animation lost every partial frame and dropped from 30 fps to 18 fps.
  1 file changed, 3 insertions(+)
 
 diff --git a/style/properties/longhands.toml b/style/properties/longhands.toml
-index 2f7fb6502..63a7aa9d0 100644
+index 9dce3bce7..3a7f8efb6 100644
 --- a/style/properties/longhands.toml
 +++ b/style/properties/longhands.toml
-@@ -464,6 +464,9 @@ affects = "layout"
+@@ -463,6 +463,9 @@ affects = "layout"
  [box-shadow]
  type = "BoxShadow"
  struct = "effects"

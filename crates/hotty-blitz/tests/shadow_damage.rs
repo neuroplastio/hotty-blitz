@@ -20,10 +20,7 @@ fn changing_box_shadow_does_not_rebuild_the_box() {
         .unwrap()
         .primary_styles()
         .unwrap();
-    let damage = style::servo::restyle_damage::ServoRestyleDamage::compute_style_difference::<
-        &blitz_dom::Node,
-    >(&a, &b)
-    .damage;
+    let damage = style::servo::restyle_damage::compute_damage(&a, &b);
     assert_eq!(
         damage,
         style::servo::restyle_damage::ServoRestyleDamage::REPAINT,

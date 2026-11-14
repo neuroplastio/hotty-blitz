@@ -1,6 +1,6 @@
 ---
 title: Finished animations keep their forwards fill
-patch: 0007-Retain-forwards-filling-animations-after-they-finish.patch
+patch: 0009-Retain-forwards-filling-animations-after-they-finish.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/stylo-0.22.0/0008-Retain-forwards-filling-animations-and-add-script-an.patch
 ---

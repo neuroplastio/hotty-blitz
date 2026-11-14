@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 16:07:28 +0100
-Subject: [PATCH 1/9] Enable CSS Scroll Snap's properties behind a pref
+Subject: [PATCH 01/10] Enable CSS Scroll Snap's properties behind a pref
 
 scroll-snap-type, scroll-snap-align, scroll-snap-stop, the eight
 scroll-padding longhands and the scroll-padding, scroll-padding-block and
@@ -22,10 +22,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  4 files changed, 23 insertions(+), 18 deletions(-)
 
 diff --git a/style/properties/longhands.toml b/style/properties/longhands.toml
-index 011c7f2bb..96a1aca4e 100644
+index 1a78e05f6..48d415336 100644
 --- a/style/properties/longhands.toml
 +++ b/style/properties/longhands.toml
-@@ -1833,7 +1833,7 @@ affects = "overflow"
+@@ -1843,7 +1843,7 @@ affects = "overflow"
  type = "ScrollSnapAlign"
  initial = "computed::ScrollSnapAlign::none()"
  struct = "box"
@@ -34,7 +34,7 @@ index 011c7f2bb..96a1aca4e 100644
  spec = "https://drafts.csswg.org/css-scroll-snap-1/#scroll-snap-align"
  animation_type = "discrete"
  affects = "paint"
-@@ -1842,7 +1842,7 @@ affects = "paint"
+@@ -1852,7 +1852,7 @@ affects = "paint"
  type = "ScrollSnapStop"
  initial = "computed::ScrollSnapStop::Normal"
  struct = "box"
@@ -43,7 +43,7 @@ index 011c7f2bb..96a1aca4e 100644
  spec = "https://drafts.csswg.org/css-scroll-snap-1/#scroll-snap-stop"
  animation_type = "discrete"
  affects = "paint"
-@@ -1851,7 +1851,7 @@ affects = "paint"
+@@ -1861,7 +1861,7 @@ affects = "paint"
  type = "ScrollSnapType"
  initial = "computed::ScrollSnapType::none()"
  struct = "box"
@@ -52,7 +52,7 @@ index 011c7f2bb..96a1aca4e 100644
  spec = "https://drafts.csswg.org/css-scroll-snap-1/#scroll-snap-type"
  animation_type = "discrete"
  affects = "paint"
-@@ -3548,7 +3548,7 @@ affects = "layout"
+@@ -3567,7 +3567,7 @@ affects = "layout"
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -61,7 +61,7 @@ index 011c7f2bb..96a1aca4e 100644
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.0"
  spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-padding-top"
-@@ -3558,7 +3558,7 @@ affects = ""
+@@ -3577,7 +3577,7 @@ affects = ""
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -70,7 +70,7 @@ index 011c7f2bb..96a1aca4e 100644
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.1"
  spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-padding-right"
-@@ -3568,7 +3568,7 @@ affects = ""
+@@ -3587,7 +3587,7 @@ affects = ""
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -79,7 +79,7 @@ index 011c7f2bb..96a1aca4e 100644
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.2"
  spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-padding-bottom"
-@@ -3578,7 +3578,7 @@ affects = ""
+@@ -3597,7 +3597,7 @@ affects = ""
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -88,7 +88,7 @@ index 011c7f2bb..96a1aca4e 100644
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.3"
  spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-padding-left"
-@@ -3588,7 +3588,7 @@ affects = ""
+@@ -3607,7 +3607,7 @@ affects = ""
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -97,7 +97,7 @@ index 011c7f2bb..96a1aca4e 100644
  logical = true
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.4"
-@@ -3599,7 +3599,7 @@ affects = ""
+@@ -3618,7 +3618,7 @@ affects = ""
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -106,7 +106,7 @@ index 011c7f2bb..96a1aca4e 100644
  logical = true
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.5"
-@@ -3610,7 +3610,7 @@ affects = ""
+@@ -3629,7 +3629,7 @@ affects = ""
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -115,7 +115,7 @@ index 011c7f2bb..96a1aca4e 100644
  logical = true
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.6"
-@@ -3621,7 +3621,7 @@ affects = ""
+@@ -3640,7 +3640,7 @@ affects = ""
  type = "NonNegativeLengthPercentageOrAuto"
  initial = "computed::NonNegativeLengthPercentageOrAuto::auto()"
  struct = "padding"
@@ -125,10 +125,10 @@ index 011c7f2bb..96a1aca4e 100644
  logical_group = "scroll-padding"
  gecko_ffi_name = "mScrollPadding.7"
 diff --git a/style/properties/shorthands.toml b/style/properties/shorthands.toml
-index 056fdcc5d..016774da7 100644
+index 6b5574114..e11ed0805 100644
 --- a/style/properties/shorthands.toml
 +++ b/style/properties/shorthands.toml
-@@ -55,19 +55,19 @@ rule_types_allowed = ["style", "keyframe", "page", "scope", "position-try"]
+@@ -55,19 +55,19 @@ rule_types_allowed = ["style", "keyframe", "page", "position-try"]
  kind = "two_properties"
  
  [scroll-padding]
@@ -182,10 +182,10 @@ index e859d2788..eea934f0f 100644
  
  impl ScrollSnapAlign {
 diff --git a/stylo_static_prefs/preferences.toml b/stylo_static_prefs/preferences.toml
-index 1d534c87c..4448bc2d0 100644
+index 2dbe9832e..bb7d68048 100644
 --- a/stylo_static_prefs/preferences.toml
 +++ b/stylo_static_prefs/preferences.toml
-@@ -58,6 +58,7 @@
+@@ -59,6 +59,7 @@
  "layout.css.ruby.enabled" = false
  "layout.css.scroll-behavior.enabled" = false
  "layout.css.scroll-driven-animations.enabled" = false

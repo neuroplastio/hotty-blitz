@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 7 Nov 2026 18:39:26 +0100
-Subject: [PATCH 8/9] Servo: add the prefers-reduced-motion media feature
+Subject: [PATCH 04/10] Servo: add the prefers-reduced-motion media feature
 
 An embedder sets whether the user asked for less motion on the Device
 (MediaData::prefers_reduced_motion, Device::set_prefers_reduced_motion), as
@@ -15,10 +15,10 @@ rule never matched. Gecko mode has it; the keyword enum is the same.
  3 files changed, 44 insertions(+), 1 deletion(-)
 
 diff --git a/style/device/servo.rs b/style/device/servo.rs
-index 338b73a9b..31d053c05 100644
+index 69dc37b60..23cf925d4 100644
 --- a/style/device/servo.rs
 +++ b/style/device/servo.rs
-@@ -79,6 +79,8 @@ pub struct MediaData {
+@@ -80,6 +80,8 @@ pub struct MediaData {
      /// Whether the user prefers light mode or dark mode
      #[ignore_malloc_size_of = "Pure stack type"]
      pub prefers_color_scheme: PrefersColorScheme,
@@ -27,7 +27,7 @@ index 338b73a9b..31d053c05 100644
      /// The capabilities of the primary pointer input
      #[ignore_malloc_size_of = "Pure stack type"]
      pub primary_pointer_capabilities: PointerCapabilities,
-@@ -330,6 +332,20 @@ impl Device {
+@@ -333,6 +335,20 @@ impl Device {
          self.extra.media_data.prefers_color_scheme
      }
  
@@ -100,10 +100,10 @@ index 14a3e520c..acde6cfaf 100644
 +    ),
  ];
 diff --git a/stylo_atoms/static_atoms.txt b/stylo_atoms/static_atoms.txt
-index ba5267fee..e890c6ebe 100644
+index 398620198..88c2ec141 100644
 --- a/stylo_atoms/static_atoms.txt
 +++ b/stylo_atoms/static_atoms.txt
-@@ -137,6 +137,7 @@ pointer
+@@ -138,6 +138,7 @@ pointer
  popstate
  postershown
  prefers-color-scheme

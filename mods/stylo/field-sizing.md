@@ -1,6 +1,6 @@
 ---
 title: "field-sizing in Servo mode, behind a pref"
-patch: 0002-Enable-field-sizing-behind-a-pref.patch
+patch: 0005-Enable-field-sizing-behind-a-pref.patch
 upstream-fit: yes
 ---
 

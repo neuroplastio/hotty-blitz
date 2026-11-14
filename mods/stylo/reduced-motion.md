@@ -1,6 +1,6 @@
 ---
 title: "prefers-reduced-motion in Servo mode"
-patch: 0008-Servo-add-the-prefers-reduced-motion-media-feature.patch
+patch: 0004-Servo-add-the-prefers-reduced-motion-media-feature.patch
 upstream-fit: yes
 ---
 

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 12:56:08 +0100
+Subject: [PATCH 10/10] Expose property-only restyle damage
+
+Make the Servo property damage calculation available to embedders that want to inspect whether a style change needs layout or only paint.
+---
+ style/servo/restyle_damage.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/style/servo/restyle_damage.rs b/style/servo/restyle_damage.rs
+index 331495447..017cff667 100644
+--- a/style/servo/restyle_damage.rs
++++ b/style/servo/restyle_damage.rs
+@@ -171,7 +171,8 @@ fn augmented_restyle_damage_rebuild_stacking_context(
+         || old.guarantees_stacking_context() != new.guarantees_stacking_context()
+ }
+ 
+-fn compute_damage(old: &ComputedValues, new: &ComputedValues) -> ServoRestyleDamage {
++/// Compute the Servo damage contributed by changed style properties.
++pub fn compute_damage(old: &ComputedValues, new: &ComputedValues) -> ServoRestyleDamage {
+     // Damage flags higher up the if-else chain imply damage flags lower down the if-else chain,
+     // so we can skip the diffing process for later flags if an earlier flag is true
+     if augmented_restyle_damage_rebuild_box(old, new) {
