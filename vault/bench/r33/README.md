@@ -90,3 +90,26 @@ cannot show a patch's win here; the documents that can are shadows
 alone the A/A run would call e1p and e3 wins; the control's own bar
 (twice its paired median) puts those two at about 11% and 21% for this
 load, so a patch run on a quieter machine sets its own.
+
+## The patches: kitesurf-perf-075 (0b55b57), 2026-11-14
+
+Each patch cherry-picked alone on this branch's harness (branches
+`perf33/shadow`, `perf33/lut`, `perf33/clip`, and `perf33/all` with the
+three), with fork branches `v-<name>` in `../vello_cpu` and `v-clip` in
+`../blitz`; the shadow fill with vello_cpu's `poly-pnorm` turned on (a
+measure-only commit). The base rebuilt byte-identical to the baseline's.
+10 rounds × 60 frames, six builds (base, A/A copy, four patched), load
+4.3–12.4; the A/A control called nothing (largest paired median 3.1%).
+Full tables: `runs/patches-0b55b57/summary.md`.
+
+| patch | wins (paired median, 10/10 rounds) | losses | pixels | verdict |
+| --- | --- | --- | --- | --- |
+| shadow fill (07a2d5b) | every shadowed page: dialogs −65/−70/−72% at 1/1.6/2 (18.9 → 5.6 ms at 1.6), shadows −65/−67/−70% (13.3 → 4.4), ks-shadows −67 to −72%, ks-wide-shadows −74%, 06-effects −32% | none | ≤ 1/255 per channel; 22–213 pixels a page on shadowed pages (ks-shadows 54/148/213, ks-wide 34/99/156 at 1/1.6/2); corpus identical | keep |
+| gradient LUT (f54c511) | dots −30% (6.1 → 4.3 ms) | none | identical on every page | keep |
+| clip paths (baa0bf3) | none | clips@2 +5.8% (1/10 faster), ks-gradients@1 +7.1% (1/10; 0.20 ms) | identical on every page | drop |
+| all three | the shadow and LUT wins, unchanged | ks-gradients@1 +7.7% (0/10), from the clip patch | as the shadow fill | — |
+
+The LUT patch does nothing for `gradients-same` (bars of one linear
+gradient, 1.50 ms either way): its win is the dot grid's repeated radial
+tiles. Whether `clips.html` reaches the new clip path is not checked from
+here (pixels are identical either way); on our documents it is no gain.
