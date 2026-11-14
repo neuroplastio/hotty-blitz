@@ -69,3 +69,16 @@ fn outset_shadow_keeps_a_square_corner() {
         "the square top-right corner should cast a square shadow"
     );
 }
+
+#[test]
+fn a_blurred_outset_shadow_keeps_a_square_corner() {
+    let (w, p) = render(
+        "background:#000;border-radius:20px 0 0 0;box-shadow:0 0 8px 8px #f00",
+        1.0,
+    );
+    let red = rgb(w, &p, 64, 14)[0];
+    assert!(
+        (145..=165).contains(&red),
+        "the square top-right corner retains its blur (red={red})"
+    );
+}

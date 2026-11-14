@@ -1,0 +1,198 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 12:55:57 +0100
+Subject: [PATCH 61/61] Preserve CSS shadow widths, corners and empty inset
+ rings
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The new backend still needs the established Gaussian width correction and quadrant-based per-corner blur. Skip coincident unblurred inset rings with nonpositive spread to avoid painting an antialiased seam.
+
+Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
+
+Co-authored-by: bpereira <bpereira@cloudflare.com>
+---
+ packages/blitz-paint/src/render/box_shadow.rs | 150 ++++++++++++++++--
+ 1 file changed, 138 insertions(+), 12 deletions(-)
+
+diff --git a/packages/blitz-paint/src/render/box_shadow.rs b/packages/blitz-paint/src/render/box_shadow.rs
+index 2eaa6c0e3..ee50d1695 100644
+--- a/packages/blitz-paint/src/render/box_shadow.rs
++++ b/packages/blitz-paint/src/render/box_shadow.rs
+@@ -1,9 +1,12 @@
+ use super::ElementCx;
+ use super::background::get_cyclic;
+ use crate::color::{Color, ToColorColor as _};
+-use anyrender::{BoxShadowKind, NonUniformRoundedRect, PaintScene};
++use anyrender::{
++    BoxShadowGeometry, BoxShadowKind, NonUniformRoundedRect, NonUniformRoundedRectRadii, PaintScene,
++};
+ use blitz_dom::CopyStyleGetters;
+-use kurbo::Vec2;
++use kurbo::{Rect, Vec2};
++use peniko::Fill;
+ use style::properties::generated::longhands::background_clip::single_value::computed_value::T as StyloBackgroundClip;
+ use style::values::computed::BoxShadow;
+ 
+@@ -53,6 +56,15 @@ impl ElementCx<'_, '_> {
+ 
+         let padding_box = self.frame.padding_box_shape();
+         for shadow in box_shadow.iter().filter(|s| s.inset).rev() {
++            // An unblurred, unshifted inset with no positive spread has no
++            // visible ring. Avoid rasterizing a coincident clipping boundary.
++            if shadow.base.blur.px() == 0.0
++                && shadow.base.horizontal.px() == 0.0
++                && shadow.base.vertical.px() == 0.0
++                && shadow.spread.px() <= 0.0
++            {
++                continue;
++            }
+             self.draw_box_shadow(scene, shadow, &padding_box, BoxShadowKind::Inset);
+         }
+     }
+@@ -79,20 +91,134 @@ impl ElementCx<'_, '_> {
+             shadow.base.vertical.px() as f64,
+         ) * self.scale;
+         let mut spread = shadow.spread.px() as f64 * self.scale;
+-        if matches!(kind, BoxShadowKind::Inset) && shadow.base.blur.px() == 0.0 && offset == Vec2::ZERO && spread > 0.0 && matches!(self.transform.as_coeffs(), [1.0, 0.0, 0.0, 1.0, _, _]) {
++        if matches!(kind, BoxShadowKind::Inset)
++            && shadow.base.blur.px() == 0.0
++            && offset == Vec2::ZERO
++            && spread > 0.0
++            && matches!(self.transform.as_coeffs(), [1.0, 0.0, 0.0, 1.0, _, _])
++        {
+             spread = spread.floor().max(1.0);
+         }
+         // The standard deviation of a CSS shadow's blur is half of its blur radius
+-        let std_dev = shadow.base.blur.px() as f64 * self.scale / 2.0;
++        let std_dev = shadow.base.blur.px() as f64 * self.scale * std::f64::consts::FRAC_1_SQRT_2;
+ 
+-        scene.draw_box_shadow(
+-            self.transform,
+-            box_shape,
+-            offset,
+-            spread,
+-            std_dev,
+-            shadow_color,
+-            kind,
++        let geometry = BoxShadowGeometry::new(box_shape, offset, spread, std_dev, kind);
++        let radii = geometry.shadow.radii;
++        let corners = [
++            radii.top_left,
++            radii.top_right,
++            radii.bottom_right,
++            radii.bottom_left,
++        ];
++        let uniform = corners
++            .iter()
++            .all(|r| r.x == corners[0].x && r.y == corners[0].x);
++        if kind != BoxShadowKind::Inset && std_dev > 0.0 && !uniform {
++            self.draw_nonuniform_outset_shadow(scene, &geometry, shadow_color);
++        } else {
++            scene.draw_box_shadow(
++                self.transform,
++                box_shape,
++                offset,
++                spread,
++                std_dev,
++                shadow_color,
++                kind,
++            );
++        }
++    }
++    /// The CPU analytic blur takes one radius. Clip four draws to the
++    /// corresponding quadrants so each corner keeps its own radius.
++    fn draw_nonuniform_outset_shadow(
++        &self,
++        scene: &mut impl PaintScene,
++        geometry: &BoxShadowGeometry,
++        color: Color,
++    ) {
++        let rect = geometry.shadow.rect;
++        let r = geometry.shadow.radii;
++        let [a, b, c, d, tx, ty] = self.transform.as_coeffs();
++        let grid = ((a, b, c, d) == (1.0, 0.0, 0.0, 1.0)).then_some(Vec2::new(tx, ty));
++        let straight = |a0: f64, a1: f64, b0: f64, b1: f64, offset: Option<f64>| {
++            let (lo, hi) = (a0.max(b0), a1.min(b1));
++            let mid = if lo <= hi {
++                (lo + hi) / 2.0
++            } else {
++                (a0 + a1 + b0 + b1) / 4.0
++            };
++            offset.map_or(mid, |o| (mid + o).round() - o)
++        };
++        let split_x = straight(
++            rect.x0 + r.top_left.x,
++            rect.x1 - r.top_right.x,
++            rect.x0 + r.bottom_left.x,
++            rect.x1 - r.bottom_right.x,
++            grid.map(|g| g.x),
+         );
++        let split_y = straight(
++            rect.y0 + r.top_left.y,
++            rect.y1 - r.bottom_left.y,
++            rect.y0 + r.top_right.y,
++            rect.y1 - r.bottom_right.y,
++            grid.map(|g| g.y),
++        );
++        let bounds = rect.inflate(4.0 * geometry.std_dev + 1.0, 4.0 * geometry.std_dev + 1.0);
++        let bounds = grid.map_or(bounds, |g| {
++            Rect::new(
++                (bounds.x0 + g.x).floor() - g.x,
++                (bounds.y0 + g.y).floor() - g.y,
++                (bounds.x1 + g.x).ceil() - g.x,
++                (bounds.y1 + g.y).ceil() - g.y,
++            )
++        });
++        let quadrants = [
++            (
++                Rect::new(bounds.x0, bounds.y0, split_x, split_y),
++                r.top_left,
++            ),
++            (
++                Rect::new(split_x, bounds.y0, bounds.x1, split_y),
++                r.top_right,
++            ),
++            (
++                Rect::new(split_x, split_y, bounds.x1, bounds.y1),
++                r.bottom_right,
++            ),
++            (
++                Rect::new(bounds.x0, split_y, split_x, bounds.y1),
++                r.bottom_left,
++            ),
++        ];
++        let clipped = geometry.kind == BoxShadowKind::Outset;
++        if clipped {
++            scene.push_clip_layer(Fill::NonZero, self.transform, &geometry.area);
++        }
++        for (quadrant, radius) in quadrants {
++            let radius = (radius.x + radius.y) / 2.0;
++            let reach = radius + 3.0 * geometry.std_dev + 1.0;
++            let local = rect.intersect(quadrant.inflate(reach, reach));
++            let radius = Vec2::new(radius, radius);
++            let radii = NonUniformRoundedRectRadii {
++                top_left: radius,
++                top_right: radius,
++                bottom_right: radius,
++                bottom_left: radius,
++            };
++            let shape = NonUniformRoundedRect::new(local, radii);
++            scene.push_clip_layer(Fill::NonZero, self.transform, &quadrant);
++            scene.draw_box_shadow(
++                self.transform,
++                &shape,
++                Vec2::ZERO,
++                0.0,
++                geometry.std_dev,
++                color,
++                BoxShadowKind::OutsetUnclipped,
++            );
++            scene.pop_layer();
++        }
++        if clipped {
++            scene.pop_layer();
++        }
+     }
+ }
