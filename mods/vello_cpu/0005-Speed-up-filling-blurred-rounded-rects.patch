@@ -1,0 +1,324 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
+Date: Thu, 13 Aug 2026 00:48:21 +0100
+Subject: [PATCH 5/7] Speed up filling blurred rounded rects
+
+Replace the corner p-norm with an optional polynomial approximation and
+skip the p-norm outside the corners. The poly-pnorm feature remains off
+by default in vello_cpu; hotty-blitz enables it; without it the existing per-pixel formula is preserved.
+
+The fit was reported by kitesurf as less than half an alpha LSB. Hotty
+render comparisons of the polynomial path against the exact path found at
+most one 8-bit channel level across the shadow fixtures. The original
+wide-blur subsampling is omitted: overlapping shadows exceeded that bound.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ vello_cpu/Cargo.toml                          |   2 +
+ .../src/fine/common/rounded_blurred_rect.rs   | 205 ++++++++++++++++--
+ vello_cpu/src/fine/mod.rs                     |   4 +
+ 3 files changed, 189 insertions(+), 22 deletions(-)
+
+diff --git a/vello_cpu/Cargo.toml b/vello_cpu/Cargo.toml
+index a184686d..45e4fdbb 100644
+--- a/vello_cpu/Cargo.toml
++++ b/vello_cpu/Cargo.toml
+@@ -55,6 +55,8 @@ text = ["dep:glifo"]
+ 
+ # Speed focussed rendering using u8 math
+ u8_pipeline = []
++# Optional polynomial p-norm for blurred rounded rectangles.
++poly-pnorm = []
+ # Quality focussed rendering using f32 math
+ f32_pipeline = []
+ 
+diff --git a/vello_cpu/src/fine/common/rounded_blurred_rect.rs b/vello_cpu/src/fine/common/rounded_blurred_rect.rs
+index 537db932..7dbe7bd0 100644
+--- a/vello_cpu/src/fine/common/rounded_blurred_rect.rs
++++ b/vello_cpu/src/fine/common/rounded_blurred_rect.rs
+@@ -11,7 +11,10 @@ use fearless_simd_macros::simd;
+ use vello_common::encode::EncodedBlurredRoundedRectangle;
+ use vello_common::fearless_simd::{Simd, SimdBase, SimdFloat, f32x8, u8x16};
+ 
+-#[cfg(not(feature = "std"))]
++#[cfg(feature = "poly-pnorm")]
++use vello_common::fearless_simd::Select;
++
++#[cfg(all(not(feature = "std"), not(feature = "poly-pnorm")))]
+ use vello_common::kurbo::common::FloatFuncs as _;
+ 
+ #[derive(Debug)]
+@@ -39,8 +42,14 @@ impl<S: Simd> BlurredRoundedRectFiller<S> {
+         let b = f32x8::splat(simd, color_components[2]);
+         let a = f32x8::splat(simd, color_components[3]);
+         let simd_rect = SimdRoundedBlurredRect::new(simd, rect);
+-        let alpha_calculator =
+-            AlphaCalculator::new(start_pos, rect.x_advance, rect.y_advance, simd_rect, Inside::new(rect), simd);
++        let alpha_calculator = AlphaCalculator::new(
++            start_pos,
++            rect.x_advance,
++            rect.y_advance,
++            simd_rect,
++            Inside::new(rect),
++            simd,
++        );
+ 
+         Self {
+             alpha_calculator,
+@@ -197,6 +206,56 @@ impl<S: Simd> AlphaCalculator<S> {
+     }
+ }
+ 
++impl<S: Simd> AlphaCalculator<S> {
++    #[inline(always)]
++    fn alpha(&self, i: f32x8<S>, j: f32x8<S>) -> f32x8<S> {
++        let r = &self.r;
++
++        let y = j - r.v1 * r.height;
++        // Equivalent to r.r1 + y.abs() - (r.h * r.v1)
++        let y0 = r.r1 - r.h.mul_sub(r.v1, y.abs());
++        let y1 = y0.max(r.v0);
++
++        let x = i - r.v1 * r.width;
++        // Equivalent to r.r1 + x.abs() - (r.w * r.v1)
++        let x0 = r.r1 - r.w.mul_sub(r.v1, x.abs());
++        let x1 = x0.max(r.v0);
++        #[cfg(feature = "poly-pnorm")]
++        let d_pos = {
++            // x1,y1 >= 0, and outside the corner squares one of them is exactly 0,
++            // where (a^e + 0)^(1/e) == a, so only corners need the p-norm.
++            let corner = self.simd.simd_gt_f32x8(x1.min(y1), r.v0);
++            if self.simd.any_true_mask32x8(corner) {
++                // (x^e + y^e)^(1/e) factors as max * phi(min/max); phi is bounded to
++                // [1, 2^(1/e)] on [0,1], so a degree-7 fit covers it.
++
++                // A lane with max == 0 divides to NaN; the select drops it.
++                let mx = x1.max(y1);
++                let t = x1.min(y1) / mx;
++                let pnorm = mx
++                    * r.phi[7]
++                        .mul_add(t, r.phi[6])
++                        .mul_add(t, r.phi[5])
++                        .mul_add(t, r.phi[4])
++                        .mul_add(t, r.phi[3])
++                        .mul_add(t, r.phi[2])
++                        .mul_add(t, r.phi[1])
++                        .mul_add(t, r.phi[0]);
++                corner.select(pnorm, x1 + y1)
++            } else {
++                x1 + y1
++            }
++        };
++        #[cfg(not(feature = "poly-pnorm"))]
++        let d_pos = (x1.powf(r.exponent) + y1.powf(r.exponent)).powf(r.recip_exponent);
++        let d_neg = x0.max(y0).min(r.v0);
++        let d = d_pos + d_neg - r.r1;
++        r.scale
++            * (f32x8::compute_erf7(self.simd, r.std_dev_inv * (r.min_edge + d))
++                - f32x8::compute_erf7(self.simd, r.std_dev_inv * d))
++    }
++}
++
+ impl<S: Simd> Iterator for AlphaCalculator<S> {
+     type Item = f32x8<S>;
+ 
+@@ -220,33 +279,123 @@ impl<S: Simd> Iterator for AlphaCalculator<S> {
+             self.x_advance.y as f32,
+             self.y_advance.y as f32,
+         );
+-        let r = &self.r;
+-
+-        let y = j - r.v1 * r.height;
+-        // Equivalent to r.r1 + y.abs() - (r.h * r.v1)
+-        let y0 = r.r1 - r.h.mul_sub(r.v1, y.abs());
+-        let y1 = y0.max(r.v0);
+-
+-        let x = i - r.v1 * r.width;
+-        // Equivalent to r.r1 + x.abs() - (r.w * r.v1)
+-        let x0 = r.r1 - r.w.mul_sub(r.v1, x.abs());
+-        let x1 = x0.max(r.v0);
+-        let d_pos = (x1.powf(r.exponent) + y1.powf(r.exponent)).powf(r.recip_exponent);
+-        let d_neg = x0.max(y0).min(r.v0);
+-        let d = d_pos + d_neg - r.r1;
+-        let z = r.scale
+-            * (f32x8::compute_erf7(self.simd, r.std_dev_inv * (r.min_edge + d))
+-                - f32x8::compute_erf7(self.simd, r.std_dev_inv * d));
+-
++        let z = self.alpha(i, j);
+         self.cur_pos += 2.0 * self.x_advance;
+-
+         Some(z)
+     }
+ }
+ 
++#[cfg(feature = "poly-pnorm")]
++// phi(t) = (1+t^e)^(1/e) as a degree-7 polynomial in t.
++// Coefficients are degree-7 polynomials in u = (e-2)/1.478, e in [2, 3.478].
++
++// PHI[k][j] is the u^j term of the t^k coefficient, fitted offline
++// against exact pow. Worst case stays inside half an LSB.
++/// Collapse `exponent` into the eight t-coefficients of phi. Public only so a
++/// host test can sweep the fit against exact pow; PHI is otherwise unreachable.
++pub fn phi_coefficients(exponent: f32) -> [f32; 8] {
++    let u = (exponent - 2.0) / 1.478;
++    core::array::from_fn(|k| {
++        let row = &PHI[k];
++        let mut c = row[7];
++        for j in (0..7).rev() {
++            c = c * u + row[j];
++        }
++        c
++    })
++}
++
++#[cfg(feature = "poly-pnorm")]
++const PHI: [[f32; 8]; 8] = [
++    [
++        0.999999523,
++        0.000287747884,
++        -0.00145391282,
++        0.00325703970,
++        -0.00416825246,
++        0.00321776350,
++        -0.00141784921,
++        0.000275894592,
++    ],
++    [
++        0.0000549813849,
++        -0.0471561439,
++        0.256915241,
++        -0.630659223,
++        0.894888878,
++        -0.767846942,
++        0.372579396,
++        -0.0785049349,
++    ],
++    [
++        0.498794109,
++        -2.01443839,
++        2.92649627,
++        -0.978838682,
++        -2.44131088,
++        3.66302776,
++        -2.15749884,
++        0.496441036,
++    ],
++    [
++        0.00960323121,
++        4.57015324,
++        -12.1590319,
++        9.96781921,
++        2.75401354,
++        -10.4653912,
++        7.21364307,
++        -1.76673782,
++    ],
++    [
++        -0.161359087,
++        -6.13405132,
++        23.4197960,
++        -25.9309597,
++        1.87568510,
++        17.2587509,
++        -13.6561842,
++        3.50852728,
++    ],
++    [
++        0.0696837083,
++        5.55993032,
++        -24.9317474,
++        32.7130051,
++        -7.60265636,
++        -16.4634781,
++        14.7194462,
++        -3.92560983,
++    ],
++    [
++        0.00442494359,
++        -3.00162649,
++        14.1223030,
++        -20.5818748,
++        6.76344347,
++        8.46083069,
++        -8.42855167,
++        2.31515384,
++    ],
++    [
++        -0.00698873494,
++        0.704757929,
++        -3.32011175,
++        5.17456198,
++        -2.03643107,
++        -1.81569624,
++        1.99027336,
++        -0.559714437,
++    ],
++];
++
+ #[derive(Debug)]
+ struct SimdRoundedBlurredRect<S: Simd> {
++    #[cfg(feature = "poly-pnorm")]
++    pub phi: [f32x8<S>; 8],
++    #[cfg(not(feature = "poly-pnorm"))]
+     pub exponent: f32,
++    #[cfg(not(feature = "poly-pnorm"))]
+     pub recip_exponent: f32,
+     pub scale: f32x8<S>,
+     pub std_dev_inv: f32x8<S>,
+@@ -268,7 +417,13 @@ impl<S: Simd> SimdRoundedBlurredRect<S> {
+         let width = f32x8::splat(s, encoded.width);
+         let height = f32x8::splat(s, encoded.height);
+         let r1 = f32x8::splat(s, encoded.r1);
++        #[cfg(feature = "poly-pnorm")]
++        let coeffs = phi_coefficients(encoded.exponent);
++        #[cfg(feature = "poly-pnorm")]
++        let phi = core::array::from_fn(|k| f32x8::splat(s, coeffs[k]));
++        #[cfg(not(feature = "poly-pnorm"))]
+         let exponent = encoded.exponent;
++        #[cfg(not(feature = "poly-pnorm"))]
+         let recip_exponent = encoded.recip_exponent;
+         let scale = f32x8::splat(s, encoded.scale);
+         let min_edge = f32x8::splat(s, encoded.min_edge);
+@@ -277,7 +432,11 @@ impl<S: Simd> SimdRoundedBlurredRect<S> {
+         let v1 = f32x8::splat(s, 0.5);
+ 
+         Self {
++            #[cfg(feature = "poly-pnorm")]
++            phi,
++            #[cfg(not(feature = "poly-pnorm"))]
+             exponent,
++            #[cfg(not(feature = "poly-pnorm"))]
+             recip_exponent,
+             scale,
+             std_dev_inv,
+@@ -298,6 +457,7 @@ trait FloatExt<S: Simd> {
+     // explanation of this approximation to the erf function.
+     /// Approximate the erf function.
+     fn compute_erf7(simd: S, x: Self) -> Self;
++    #[cfg(not(feature = "poly-pnorm"))]
+     fn powf(self, x: f32) -> Self;
+ }
+ 
+@@ -318,6 +478,7 @@ impl<S: Simd> FloatExt<S> for f32x8<S> {
+         x / denom
+     }
+ 
++    #[cfg(not(feature = "poly-pnorm"))]
+     #[inline]
+     fn powf(mut self, x: f32) -> Self {
+         // TODO: SIMD
+diff --git a/vello_cpu/src/fine/mod.rs b/vello_cpu/src/fine/mod.rs
+index 69076cea..e2c55168 100644
+--- a/vello_cpu/src/fine/mod.rs
++++ b/vello_cpu/src/fine/mod.rs
+@@ -21,6 +21,10 @@ pub(crate) use crate::fine::common::gradient::radial::SimdRadialKind;
+ pub(crate) use crate::fine::common::gradient::sweep::SimdSweepKind;
+ use crate::fine::common::image::{FilteredImagePainter, NNImagePainter, PlainNNImagePainter};
+ use crate::fine::common::rounded_blurred_rect::BlurredRoundedRectFiller;
++// Exposed for kitesurf's fit-accuracy test only; not part of the vello_cpu API.
++#[cfg(feature = "poly-pnorm")]
++#[doc(hidden)]
++pub use crate::fine::common::rounded_blurred_rect::phi_coefficients;
+ use crate::peniko::{BlendMode, ImageQuality};
+ use crate::region::Region;
+ use crate::util::EncodedImageExt;

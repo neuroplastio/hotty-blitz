@@ -25,6 +25,7 @@ blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../b
 
 mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the one we build with, and each set applies on it
 	@python3 scripts/mods.py check
+	@python3 scripts/check-render-features.py crates/hotty-blitz/Cargo.toml
 	@test "$$(sed -n 's/.*github.com\/DioxusLabs\/blitz", rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | sort -u)" = "$(call base,blitz)" || { echo "mods/blitz/mod.md: base is not the rev Cargo.toml pins" >&2; exit 1; }
 	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "parley"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../parley show $(call base,parley):Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "mods/parley/mod.md: base is not the parley release Blitz pins" >&2; exit 1; }
 	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "stylo"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../stylo show $(call base,stylo):Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "mods/stylo/mod.md: base is not the Stylo release Blitz pins" >&2; exit 1; }

@@ -28,7 +28,7 @@ anyrender_vello_cpu.workspace = true
 # Color Emoji's sbix). anyrender_vello_cpu brings vello_cpu without `png`,
 # and then every such glyph is dropped: an emoji drew blank. Only the feature
 # is added here; the version is the one anyrender_vello_cpu already brings.
-vello_cpu = { version = "0.4", default-features = false, features = ["png"] }
+vello_cpu = { version = "0.4", default-features = false, features = ["png", "poly-pnorm"] }
 base64.workspace = true
 # `Host::inspect`, a debugging view of an element: not a hotty body.
 serde_json.workspace = true
