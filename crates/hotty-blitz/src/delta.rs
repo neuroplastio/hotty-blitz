@@ -691,6 +691,23 @@ mod taffy_baseline_tests {
     }
 
     #[test]
+    fn wrapping_inline_flex_counts_padding_in_outer_width() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0}.outer{width:300px}.flex{display:inline-flex;flex-wrap:wrap;padding:0 20px}.item{width:150px;height:10px;flex:none}</style><div class=outer><div id=flex class=flex><div class=item></div><div class=item></div><div class=item></div></div></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = doc
+            .get_client_bounding_rect(doc.get_element_by_id("flex").unwrap())
+            .unwrap();
+        assert_eq!(rect.width, 300.0);
+        assert_eq!(rect.height, 30.0);
+    }
+
+    #[test]
     fn bidi_controls_alone_do_not_make_a_line_box() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0;font:20px/20px sans-serif}.abs{position:absolute}.box{display:inline-block;width:5px;height:5px}</style><div id=empty><span dir=ltr>&#x2066;&#x2069;</span></div><div id=absolute><span dir=rtl>&#x202a;<i class=abs></i>&#x202c;</span></div><div id=withbox><span dir=ltr><i class=box></i></span></div><div id=withtext><span dir=rtl>x</span></div>",
