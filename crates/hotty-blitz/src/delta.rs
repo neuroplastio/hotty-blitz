@@ -674,6 +674,27 @@ mod taffy_baseline_tests {
     use blitz_traits::shell::{ColorScheme, Viewport};
 
     #[test]
+    fn authored_replaced_sizes_overflow_and_survive_zero_height_parent() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0}.outer{width:200px}.ratio{height:0}.ratio svg{width:100%;height:auto}</style><div class=outer><canvas id=canvas width=400 height=300></canvas><div class=ratio><svg id=svg width=400 height=200 viewBox='0 0 400 200'></svg></div></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = |id| {
+            doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                .unwrap()
+        };
+        assert_eq!(
+            (rect("canvas").width, rect("canvas").height),
+            (400.0, 300.0)
+        );
+        assert_eq!((rect("svg").width, rect("svg").height), (200.0, 100.0));
+    }
+
+    #[test]
     fn forced_breaks_and_nowrap_inline_boxes_keep_line_boundaries() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0;font:20px/20px sans-serif}.abs{position:absolute}.nowrap{width:100px;white-space:nowrap}.box{display:inline-block;width:80px;height:10px}</style><div id=two>text<br><br><span class=abs></span></div><div id=three>text<br><span class=abs></span><br>x</div><div class=nowrap><span id=one class=box></span><span id=other class=box></span></div>",

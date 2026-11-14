@@ -1,3 +1,4 @@
 # Kitesurf leg 4: covered changes
 
 - Parley 0.12 patch 0005 (breaks around out-of-flow and atomic boxes) is not ported: on 0.13 forced newlines are appended as text and contribute line metrics before the explicit break (upstream Parley a7c1c56); the existing hotty Parley patch `Give inline boxes the wrap mode of their span` covers the wrap-mode and intrinsic-width portions. A host regression checks the two out-of-flow/forced-break sequences and consecutive inline blocks under `white-space:nowrap` on this base.
+- Blitz DOM 0003 (implicit max-size for replaced elements) is skipped: upstream Blitz 42821263fc370e4363b75c2d40e52bfe5d7eed98 removes the available-space clamp on both axes. This is broader than kitesurf's retained natural-image shrink leniency; restoring that leniency would undo part of the upstream fix. Host tests check an authored canvas overflowing its container and a percentage-width SVG under a zero-height ancestor.
