@@ -53,6 +53,8 @@ stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 # The vello_cpu workspace carries both sets and their shared vello_common;
 # ../glifo separately materializes the glifo set for checking.
 [patch.crates-io]
+# usvg 0.50.0 is built from the resvg release revision in mods/usvg.
+usvg = { path = "../resvg/crates/usvg" }
 parley = { path = "../parley/parley" }
 fontique = { path = "../parley/fontique" }
 parley_engine = { path = "../parley/parley_engine" }

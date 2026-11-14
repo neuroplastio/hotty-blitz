@@ -6,8 +6,8 @@
 #   scripts/canary.sh base     # each set's base, exactly (make mods)
 #
 # The forks are the ones make blitz sets up, at ../blitz, ../parley,
-# ../vello_cpu, ../glifo and ../stylo. Stylo's latest is servo/stylo's main, the
-# stylo fork's origin.
+# ../vello_cpu, ../glifo, ../stylo and ../resvg. Stylo's latest is
+# servo/stylo's main, the stylo fork's origin.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 AT="${1:-latest}"
@@ -48,6 +48,7 @@ git_set() {
 git_set blitz "$(dirname "$HERE")/blitz"
 git_set parley "$(dirname "$HERE")/parley"
 git_set stylo "$(dirname "$HERE")/stylo"
+git_set usvg "$(dirname "$HERE")/resvg"
 
 # Both sets target a Git revision of the same upstream vello workspace.
 if [ "$AT" = base ]; then

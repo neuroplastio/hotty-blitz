@@ -4363,3 +4363,18 @@ fn has_selector_updates_for_sibling_attributes_and_focus() {
     render(&mut h);
     assert_eq!(pixel(&h, "x", 30, 30), [255, 0, 0]);
 }
+
+#[test]
+fn svg_path_length_rescales_dash_pattern() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0}</style><svg width='100' height='20' xmlns='http://www.w3.org/2000/svg'><path d='M0 10H100' pathLength='10' stroke='red' stroke-width='6' stroke-dasharray='1 1'/></svg>",
+        "4",
+    );
+    assert_eq!(pixel(&h, "x", 5, 10), [255, 0, 0]);
+    assert_ne!(pixel(&h, "x", 15, 10), [255, 0, 0]);
+    assert_eq!(pixel(&h, "x", 25, 10), [255, 0, 0]);
+}

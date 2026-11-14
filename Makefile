@@ -16,12 +16,13 @@ hotty:
 # A set's base, from its mod.md.
 base = $(shell sed -n 's/^base:[[:space:]]*\([^[:space:]\#]*\).*/\1/p' mods/$(1)/mod.md)
 
-blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, glifo at ../glifo, Stylo at ../stylo
+blitz:   ## the forks Cargo.toml patches in, from mods/ (gov P-7): Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, glifo at ../glifo, Stylo at ../stylo, usvg at ../resvg
 	@git -C ../blitz merge-base --is-ancestor $(call base,blitz) hotty 2>/dev/null && test "$$(git -C ../blitz rev-list --count $(call base,blitz)..hotty 2>/dev/null)" = "$$(ls mods/blitz/*.patch | wc -l | tr -d ' ')" || scripts/blitz-fork.sh
 	@git -C ../parley merge-base --is-ancestor $(call base,parley) hotty 2>/dev/null && test "$$(git -C ../parley rev-list --count $(call base,parley)..hotty 2>/dev/null)" = "$$(ls mods/parley/*.patch | wc -l | tr -d ' ')" || scripts/parley-fork.sh
 	@test -f ../vello_cpu/vello_cpu/Cargo.toml && git -C ../vello_cpu merge-base --is-ancestor $(call base,vello_cpu) hotty 2>/dev/null && test "$$(git -C ../vello_cpu rev-list --count $(call base,vello_cpu)..hotty 2>/dev/null)" = "$$(ls mods/vello_cpu/*.patch mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/vello-fork.sh
 	@test -f ../glifo/glifo/Cargo.toml && git -C ../glifo merge-base --is-ancestor $(call base,glifo) hotty 2>/dev/null && test "$$(git -C ../glifo rev-list --count $(call base,glifo)..hotty 2>/dev/null)" = "$$(ls mods/glifo/*.patch | wc -l | tr -d ' ')" || scripts/glifo-fork.sh
 	@git -C ../stylo merge-base --is-ancestor $(call base,stylo) hotty 2>/dev/null && test "$$(git -C ../stylo rev-list --count $(call base,stylo)..hotty 2>/dev/null)" = "$$(ls mods/stylo/*.patch | wc -l | tr -d ' ')" || scripts/stylo-fork.sh
+	@git -C ../resvg merge-base --is-ancestor $(call base,usvg) hotty 2>/dev/null && test "$$(git -C ../resvg rev-list --count $(call base,usvg)..hotty 2>/dev/null)" = "$$(ls mods/usvg/*.patch | wc -l | tr -d ' ')" || scripts/usvg-fork.sh
 
 mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the one we build with, and each set applies on it
 	@python3 scripts/mods.py check
@@ -29,6 +30,7 @@ mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the o
 	@test "$$(sed -n 's/.*github.com\/DioxusLabs\/blitz", rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | sort -u)" = "$(call base,blitz)" || { echo "mods/blitz/mod.md: base is not the rev Cargo.toml pins" >&2; exit 1; }
 	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "parley"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../parley show $(call base,parley):Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "mods/parley/mod.md: base is not the parley release Blitz pins" >&2; exit 1; }
 	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "stylo"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../stylo show $(call base,stylo):Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "mods/stylo/mod.md: base is not the Stylo release Blitz pins" >&2; exit 1; }
+	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "usvg"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../resvg show $(call base,usvg):crates/usvg/Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "usvg base is not the release Blitz pins" >&2; exit 1; }
 	@test "$(call base,vello_cpu)" = "$(call base,glifo)" || { echo "vello_cpu and glifo must use the same base" >&2; exit 1; }
 	@for crate in vello_cpu glifo; do \
 	  pinned=$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n "/^name = \"$$crate\"$$/{n;s/^version = \"\(.*\)\"/\1/p;}"); \
