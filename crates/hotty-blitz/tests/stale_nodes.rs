@@ -219,3 +219,19 @@ fn a_pointer_moved_before_the_frame_after_a_removal() {
         &[Delta("remove", "a", None, ""), Move(5.0, 10.0)],
     );
 }
+
+#[test]
+fn anonymous_table_cells_can_be_removed_and_rebuilt() {
+    run(
+        r#"<style>.cell{display:table-cell;width:40px;height:20px}</style><div id=parent><div id=a class=cell>A</div><div id=b class=cell>B</div></div>"#,
+        &[
+            Delta("remove", "a", None, ""),
+            Render,
+            Delta("attr", "parent", Some("style"), "display:none"),
+            Render,
+            Delta("inner", "parent", None, "<div id=c class=cell>C</div>"),
+            Delta("unattr", "parent", Some("style"), ""),
+            Render,
+        ],
+    );
+}

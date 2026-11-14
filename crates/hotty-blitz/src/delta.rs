@@ -691,6 +691,54 @@ mod taffy_baseline_tests {
     }
 
     #[test]
+    fn anonymous_table_survives_contents_and_parent_restyle() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0}.cell{display:table-cell;width:40px;height:20px}.contents{display:contents}</style><div id=parent><div class=contents><div id=a class=cell>A</div> <div id=b class=cell>B</div></div></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let check = |doc: &HtmlDocument| {
+            let rect = |id| {
+                doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                    .unwrap()
+            };
+            assert_eq!(rect("a").y, rect("b").y);
+            assert_eq!(rect("b").x, rect("a").x + rect("a").width);
+        };
+        check(&doc);
+        let parent = doc.get_element_by_id("parent").unwrap();
+        doc.mutate()
+            .set_attribute(parent, blitz_dom::qual_name!("style"), "color:red");
+        doc.resolve(0.0);
+        check(&doc);
+    }
+
+    #[test]
+    fn anonymous_table_fixup_keeps_misparented_cells_and_content() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0}.cell{display:table-cell;width:40px;height:20px}.table{display:table}.content{display:block;width:60px;height:20px}</style><div><div id=a class=cell>A</div> <div id=b class=cell>B</div></div><div class=table><div id=content class=content>C</div></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = |id| {
+            doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                .unwrap()
+        };
+        assert_eq!(rect("a").y, rect("b").y);
+        assert_eq!(rect("b").x, rect("a").x + rect("a").width);
+        assert_eq!(
+            (rect("content").width, rect("content").height),
+            (60.0, 20.0)
+        );
+    }
+
+    #[test]
     fn svg_image_natural_dimensions_use_css_and_viewbox() {
         use blitz_dom::node::SvgImageData;
         let parse = |s: &str| SvgImageData::from_data(s.as_bytes(), &Default::default()).unwrap();
