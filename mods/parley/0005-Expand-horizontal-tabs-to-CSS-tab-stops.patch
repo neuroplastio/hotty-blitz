@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bpereira <bpereira@cloudflare.com>
 Date: Fri, 18 Sep 2026 21:34:18 +0100
-Subject: [PATCH 5/5] Expand horizontal tabs to CSS tab stops
+Subject: [PATCH 5/6] Expand horizontal tabs to CSS tab stops
 
 Recognize horizontal tabs in the text engine and expand preserved tabs to
 CSS tab stops during line layout. Thread the configured tab size through
@@ -9,32 +9,30 @@ text styles and update cluster and glyph advances so painting, selection
 and hit testing agree. Use a space glyph where available to leave the tab
 invisible.
 ---
- parley/Cargo.toml                      |   5 +-
- parley/src/layout/data.rs              | 109 +++++++++++++++-
- parley/src/layout/line_break.rs        | 168 ++++++++++++++++++++++++-
+ parley/Cargo.toml                      |   3 +-
+ parley/src/layout/data.rs              | 108 +++++++++++++++-
+ parley/src/layout/line_break.rs        | 164 ++++++++++++++++++++++++-
  parley/src/layout/mod.rs               |   4 +-
  parley/src/resolve/mod.rs              |   8 +-
  parley/src/style/mod.rs                |  54 ++++++++
  parley/src/tests/test_builders.rs      |   1 +
  parley_engine/src/shape/shaped_text.rs |  15 +++
- 8 files changed, 349 insertions(+), 15 deletions(-)
+ 8 files changed, 343 insertions(+), 14 deletions(-)
 
 diff --git a/parley/Cargo.toml b/parley/Cargo.toml
-index 12ab148..eaa9268 100644
+index a0ab334..c750c00 100644
 --- a/parley/Cargo.toml
 +++ b/parley/Cargo.toml
-@@ -18,8 +18,8 @@ workspace = true
- 
- [features]
+@@ -17,7 +17,7 @@ all-features = true
  default = ["system"]
+ # Get floating point functions from the standard library
+ # (likely using your target's libc).
 -std = ["fontique/std", "parley_engine/std", "peniko/std", "parlance/std"]
--libm = ["fontique/libm", "parley_engine/libm", "peniko/libm", "dep:core_maths"]
 +std = ["fontique/std", "parley_engine/std", "peniko/std", "parlance/std", "skrifa/std"]
-+libm = ["fontique/libm", "parley_engine/libm", "peniko/libm", "skrifa/libm", "dep:core_maths"]
- bytemuck = ["fontique/bytemuck", "parlance/bytemuck", "parley_engine/bytemuck"]
- # Enables support for system font backends
- system = ["std", "fontique/system"]
-@@ -28,6 +28,7 @@ system = ["std", "fontique/system"]
+ # Use floating point implementations from libm.
+ # This is useful for `no_std` environments.
+ # However, note that the `libm` crate is not as efficient as the standard library.
+@@ -32,6 +32,7 @@ system = ["std", "fontique/system"]
  complex-scripts = ["parley_engine/complex-scripts"]
  
  [dependencies]
@@ -43,19 +41,19 @@ index 12ab148..eaa9268 100644
  linebender_resource_handle = { workspace = true }
  fontique = { workspace = true }
 diff --git a/parley/src/layout/data.rs b/parley/src/layout/data.rs
-index e133e1e..7538442 100644
+index aa4d800..9ad4278 100644
 --- a/parley/src/layout/data.rs
 +++ b/parley/src/layout/data.rs
 @@ -2,7 +2,7 @@
  // SPDX-License-Identifier: Apache-2.0 OR MIT
  
- use crate::inline_box::{InlineBox, LayoutInlineBox};
+ use crate::inline_box::LayoutInlineBox;
 -use crate::layout::spacing::{Justification, Spacing};
 +use crate::layout::spacing::{EffectiveSpacing, Justification, Spacing};
- use crate::layout::style_metrics::{BoxMetrics, StyleMetrics};
+ use crate::layout::style_metrics::{BoxMetrics, StyleMetrics, inline_box_placement};
  use crate::layout::whitespace::whitespace_hangs;
  use crate::layout::{ContentWidths, LineMetrics, Style};
-@@ -16,7 +16,7 @@ use core::ops::Range;
+@@ -14,7 +14,7 @@ use core::ops::Range;
  use alloc::vec::Vec;
  use parlance::BidiLevel;
  use parley_engine::shape::Whitespace;
@@ -64,7 +62,7 @@ index e133e1e..7538442 100644
  
  /// `HarfRust`-based run data
  #[derive(Clone, Debug, PartialEq)]
-@@ -44,6 +44,8 @@ pub(crate) struct RunData {
+@@ -42,6 +42,8 @@ pub(crate) struct RunData {
      /// This can happen when ligatures span across styles, or (awkwardly) if a style changes within
      /// a grapheme.
      pub(crate) has_mixed_style_atoms: bool,
@@ -73,7 +71,7 @@ index e133e1e..7538442 100644
  }
  
  /// The metrics of a run's box. This differs from the style-derived box by taking into account any
-@@ -199,6 +201,13 @@ pub(crate) struct LayoutData<B: Brush> {
+@@ -197,6 +199,13 @@ pub(crate) struct LayoutData<B: Brush> {
      pub(crate) base_level: BidiLevel,
      /// The length of the text in the layout
      pub(crate) text_len: usize,
@@ -87,7 +85,7 @@ index e133e1e..7538442 100644
  
      // Output of style resolution (input to line breaking)
      pub(crate) styles: Vec<Style<B>>,
-@@ -245,6 +254,7 @@ impl<B: Brush> Default for LayoutData<B> {
+@@ -247,6 +256,7 @@ impl<B: Brush> Default for LayoutData<B> {
              quantize: true,
              base_level: BidiLevel::new(0),
              text_len: 0,
@@ -95,7 +93,7 @@ index e133e1e..7538442 100644
              width: 0.,
              full_width: 0.,
              height: 0.,
-@@ -271,6 +281,7 @@ impl<B: Brush> LayoutData<B> {
+@@ -275,6 +285,7 @@ impl<B: Brush> LayoutData<B> {
          self.quantize = true;
          self.base_level = BidiLevel::new(0);
          self.text_len = 0;
@@ -103,7 +101,7 @@ index e133e1e..7538442 100644
          self.width = 0.;
          self.full_width = 0.;
          self.height = 0.;
-@@ -358,6 +369,51 @@ impl<B: Brush> LayoutData<B> {
+@@ -385,6 +396,51 @@ impl<B: Brush> LayoutData<B> {
          };
  
          let font = &self.shaped_text.fonts()[shaped_run.font_index];
@@ -155,7 +153,7 @@ index e133e1e..7538442 100644
          let run = RunData {
              font_attrs: fontique::Attributes {
                  width: run_style.font_width,
-@@ -369,6 +425,8 @@ impl<B: Brush> LayoutData<B> {
+@@ -396,6 +452,8 @@ impl<B: Brush> LayoutData<B> {
              spacing,
              run_box,
              has_mixed_style_atoms,
@@ -164,7 +162,7 @@ index e133e1e..7538442 100644
          };
  
          self.runs.push(run);
-@@ -379,6 +437,23 @@ impl<B: Brush> LayoutData<B> {
+@@ -406,6 +464,23 @@ impl<B: Brush> LayoutData<B> {
          });
      }
  
@@ -188,7 +186,7 @@ index e133e1e..7538442 100644
      /// Calculates the min- and max-content widths of the layout.
      ///
      /// The max-content width is the widest line when breaking only at forced breaks. The
-@@ -417,6 +492,10 @@ struct ContentWidthsMeasurer {
+@@ -444,6 +519,10 @@ struct ContentWidthsMeasurer {
      /// `running_min_width` when the hanging whitespace started before the last break
      /// opportunity, in which case the line consists entirely of hanging whitespace.
      running_hanging_whitespace: f32,
@@ -199,7 +197,7 @@ index e133e1e..7538442 100644
  
      /// Whether that running whitespace hangs conditionally before a forced break (following CSS
      /// Text 4 § 4.3.2, that's the case for `WhiteSpaceCollapse::Preserve`). Conditionally hanging
-@@ -441,6 +520,7 @@ impl ContentWidthsMeasurer {
+@@ -468,6 +547,7 @@ impl ContentWidthsMeasurer {
              running_min_width: first_line_indent,
              running_max_width: first_line_indent,
              running_hanging_whitespace: 0.,
@@ -207,7 +205,7 @@ index e133e1e..7538442 100644
              hangs_conditionally: false,
              text_wrap_mode: TextWrapMode::Wrap,
              soft_indent: indent_options.indent_following_soft_wrap_break(indent_amount),
-@@ -478,10 +558,11 @@ impl ContentWidthsMeasurer {
+@@ -505,10 +585,11 @@ impl ContentWidthsMeasurer {
              .min_width
              .max(self.running_min_width - self.running_hanging_whitespace);
          if !self.hangs_conditionally {
@@ -220,7 +218,7 @@ index e133e1e..7538442 100644
          self.line_has_content = false;
          self.running_min_width = self.hard_indent;
          self.running_max_width = self.hard_indent;
-@@ -495,6 +576,9 @@ impl ContentWidthsMeasurer {
+@@ -521,6 +602,9 @@ impl ContentWidthsMeasurer {
                  LayoutItemKind::TextRun => {
                      let slice = layout_data.shaped_text.run_slice(item.index as u32);
                      let run_spacing = layout_data.runs[item.index].spacing;
@@ -230,7 +228,7 @@ index e133e1e..7538442 100644
                      // Trailing whitespace can only hang if it ends up at the line's end edge after
                      // bidi reordering. We don't currently apply UAX #9 L1 (resetting trailing
                      // whitespace to paragraph level), so only logically-last items that match the
-@@ -507,6 +591,7 @@ impl ContentWidthsMeasurer {
+@@ -533,6 +617,7 @@ impl ContentWidthsMeasurer {
                              &layout_data.styles,
                              slice,
                              run_spacing,
@@ -238,7 +236,7 @@ index e133e1e..7538442 100644
                              can_hang,
                              is_rtl,
                          );
-@@ -515,6 +600,7 @@ impl ContentWidthsMeasurer {
+@@ -541,6 +626,7 @@ impl ContentWidthsMeasurer {
                              &layout_data.styles,
                              slice,
                              run_spacing,
@@ -246,7 +244,7 @@ index e133e1e..7538442 100644
                              can_hang,
                              is_rtl,
                          );
-@@ -588,6 +674,7 @@ impl ContentWidthsMeasurer {
+@@ -586,6 +672,7 @@ impl ContentWidthsMeasurer {
          styles: &[Style<B>],
          slice: ShapedSlice<'_>,
          spacing: Spacing,
@@ -287,19 +285,11 @@ index e133e1e..7538442 100644
              }
          }
          self.line_has_content = empty_at != clusters.len();
-@@ -686,6 +782,7 @@ impl ContentWidthsMeasurer {
-         }
-         // Inline boxes don't hang.
-         self.running_hanging_whitespace = 0.0;
-+        self.running_hanging_whitespace_max = 0.0;
-         self.running_min_width += inline_box.width;
-         self.running_max_width += inline_box.width;
-         self.line_has_content = true;
 diff --git a/parley/src/layout/line_break.rs b/parley/src/layout/line_break.rs
-index c1687bf..c5b8512 100644
+index 97c9f97..140ea23 100644
 --- a/parley/src/layout/line_break.rs
 +++ b/parley/src/layout/line_break.rs
-@@ -31,6 +31,17 @@ use parley_engine::Atom;
+@@ -29,6 +29,17 @@ use parley_engine::Atom;
  use parley_engine::shape::{Character, Whitespace};
  use smallvec::SmallVec;
  
@@ -317,7 +307,7 @@ index c1687bf..c5b8512 100644
  #[derive(Default)]
  struct LineLayout {
      lines: Vec<LineData>,
-@@ -1219,7 +1230,20 @@ impl<'a, B: Brush> BreakLines<'a, B> {
+@@ -1217,7 +1228,20 @@ impl<'a, B: Brush> BreakLines<'a, B> {
  
                          // Breaking an atom requires reshaping, which we don't do here, so it is
                          // consumed as a whole (this includes all clusters of a ligature).
@@ -339,8 +329,8 @@ index c1687bf..c5b8512 100644
  
                          // Compute the x position of the content being currently processed
                          let next_x = self.state.line.x + advance;
-@@ -1409,7 +1433,14 @@ impl<'a, B: Brush> BreakLines<'a, B> {
-                         let whitespace = first_character.whitespace;
+@@ -1375,7 +1399,14 @@ impl<'a, B: Brush> BreakLines<'a, B> {
+                         let whitespace = first_cluster.whitespace();
                          let is_newline = whitespace == Whitespace::Newline;
                          let is_separator = is_word_separator(whitespace);
 -                        let advance = spacing.atom_advance(&atom);
@@ -355,7 +345,7 @@ index c1687bf..c5b8512 100644
  
                          // Compute the x position.
                          // Newlines don't contribute to line width (matching break_next behavior).
-@@ -1710,7 +1741,7 @@ impl<B: Brush> Drop for BreakLines<'_, B> {
+@@ -1665,7 +1696,7 @@ impl<B: Brush> Drop for BreakLines<'_, B> {
  
  #[expect(clippy::cast_possible_truncation, reason = "deferred")]
  fn commit_line<B: Brush>(
@@ -364,7 +354,7 @@ index c1687bf..c5b8512 100644
      lines: &mut LineLayout,
      state: &mut LineState,
      max_advance: f32,
-@@ -1815,6 +1846,13 @@ fn commit_line<B: Brush>(
+@@ -1769,6 +1800,13 @@ fn commit_line<B: Brush>(
      // let end_run_idx = lines.line_items.last().map(|item| item.index).unwrap_or(0);
      let end_item_idx = lines.line_items.len();
  
@@ -378,7 +368,7 @@ index c1687bf..c5b8512 100644
      // Trailing whitespace under `WhiteSpaceCollapse::Preserve` directly preceding a forced break
      // hangs conditionally (CSS Text 4 § 4.3.2): only the part that doesn't fit hangs. Whitespace
      // that fits, stays inside the line box, and counts towards alignment and the layout width. The
-@@ -1826,7 +1864,7 @@ fn commit_line<B: Brush>(
+@@ -1780,7 +1818,7 @@ fn commit_line<B: Brush>(
      // Hence an `overflow` of `f32::INFINITY` can be used to model that case.
      let overflow = match break_reason {
          BreakReason::Regular | BreakReason::Emergency => f32::INFINITY,
@@ -387,7 +377,7 @@ index c1687bf..c5b8512 100644
      };
      let (hanging_advance, justification_end_cluster, hanging_opportunities) = hanging_whitespace(
          layout,
-@@ -1855,7 +1893,7 @@ fn commit_line<B: Brush>(
+@@ -1809,7 +1847,7 @@ fn commit_line<B: Brush>(
          },
          metrics: LineMetrics {
              indent: line_indent,
@@ -396,7 +386,7 @@ index c1687bf..c5b8512 100644
              hanging_advance,
              ..Default::default()
          },
-@@ -1880,6 +1918,126 @@ fn commit_line<B: Brush>(
+@@ -1834,6 +1872,122 @@ fn commit_line<B: Brush>(
      };
  }
  
@@ -428,12 +418,8 @@ index c1687bf..c5b8512 100644
 +    let mut actions: Vec<TabAction> = Vec::new();
 +    for line_item in line_items {
 +        match line_item.kind {
-+            LayoutItemKind::InlineBox => {
-+                let inline_box = &data.inline_boxes[line_item.index].inline_box;
-+                if inline_box.kind == InlineBoxKind::InFlow {
-+                    pen += inline_box.width;
-+                }
-+            }
++            // An in-flow box is an inline-object text run in Parley 0.13.
++            LayoutItemKind::OutOfFlowBox => {}
 +            LayoutItemKind::TextRun => {
 +                let run = &data.runs[line_item.index];
 +                let spacing = EffectiveSpacing::new(run.spacing, Justification::NONE);
@@ -524,10 +510,10 @@ index c1687bf..c5b8512 100644
  /// the index one past its logically last shaped cluster that's eligible for justification (see
  /// [`Justification::justification_end_cluster`]), and the number of justification opportunities
 diff --git a/parley/src/layout/mod.rs b/parley/src/layout/mod.rs
-index 6e2baba..66665a6 100644
+index a4760ab..cd8731c 100644
 --- a/parley/src/layout/mod.rs
 +++ b/parley/src/layout/mod.rs
-@@ -43,7 +43,7 @@ pub use crate::editing::{Cursor, Selection};
+@@ -42,7 +42,7 @@ pub use crate::editing::{Cursor, Selection};
  
  // TODO - Move the following to `style` module and submodules.
  
@@ -536,7 +522,7 @@ index 6e2baba..66665a6 100644
  use crate::{LineHeight, OverflowWrap, TextWrapMode, VerticalAlign, WhiteSpaceCollapse};
  
  /// Style properties.
-@@ -68,6 +68,8 @@ pub struct Style<B: Brush> {
+@@ -67,6 +67,8 @@ pub struct Style<B: Brush> {
      pub(crate) text_wrap_mode: TextWrapMode,
      /// Per-cluster whitespace collapsing and hanging behavior.
      pub(crate) white_space_collapse: WhiteSpaceCollapse,
@@ -546,7 +532,7 @@ index 6e2baba..66665a6 100644
      ///
      /// This is useful for consumers exposing the text to assistive technologies,
 diff --git a/parley/src/resolve/mod.rs b/parley/src/resolve/mod.rs
-index f465832..ba84377 100644
+index 49c4a68..3b6cf87 100644
 --- a/parley/src/resolve/mod.rs
 +++ b/parley/src/resolve/mod.rs
 @@ -15,7 +15,7 @@ use super::style::{
@@ -556,12 +542,12 @@ index f465832..ba84377 100644
 -use crate::style::TextStyle;
 +use crate::style::{TabSize, TextStyle};
  use crate::util::nearly_eq;
+ use crate::{CollapsedSpace, TextWrapMode, WhiteSpaceCollapse, WordBreak};
  use crate::{LineBreak, LineHeight, OverflowWrap, VerticalAlign, layout};
- use crate::{TextWrapMode, WhiteSpaceCollapse, WordBreak};
-@@ -210,6 +210,10 @@ impl ResolveContext {
-             overflow_wrap: raw_style.overflow_wrap,
+@@ -212,6 +212,10 @@ impl ResolveContext {
              text_wrap_mode: raw_style.text_wrap_mode,
              white_space_collapse: raw_style.white_space_collapse,
+             collapsed_space: raw_style.collapsed_space,
 +            tab_size: match raw_style.tab_size {
 +                TabSize::Chars(n) => TabSize::Chars(n),
 +                TabSize::Px(l) => TabSize::Px(l * scale),
@@ -569,15 +555,15 @@ index f465832..ba84377 100644
          }
      }
  
-@@ -448,6 +452,7 @@ pub(crate) struct ResolvedStyle<B: Brush> {
-     pub(crate) text_wrap_mode: TextWrapMode,
-     /// Whitespace collapsing and hanging behavior.
+@@ -454,6 +458,7 @@ pub(crate) struct ResolvedStyle<B: Brush> {
      pub(crate) white_space_collapse: WhiteSpaceCollapse,
+     /// The character that collapsible whitespace collapses to.
+     pub(crate) collapsed_space: CollapsedSpace,
 +    pub(crate) tab_size: TabSize,
  }
  
  impl<B: Brush> ResolvedStyle<B> {
-@@ -527,6 +532,7 @@ impl<B: Brush> ResolvedStyle<B> {
+@@ -535,6 +540,7 @@ impl<B: Brush> ResolvedStyle<B> {
              overflow_wrap: self.overflow_wrap,
              text_wrap_mode: self.text_wrap_mode,
              white_space_collapse: self.white_space_collapse,
@@ -586,7 +572,7 @@ index f465832..ba84377 100644
          }
      }
 diff --git a/parley/src/style/mod.rs b/parley/src/style/mod.rs
-index d9977df..a69d929 100644
+index c43d973..89a386c 100644
 --- a/parley/src/style/mod.rs
 +++ b/parley/src/style/mod.rs
 @@ -25,6 +25,57 @@ pub use styleset::StyleSet;
@@ -647,40 +633,40 @@ index d9977df..a69d929 100644
  /// Whitespace collapsing and hanging behavior.
  ///
  /// Note: Currently only the [`TreeBuilder`](crate::TreeBuilder) collapses white space. The
-@@ -334,6 +385,8 @@ pub struct TextStyle<'family, 'settings, B: Brush> {
-     pub text_wrap_mode: TextWrapMode,
-     /// Whitespace collapsing and hanging behavior.
+@@ -361,6 +412,8 @@ pub struct TextStyle<'family, 'settings, B: Brush> {
      pub white_space_collapse: WhiteSpaceCollapse,
+     /// The character that collapsible whitespace collapses to.
+     pub collapsed_space: CollapsedSpace,
 +    /// CSS tab stop spacing.
 +    pub tab_size: TabSize,
  }
  
  impl<B: Brush> Default for TextStyle<'static, 'static, B> {
-@@ -365,6 +418,7 @@ impl<B: Brush> Default for TextStyle<'static, 'static, B> {
-             overflow_wrap: OverflowWrap::default(),
+@@ -393,6 +446,7 @@ impl<B: Brush> Default for TextStyle<'static, 'static, B> {
              text_wrap_mode: TextWrapMode::default(),
              white_space_collapse: WhiteSpaceCollapse::default(),
+             collapsed_space: CollapsedSpace::default(),
 +            tab_size: TabSize::default(),
          }
      }
  }
 diff --git a/parley/src/tests/test_builders.rs b/parley/src/tests/test_builders.rs
-index 315f1c2..ee12706 100644
+index d8c0249..b533799 100644
 --- a/parley/src/tests/test_builders.rs
 +++ b/parley/src/tests/test_builders.rs
-@@ -236,6 +236,7 @@ fn create_root_style() -> TextStyle<'static, 'static, ColorBrush> {
-         overflow_wrap: OverflowWrap::Anywhere,
-         text_wrap_mode: TextWrapMode::Wrap,
+@@ -238,6 +238,7 @@ fn create_root_style() -> TextStyle<'static, 'static, ColorBrush> {
          white_space_collapse: WhiteSpaceCollapse::PreserveBreaks,
+         // Only affects the `TreeBuilder`, which collapses white space.
+         collapsed_space: crate::CollapsedSpace::Space,
 +        tab_size: Default::default(),
      }
  }
  
 diff --git a/parley_engine/src/shape/shaped_text.rs b/parley_engine/src/shape/shaped_text.rs
-index 63afadd..b42070c 100644
+index 24fe29d..faf4885 100644
 --- a/parley_engine/src/shape/shaped_text.rs
 +++ b/parley_engine/src/shape/shaped_text.rs
-@@ -245,6 +245,21 @@ impl ShapedText {
+@@ -281,6 +281,21 @@ impl ShapedText {
          &self.glyphs
      }
  

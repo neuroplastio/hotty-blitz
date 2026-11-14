@@ -1,6 +1,6 @@
 ---
 title: "Emoji draw in colour whatever the font stack"
-patch: 0002-parley-a-cluster-with-emoji-presentation-takes-a-col.patch
+patch: 0001-parley-a-cluster-with-emoji-presentation-takes-a-col.patch
 upstream-fit: yes
 ---
 

@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 23 Oct 2026 21:45:09 +0200
+Subject: [PATCH 2/6] Give inline boxes the wrap mode of their span
+
+The line breaker and the content widths measurer track `text_wrap_mode`
+from text clusters only, so an inline box took the mode of whatever text
+came before it, or `Wrap` when none did. Boxes in a `nowrap` span could
+be broken between, a `nowrap` paragraph of boxes had the min-content
+width of its widest box, and boxes in a span that wraps, inside a
+`nowrap` paragraph, never wrapped.
+
+A box now takes the mode of the span containing it, from its
+`parent_style_index`. As with text, the content before a box decides
+whether the line may break before it, and the box's own span whether it
+may break after it. When a box overflows and the content before it
+doesn't allow a break, the line falls back to an earlier opportunity, as
+text does, and a box placed after wrapping content marks the opportunity
+before it, so a `nowrap` run of boxes moves to the next line whole.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ parley_tests/tests/content_widths.rs | 84 +++++++++++++++++++++++++++-
+ 1 file changed, 82 insertions(+), 2 deletions(-)
+
+diff --git a/parley_tests/tests/content_widths.rs b/parley_tests/tests/content_widths.rs
+index ed1331e..5ef4c5a 100644
+--- a/parley_tests/tests/content_widths.rs
++++ b/parley_tests/tests/content_widths.rs
+@@ -6,8 +6,9 @@
+ use crate::util::TestEnv;
+ use crate::{test_name, util::ColorBrush};
+ use parley::{
+-    ContentWidths, IndentOptions, InlineBox, InlineBoxKind, Layout, LineBreak, StyleProperty,
+-    TextWrapMode, VerticalAlign, WhiteSpaceCollapse,
++    ContentWidths, IndentOptions, InlineBox, InlineBoxKind, Layout,
++    LineBreak, PositionedLayoutItem, StyleProperty, TextWrapMode, TreeBuilder, VerticalAlign,
++    WhiteSpaceCollapse,
+ };
+ 
+ /// Checks that calculated content widths agree with actual line breaking.
+@@ -536,3 +537,82 @@ fn content_widths_text_indent_inline_box() {
+         "no line should be indented: {widths:?}"
+     );
+ }
++
++/// Pushes three in-flow boxes, 10 wide.
++fn push_three_boxes(builder: &mut TreeBuilder<'_, ColorBrush>) {
++    for id in 0..3 {
++        builder.push_inline_box(InlineBox {
++            id,
++            kind: InlineBoxKind::InFlow,
++            index: 0,
++            width: 10.0,
++            height: 10.0,
++            baseline: None,
++            vertical_align: VerticalAlign::BASELINE,
++        });
++    }
++}
++
++#[test]
++fn content_widths_inline_boxes_follow_their_span_wrap_mode() {
++    let mut env = TestEnv::new(test_name!(), None);
++
++    // Boxes in a `nowrap` span stay together, though no text has set the mode.
++    let mut builder = env.tree_builder();
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::NoWrap)]);
++    push_three_boxes(&mut builder);
++    builder.pop_style_span();
++    let (mut layout, _) = builder.build();
++    let widths = assert_content_widths_match_layout(&mut layout);
++    assert!(
++        (widths.min - 30.0).abs() < 1e-3,
++        "Min content width {} should be the three boxes' width",
++        widths.min
++    );
++    assert_eq!(layout.len(), 1, "the boxes stay on one line");
++
++    // Boxes in a span that wraps, in a paragraph that doesn't, may be broken between.
++    let mut builder = env.tree_builder();
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::NoWrap)]);
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::Wrap)]);
++    push_three_boxes(&mut builder);
++    builder.pop_style_span();
++    builder.pop_style_span();
++    let (mut layout, _) = builder.build();
++    let widths = assert_content_widths_match_layout(&mut layout);
++    assert!(
++        (widths.min - 10.0).abs() < 1e-3,
++        "Min content width {} should be one box's width",
++        widths.min
++    );
++    assert_eq!(layout.len(), 3, "one box per line");
++}
++
++#[test]
++fn inline_boxes_in_a_nowrap_span_move_to_the_next_line_together() {
++    let mut env = TestEnv::new(test_name!(), None);
++
++    let mut builder = env.tree_builder();
++    builder.push_text("A ");
++    builder.push_style_modification_span(&[StyleProperty::TextWrapMode(TextWrapMode::NoWrap)]);
++    push_three_boxes(&mut builder);
++    builder.pop_style_span();
++    let (mut layout, text) = builder.build();
++    layout.break_all_lines(Some(35.0));
++
++    assert_eq!(layout.len(), 2, "the line breaks before the span");
++    assert_eq!(&text[layout.get(0).unwrap().text_range()], "A ");
++    let boxes = |line: usize| {
++        layout
++            .get(line)
++            .unwrap()
++            .items()
++            .filter(|item| matches!(item, PositionedLayoutItem::InlineBox(_)))
++            .count()
++    };
++    assert_eq!(
++        (boxes(0), boxes(1)),
++        (0, 3),
++        "all three boxes on the second line"
++    );
++}

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 05:47:46 +0100
-Subject: [PATCH 3/5] fontique: ask the system for a fallback once per
+Subject: [PATCH 3/6] fontique: ask the system for a fallback once per
  collection
 
 A collection's clones share the system's fonts, but the fallback family
@@ -10,25 +10,21 @@ clone asked again: with fontconfig, a match over every font installed.
 The answer is now kept beside the system's fonts, for every clone, and a
 key the system has no fallback for is asked once too.
 ---
- fontique/src/collection/mod.rs | 34 ++++++++++++++++++++++++++--------
- 1 file changed, 26 insertions(+), 8 deletions(-)
+ fontique/src/collection/mod.rs | 30 ++++++++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
 
 diff --git a/fontique/src/collection/mod.rs b/fontique/src/collection/mod.rs
-index 4fc5f60..b00ab15 100644
+index 0279875..b00ab15 100644
 --- a/fontique/src/collection/mod.rs
 +++ b/fontique/src/collection/mod.rs
-@@ -445,14 +445,11 @@ impl Inner {
+@@ -445,10 +445,11 @@ impl Inner {
              #[cfg(feature = "system")]
              if let Some(families) = self.data.fallbacks.get(selector) {
                  self.fallback_cache.set(script, lang_key, families);
 -            } else if let Some(system) = self.system.as_ref() {
--                // Some platforms don't need mut System
--                #[allow(unused_mut)]
--                let mut system = system.fonts.lock().unwrap();
--                if let Some(family) = system.fallback(selector) {
--                    self.data.fallbacks.set(selector, core::iter::once(family));
--                    self.fallback_cache.set(script, lang_key, &[family]);
--                }
+-                let family = system.fonts.lock().unwrap().fallback(selector);
+-                self.data.fallbacks.set(selector, family.into_iter());
+-                self.fallback_cache.set(script, lang_key, family.as_slice());
 +            } else if let Some(system) = self.system.as_ref()
 +                && let Some(family) = system.fallback(selector)
 +            {
@@ -37,7 +33,7 @@ index 4fc5f60..b00ab15 100644
              }
              #[cfg(not(feature = "system"))]
              if let Some(families) = self.data.fallbacks.get(selector) {
-@@ -670,6 +667,11 @@ impl FallbackCache {
+@@ -666,6 +667,11 @@ impl FallbackCache {
  struct System {
      #[cfg(feature = "system")]
      fonts: Arc<Mutex<SystemFonts>>,
@@ -49,7 +45,7 @@ index 4fc5f60..b00ab15 100644
      family_names: Arc<FamilyNameMap>,
      generic_families: Arc<GenericFamilyMap>,
  }
-@@ -684,10 +686,26 @@ impl System {
+@@ -680,10 +686,26 @@ impl System {
          Self {
              #[cfg(feature = "system")]
              fonts,

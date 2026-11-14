@@ -2,13 +2,13 @@
 upstream: Parley
 url: https://github.com/linebender/parley
 license: Apache-2.0 OR MIT
-base: 6e1143dda817360dd3a2a64f9133c6e5dfabd881  # v0.12.0
+base: 32a137efbb228ad0b1c6a46b979dfb55d4584eae  # v0.13.0
 builds: hotty-blitz
 public: true
 ---
 
-Blitz lays out text with Parley 0.12 from crates.io, and our `base` is the
-commit tagged v0.12.0, which those packages were published from.
+Blitz lays out text with Parley 0.13 from crates.io, and our `base` is the
+commit tagged v0.13.0, which those packages were published from.
 hotty-blitz draws hotty surfaces, often with a terminal's monospace font
 stack, and Parley chose a font for emoji in a way that drew them in
 monochrome there. It also broke lines between inline boxes that
