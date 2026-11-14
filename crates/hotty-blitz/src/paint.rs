@@ -102,6 +102,17 @@ impl<S: PaintScene> PaintScene for Window<'_, S> {
             .push_clip_layer(fill, self.shift * transform, clip)
     }
 
+    fn push_mask_layer(
+        &mut self,
+        fill: Fill,
+        mode: anyrender::MaskMode,
+        transform: Affine,
+        clip: &impl Shape,
+    ) {
+        self.inner
+            .push_mask_layer(fill, mode, self.shift * transform, clip)
+    }
+
     fn pop_layer(&mut self) {
         self.inner.pop_layer()
     }
@@ -194,15 +205,21 @@ impl<S: PaintScene> PaintScene for Window<'_, S> {
     fn draw_box_shadow(
         &mut self,
         transform: Affine,
-        rect: kurbo::Rect,
-        brush: Color,
-        radius: f64,
+        shape: &anyrender::NonUniformRoundedRect,
+        offset: kurbo::Vec2,
+        spread: f64,
         std_dev: f64,
+        color: Color,
+        kind: anyrender::BoxShadowKind,
     ) {
         let t = self.shift * transform;
-        let spread = radius + 3.0 * std_dev;
-        if self.visible(t.transform_rect_bbox(rect).inflate(spread, spread)) {
-            self.inner.draw_box_shadow(t, rect, brush, radius, std_dev)
+        let geometry = anyrender::BoxShadowGeometry::new(shape, offset, spread, std_dev, kind);
+        if self.visible(
+            t.transform_rect_bbox(geometry.area.bounding_box())
+                .inflate(1.0, 1.0),
+        ) {
+            self.inner
+                .draw_box_shadow(t, shape, offset, spread, std_dev, color, kind)
         }
     }
 }
@@ -369,6 +386,17 @@ impl<S: PaintScene> PaintScene for Inked<'_, S> {
     }
 
     #[inline]
+    fn push_mask_layer(
+        &mut self,
+        fill: Fill,
+        mode: anyrender::MaskMode,
+        transform: Affine,
+        clip: &impl Shape,
+    ) {
+        self.inner.push_mask_layer(fill, mode, transform, clip)
+    }
+
+    #[inline]
     fn pop_layer(&mut self) {
         self.inner.pop_layer()
     }
@@ -448,13 +476,15 @@ impl<S: PaintScene> PaintScene for Inked<'_, S> {
     fn draw_box_shadow(
         &mut self,
         transform: Affine,
-        rect: kurbo::Rect,
-        brush: Color,
-        radius: f64,
+        shape: &anyrender::NonUniformRoundedRect,
+        offset: kurbo::Vec2,
+        spread: f64,
         std_dev: f64,
+        color: Color,
+        kind: anyrender::BoxShadowKind,
     ) {
         self.inner
-            .draw_box_shadow(transform, rect, brush, radius, std_dev)
+            .draw_box_shadow(transform, shape, offset, spread, std_dev, color, kind)
     }
 }
 

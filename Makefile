@@ -27,9 +27,13 @@ mods: blitz   ## mods/ as gov P-7 has it: every patch described, each base the o
 	@python3 scripts/mods.py check
 	@test "$$(sed -n 's/.*github.com\/DioxusLabs\/blitz", rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | sort -u)" = "$(call base,blitz)" || { echo "mods/blitz/mod.md: base is not the rev Cargo.toml pins" >&2; exit 1; }
 	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "parley"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../parley show $(call base,parley):Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "mods/parley/mod.md: base is not the parley release Blitz pins" >&2; exit 1; }
-	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.toml | sed -n 's/^style = .*github.com\/servo\/stylo", rev = "\([0-9a-f]*\)".*/\1/p')" = "$(call base,stylo)" || { echo "mods/stylo/mod.md: base is not the Stylo rev Blitz pins" >&2; exit 1; }
+	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "stylo"$$/{n;s/^version = "\(.*\)"/\1/p;}')" = "$$(git -C ../stylo show $(call base,stylo):Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" || { echo "mods/stylo/mod.md: base is not the Stylo release Blitz pins" >&2; exit 1; }
 	@test "$(call base,vello_cpu)" = "$(call base,glifo)" || { echo "vello_cpu and glifo must use the same base" >&2; exit 1; }
-	@test "$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n '/^name = "vello_cpu"$$/{n;n;s/.*#\([0-9a-f]*\)"/\1/p;}')" = "$(call base,vello_cpu)" || { echo "vello base is not the revision Blitz pins" >&2; exit 1; }
+	@for crate in vello_cpu glifo; do \
+	  pinned=$$(git -C ../blitz show $(call base,blitz):Cargo.lock | sed -n "/^name = \"$$crate\"$$/{n;s/^version = \"\(.*\)\"/\1/p;}"); \
+	  actual=$$(git -C ../vello_cpu show $(call base,vello_cpu):$$crate/Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1); \
+	  test "$$pinned" = "$$actual" || { echo "$$crate base is not the release Blitz pins" >&2; exit 1; }; \
+	done
 	@scripts/canary.sh base
 
 canary: blitz   ## do the sets in mods/ still apply to upstream's latest?

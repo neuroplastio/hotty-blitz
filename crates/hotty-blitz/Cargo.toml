@@ -28,7 +28,7 @@ anyrender_vello_cpu.workspace = true
 # Color Emoji's sbix). anyrender_vello_cpu brings vello_cpu without `png`,
 # and then every such glyph is dropped: an emoji drew blank. Only the feature
 # is added here; the version is the one anyrender_vello_cpu already brings.
-vello_cpu = { version = "0.3", default-features = false, features = ["png"] }
+vello_cpu = { version = "0.4", default-features = false, features = ["png"] }
 base64.workspace = true
 # `Host::inspect`, a debugging view of an element: not a hotty body.
 serde_json.workspace = true
@@ -36,11 +36,11 @@ keyboard-types = "0.8"
 # The shared monotonic clock and thread ids of trace.rs's stamps (gov R-22):
 # the version the lockfile already holds.
 libc = "0.2"
-stylo_static_prefs = { git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
+stylo_static_prefs = "0.24"
 # Element states (focus, disabled), as Blitz keeps them: the version Blitz brings.
-stylo_dom = { git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
+stylo_dom = "0.24"
 # Computed styles (user-select, SPEC §11), as Blitz computes them: the version Blitz brings.
-stylo = { git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
+stylo = "0.24"
 kurbo = "0.13.1"
 # Which glyphs draw nothing (paint.rs, `Ink`): the version Blitz brings.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }

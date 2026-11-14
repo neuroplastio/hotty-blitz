@@ -17,14 +17,14 @@ hotty = { git = "https://github.com/neuroplastio/hotty-rs", rev = "0241d5f12d0e9
 hotty-blitz = { path = "crates/hotty-blitz" }
 
 # Blitz is pinned by commit. Upgrade in a leg of its own.
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "c27b4ca14158dc457f35c78eb32b8c4fec906b7e", default-features = false, features = ["svg", "system-fonts", "floats", "woff"] }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "c27b4ca14158dc457f35c78eb32b8c4fec906b7e" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "c27b4ca14158dc457f35c78eb32b8c4fec906b7e", default-features = false, features = ["svg", "scrollbars"] }
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "c27b4ca14158dc457f35c78eb32b8c4fec906b7e" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "84dec072bd3c6657ad0950372ffc1dff5c9d82e9", default-features = false, features = ["svg", "system-fonts", "floats", "woff"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "84dec072bd3c6657ad0950372ffc1dff5c9d82e9" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "84dec072bd3c6657ad0950372ffc1dff5c9d82e9", default-features = false, features = ["svg", "scrollbars"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "84dec072bd3c6657ad0950372ffc1dff5c9d82e9" }
 # The version Blitz pins (its workspace), for the fonts a host ships (fonts.rs).
-parley = { version = "0.12", default-features = false, features = ["std"] }
-anyrender = { git = "https://github.com/DioxusLabs/anyrender", rev = "3e7fc16bc0223aaf0f053f1162b36146070e2f75" }
-anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/anyrender", rev = "3e7fc16bc0223aaf0f053f1162b36146070e2f75", default-features = false, features = ["filters", "multithreading"] }
+parley = { version = "0.13", default-features = false, features = ["std"] }
+anyrender = { git = "https://github.com/DioxusLabs/anyrender", rev = "1a314052b7b19cc510606d2d3c6145cf8b9a8a84" }
+anyrender_vello_cpu = { git = "https://github.com/DioxusLabs/anyrender", rev = "1a314052b7b19cc510606d2d3c6145cf8b9a8a84", default-features = false, features = ["filters", "multithreading"] }
 
 base64 = "0.22"
 unicode-segmentation = "1.13"
@@ -49,7 +49,7 @@ stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 # from the release Blitz pins and the patches in mods/parley/): a cluster with
 # emoji presentation takes a colour font before a text font.
 #
-# vello_cpu and glifo use the DioxusLabs vello revision Blitz pins.
+# vello_cpu and glifo use the linebender vello release revision Blitz uses.
 # The vello_cpu workspace carries both sets and their shared vello_common;
 # ../glifo separately materializes the glifo set for checking.
 [patch.crates-io]
@@ -63,11 +63,10 @@ glifo = { path = "../vello_cpu/glifo" }
 vello_common = { path = "../vello_cpu/vello_common" }
 
 # The Stylo fork (../stylo, branch `hotty`, made by scripts/stylo-fork.sh from
-# the commit Blitz pins and the patches in mods/stylo/): Scroll Snap's
+# the release Blitz uses and the patches in mods/stylo/): Scroll Snap's
 # properties parse in Servo mode, behind a pref Blitz sets. Every package Blitz
 # takes from that repository is patched, so that the prefs Blitz sets are the
 # ones Stylo reads.
-[patch."https://github.com/servo/stylo"]
 stylo = { path = "../stylo/style" }
 stylo_traits = { path = "../stylo/style_traits" }
 stylo_atoms = { path = "../stylo/stylo_atoms" }
