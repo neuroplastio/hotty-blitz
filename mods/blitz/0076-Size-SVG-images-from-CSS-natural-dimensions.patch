@@ -1,0 +1,412 @@
+From e07f44f862010390ec6d8aa07e826783cd3544af Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
+Date: Sat, 14 Nov 2026 17:17:49 +0100
+Subject: [PATCH] Size SVG images from CSS natural dimensions
+
+Retain zero and absent dimensions, normalize the tree viewport to the natural size, and let root style lengths override attributes with the pinned usvg parser.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ packages/blitz-dom/src/layout/mod.rs   |  10 +-
+ packages/blitz-dom/src/node/element.rs |  10 +
+ packages/blitz-dom/src/node/svg.rs     | 247 ++++++++++++++++++++++---
+ packages/blitz-dom/src/util.rs         |  26 +++
+ 4 files changed, 270 insertions(+), 23 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index b036a3491..d57688b80 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -539,12 +539,18 @@ impl LayoutPassState<'_> {
+                             ImageData::Svg(svg) => {
+                                 let mut width = svg.intrinsic_width();
+                                 let mut height = svg.intrinsic_height();
++                                let viewbox_ratio = svg.viewbox_aspect_ratio();
++                                let ratio = match (width, height, viewbox_ratio) {
++                                    (Some(width), Some(height), _) => Some(width / height),
++                                    (_, _, Some(ratio)) => Some(ratio),
++                                    _ => None,
++                                };
+                                 // An SVG with no declared dimensions and no viewBox has no
+                                 // intrinsic dimensions per CSS, but usvg still resolves a
+                                 // concrete size; use it in place of the default object size.
+                                 if width.is_none()
+                                     && height.is_none()
+-                                    && svg.viewbox_aspect_ratio().is_none()
++                                    && viewbox_ratio.is_none()
+                                 {
+                                     let size = svg.tree.size();
+                                     width = Some(size.width());
+@@ -554,7 +560,7 @@ impl LayoutPassState<'_> {
+                                     IntrinsicSizes {
+                                         width,
+                                         height,
+-                                        ratio: Some(svg.aspect_ratio()),
++                                        ratio,
+                                     },
+                                     DEFAULT_OBJECT_SIZE,
+                                 )
+diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
+index 3bd619f36..81456ee3b 100644
+--- a/packages/blitz-dom/src/node/element.rs
++++ b/packages/blitz-dom/src/node/element.rs
+@@ -618,6 +618,16 @@ impl ElementData {
+         }
+     }
+ 
++    // Full svg metadata (naturals + viewBox presence), so the
++    // painter can tell a real viewBox from usvg's synthesized size.
++    #[cfg(feature = "svg")]
++    pub fn svg_image_data(&self) -> Option<&SvgImageData> {
++        match self.image_data()? {
++            ImageData::Svg(data) => Some(data),
++            _ => None,
++        }
++    }
++
+     pub fn text_input_data(&self) -> Option<&TextInputData> {
+         match &self.special_data {
+             SpecialElementData::TextInput(data) => Some(data),
+diff --git a/packages/blitz-dom/src/node/svg.rs b/packages/blitz-dom/src/node/svg.rs
+index 3b65ac595..a7e0d65e0 100644
+--- a/packages/blitz-dom/src/node/svg.rs
++++ b/packages/blitz-dom/src/node/svg.rs
+@@ -34,7 +34,19 @@ impl SvgIntrinsicDimensions {
+         let root = doc.root_element();
+ 
+         let parse_length = |name: &str| -> Option<svgtypes::Length> {
+-            root.attribute(name)?.parse::<svgtypes::Length>().ok()
++            // Root CSS beats the equivalent presentation attribute. Read the
++            // last declaration, matching normal declaration-list precedence.
++            let from_style = root.attribute("style").and_then(|style| {
++                style.split(';').rev().find_map(|declaration| {
++                    let (property, value) = declaration.split_once(':')?;
++                    property
++                        .trim()
++                        .eq_ignore_ascii_case(name)
++                        .then(|| value.trim().parse::<svgtypes::Length>().ok())
++                        .flatten()
++                })
++            });
++            from_style.or_else(|| root.attribute(name)?.parse::<svgtypes::Length>().ok())
+         };
+         // Parsed manually rather than via `svgtypes::ViewBox`, which rejects
+         // zero sizes: a zero `viewBox` width/height is distinguished from an
+@@ -106,33 +118,114 @@ impl SvgImageData {
+         };
+         let doc = roxmltree::Document::parse_with_options(text, xml_options)
+             .map_err(usvg::Error::ParsingFailed)?;
+-        let tree = usvg::Tree::from_xmltree(&doc, options)?;
+-        Ok(Self {
++        let intrinsic_dimensions = SvgIntrinsicDimensions::from_xmltree(&doc);
++        // usvg 0.46 uses the presentation attributes for its root viewport
++        // even when the inline style overrides them. Reflect recognized style
++        // lengths into the attributes before usvg builds the tree.
++        let mut canonical = text.to_string();
++        if let Some(style) = doc.root_element().attribute("style") {
++            for name in ["width", "height"] {
++                if let Some(value) = style.split(';').rev().find_map(|declaration| {
++                    let (property, value) = declaration.split_once(':')?;
++                    let value = value.trim();
++                    (property.trim().eq_ignore_ascii_case(name)
++                        && value.parse::<svgtypes::Length>().is_ok())
++                    .then_some(value)
++                }) {
++                    canonical = replace_root_dimension(&canonical, name, value);
++                }
++            }
++        }
++        let canonical_doc = roxmltree::Document::parse_with_options(
++            &canonical,
++            roxmltree::ParsingOptions {
++                allow_dtd: true,
++                ..Default::default()
++            },
++        )
++        .map_err(usvg::Error::ParsingFailed)?;
++        let tree = match usvg::Tree::from_xmltree(&canonical_doc, options) {
++            Ok(tree) => tree,
++            Err(usvg::Error::InvalidSize) => {
++                let stripped = strip_root_dimensions(
++                    &canonical,
++                    intrinsic_dimensions
++                        .width
++                        .is_some_and(|length| length.number <= 0.0),
++                    intrinsic_dimensions
++                        .height
++                        .is_some_and(|length| length.number <= 0.0),
++                );
++                let retry_options = roxmltree::ParsingOptions {
++                    allow_dtd: true,
++                    ..Default::default()
++                };
++                let retry_doc = roxmltree::Document::parse_with_options(&stripped, retry_options)
++                    .map_err(usvg::Error::ParsingFailed)?;
++                usvg::Tree::from_xmltree(&retry_doc, options)?
++            }
++            Err(err) => return Err(err),
++        };
++        let mut image = Self {
+             tree: Arc::new(tree),
+-            intrinsic_dimensions: SvgIntrinsicDimensions::from_xmltree(&doc),
+-        })
++            intrinsic_dimensions,
++        };
++
++        // Keep usvg's viewport aligned with the CSS natural dimensions. usvg
++        // otherwise resolves a missing axis against the viewBox edge, which can
++        // letterbox the tree when it is scaled into the CSS-sized box.
++        let width = image.intrinsic_width();
++        let height = image.intrinsic_height();
++        let ratio = image.viewbox_aspect_ratio();
++        let normalized_size = match (width, height, ratio) {
++            (Some(width), None, ratio) if width > 0.0 => {
++                Some((width, ratio.map(|r| width / r).unwrap_or(150.0)))
++            }
++            (None, Some(height), ratio) if height > 0.0 => {
++                Some((ratio.map(|r| height * r).unwrap_or(300.0), height))
++            }
++            (None, None, None) => Some((300.0, 150.0)),
++            _ => None,
++        };
++        if let Some((width, height)) = normalized_size {
++            let normalized = inject_root_dimensions(&canonical, width, height);
++            let normalized_options = roxmltree::ParsingOptions {
++                allow_dtd: true,
++                ..Default::default()
++            };
++            let normalized_doc =
++                roxmltree::Document::parse_with_options(&normalized, normalized_options)
++                    .map_err(usvg::Error::ParsingFailed)?;
++            image.tree = Arc::new(usvg::Tree::from_xmltree(&normalized_doc, options)?);
++        }
++
++        Ok(image)
+     }
+ 
+     /// The intrinsic width in CSS px, present only when the root `<svg>`
+     /// declared an absolute (non-percentage) `width`.
+     pub fn intrinsic_width(&self) -> Option<f32> {
+         use svgtypes::LengthUnit;
+-        let declared = self
+-            .intrinsic_dimensions
+-            .width
+-            .is_some_and(|len| len.unit != LengthUnit::Percent);
+-        declared.then(|| self.tree.size().width())
++        match self.intrinsic_dimensions.width {
++            Some(len) if len.unit != LengthUnit::Percent && len.number == 0.0 => Some(0.0),
++            Some(len) if len.unit != LengthUnit::Percent && len.number > 0.0 => {
++                Some(self.tree.size().width())
++            }
++            _ => None,
++        }
+     }
+ 
+     /// The intrinsic height in CSS px, present only when the root `<svg>`
+     /// declared an absolute (non-percentage) `height`.
+     pub fn intrinsic_height(&self) -> Option<f32> {
+         use svgtypes::LengthUnit;
+-        let declared = self
+-            .intrinsic_dimensions
+-            .height
+-            .is_some_and(|len| len.unit != LengthUnit::Percent);
+-        declared.then(|| self.tree.size().height())
++        match self.intrinsic_dimensions.height {
++            Some(len) if len.unit != LengthUnit::Percent && len.number == 0.0 => Some(0.0),
++            Some(len) if len.unit != LengthUnit::Percent && len.number > 0.0 => {
++                Some(self.tree.size().height())
++            }
++            _ => None,
++        }
+     }
+ 
+     /// The aspect ratio of the root `<svg>`'s `viewBox`, if it declares one.
+@@ -173,9 +266,14 @@ impl SvgImageData {
+     pub fn resolved_width(&self, container_width: Option<f32>) -> Option<f32> {
+         use svgtypes::LengthUnit;
+         match self.intrinsic_dimensions.width {
+-            Some(len) if len.unit != LengthUnit::Percent => Some(self.tree.size().width()),
+-            Some(len) => container_width.map(|cw| cw * (len.number as f32) / 100.0),
+-            None => None,
++            Some(len) if len.unit != LengthUnit::Percent && len.number == 0.0 => Some(0.0),
++            Some(len) if len.unit != LengthUnit::Percent && len.number > 0.0 => {
++                Some(self.tree.size().width())
++            }
++            Some(len) if len.unit == LengthUnit::Percent => {
++                container_width.map(|cw| cw * (len.number as f32) / 100.0)
++            }
++            _ => None,
+         }
+     }
+ 
+@@ -184,9 +282,14 @@ impl SvgImageData {
+     pub fn resolved_height(&self, container_height: Option<f32>) -> Option<f32> {
+         use svgtypes::LengthUnit;
+         match self.intrinsic_dimensions.height {
+-            Some(len) if len.unit != LengthUnit::Percent => Some(self.tree.size().height()),
+-            Some(len) => container_height.map(|ch| ch * (len.number as f32) / 100.0),
+-            None => None,
++            Some(len) if len.unit != LengthUnit::Percent && len.number == 0.0 => Some(0.0),
++            Some(len) if len.unit != LengthUnit::Percent && len.number > 0.0 => {
++                Some(self.tree.size().height())
++            }
++            Some(len) if len.unit == LengthUnit::Percent => {
++                container_height.map(|ch| ch * (len.number as f32) / 100.0)
++            }
++            _ => None,
+         }
+     }
+ 
+@@ -263,3 +366,105 @@ fn view_box_transform(
+     let ty = (height - view_box.height() * sy) * align_y - view_box.y() * sy;
+     usvg::Transform::from_row(sx, 0.0, 0.0, sy, tx, ty)
+ }
++
++fn strip_root_dimensions(source: &str, strip_width: bool, strip_height: bool) -> String {
++    let Some(root_start) = source.find("<svg") else {
++        return source.to_string();
++    };
++    let Some(rel_end) = source[root_start..].find('>') else {
++        return source.to_string();
++    };
++    let root_end = root_start + rel_end;
++    let mut root = source[root_start..root_end].to_string();
++
++    if strip_width {
++        strip_tag_attr(&mut root, "width");
++    }
++    if strip_height {
++        strip_tag_attr(&mut root, "height");
++    }
++
++    format!("{}{}{}", &source[..root_start], root, &source[root_end..])
++}
++
++fn replace_root_dimension(source: &str, name: &str, value: &str) -> String {
++    let mut source = strip_root_dimensions(source, name == "width", name == "height");
++    if let Some(root_start) = source.find("<svg") {
++        source.insert_str(root_start + 4, &format!(" {name}=\"{value}\""));
++    }
++    source
++}
++
++fn inject_root_dimensions(source: &str, width: f32, height: f32) -> String {
++    let source = strip_root_dimensions(source, true, true);
++    let Some(root_start) = source.find("<svg") else {
++        return source;
++    };
++    let mut out = String::with_capacity(source.len() + 40);
++    out.push_str(&source[..root_start + 4]);
++    out.push_str(&format!(" width=\"{width}\" height=\"{height}\""));
++    out.push_str(&source[root_start + 4..]);
++    out
++}
++
++fn strip_tag_attr(tag: &mut String, name: &str) {
++    let bytes = tag.as_bytes().to_vec();
++    let mut i = 0;
++    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
++        i += 1;
++    }
++    while i < bytes.len() {
++        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
++            i += 1;
++        }
++        let name_start = i;
++        while i < bytes.len()
++            && !bytes[i].is_ascii_whitespace()
++            && bytes[i] != b'='
++            && bytes[i] != b'>'
++        {
++            i += 1;
++        }
++        if i == name_start {
++            break;
++        }
++        let attr_name = &tag[name_start..i];
++        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
++            i += 1;
++        }
++        if i >= bytes.len() || bytes[i] != b'=' {
++            if attr_name.eq_ignore_ascii_case(name) {
++                tag.replace_range(name_start..i, "");
++                return;
++            }
++            continue;
++        }
++        i += 1;
++        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
++            i += 1;
++        }
++        if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
++            let quote = bytes[i];
++            i += 1;
++            while i < bytes.len() && bytes[i] != quote {
++                i += 1;
++            }
++            if i < bytes.len() {
++                i += 1;
++            }
++        } else {
++            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
++                i += 1;
++            }
++        }
++        if attr_name.eq_ignore_ascii_case(name) {
++            let cut_from = if name_start > 0 {
++                name_start - 1
++            } else {
++                name_start
++            };
++            tag.replace_range(cut_from..i, "");
++            return;
++        }
++    }
++}
+diff --git a/packages/blitz-dom/src/util.rs b/packages/blitz-dom/src/util.rs
+index 7dbc8d338..298bcf6f3 100644
+--- a/packages/blitz-dom/src/util.rs
++++ b/packages/blitz-dom/src/util.rs
+@@ -241,6 +241,16 @@ mod svg_tests {
+         assert_eq!(svg.intrinsic_height(), Some(16.0));
+     }
+ 
++    #[test]
++    fn root_style_dimensions_override_attributes() {
++        let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" style="width: 400px; height: 50px" viewBox="0 0 200 100"></svg>"#;
++        let svg = parse_svg_image(src).unwrap();
++        assert_eq!(svg.intrinsic_width(), Some(400.0));
++        assert_eq!(svg.intrinsic_height(), Some(50.0));
++        assert_eq!(svg.tree.size().width(), 400.0);
++        assert_eq!(svg.tree.size().height(), 50.0);
++    }
++
+     #[test]
+     fn percentage_dimensions_are_not_intrinsic() {
+         let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="50%" viewBox="0 0 200 100"></svg>"#;
+@@ -311,6 +321,22 @@ mod svg_tests {
+         assert_eq!(svg.intrinsic_width(), None);
+         assert_eq!(svg.intrinsic_height(), None);
+     }
++
++    #[test]
++    fn zero_dimension_survives_usvg_invalid_size() {
++        let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="0" height="20"></svg>"#;
++        let svg = parse_svg_image(src).unwrap();
++        assert_eq!(svg.intrinsic_width(), Some(0.0));
++        assert_eq!(svg.intrinsic_height(), Some(20.0));
++    }
++
++    #[test]
++    fn negative_dimension_is_not_intrinsic() {
++        let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="-5" height="20"></svg>"#;
++        let svg = parse_svg_image(src).unwrap();
++        assert_eq!(svg.intrinsic_width(), None);
++        assert_eq!(svg.intrinsic_height(), Some(20.0));
++    }
+ }
+ 
+ /// Creates an markup5ever::QualName.
+-- 
+2.56.0
+

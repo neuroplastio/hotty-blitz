@@ -691,6 +691,29 @@ mod taffy_baseline_tests {
     }
 
     #[test]
+    fn svg_image_natural_dimensions_use_css_and_viewbox() {
+        use blitz_dom::node::SvgImageData;
+        let parse = |s: &str| SvgImageData::from_data(s.as_bytes(), &Default::default()).unwrap();
+        let square = parse(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='100' viewBox='0 0 200 200'><rect width='200' height='200'/></svg>",
+        );
+        assert_eq!(square.intrinsic_width(), Some(100.0));
+        assert_eq!(square.intrinsic_height(), None);
+        assert_eq!(
+            (square.tree.size().width(), square.tree.size().height()),
+            (100.0, 100.0)
+        );
+        let zero = parse(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='0' height='100' viewBox='0 0 100 100'/>",
+        );
+        assert_eq!(zero.intrinsic_width(), Some(0.0));
+        let styled = parse(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='100' style='width:50px' viewBox='0 0 100 100'/>",
+        );
+        assert_eq!(styled.intrinsic_width(), Some(50.0));
+    }
+
+    #[test]
     fn wrapping_inline_flex_counts_padding_in_outer_width() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0}.outer{width:300px}.flex{display:inline-flex;flex-wrap:wrap;padding:0 20px}.item{width:150px;height:10px;flex:none}</style><div class=outer><div id=flex class=flex><div class=item></div><div class=item></div><div class=item></div></div></div>",
