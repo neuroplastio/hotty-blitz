@@ -7,3 +7,8 @@ Filters are detected while forwarding a scene. A newly filtered frame is repaint
 `vault/bench/r33/filters.html` provides a filtered page for the measurement;
 use a filter-free corpus page with the same build and an A/A control to check
 that the forwarding check does not move its paint cost.
+
+hotty-perf found the filter-free hard rule held. On 06-effects, rendering the
+filtered damaged area on one thread raised paint p50 from 0.5 to 3.9 ms per
+frame. Accepted for this release; follow up by rasterizing only filter layers
+single-threaded, keeping the rest of a filtered scene parallel.
