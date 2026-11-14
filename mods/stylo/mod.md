@@ -28,3 +28,5 @@ and that the set applies on it; `make canary` applies it to servo/stylo's
 latest `main`. After a change in the fork, export the patches into this
 directory again with `git format-patch --zero-commit`, and `scripts/mods.py
 relink stylo <dir>` points each `.md` at its new file name.
+
+The range-control port also enables the existing `accent-color` property in Servo builds, so form controls can paint an authored accent.

@@ -1,0 +1,31 @@
+From 1fd065beb0f5bebcb0cb5304303e21f9abbecd25 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
+Date: Sat, 14 Nov 2026 17:26:07 +0100
+Subject: [PATCH] Enable accent-color in the Servo build
+
+Expose the existing computed property to the form-control painter.
+
+Co-authored-by: Rui Figueira <rfigueira@cloudflare.com>
+
+Co-authored-by: Ruskin Constant <ruskin@cloudflare.com>
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ style/properties/longhands.toml | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/style/properties/longhands.toml b/style/properties/longhands.toml
+index 3a7f8efb6..d9e464eda 100644
+--- a/style/properties/longhands.toml
++++ b/style/properties/longhands.toml
+@@ -129,7 +129,6 @@ affects = "layout"
+ type = "ColorOrAuto"
+ initial = "generics::color::ColorOrAuto::Auto"
+ struct = "inherited_ui"
+-engine = "gecko"
+ spec = "https://drafts.csswg.org/css-ui-4/#widget-accent"
+ ignored_when_colors_disabled = true
+ affects = "paint"
+-- 
+2.56.0
+

@@ -1,0 +1,555 @@
+From 1078a4efd38ac6d34c443bd02f7d3a3e59ed6ec2 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
+Date: Sat, 14 Nov 2026 17:26:18 +0100
+Subject: [PATCH] Paint range inputs using their value and accent
+
+Seed and update range values, paint the track and thumb, apply computed accent-color to controls, and rewrite legacy thumb colors in place within their CSS group. Closed select arrows are already provided by our select patch.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ packages/blitz-dom/assets/default.css         |   3 +
+ packages/blitz-dom/src/css_compat.rs          | 198 ++++++++++++++++++
+ packages/blitz-dom/src/document.rs            |   4 +-
+ packages/blitz-dom/src/layout/construct.rs    |  15 ++
+ packages/blitz-dom/src/lib.rs                 |   1 +
+ packages/blitz-dom/src/mutator.rs             |  11 +
+ packages/blitz-dom/src/net.rs                 |  10 +-
+ packages/blitz-dom/src/node/element.rs        |  36 ++++
+ .../blitz-paint/src/render/form_controls.rs   |  99 ++++++++-
+ 9 files changed, 368 insertions(+), 9 deletions(-)
+ create mode 100644 packages/blitz-dom/src/css_compat.rs
+
+diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
+index 23a289b83..818a7bacc 100644
+--- a/packages/blitz-dom/assets/default.css
++++ b/packages/blitz-dom/assets/default.css
+@@ -1214,3 +1214,6 @@ slot {
+         background-color: transparent;
+     }
+ }
++
++/* Range sliders draw their own track and thumb. */
++input[type="range"] { border: none; padding: 0; background-color: transparent; width: 129px; height: 1.3em; }
+diff --git a/packages/blitz-dom/src/css_compat.rs b/packages/blitz-dom/src/css_compat.rs
+new file mode 100644
+index 000000000..40485d150
+--- /dev/null
++++ b/packages/blitz-dom/src/css_compat.rs
+@@ -0,0 +1,198 @@
++//! Lift legacy slider-thumb background colors into `accent-color` rules.
++//! Synthesized rules stay next to the original, including inside conditional
++//! groups, so media queries and later declarations keep their ordering.
++
++const THUMB_PSEUDOS: [&str; 2] = ["::-webkit-slider-thumb", "::-moz-range-thumb"];
++
++/// Returns `None` when the sheet needs no rewrite (fast path: one
++/// substring scan), otherwise the original CSS with synthesized
++/// `accent-color` rules appended.
++pub fn rewrite_legacy_widget_pseudo_rules(css: &str) -> Option<String> {
++    if !THUMB_PSEUDOS.iter().any(|p| css.contains(p)) {
++        return None;
++    }
++    let bytes = css.as_bytes();
++    let mut out = String::new();
++    let mut last_copied = 0;
++    let mut seg_start = 0;
++    let mut i = 0;
++    while i < bytes.len() {
++        match bytes[i] {
++            b'\'' | b'"' => {
++                i = skip_quoted(bytes, i);
++            }
++            b'/' if bytes.get(i + 1) == Some(&b'*') => {
++                i = skip_comment(bytes, i);
++            }
++            b'{' => {
++                let selector = css[seg_start..i].trim();
++                if selector.starts_with('@') {
++                    seg_start = i + 1;
++                    i += 1;
++                    continue;
++                }
++                let body_start = i + 1;
++                i = body_start;
++                while i < bytes.len() && bytes[i] != b'}' {
++                    if matches!(bytes[i], b'\'' | b'"') {
++                        i = skip_quoted(bytes, i);
++                    } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
++                        i = skip_comment(bytes, i);
++                    } else {
++                        i += 1;
++                    }
++                }
++                if i == bytes.len() {
++                    break;
++                }
++                let mut extra = String::new();
++                process_rule(selector, &css[body_start..i], &mut extra);
++                i += 1;
++                if !extra.is_empty() {
++                    out.push_str(&css[last_copied..i]);
++                    out.push_str(&extra);
++                    last_copied = i;
++                }
++                seg_start = i;
++            }
++            b'}' | b';' => {
++                seg_start = i + 1;
++                i += 1;
++            }
++            _ => i += 1,
++        }
++    }
++    if last_copied == 0 {
++        return None;
++    }
++    out.push_str(&css[last_copied..]);
++    Some(out)
++}
++
++fn skip_quoted(bytes: &[u8], start: usize) -> usize {
++    let quote = bytes[start];
++    let mut i = start + 1;
++    while i < bytes.len() {
++        if bytes[i] == b'\\' {
++            i = (i + 2).min(bytes.len());
++        } else if bytes[i] == quote {
++            return i + 1;
++        } else {
++            i += 1;
++        }
++    }
++    i
++}
++
++fn skip_comment(bytes: &[u8], start: usize) -> usize {
++    let mut i = start + 2;
++    while i + 1 < bytes.len() {
++        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
++            return i + 2;
++        }
++        i += 1;
++    }
++    bytes.len()
++}
++
++fn process_rule(selector_list: &str, body: &str, extra: &mut String) {
++    // Collect the selectors that target a thumb pseudo, stripped of
++    // the pseudo itself. `.form-range:focus::-webkit-slider-thumb`
++    // keeps its `:focus`; the cascade sorts that out.
++    let mut stripped: Vec<String> = Vec::new();
++    for sel in selector_list.split(',') {
++        let sel = sel.trim();
++        for pseudo in THUMB_PSEUDOS {
++            if let Some(pos) = sel.find(pseudo) {
++                let mut s = String::with_capacity(sel.len());
++                s.push_str(&sel[..pos]);
++                s.push_str(&sel[pos + pseudo.len()..]);
++                let s = s.trim().to_string();
++                if !s.is_empty() {
++                    stripped.push(s);
++                }
++                break;
++            }
++        }
++    }
++    if stripped.is_empty() {
++        return;
++    }
++
++    let Some(color) = extract_background_color(body) else {
++        return;
++    };
++
++    extra.push_str("\n");
++    extra.push_str(&stripped.join(", "));
++    extra.push_str(" { accent-color: ");
++    extra.push_str(color);
++    extra.push_str("; }");
++}
++
++/// Pull a usable color out of the rule body: `background-color: X`
++/// wins; a `background: X` shorthand is accepted only when its value
++/// is a single token (no url()/gradients/position syntax).
++fn extract_background_color(body: &str) -> Option<&str> {
++    let mut shorthand: Option<&str> = None;
++    for decl in body.split(';') {
++        let Some((prop, value)) = decl.split_once(':') else {
++            continue;
++        };
++        let prop = prop.trim();
++        let value = value.trim().trim_end_matches("!important").trim();
++        if value.is_empty() {
++            continue;
++        }
++        if prop.eq_ignore_ascii_case("background-color") {
++            return Some(value);
++        }
++        if prop.eq_ignore_ascii_case("background")
++            && !value.contains("url(")
++            && !value.contains("gradient")
++            && !value.contains(' ')
++        {
++            shorthand = Some(value);
++        }
++    }
++    shorthand
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn rewrites_bootstrap_thumb_rule() {
++        let css = ".form-range::-webkit-slider-thumb{width:1rem;background-color:navy;border:0}";
++        let out = rewrite_legacy_widget_pseudo_rules(css).unwrap();
++        assert!(out.contains(".form-range { accent-color: navy; }"));
++        assert!(out.starts_with(css));
++    }
++
++    #[test]
++    fn keeps_focus_variant_and_skips_no_color() {
++        let css = ".form-range:focus::-webkit-slider-thumb{box-shadow:0 0 0 1px #fff}";
++        assert!(rewrite_legacy_widget_pseudo_rules(css).is_none());
++    }
++
++    #[test]
++    fn handles_moz_and_media_nesting() {
++        let css = "@media (min-width: 600px) { .r::-moz-range-thumb { background: #123456 } }";
++        let out = rewrite_legacy_widget_pseudo_rules(css).unwrap();
++        assert!(out.contains(".r { accent-color: #123456; }"));
++        assert!(out.find("accent-color").unwrap() < out.rfind('}').unwrap());
++    }
++
++    #[test]
++    fn fast_path_no_pseudo() {
++        assert!(rewrite_legacy_widget_pseudo_rules("body{color:red}").is_none());
++    }
++
++    #[test]
++    fn important_is_stripped_from_value() {
++        let css = ".r::-webkit-slider-thumb{background-color: rebeccapurple !important;}";
++        let out = rewrite_legacy_widget_pseudo_rules(css).unwrap();
++        assert!(out.contains(".r { accent-color: rebeccapurple; }"));
++    }
++}
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index df165280e..af42b20c3 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1515,8 +1515,10 @@ impl BaseDocument {
+         media: Option<&str>,
+     ) -> DocumentStyleSheet {
+         let list = self.parse_stylesheet_media(origin, media);
++        let css = css.as_ref();
++        let rewritten = crate::css_compat::rewrite_legacy_widget_pseudo_rules(css);
+         let data = Stylesheet::from_str(
+-            css.as_ref(),
++            rewritten.as_deref().unwrap_or(css),
+             self.url.url_extra_data(),
+             origin,
+             ServoArc::new(self.guard.wrap(list)),
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index 573e4ecf9..885b46f01 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -556,6 +556,21 @@ fn collect_layout_children_with_wrap(
+             } else if matches!(type_attr, Some("checkbox" | "radio")) {
+                 create_checkbox_input(doc, container_node_id);
+                 return;
++            } else if matches!(type_attr, Some("range")) {
++                // Seed the slider's live value from the
++                // value/min/max attributes (HTML default: midpoint
++                // of the range when no value attribute). Construct
++                // re-runs on every layout pass; keep an existing
++                // RangeInput (it carries the live IDL value).
++                let el = doc.nodes[container_node_id]
++                    .data
++                    .downcast_element_mut()
++                    .unwrap();
++                if !matches!(el.special_data, SpecialElementData::RangeInput(_)) {
++                    el.special_data = SpecialElementData::RangeInput(0.0);
++                    el.reset_range_input();
++                }
++                return;
+             }
+         }
+ 
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index 037d3f333..7c2a937ae 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -40,6 +40,7 @@ mod document;
+ pub mod node;
+ 
+ mod config;
++mod css_compat;
+ /// CSSOM stylesheet access (`document.styleSheets`, `CSSStyleSheet`, `CSSRule`)
+ mod cssom;
+ mod debug;
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index dc1b9babd..63c6b5280 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -406,6 +406,11 @@ impl DocumentMutator<'_> {
+             element.flush_presentation_attributes(&self.doc.guard, &self.doc.url.url_extra_data());
+         }
+ 
++        if matches!(name.local.as_ref(), "value" | "min" | "max") && element.reset_range_input() {
++            node.insert_damage(ONLY_RELAYOUT);
++            return;
++        }
++
+         let tag = &element.name.local;
+         let attr = &name.local;
+ 
+@@ -595,6 +600,11 @@ impl DocumentMutator<'_> {
+             element.flush_presentation_attributes(&self.doc.guard, &self.doc.url.url_extra_data());
+         }
+ 
++        if matches!(name.local.as_ref(), "value" | "min" | "max") && element.reset_range_input() {
++            node.insert_damage(ONLY_RELAYOUT);
++            return;
++        }
++
+         // Update text input value
+         if name.local == local_name!("value") {
+             if let Some(input_data) = element.text_input_data_mut() {
+@@ -1486,6 +1496,7 @@ impl<'doc> DocumentMutator<'doc> {
+                 SpecialElementData::TableRoot(_) => {}
+                 SpecialElementData::TextInput(_) => {}
+                 SpecialElementData::CheckboxInput(_) => {}
++                SpecialElementData::RangeInput(_) => {}
+                 #[cfg(feature = "file-input")]
+                 SpecialElementData::FileInput(_) => {}
+                 SpecialElementData::None => {}
+diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
+index 93e0e08e4..6bf2c68df 100644
+--- a/packages/blitz-dom/src/net.rs
++++ b/packages/blitz-dom/src/net.rs
+@@ -159,8 +159,11 @@ impl NetHandler for ResourceHandler<StylesheetHandler> {
+         // NOTE(Nico): I don't *think* external stylesheets should have HTML entities escaped
+         // let escaped_css = html_escape::decode_html_entities(css);
+ 
++        let rewritten = std::str::from_utf8(&bytes)
++            .ok()
++            .and_then(crate::css_compat::rewrite_legacy_widget_pseudo_rules);
+         let sheet = Stylesheet::from_bytes(
+-            &bytes,
++            rewritten.as_deref().map(str::as_bytes).unwrap_or(&bytes),
+             self.data.source_url.clone().into(),
+             None,
+             None,
+@@ -277,8 +280,11 @@ impl NetHandler for ResourceHandler<NestedStylesheetHandler> {
+         // NOTE(Nico): I don't *think* external stylesheets should have HTML entities escaped
+         // let escaped_css = html_escape::decode_html_entities(css);
+ 
++        let rewritten = std::str::from_utf8(&bytes)
++            .ok()
++            .and_then(crate::css_compat::rewrite_legacy_widget_pseudo_rules);
+         let sheet = ServoArc::new(Stylesheet::from_bytes(
+-            &bytes,
++            rewritten.as_deref().map(str::as_bytes).unwrap_or(&bytes),
+             UrlExtraData(self.data.url.clone()),
+             None,
+             None,
+diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
+index 81456ee3b..9869d6273 100644
+--- a/packages/blitz-dom/src/node/element.rs
++++ b/packages/blitz-dom/src/node/element.rs
+@@ -393,6 +393,12 @@ pub enum SpecialElementData {
+     TextInput(TextInputData),
+     /// Checkbox checked state
+     CheckboxInput(bool),
++    /// Live IDL value of an `<input type=range>` slider.
++    /// The paint layer combines it with the min/max/step attributes
++    /// to place the thumb; JS updates it via the setInputText wasm
++    /// entry (same IDL-vs-attribute decoupling as TextInput's
++    /// value_override).
++    RangeInput(f64),
+     /// Selected files
+     #[cfg(feature = "file-input")]
+     FileInput(FileData),
+@@ -413,6 +419,7 @@ impl Clone for SpecialElementData {
+             Self::TableRoot(data) => Self::TableRoot(data.clone()),
+             Self::TextInput(data) => Self::TextInput(data.clone()),
+             Self::CheckboxInput(data) => Self::CheckboxInput(*data),
++            Self::RangeInput(data) => Self::RangeInput(*data),
+             #[cfg(feature = "file-input")]
+             Self::FileInput(data) => Self::FileInput(data.clone()),
+             Self::None => Self::None,
+@@ -665,6 +672,34 @@ impl ElementData {
+         }
+     }
+ 
++    /// Live value of an `<input type=range>`, when the
++    /// special data has been initialized (layout construct pass).
++    pub fn range_input_value(&self) -> Option<f64> {
++        match self.special_data {
++            SpecialElementData::RangeInput(value) => Some(value),
++            _ => None,
++        }
++    }
++
++    /// Refresh a slider from its HTML attributes after a host delta.
++    pub(crate) fn reset_range_input(&mut self) -> bool {
++        if !matches!(self.special_data, SpecialElementData::RangeInput(_)) {
++            return false;
++        }
++        let parse = |name| {
++            self.attr(name)
++                .and_then(|v| v.parse::<f64>().ok())
++                .filter(|n| n.is_finite())
++        };
++        let min = parse(local_name!("min")).unwrap_or(0.0);
++        let max = parse(local_name!("max")).unwrap_or(100.0).max(min);
++        let value = parse(local_name!("value"))
++            .unwrap_or(min / 2.0 + max / 2.0)
++            .clamp(min, max);
++        self.special_data = SpecialElementData::RangeInput(value);
++        true
++    }
++
+     pub fn checkbox_input_checked_mut(&mut self) -> Option<&mut bool> {
+         match self.special_data {
+             SpecialElementData::CheckboxInput(ref mut checked) => Some(checked),
+@@ -1016,6 +1051,7 @@ impl std::fmt::Debug for SpecialElementData {
+             SpecialElementData::TableRoot(_) => f.write_str("NodeSpecificData::TableRoot"),
+             SpecialElementData::TextInput(_) => f.write_str("NodeSpecificData::TextInput"),
+             SpecialElementData::CheckboxInput(_) => f.write_str("NodeSpecificData::CheckboxInput"),
++            SpecialElementData::RangeInput(_) => f.write_str("NodeSpecificData::RangeInput"),
+             #[cfg(feature = "file-input")]
+             SpecialElementData::FileInput(_) => f.write_str("NodeSpecificData::FileInput"),
+             SpecialElementData::None => f.write_str("NodeSpecificData::None"),
+diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-paint/src/render/form_controls.rs
+index 8803a98a1..519f7fe02 100644
+--- a/packages/blitz-paint/src/render/form_controls.rs
++++ b/packages/blitz-paint/src/render/form_controls.rs
+@@ -1,6 +1,7 @@
+ use super::ElementCx;
+-use crate::color::Color;
++use crate::color::{Color, ToColorColor};
+ use anyrender::PaintScene;
++use blitz_dom::CopyStyleGetters;
+ use blitz_dom::local_name;
+ use blitz_traits::shell::ColorScheme;
+ use kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke};
+@@ -11,14 +12,52 @@ impl ElementCx<'_, '_> {
+         if self.element.name.local != local_name!("input") {
+             return;
+         }
++        let type_attr = self.node.attr(local_name!("type"));
++        let scheme = self.context.dom.used_color_scheme(&self.style);
++        let disabled = self.element.is_disabled();
++        let mut colors = ControlColors::new(scheme, disabled);
++        if !disabled {
++            if let style::values::computed::ColorOrAuto::Color(color) =
++                &self.style.get_inherited_ui().accent_color
++            {
++                colors.accent = color
++                    .resolve_to_absolute(&self.style.clone_color())
++                    .as_srgb_color();
++            }
++        }
++        if let Some(value) = self.element.range_input_value() {
++            let parse = |name| {
++                self.node
++                    .attr(name)
++                    .and_then(|v: &str| v.parse::<f64>().ok())
++                    .filter(|n| n.is_finite())
++            };
++            let min = parse(local_name!("min")).unwrap_or(0.0);
++            let max = parse(local_name!("max")).unwrap_or(100.0).max(min);
++            let fraction = if max > min {
++                let span = max - min;
++                if span.is_finite() {
++                    ((value - min) / span).clamp(0.0, 1.0)
++                } else {
++                    ((value / 2.0 - min / 2.0) / (max / 2.0 - min / 2.0)).clamp(0.0, 1.0)
++                }
++            } else {
++                0.5
++            };
++            draw_range_slider(
++                scene,
++                fraction,
++                self.frame.border_box,
++                self.transform,
++                colors.accent,
++                self.scale,
++            );
++            return;
++        }
+         let Some(checked) = self.element.checkbox_input_checked() else {
+             return;
+         };
+ 
+-        let type_attr = self.node.attr(local_name!("type"));
+-        let scheme = self.context.dom.used_color_scheme(&self.style);
+-        let colors = ControlColors::new(scheme, self.element.is_disabled());
+-
+         // The control is a square, centred in the border box.
+         let frame = self.frame.border_box;
+         let side = frame.width().min(frame.height());
+@@ -36,8 +75,56 @@ impl ElementCx<'_, '_> {
+     }
+ }
+ 
++/// Draw the track and thumb of a horizontal range control.
++fn draw_range_slider(
++    scene: &mut impl PaintScene,
++    fraction: f64,
++    frame: Rect,
++    transform: Affine,
++    accent: Color,
++    scale: f64,
++) {
++    let (width, height) = (frame.width(), frame.height());
++    if width <= 0.0 || height <= 0.0 {
++        return;
++    }
++    let cy = frame.y0 + height / 2.0;
++    let radius = (height * 0.5).min(width * 0.25).max(2.0 * scale) * 0.8;
++    let track_h = (height * 0.25).clamp(2.0 * scale, 6.0 * scale);
++    let thumb_x = frame.x0 + radius + (width - 2.0 * radius).max(0.0) * fraction;
++    let track = RoundedRect::new(
++        frame.x0,
++        cy - track_h / 2.0,
++        frame.x1,
++        cy + track_h / 2.0,
++        track_h / 2.0,
++    );
++    let filled = RoundedRect::new(
++        frame.x0,
++        cy - track_h / 2.0,
++        thumb_x,
++        cy + track_h / 2.0,
++        track_h / 2.0,
++    );
++    scene.fill(
++        Fill::NonZero,
++        transform,
++        Color::from_rgb8(222, 226, 230),
++        None,
++        &track,
++    );
++    scene.fill(Fill::NonZero, transform, accent, None, &filled);
++    scene.fill(
++        Fill::NonZero,
++        transform,
++        accent,
++        None,
++        &Circle::new(Point::new(thumb_x, cy), radius),
++    );
++}
++
+ /// The colors of a checkbox or radio button in a color scheme, those Chromium
+-/// draws with `accent-color: auto` (Stylo's Servo build has no `accent-color`).
++/// draws with `accent-color: auto`.
+ struct ControlColors {
+     /// The fill of a checked control, and its border.
+     accent: Color,
+-- 
+2.56.0
+
