@@ -1,0 +1,268 @@
+From bd36029174b437b38e9e22371dcc4922cc709fdc Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 16:18:19 +0100
+Subject: [PATCH] Resolve inline SVG references across the document
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Track external sprite targets so an embedder can rebuild only the SVGs affected by a source mutation. Preserve currentColor at each use site.
+
+Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
+---
+ packages/blitz-dom/src/document.rs         |  67 ++++++++++++
+ packages/blitz-dom/src/layout/construct.rs | 113 ++++++++++++++++++++-
+ packages/blitz-dom/src/node/svg_source.rs  |   7 ++
+ 3 files changed, 186 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 36a9c1c48..df165280e 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -334,6 +334,9 @@ pub struct BaseDocument {
+     /// May contain multiple nodes for the same id: `get_element_by_id`
+     /// returns the first in tree order.
+     pub(crate) nodes_to_id: HashMap<String, SmallVec<[NodeId; 1]>>,
++    /// External SVG consumer -> referenced IDs and their resolved target nodes.
++    #[cfg(feature = "svg")]
++    pub(crate) external_svg_targets: HashMap<NodeId, HashMap<String, Option<NodeId>>>,
+     /// Map of `<style>` and `<link>` node IDs to their associated stylesheet
+     pub(crate) nodes_to_stylesheet: BTreeMap<NodeId, DocumentStyleSheet>,
+     /// Incremented whenever `nodes_to_stylesheet` changes (a stylesheet is
+@@ -521,6 +524,8 @@ impl BaseDocument {
+             snapshots,
+             relative_dom_mutation: Cell::new(false),
+             nodes_to_id,
++            #[cfg(feature = "svg")]
++            external_svg_targets: HashMap::new(),
+             viewport,
+             media_type,
+             pending_device_changes: DeviceChanges::empty(),
+@@ -1030,6 +1035,66 @@ impl BaseDocument {
+             .is_some_and(|body| body.id == node_id)
+     }
+ 
++    /// SVGs that use a sprite containing `changed`; include targets below
++    /// `changed` when that whole subtree is about to be removed or replaced.
++    #[cfg(feature = "svg")]
++    pub fn external_svg_dependents(
++        &self,
++        changed: NodeId,
++        include_descendants: bool,
++    ) -> Vec<NodeId> {
++        let is_under = |mut node: NodeId, ancestor: NodeId| loop {
++            if node == ancestor {
++                return true;
++            }
++            let Some(parent) = self.nodes.get(node).and_then(|n| n.parent) else {
++                return false;
++            };
++            node = parent;
++        };
++        self.external_svg_targets
++            .iter()
++            .filter_map(|(&consumer, targets)| {
++                self.nodes
++                    .get(consumer)
++                    .filter(|n| n.flags.is_in_document())?;
++                targets
++                    .values()
++                    .flatten()
++                    .any(|&target| {
++                        is_under(changed, target)
++                            || (include_descendants && is_under(target, changed))
++                    })
++                    .then_some(consumer)
++            })
++            .collect()
++    }
++
++    /// SVGs whose referenced IDs now resolve to different nodes.
++    #[cfg(feature = "svg")]
++    pub fn external_svg_changed_bindings(&self) -> Vec<NodeId> {
++        self.external_svg_targets
++            .iter()
++            .filter_map(|(&consumer, targets)| {
++                self.nodes
++                    .get(consumer)
++                    .filter(|n| n.flags.is_in_document())?;
++                targets
++                    .iter()
++                    .any(|(id, old)| self.get_element_by_id(id) != *old)
++                    .then_some(consumer)
++            })
++            .collect()
++    }
++
++    /// Reconstruct an inline SVG whose external sprite changed.
++    #[cfg(feature = "svg")]
++    pub fn invalidate_external_svg(&mut self, consumer: NodeId) {
++        if let Some(node) = self.nodes.get_mut(consumer) {
++            node.insert_damage(ALL_DAMAGE);
++        }
++    }
++
+     pub fn create_node(&mut self, node_data: NodeData) -> NodeId {
+         let tree_ptr = self.nodes.as_mut() as *mut NodeTree;
+         let guard = self.guard.clone();
+@@ -1047,6 +1112,8 @@ impl BaseDocument {
+     /// it so that stale NodeIds are never dereferenced after the slot is freed.
+     pub(crate) fn remove_node_from_tree(&mut self, node_id: NodeId) -> Option<Node> {
+         self.clear_interaction_state_for_removed_node(node_id);
++        #[cfg(feature = "svg")]
++        self.external_svg_targets.remove(&node_id);
+         // Layout children can outlive anonymous blocks and other layout parents.
+         let laid_out: Vec<NodeId> = self
+             .nodes
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index a337648d2..573e4ecf9 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -37,6 +37,111 @@ use super::{
+ 
+ const DUMMY_NAME: QualName = qual_name!("div", html);
+ 
++// Elements whose fragment ref pulls another element INTO the render tree.
++// `<a href="#x">` is a link, not a resource ref, so it must not hoist.
++#[cfg(feature = "svg")]
++const FRAGMENT_REF_ELEMENTS: [&str; 4] = ["<use", "<image", "<feImage", "<feimage"];
++
++// Fragment refs (`href="#id"` / `xlink:href="#id"`) in serializer output.
++// Only ever run on write_outer_html output, so `href="#` is canonical.
++#[cfg(feature = "svg")]
++fn collect_fragment_refs(html: &str, out: &mut Vec<String>) {
++    for tag in FRAGMENT_REF_ELEMENTS {
++        let mut rest = html;
++        while let Some(pos) = rest.find(tag) {
++            rest = &rest[pos + tag.len()..];
++            // A tag-name boundary must follow, else `<uses>`/`<imagexyz>`
++            // (any element sharing the prefix) would match too.
++            let at_boundary = match rest.chars().next() {
++                Some(c) => c.is_whitespace() || c == '>' || c == '/',
++                None => false,
++            };
++            // Scan the opening TAG only: a ref in a later sibling belongs
++            // to that element, and gets its own iteration of this loop.
++            let Some(tag_end) = rest.find('>') else { break };
++            if at_boundary {
++                if let Some(h) = rest[..tag_end].find("href=\"#") {
++                    let after = &rest[h + 7..tag_end];
++                    if let Some(end) = after.find('"') {
++                        if end > 0 && end <= 256 {
++                            out.push(after[..end].to_string());
++                        }
++                    }
++                }
++            }
++            rest = &rest[tag_end..];
++        }
++    }
++}
++
++// Ids the serializer has already emitted. Indexed once per chunk so the
++// hoist loop tests membership in O(1) instead of rescanning the buffer.
++#[cfg(feature = "svg")]
++fn collect_ids(html: &str, out: &mut std::collections::HashSet<String>) {
++    let mut rest = html;
++    while let Some(pos) = rest.find(" id=\"") {
++        rest = &rest[pos + 5..];
++        let Some(end) = rest.find('"') else { break };
++        out.insert(rest[..end].to_string());
++        rest = &rest[end..];
++    }
++}
++
++// SVG sprite support: hoist same-document `<use>` targets that live
++// outside this <svg> into an injected <defs> block before usvg parse.
++#[cfg(feature = "svg")]
++fn inline_external_fragment_refs(
++    doc: &BaseDocument,
++    outer_html: &mut String,
++) -> std::collections::HashMap<String, Option<NodeId>> {
++    let mut targets = std::collections::HashMap::new();
++    let mut queue = Vec::new();
++    collect_fragment_refs(outer_html, &mut queue);
++    if queue.is_empty() {
++        return targets;
++    }
++
++    // Ids usvg will already see: the subtree's own, plus each hoisted
++    // chunk's (a hoisted subtree can define ids nothing queued asked for).
++    let mut present = std::collections::HashSet::new();
++    collect_ids(outer_html, &mut present);
++
++    let mut seen = std::collections::HashSet::new();
++    let mut defs = String::new();
++    while let Some(id) = queue.pop() {
++        if defs.len() > 512 * 1024 {
++            break; // runaway guard: pathological ref chains stop growing
++        }
++        if !seen.insert(id.clone()) {
++            continue;
++        }
++        if present.contains(&id) {
++            continue;
++        }
++        let target_id = doc.get_element_by_id(&id);
++        targets.insert(id.clone(), target_id);
++        let Some(node) = target_id.and_then(|target_id| doc.get_node(target_id)) else {
++            continue;
++        };
++        // Verbatim (currentColor not baked): <use> content inherits color
++        // from the referencing site, not the sprite's hidden context.
++        let before = defs.len();
++        node.write_outer_html(&mut defs);
++        collect_fragment_refs(&defs[before..], &mut queue);
++        collect_ids(&defs[before..], &mut present);
++    }
++    if defs.is_empty() {
++        return targets;
++    }
++
++    // Self-closing roots have no children hence no refs, so the first
++    // `>` here is always the end of the root <svg>'s opening tag.
++    if let Some(open_end) = outer_html.find('>') {
++        outer_html.insert_str(open_end + 1, &format!("<defs>{defs}</defs>"));
++    }
++    targets
++}
++
+ #[derive(Clone)]
+ pub(crate) struct ConstructionTask {
+     pub(crate) node_id: NodeId,
+@@ -456,7 +561,13 @@ fn collect_layout_children_with_wrap(
+ 
+         #[cfg(feature = "svg")]
+         if matches!(tag_name, "svg") {
+-            let outer_html = doc.get_node(container_node_id).unwrap().svg_source();
++            let mut outer_html = doc.get_node(container_node_id).unwrap().svg_source();
++            let targets = inline_external_fragment_refs(doc, &mut outer_html);
++            if targets.is_empty() {
++                doc.external_svg_targets.remove(&container_node_id);
++            } else {
++                doc.external_svg_targets.insert(container_node_id, targets);
++            }
+ 
+             // Remove contruction damage from subtree
+             doc.iter_subtree_mut(container_node_id, |id: NodeId, doc: &mut BaseDocument| {
+diff --git a/packages/blitz-dom/src/node/svg_source.rs b/packages/blitz-dom/src/node/svg_source.rs
+index 18fea5990..7aea3263d 100644
+--- a/packages/blitz-dom/src/node/svg_source.rs
++++ b/packages/blitz-dom/src/node/svg_source.rs
+@@ -197,6 +197,13 @@ impl Node {
+             }
+             _ => {}
+         }
++        // A referenced sprite subtree is serialized without its original
++        // computed colour: currentColor must inherit from this use site.
++        if data.name.local == local_name!("use")
++            && let Some(color) = &current_color
++        {
++            style.push_str(&format!(";color:{color}"));
++        }
+         if !style.is_empty() {
+             out.push_str(" style=\"");
+             encode_quoted_attribute_to_string(style.trim_start_matches(';'), out);
+-- 
+2.56.0
+

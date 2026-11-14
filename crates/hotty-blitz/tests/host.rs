@@ -4378,3 +4378,49 @@ fn svg_path_length_rescales_dash_pattern() {
     assert_ne!(pixel(&h, "x", 15, 10), [255, 0, 0]);
     assert_eq!(pixel(&h, "x", 25, 10), [255, 0, 0]);
 }
+
+#[test]
+fn inline_svg_use_resolves_external_sprite_in_document() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0}</style><svg style='display:none' xmlns='http://www.w3.org/2000/svg'><symbol id='square' viewBox='0 0 20 20'><rect width='20' height='20' fill='currentColor'/></symbol></svg><svg width='20' height='20' style='color:red' xmlns='http://www.w3.org/2000/svg'><use href='#square' width='20' height='20'/></svg>",
+        "4",
+    );
+    assert_eq!(pixel(&h, "x", 10, 10), [255, 0, 0]);
+}
+
+#[test]
+fn inline_svg_sprite_chains_keep_each_use_color() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0}</style><svg style='display:none;color:green' xmlns='http://www.w3.org/2000/svg'><symbol id='square' viewBox='0 0 20 20'><rect width='20' height='20' fill='currentColor'/></symbol><symbol id='alias' viewBox='0 0 20 20'><use href='#square' width='20' height='20'/></symbol></svg><svg width='40' height='20' xmlns='http://www.w3.org/2000/svg'><use href='#alias' width='20' height='20' style='color:red'/><use href='#alias' x='20' width='20' height='20' style='color:blue'/></svg>",
+        "4",
+    );
+    assert_eq!(pixel(&h, "x", 10, 10), [255, 0, 0]);
+    assert_eq!(pixel(&h, "x", 30, 10), [0, 0, 255]);
+}
+
+#[test]
+fn inline_svg_sprite_updates_when_external_definition_changes() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0}</style><svg style='display:none' xmlns='http://www.w3.org/2000/svg'><symbol id='square' viewBox='0 0 20 20'><rect id='shape' width='20' height='20' fill='red'/></symbol></svg><svg width='20' height='20' xmlns='http://www.w3.org/2000/svg'><use href='#square' width='20' height='20'/></svg>",
+        "4",
+    );
+    assert_eq!(pixel(&h, "x", 10, 10), [255, 0, 0]);
+    h.handle(&op_cmd(
+        &[("op", "attr"), ("t", "shape"), ("k", "fill")],
+        "blue",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 255]);
+}

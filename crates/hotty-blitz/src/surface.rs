@@ -1535,6 +1535,14 @@ impl Surface {
             ..
         } = self;
         let mut gone = Vec::new();
+        let mut sprite_consumers = std::collections::HashSet::new();
+        if let Some(changed) = t.and_then(|id| doc.get_element_by_id(id)) {
+            let replaces_subtree = matches!(op, "remove" | "text" | "morph" | "");
+            sprite_consumers.extend(doc.external_svg_dependents(changed, replaces_subtree));
+        }
+        for &id in &sprite_consumers {
+            damage.touch(doc, id, scale);
+        }
         let res = delta::apply(
             doc,
             parse_doc,
@@ -1542,9 +1550,37 @@ impl Surface {
             t,
             k,
             payload,
-            &mut |d, id| damage.touch(d, id, scale),
+            &mut |d, id| {
+                // A top-level morph has no target; inspect the nodes it changes.
+                if t.is_none() && matches!(op, "morph" | "") {
+                    for consumer in d.external_svg_dependents(id, false) {
+                        if sprite_consumers.insert(consumer) {
+                            damage.touch(d, consumer, scale);
+                        }
+                    }
+                }
+                damage.touch(d, id, scale);
+            },
             &mut gone,
         );
+        if res.is_ok() {
+            // Targets may be inserted, removed or renamed, changing an ID's
+            // binding even when there was no old target to walk above.
+            let may_change_ids = matches!(
+                op,
+                "append" | "prepend" | "before" | "after" | "remove" | "morph" | "text" | ""
+            ) || (matches!(op, "attr" | "unattr") && k == Some("id"));
+            if may_change_ids {
+                for consumer in doc.external_svg_changed_bindings() {
+                    if sprite_consumers.insert(consumer) {
+                        damage.touch(doc, consumer, scale);
+                    }
+                }
+            }
+            for consumer in sprite_consumers {
+                doc.invalidate_external_svg(consumer);
+            }
+        }
         // A dropped control's rev and history go with it: Blitz may give
         // its id to another element, whose rev starts at 0 (SPEC §6.4).
         for id in gone {
@@ -4283,5 +4319,105 @@ mod tests {
         let small: Vec<(u32, u32)> = (1..=12).map(|i| (64 * i, 64)).collect();
         let (kept, _) = run(&small);
         assert_eq!(kept, small[2..].to_vec());
+    }
+
+    #[test]
+    fn sprite_deltas_rebuild_only_dependent_svgs() {
+        use blitz_dom::node::ImageData;
+        use std::sync::Arc;
+
+        fn svg(host: &crate::Host, id: &str) -> ImageData {
+            let doc = &host.surfaces.get("x").unwrap().doc;
+            let id = doc.get_element_by_id(id).unwrap();
+            doc.get_node(id)
+                .unwrap()
+                .element_data()
+                .unwrap()
+                .image_data()
+                .unwrap()
+                .clone()
+        }
+        fn rebuilt(before: &ImageData, after: &ImageData) -> bool {
+            match (before, after) {
+                (ImageData::Svg(a), ImageData::Svg(b)) => !Arc::ptr_eq(&a.tree, &b.tree),
+                _ => panic!("expected SVG images"),
+            }
+        }
+        fn command(pairs: &[(&str, &str)], payload: &str) -> hotty::Message {
+            hotty::Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+        }
+        let config = crate::Config::default();
+        let metrics = config.metrics;
+        let mut host = crate::Host::new(config);
+        let html = "<style>body{margin:0}</style><svg style='display:none'><symbol id='a'><rect id='a-shape' width='20' height='20' fill='red'/></symbol><symbol id='b'><rect id='b-shape' width='20' height='20' fill='red'/></symbol></svg><svg id='first' width='20' height='20'><use href='#a'/></svg><svg id='second' width='20' height='20'><use href='#b'/></svg><p id='unrelated'>old</p>";
+        host.handle(&command(&[("a", "doc"), ("s", "x")], html));
+        host.handle(&command(
+            &[("a", "place"), ("s", "x"), ("c", "40"), ("r", "10")],
+            "",
+        ));
+        host.render_dirty(&mut |_, _, _| {});
+        let before = [svg(&host, "first"), svg(&host, "second")];
+
+        let change = |host: &mut crate::Host, op: &str, target: &str, key: &str, value: &str| {
+            host.surfaces
+                .get_mut("x")
+                .unwrap()
+                .apply(
+                    &[hotty::Op {
+                        op: op.into(),
+                        target: target.into(),
+                        key: key.into(),
+                        value: Some(value.into()),
+                    }],
+                    &metrics,
+                )
+                .unwrap();
+            host.render_dirty(&mut |_, _, _| {});
+        };
+        change(&mut host, "text", "unrelated", "", "new");
+        let after_unrelated = [svg(&host, "first"), svg(&host, "second")];
+        assert_eq!(
+            before
+                .iter()
+                .zip(&after_unrelated)
+                .filter(|(a, b)| rebuilt(a, b))
+                .count(),
+            0
+        );
+
+        change(&mut host, "attr", "a-shape", "fill", "blue");
+        let after_sprite = [svg(&host, "first"), svg(&host, "second")];
+        assert_eq!(
+            after_unrelated
+                .iter()
+                .zip(&after_sprite)
+                .filter(|(a, b)| rebuilt(a, b))
+                .count(),
+            1
+        );
+        assert!(rebuilt(&after_unrelated[0], &after_sprite[0]));
+        assert!(!rebuilt(&after_unrelated[1], &after_sprite[1]));
+
+        change(&mut host, "attr", "a", "id", "renamed");
+        let after_rename = [svg(&host, "first"), svg(&host, "second")];
+        assert_eq!(
+            after_sprite
+                .iter()
+                .zip(&after_rename)
+                .filter(|(a, b)| rebuilt(a, b))
+                .count(),
+            1
+        );
+        change(&mut host, "attr", "renamed", "id", "a");
+        let after_restore = [svg(&host, "first"), svg(&host, "second")];
+        assert_eq!(
+            after_rename
+                .iter()
+                .zip(&after_restore)
+                .filter(|(a, b)| rebuilt(a, b))
+                .count(),
+            1
+        );
+        assert!(rebuilt(&after_rename[0], &after_restore[0]));
     }
 }
