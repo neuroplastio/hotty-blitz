@@ -674,6 +674,25 @@ mod taffy_baseline_tests {
     use blitz_traits::shell::{ColorScheme, Viewport};
 
     #[test]
+    fn forced_breaks_and_nowrap_inline_boxes_keep_line_boundaries() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0;font:20px/20px sans-serif}.abs{position:absolute}.nowrap{width:100px;white-space:nowrap}.box{display:inline-block;width:80px;height:10px}</style><div id=two>text<br><br><span class=abs></span></div><div id=three>text<br><span class=abs></span><br>x</div><div class=nowrap><span id=one class=box></span><span id=other class=box></span></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = |id| {
+            doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                .unwrap()
+        };
+        assert_eq!(rect("two").height, 40.0);
+        assert_eq!(rect("three").height, 60.0);
+        assert_eq!(rect("one").y, rect("other").y);
+    }
+
+    #[test]
     fn inline_blocks_use_the_last_baseline_of_nested_block_content() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0;font:20px/20px sans-serif} span{display:inline-block}</style><div><span id=direct>one<br>two</span><span id=nested><div>one<br>two</div></span></div>",
