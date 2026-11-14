@@ -1,3 +1,28 @@
+OpenMoji, as hotty-blitz bundles it
+
+OpenMoji Color, the COLRv0 build (OpenMoji-color-glyf_colr_0.woff2), byte
+for byte as OpenMoji publishes it: not subsetted, converted or otherwise
+modified.
+
+  All emojis designed by OpenMoji – the open-source emoji and icon project.
+  License: CC BY-SA 4.0
+  © HfG Schwäbisch Gmünd, https://openmoji.org/
+
+Its licence is Creative Commons Attribution-ShareAlike 4.0 International,
+in OpenMoji-CC-BY-SA-4.0.txt beside this file (OpenMoji's LICENSE.txt at
+the release's tag).
+
+  Version   17.0.0
+  Source    https://github.com/hfg-gmuend/openmoji/releases/tag/17.0.0
+  Asset     openmoji-font.zip
+            sha256 1de61d8dcb38d0bebbdd13c7057a65f5d957ead36ce4b61bd635f84e6f3cadba
+  Path      OpenMoji-color-glyf_colr_0/
+
+  OpenMoji-color-glyf_colr_0.woff2   976028 bytes
+            sha256 55cce9521e25f12cf4077ed9fa6060c97bf0b02f0f1b7fb7b34717593e718339
+
+========================================================================
+
 IBM Plex Sans, as hotty-blitz bundles it
 
 IBM Plex Sans Regular, Medium and SemiBold (400, 500 and 600), byte for byte
@@ -20,7 +45,7 @@ SIL Open Font License 1.1, in IBM-Plex-OFL.txt beside this file.
   IBMPlexSans-SemiBold.woff2  67060 bytes
             sha256 f78048030eab62e860efa39a0df79e2e5581bf122eb95b9bc42c0b8a4988d205
 
-The rest of this file is about the other font, AdwaitaMono Nerd Font Propo.
+The rest of this file is about AdwaitaMono Nerd Font Propo.
 
 ========================================================================
 

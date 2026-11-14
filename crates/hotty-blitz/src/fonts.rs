@@ -1,5 +1,6 @@
-//! The fonts a host ships (fonts/, both OFL-1.1; Plex's source and the icon
-//! sets' licences in fonts/NOTICE.txt).
+//! The fonts a host ships (fonts/: AdwaitaMono and Plex are OFL-1.1,
+//! OpenMoji CC-BY-SA-4.0; the sources and the icon sets' licences are in
+//! fonts/NOTICE.txt).
 //!
 //! AdwaitaMono Nerd Font Propo, Regular, Bold, Italic and Bold Italic. It is
 //! the first `monospace` font, so a document draws alike on every system, and
@@ -18,10 +19,22 @@
 //! family. A collection looks a name up among the fonts registered in it
 //! before the system's, so these faces win over an installed Plex.
 //!
-//! Neither is in the spec: a document can't count on them on another host.
+//! OpenMoji Color 17.0, HfG Schwäbisch Gmünd's COLRv0 build as they publish
+//! it, so an emoji draws alike on every host, and not in whichever emoji font
+//! the system has. It is the first `emoji` font. In every other generic
+//! family it goes just before the first of the system's colour emoji fonts
+//! (those it lists first for `emoji`) that the system lists there, as
+//! fontconfig lists Noto Color Emoji under monospace and sans-serif, and
+//! nowhere if it lists none: an emoji cluster takes the first colour font of its
+//! stack, then of `emoji` (the parley patch), and a text cluster draws as it
+//! did. A document that names the system's emoji font gets that font.
+//!
+//! None is in the spec: a document can't count on them on another host.
 
 use blitz_dom::FontContext;
-use parley::fontique::{Blob, FamilyId, GenericFamily, SourceCache};
+use parley::fontique::{
+    Blob, Collection, FamilyId, GenericFamily, QueryFamily, QueryStatus, SourceCache,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -43,6 +56,11 @@ const PLEX_FACES: [&[u8]; 3] = [
     include_bytes!("../fonts/IBMPlexSans-Medium.woff2"),
     include_bytes!("../fonts/IBMPlexSans-SemiBold.woff2"),
 ];
+
+/// The family of the emoji font, as a document names it.
+pub const OPENMOJI: &str = "OpenMoji";
+
+const OPENMOJI_FACE: &[u8] = include_bytes!("../fonts/OpenMoji-color-glyf_colr_0.woff2");
 
 /// The families that take it first.
 const FIRST: [GenericFamily; 2] = [GenericFamily::Monospace, GenericFamily::UiMonospace];
@@ -84,6 +102,7 @@ fn build() -> FontContext {
         let decoding: Vec<_> = FACES
             .iter()
             .chain(&PLEX_FACES)
+            .chain([&OPENMOJI_FACE])
             .map(|f| s.spawn(|| blitz_dom::decode_font_bytes(f).into_owned()))
             .collect();
         decoding
@@ -110,9 +129,13 @@ fn build() -> FontContext {
         }
     }
     // Plex is registered under its own name and listed nowhere.
-    for face in faces {
+    for face in faces.by_ref().take(PLEX_FACES.len()) {
         c.register_fonts(face, None);
     }
+    let emoji: Vec<FamilyId> = faces
+        .flat_map(|face| c.register_fonts(face, None))
+        .map(|(id, _)| id)
+        .collect();
     // A collection lists its own families for a generic one before the
     // system's, so each list is written whole.
     for g in FIRST {
@@ -125,7 +148,47 @@ fn build() -> FontContext {
         let list = choice.iter().chain(&ours).chain(rest).copied();
         c.set_generic_families(g, list.collect::<Vec<_>>().into_iter());
     }
+    // OpenMoji goes ahead of the system's colour fonts: those it lists
+    // first for emoji, before its first text font. Fontconfig lists every
+    // family for emoji, and checking them all would take 300 ms.
+    let FontContext {
+        collection: c,
+        source_cache,
+    } = &mut ctx;
+    let system: Vec<FamilyId> = c.generic_families(GenericFamily::Emoji).collect();
+    let colour: Vec<FamilyId> = system
+        .iter()
+        .copied()
+        .take_while(|id| is_colour(c, source_cache, *id))
+        .collect();
+    for g in FIRST.into_iter().chain(SECOND) {
+        let list: Vec<FamilyId> = c.generic_families(g).collect();
+        let Some(at) = list.iter().position(|id| colour.contains(id)) else {
+            continue;
+        };
+        let list = list[..at].iter().chain(&emoji).chain(&list[at..]).copied();
+        c.set_generic_families(g, list.collect::<Vec<_>>().into_iter());
+    }
+    let list = emoji
+        .iter()
+        .chain(system.iter().filter(|id| !emoji.contains(id)));
+    c.set_generic_families(
+        GenericFamily::Emoji,
+        list.copied().collect::<Vec<_>>().into_iter(),
+    );
     ctx
+}
+
+/// Whether the family's regular face draws colour glyphs.
+fn is_colour(c: &mut Collection, cache: &mut SourceCache, id: FamilyId) -> bool {
+    let mut q = c.query(cache);
+    q.set_families([QueryFamily::Id(id)]);
+    let mut colour = false;
+    q.matches_with(|f| {
+        colour = f.has_color_glyphs();
+        QueryStatus::Stop
+    });
+    colour
 }
 
 #[cfg(test)]
@@ -252,7 +315,9 @@ mod tests {
         for g in SECOND {
             let mut want = names(&mut system, g);
             want.insert(want.len().min(1), FAMILY.to_owned());
-            assert_eq!(names(&mut ctx, g)[..want.len()], want[..], "{g:?}");
+            let mut have = names(&mut ctx, g);
+            have.retain(|n| n != OPENMOJI);
+            assert_eq!(have[..want.len()], want[..], "{g:?}");
         }
         // md-apple_keyboard_command, from ours whatever Nerd Fonts the
         // system has, unless its sans-serif is one.
@@ -268,5 +333,102 @@ mod tests {
                 ours
             );
         }
+    }
+
+    #[test]
+    fn openmoji_is_the_first_emoji_font() {
+        let mut ctx = context();
+        let ours = ctx.collection.family_id(OPENMOJI).expect("registered");
+        let list: Vec<FamilyId> = ctx
+            .collection
+            .generic_families(GenericFamily::Emoji)
+            .collect();
+        assert_eq!(list.first(), Some(&ours));
+        assert_eq!(list.iter().filter(|id| **id == ours).count(), 1);
+        assert_eq!(first_with(&mut ctx, GenericFamily::Emoji, '😀'), Some(ours));
+    }
+
+    #[test]
+    fn openmoji_comes_before_every_colour_font_the_system_lists() {
+        let mut ctx = context();
+        let ours = ctx.collection.family_id(OPENMOJI).expect("registered");
+        for g in FIRST.into_iter().chain(SECOND) {
+            let list: Vec<FamilyId> = ctx.collection.generic_families(g).collect();
+            let first = list
+                .iter()
+                .copied()
+                .find(|id| is_colour(&mut ctx.collection, &mut ctx.source_cache, *id));
+            assert!(first.is_none() || first == Some(ours), "{g:?}");
+        }
+        // Text the system's fonts draw draws from them.
+        assert_ne!(
+            first_with(&mut ctx, GenericFamily::SansSerif, 'a'),
+            Some(ours)
+        );
+    }
+
+    #[test]
+    fn openmoji_draws_in_colour() {
+        let mut ctx = context();
+        let ours = ctx.collection.family_id(OPENMOJI).expect("registered");
+        assert!(is_colour(&mut ctx.collection, &mut ctx.source_cache, ours));
+    }
+
+    /// The blobs of the fonts the layout of `text` in `stack` draws from.
+    fn drawn_from(ctx: &mut FontContext, stack: &str, text: &str) -> Vec<Vec<u8>> {
+        use parley::{LayoutContext, PositionedLayoutItem, StyleProperty};
+        let mut lcx: LayoutContext<()> = LayoutContext::new();
+        let mut b = lcx.ranged_builder(ctx, text, 1.0, true);
+        b.push_default(StyleProperty::FontFamily(stack.into()));
+        b.push_default(StyleProperty::FontSize(40.0));
+        let mut layout = b.build(text);
+        layout.break_all_lines(None);
+        let mut blobs = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                if let PositionedLayoutItem::GlyphRun(r) = item {
+                    blobs.push(r.run().font().data.as_ref().to_vec());
+                }
+            }
+        }
+        blobs
+    }
+
+    #[test]
+    fn an_emoji_draws_from_openmoji_whatever_the_stack() {
+        let mut ctx = context();
+        let ours = blitz_dom::decode_font_bytes(OPENMOJI_FACE).into_owned();
+        // As fontconfig names it on most systems, and lists it under
+        // sans-serif.
+        let noto = "'Noto Color Emoji'";
+        for stack in [
+            "emoji",
+            "monospace",
+            "sans-serif",
+            "serif",
+            "system-ui",
+            "'DejaVu Sans', monospace",
+            "'No Such Font'",
+        ] {
+            for text in ["😀", "⚡", "❤️", "🇩🇪", "👍🏽", "🏳️‍🌈", "1️⃣"]
+            {
+                let from = drawn_from(&mut ctx, stack, text);
+                assert!(
+                    !from.is_empty() && from.iter().all(|b| *b == ours),
+                    "{text} in {stack}"
+                );
+            }
+        }
+        // A document that names another emoji font gets it, if the system
+        // has it.
+        if ctx.collection.family_id("Noto Color Emoji").is_some() {
+            assert!(drawn_from(&mut ctx, noto, "😀").iter().all(|b| *b != ours));
+        }
+        // Text stays the text font's.
+        assert!(
+            drawn_from(&mut ctx, "sans-serif", "abc")
+                .iter()
+                .all(|b| *b != ours)
+        );
     }
 }

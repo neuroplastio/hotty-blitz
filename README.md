@@ -273,7 +273,7 @@ Not done yet:
 
 ## Fonts
 
-A host ships two families (in `crates/hotty-blitz/fonts/`), so a document
+A host ships three families (in `crates/hotty-blitz/fonts/`), so a document
 looks the same on every system.
 
 AdwaitaMono Nerd Font Propo (Regular, Bold, Italic and Bold Italic) is there
@@ -293,10 +293,20 @@ draws alike on a machine that has Plex and one that does not. The files are
 IBM's v6.4.0 release, byte for byte (the name "Plex" is reserved, so they
 are never subsetted or re-encoded).
 
-The faces are decompressed on a thread of their own when a host starts
-(about 85 ms).
+OpenMoji Color 17.0 (the COLRv0 build, as OpenMoji publishes it) draws every
+emoji, whatever font the document asks for, rather than whichever emoji font
+the system has. It is the first `emoji` font. In every other generic family
+it comes just before the system's colour emoji font (fontconfig lists Noto
+Color Emoji under `monospace` and `sans-serif`), so an emoji cluster, which
+takes the first colour font of its stack, takes OpenMoji, and text draws as
+before. A document that names another emoji font, such as "Noto Color
+Emoji", gets that font. hottyterm draws its cells' emoji from OpenMoji too.
 
-The spec names neither font: a document can't count on them on another host.
+The faces are decompressed on a thread of their own when a host starts
+(about 85 ms; OpenMoji's alone takes about 50).
+
+The spec names none of these fonts: a document can't count on them on another
+host.
 
 ## Fidelity
 
@@ -306,7 +316,6 @@ Chromium. The known gaps:
 - tables (captions, `colspan`);
 - `text-overflow` on right-to-left lines (they clip);
 - container queries;
-- colour emoji;
 - 3D transforms.
 
 `make oracle` rebuilds the sheets.
@@ -326,8 +335,10 @@ Apache-2.0 ([LICENSE](LICENSE)).
 - Blitz is MIT OR Apache-2.0, parley Apache-2.0 OR MIT, vello_cpu
   and glifo Apache-2.0 OR MIT, and Stylo MPL-2.0. Our patches on each, in `mods/`, are
   offered under that upstream's licence, the one its `mod.md` names (gov P-7).
-- The fonts in `crates/hotty-blitz/fonts/` are OFL-1.1: AdwaitaMono's in
-  `OFL.txt`, IBM Plex Sans's (Reserved Font Name "Plex") in `IBM-Plex-OFL.txt`.
-  AdwaitaMono's Nerd Fonts icon sets keep their own licences, listed with
-  their texts in `NOTICE.txt`, which also records where Plex's files came from.
-  A program that ships the library ships all three files.
+- AdwaitaMono and IBM Plex Sans in `crates/hotty-blitz/fonts/` are OFL-1.1:
+  AdwaitaMono's in `OFL.txt`, IBM Plex Sans's (Reserved Font Name "Plex") in
+  `IBM-Plex-OFL.txt`. AdwaitaMono's Nerd Fonts icon sets keep their own
+  licences, listed with their texts in `NOTICE.txt`, which also records where
+  Plex's and OpenMoji's files came from. OpenMoji, by HfG Schwäbisch Gmünd,
+  is CC-BY-SA-4.0, in `OpenMoji-CC-BY-SA-4.0.txt`. A program that ships the
+  library ships all four files.
