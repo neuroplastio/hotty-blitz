@@ -42,8 +42,7 @@ pub fn host_css(config: &Config) -> String {
     let _ = writeln!(css, "  line-height: {cell_h}px;");
     let _ = writeln!(css, "  color: var(--hotty-fg);");
     let _ = writeln!(css, "  background: var(--hotty-bg);");
-    // Stylo, as Servo builds it, does not know accent-color yet and drops
-    // it: checks keep Blitz's colours.
+    // Controls inherit the terminal accent unless the document chooses one.
     let _ = writeln!(css, "  accent-color: var(--hotty-accent);");
     let _ = writeln!(css, "}}");
     css.push_str("body { margin: 0; }\n");

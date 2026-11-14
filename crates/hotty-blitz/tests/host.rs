@@ -1569,7 +1569,8 @@ fn a_detached_document_paints_as_if_its_controls_had_disabled() {
 fn controls(box_style: &str) -> String {
     format!(
         "<style>body{{margin:0}} input,button{{position:absolute;top:0;margin:0}}
-         #f,#b{{width:40px;height:20px;padding:0}} #f{{background:Field}} #b{{background:ButtonFace}}</style>
+         #f,#b{{width:40px;height:20px;padding:0}} #f{{background:Field}} #b{{background:ButtonFace}}
+         input[type=checkbox],input[type=radio]{{accent-color:auto}}</style>
          <div id=box style='{box_style}'>
          <input id=f style='left:0'><button id=b style='left:50px'></button>
          <input type=checkbox id=c style='left:100px'><input type=checkbox checked id=cc style='left:120px'>
@@ -1636,6 +1637,16 @@ fn form_controls_follow_the_used_color_scheme() {
     let page = controls("") + "<style>#f{background:#f00} #b{background:#00f}</style>";
     doc_at(&mut h, "x", &[], &page, "2");
     assert_eq!(control_colors(&h)[..2], [RED, BLUE]);
+}
+
+#[test]
+fn controls_take_the_host_accent_unless_the_document_overrides_it() {
+    let mut h = host();
+    let page = controls("").replace("accent-color:auto", "accent-color:var(--hotty-accent)");
+    doc_at(&mut h, "x", &[], &page, "2");
+    let colors = control_colors(&h);
+    assert_eq!(colors[3], [97, 175, 239]);
+    assert_eq!(colors[5], [97, 175, 239]);
 }
 
 #[test]
