@@ -51,6 +51,11 @@ fn collapsed_border_does_not_cross_a_spanning_cell() {
         [255, 0, 0],
         "the second row keeps its shared border"
     );
+    let border_width = (90..110).filter(|&x| pixel(x, 60) == [255, 0, 0]).count();
+    assert_eq!(
+        border_width, 4,
+        "the shared border keeps its authored width"
+    );
 }
 
 #[test]
@@ -88,9 +93,6 @@ fn collapsed_border_does_not_cross_a_row_spanning_cell() {
         [255, 255, 255],
         "no horizontal border inside rowspan"
     );
-    assert_eq!(
-        pixel(150, 40),
-        [255, 0, 0],
-        "the adjacent cells keep their shared border"
-    );
+    let border_width = (35..55).filter(|&y| pixel(150, y) == [255, 0, 0]).count();
+    assert_eq!(border_width, 4, "the adjacent cells keep one shared border");
 }
