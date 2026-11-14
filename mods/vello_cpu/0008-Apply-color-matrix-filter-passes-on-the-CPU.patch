@@ -1,0 +1,124 @@
+From 5f8c8679cc9c4085ade1a6d4b71896521c6ca7c9 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 19:05:44 +0100
+Subject: [PATCH] Apply color-matrix filter passes on the CPU
+
+---
+ vello_cpu/src/filter/mod.rs | 83 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 82 insertions(+), 1 deletion(-)
+
+diff --git a/vello_cpu/src/filter/mod.rs b/vello_cpu/src/filter/mod.rs
+index 06222a02..9fd8cf3a 100644
+--- a/vello_cpu/src/filter/mod.rs
++++ b/vello_cpu/src/filter/mod.rs
+@@ -17,7 +17,7 @@ mod shift;
+ 
+ use context::ScratchBuffer;
+ use vello_common::filter::PreparedFilter;
+-use vello_common::filter_effects::Filter;
++use vello_common::filter_effects::{Filter, FilterPrimitive};
+ use vello_common::kurbo::Affine;
+ use vello_common::pixmap::Pixmap;
+ 
+@@ -64,6 +64,9 @@ pub(crate) fn filter_lowp(
+     filter_scratch: &mut ScratchBuffer,
+     transform: Affine,
+ ) {
++    if color_matrices(filter, pixmap) {
++        return;
++    }
+     let prepared_filter = PreparedFilter::new(filter, &transform);
+ 
+     match prepared_filter {
+@@ -102,6 +105,9 @@ pub(crate) fn filter_highp(
+     filter_scratch: &mut ScratchBuffer,
+     transform: Affine,
+ ) {
++    if color_matrices(filter, pixmap) {
++        return;
++    }
+     let prepared_filter = PreparedFilter::new(filter, &transform);
+ 
+     match prepared_filter {
+@@ -119,3 +125,78 @@ pub(crate) fn filter_highp(
+         }
+     }
+ }
++
++fn color_matrices(filter: &Filter, pixmap: &mut Pixmap) -> bool {
++    let primitives = &filter.graph.primitives;
++    if primitives.is_empty()
++        || !primitives
++            .iter()
++            .all(|p| matches!(p, FilterPrimitive::ColorMatrix { .. }))
++    {
++        return false;
++    }
++    for primitive in primitives {
++        if let FilterPrimitive::ColorMatrix { matrix } = primitive {
++            color_matrix(pixmap, matrix);
++        }
++    }
++    true
++}
++
++/// Color matrices operate on straight RGBA, while the layer pixmap is
++/// premultiplied. Convert around the matrix and keep transparent pixels valid.
++fn color_matrix(pixmap: &mut Pixmap, matrix: &[f32; 20]) {
++    for pixel in pixmap.data_as_u8_slice_mut().chunks_exact_mut(4) {
++        let alpha = f32::from(pixel[3]) / 255.0;
++        let straight = if alpha > 0.0 {
++            [
++                f32::from(pixel[0]) / (255.0 * alpha),
++                f32::from(pixel[1]) / (255.0 * alpha),
++                f32::from(pixel[2]) / (255.0 * alpha),
++                alpha,
++            ]
++        } else {
++            [0.0; 4]
++        };
++        let mut out = [0.0_f32; 4];
++        for (row, channel) in out.iter_mut().enumerate() {
++            let m = &matrix[row * 5..row * 5 + 5];
++            *channel = (m[0] * straight[0]
++                + m[1] * straight[1]
++                + m[2] * straight[2]
++                + m[3] * straight[3]
++                + m[4])
++                .clamp(0.0, 1.0);
++        }
++        for channel in 0..3 {
++            pixel[channel] = (out[channel] * out[3] * 255.0).round() as u8;
++        }
++        pixel[3] = (out[3] * 255.0).round() as u8;
++    }
++    pixmap.set_may_have_transparency(true);
++}
++
++#[cfg(test)]
++mod color_matrix_tests {
++    use super::*;
++
++    #[test]
++    fn invert_unpremultiplies_and_preserves_alpha() {
++        let mut pixmap = Pixmap::new(2, 1);
++        pixmap
++            .data_as_u8_slice_mut()
++            .copy_from_slice(&[128, 0, 0, 128, 0, 0, 0, 0]);
++        color_matrix(
++            &mut pixmap,
++            &[
++                -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0,
++                0.0, 0.0, 1.0, 0.0,
++            ],
++        );
++        assert_eq!(
++            pixmap.data_as_u8_slice_mut(),
++            &[0, 128, 128, 128, 0, 0, 0, 0]
++        );
++        assert!(pixmap.may_have_transparency());
++    }
++}
+-- 
+2.56.0
+
