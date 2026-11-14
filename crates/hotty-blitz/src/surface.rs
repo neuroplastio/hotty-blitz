@@ -135,7 +135,9 @@ pub(crate) enum Fault {
 /// They also keep which glyphs draw nothing (`paint::Ink`), for every
 /// surface's painter.
 #[derive(Default)]
-pub(crate) struct Renderers(Vec<(((u32, u32), bool), VelloCpuImageRenderer)>, paint::Ink);
+pub(crate) struct Renderers(Vec<RendererEntry>, paint::Ink);
+
+type RendererEntry = (((u32, u32), bool), VelloCpuImageRenderer);
 
 impl Renderers {
     /// How many contexts a host keeps: 16 worker threads at most, since
@@ -1456,13 +1458,14 @@ impl Surface {
                 renderer.render(
                     |scene| {
                         let mut inked = paint::Inked::new(scene, ink);
-                        let mut window =
-                            paint::Window::new(&mut inked, r.x, r.y, r_render.w, r_render.h);
-                        paint_scene(&mut window, doc, scale, w, h, 0, 0);
-                        #[cfg(test)]
-                        assert!(fault != Some(Fault::Paint), "a fault while painting");
-                        bars.paint(&mut window, kurbo::Affine::IDENTITY);
-                        drop(window);
+                        {
+                            let mut window =
+                                paint::Window::new(&mut inked, r.x, r.y, r_render.w, r_render.h);
+                            paint_scene(&mut window, doc, scale, w, h, 0, 0);
+                            #[cfg(test)]
+                            assert!(fault != Some(Fault::Paint), "a fault while painting");
+                            bars.paint(&mut window, kurbo::Affine::IDENTITY);
+                        }
                         filtered = inked.filtered;
                         scened = trace::now();
                     },
