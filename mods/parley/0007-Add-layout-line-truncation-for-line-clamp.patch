@@ -1,0 +1,40 @@
+From 8232ac1544925454f0f0d9b599ce984776eca3cb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Lu=C3=ADs=20Duarte?= <lduarte@cloudflare.com>
+Date: Sat, 14 Nov 2026 17:38:56 +0100
+Subject: [PATCH] Add layout line truncation for legacy line clamp
+
+Keep at most the requested laid-out lines and update the layout height from the last retained line.
+
+Co-authored-by: hotty Agent <hotty@neuroplast.io>
+---
+ parley/src/layout/layout.rs | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/parley/src/layout/layout.rs b/parley/src/layout/layout.rs
+index 0ae026a..3d0c1a1 100644
+--- a/parley/src/layout/layout.rs
++++ b/parley/src/layout/layout.rs
+@@ -304,6 +304,20 @@ impl<B: Brush> Layout<B> {
+             .break_remaining(max_advance.unwrap_or(f32::MAX));
+     }
+ 
++    /// Truncate to at most `max_lines` laid-out lines, updating the height.
++    pub fn truncate_lines(&mut self, max_lines: usize) {
++        if self.data.lines.len() <= max_lines {
++            return;
++        }
++        self.data.lines.truncate(max_lines);
++        self.data.height = self
++            .data
++            .lines
++            .last()
++            .map(|line| line.metrics.block_max_coord)
++            .unwrap_or(0.0);
++    }
++
+     /// Returns the index and `Line` object for the line containing the
+     /// given byte `index` in the source text.
+     pub(crate) fn line_for_byte_index(&self, index: usize) -> Option<(usize, Line<'_, B>)> {
+-- 
+2.56.0
+

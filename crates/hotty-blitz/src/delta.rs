@@ -691,6 +691,41 @@ mod taffy_baseline_tests {
     }
 
     #[test]
+    fn webkit_box_layout_and_legacy_line_clamp() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0;font:20px/20px sans-serif}.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;width:100px}.flex{display:-webkit-box;-webkit-box-orient:horizontal}.item{width:30px;height:10px}</style><div id=clamp class=clamp>one<br>two<br>three</div><div id=plain style='display:block;-webkit-line-clamp:1'>one<br>two<br>three</div><div class=flex><div id=a class=item></div><div id=b class=item></div></div><div style='display:-webkit-box;-webkit-box-orient:vertical'><div id=c class=item></div><div id=d class=item></div></div>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = |id| {
+            doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                .unwrap()
+        };
+        assert_eq!(rect("clamp").height, 40.0);
+        assert_eq!(rect("a").y, rect("b").y);
+        assert_eq!(rect("b").x, rect("a").x + rect("a").width);
+        assert_eq!(rect("c").x, rect("d").x);
+        assert_eq!(rect("d").y, rect("c").y + rect("c").height);
+        assert_eq!(
+            rect("plain").height,
+            60.0,
+            "ordinary blocks do not get the legacy clamp"
+        );
+        let id = doc.get_element_by_id("clamp").unwrap();
+        doc.mutate()
+            .set_attribute(id, blitz_dom::qual_name!("style"), "-webkit-line-clamp:1");
+        doc.resolve(0.0);
+        assert_eq!(doc.get_client_bounding_rect(id).unwrap().height, 20.0);
+        doc.mutate()
+            .clear_attribute(id, blitz_dom::qual_name!("style"));
+        doc.resolve(0.0);
+        assert_eq!(doc.get_client_bounding_rect(id).unwrap().height, 40.0);
+    }
+
+    #[test]
     fn anonymous_table_survives_contents_and_parent_restyle() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0}.cell{display:table-cell;width:40px;height:20px}.contents{display:contents}</style><div id=parent><div class=contents><div id=a class=cell>A</div> <div id=b class=cell>B</div></div></div>",

@@ -30,3 +30,5 @@ directory again with `git format-patch --zero-commit`, and `scripts/mods.py
 relink stylo <dir>` points each `.md` at its new file name.
 
 The range-control port also enables the existing `accent-color` property in Servo builds, so form controls can paint an authored accent.
+
+Legacy WebKit box layout and line clamping also need Servo box-orient and the line-clamp style adjustment; their patch pins the resulting computed-style size.
