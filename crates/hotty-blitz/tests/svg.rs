@@ -311,3 +311,41 @@ fn the_svg_s_own_opacity_applies_once() {
         [r, g, b]
     );
 }
+
+#[test]
+fn inline_svg_viewport_clips_and_without_viewbox_keeps_css_units() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("q", "2")],
+        r##"<style>body{margin:0;background:#0f0}svg{display:block}</style><svg width="100" height="40" viewBox="0 0 10 4"><rect width="20" height="4" fill="#f00"/></svg><svg style="width:100px;height:40px"><rect width="20" height="20" fill="#f00"/></svg><svg style="overflow:visible" width="100" height="40" viewBox="0 0 10 4"><rect width="20" height="4" fill="#f00"/></svg><img style="display:block;width:100px;height:40px" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 4'%3E%3Crect width='20' height='4' fill='%23f00'/%3E%3C/svg%3E">"##,
+    ));
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", "20"),
+            ("r", "8"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(pixel(&h, "x", 50, 20), RED);
+    assert_eq!(
+        pixel(&h, "x", 15, 50),
+        RED,
+        "without a viewBox, SVG units are CSS pixels"
+    );
+    assert_eq!(
+        pixel(&h, "x", 120, 20),
+        GREEN,
+        "viewBox content must be clipped"
+    );
+    assert_eq!(
+        pixel(&h, "x", 120, 100),
+        RED,
+        "author overflow:visible permits overflow"
+    );
+    assert_eq!(pixel(&h, "x", 50, 140), RED, "SVG image is drawn");
+    assert_eq!(pixel(&h, "x", 120, 140), GREEN, "SVG images never bleed");
+}
