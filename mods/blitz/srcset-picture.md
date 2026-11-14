@@ -1,6 +1,6 @@
 ---
 title: "Select image sources and update them when the device changes"
-patch: 0035-Select-image-sources-and-update-them-when-the-device.patch
+patch: 0033-Select-image-sources-and-update-them-when-the-device.patch
 upstream-fit: yes
 ---
 

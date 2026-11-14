@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Sun, 26 Jul 2026 00:14:38 +0100
-Subject: [PATCH 07/62] Flush nested inline pseudo-elements (child display, not
+Subject: [PATCH 07/61] Flush nested inline pseudo-elements (child display, not
  parent's)
 
 flush_inline_pseudos_recursive decided whether to recurse into a
@@ -17,10 +17,10 @@ azuleja.azulpop.pt's bootstrap-icons empty-state icons.
  1 file changed, 2 insertions(+), 1 deletion(-)
 
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
-index 3159a4297..70b5fcf66 100644
+index b22d74954..2051fbd74 100644
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
-@@ -962,7 +962,8 @@ pub(crate) fn find_inline_layout_embedded_boxes(
+@@ -964,7 +964,8 @@ pub(crate) fn find_inline_layout_embedded_boxes(
      fn flush_inline_pseudos_recursive(doc: &mut BaseDocument, node_id: NodeId) {
          doc.iter_children_mut(node_id, |child_id, doc| {
              flush_pseudo_elements(doc, child_id);

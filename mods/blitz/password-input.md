@@ -1,6 +1,6 @@
 ---
 title: "Mask and edit password inputs"
-patch: 0021-Mask-and-edit-password-inputs.patch
+patch: 0019-Mask-and-edit-password-inputs.patch
 upstream-fit: yes
 ---
 

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 10:39:40 +0200
-Subject: [PATCH 10/62] blitz-paint: outlines take outline-offset and every
+Subject: [PATCH 10/61] blitz-paint: outlines take outline-offset and every
  border style
 
 An outline was always drawn solid, just outside the border box:
@@ -23,17 +23,17 @@ covered by the element's own background.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- packages/blitz-paint/src/kurbo_css/css_box.rs |  80 +++++++------
+ packages/blitz-paint/src/kurbo_css/css_box.rs |  78 +++++++------
  packages/blitz-paint/src/kurbo_css/mod.rs     |   1 -
  packages/blitz-paint/src/render.rs            |   6 +-
  packages/blitz-paint/src/render/border.rs     | 107 +++++++++++-------
- 4 files changed, 119 insertions(+), 75 deletions(-)
+ 4 files changed, 120 insertions(+), 72 deletions(-)
 
 diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-paint/src/kurbo_css/css_box.rs
-index 211bf9d2f..cb608f590 100644
+index 92a39954d..8e5452691 100644
 --- a/packages/blitz-paint/src/kurbo_css/css_box.rs
 +++ b/packages/blitz-paint/src/kurbo_css/css_box.rs
-@@ -8,32 +8,29 @@ use super::{Corner, CssBoxKind, Direction, Edge, add_insets, get_corner_insets};
+@@ -9,26 +9,24 @@ use super::{Corner, CssBoxKind, Direction, Edge, add_insets, get_corner_insets};
  /// We have 4 boxes, 4 corners, and clockwise/anticlockwise for a total of 16 different options
  ///
  /// ```a
@@ -76,29 +76,22 @@ index 211bf9d2f..cb608f590 100644
  #[derive(Debug, Clone)]
  pub struct CssBox {
      pub border_box: Rect,
-     pub padding_box: Rect,
-     pub content_box: Rect,
--    pub outline_box: Rect,
+@@ -87,13 +85,13 @@ impl CssBox {
+         self.padding_box() - self.padding_width
+     }
  
-     pub padding_width: Insets,
-     pub border_width: Insets,
-@@ -52,7 +49,6 @@ impl CssBox {
-     ) -> Self {
-         let padding_box = border_box - border;
-         let content_box = padding_box - padding;
--        let outline_box = border_box.inset(outline_width);
++    #[cfg(test)]
+     pub fn outline_box(&self) -> Rect {
+         self.border_box.inset(self.outline_width)
+     }
  
-         // Correct the border radii if they are too big if two border radii would intersect, then we need to shrink
-         // ALL border radii by the same factor such that they do not
-@@ -78,7 +74,6 @@ impl CssBox {
-             padding_box,
-             border_box,
-             content_box,
--            outline_box,
-             outline_width,
-             padding_width: padding,
-             border_width: border,
-@@ -195,18 +190,36 @@ impl CssBox {
+     fn rect(&self, kind: CssBoxKind) -> Rect {
+         match kind {
+-            CssBoxKind::OutlineBox => self.outline_box(),
+             CssBoxKind::BorderBox => self.border_box,
+             CssBoxKind::PaddingBox => self.padding_box(),
+             CssBoxKind::ContentBox => self.content_box(),
+@@ -209,18 +207,36 @@ impl CssBox {
          )
      }
  
@@ -145,16 +138,8 @@ index 211bf9d2f..cb608f590 100644
 +        )
      }
  
-     /// Construct a bezpath drawing the frame border
-@@ -337,7 +350,6 @@ impl CssBox {
- 
-     fn corner(&self, corner: Corner, css_box: CssBoxKind) -> Point {
-         let Rect { x0, y0, x1, y1 } = match css_box {
--            CssBoxKind::OutlineBox => self.outline_box,
-             CssBoxKind::BorderBox => self.border_box,
-             CssBoxKind::PaddingBox => self.padding_box,
-             CssBoxKind::ContentBox => self.content_box,
-@@ -519,7 +531,6 @@ impl CssBox {
+     /// The frame's border box as a shape that backends can recognise as a (rounded) rect
+@@ -522,7 +538,6 @@ impl CssBox {
          }
  
          let css_box: Insets = match side {
@@ -162,7 +147,7 @@ index 211bf9d2f..cb608f590 100644
              BorderBox => return false,
              PaddingBox => self.border_width,
              ContentBox => add_insets(self.border_width, self.padding_width),
-@@ -578,7 +589,6 @@ impl CssBox {
+@@ -581,7 +596,6 @@ impl CssBox {
  
          let radii: Vec2 = match side {
              BorderBox => corner_radii,
@@ -183,10 +168,10 @@ index 099cc0f38..f9ec91941 100644
      PaddingBox,
      ContentBox,
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index f2095235c..587763f39 100644
+index 95df10360..ba6543b3a 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
-@@ -612,7 +612,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -613,7 +613,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
  
          let paints_own_box = !node.is_inline_with_only_block_children();
  
@@ -194,7 +179,7 @@ index f2095235c..587763f39 100644
          if paints_own_box {
              cx.draw_outset_box_shadow(scene);
          }
-@@ -731,6 +730,11 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -732,6 +731,11 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
              },
          );
  
@@ -207,7 +192,7 @@ index f2095235c..587763f39 100644
              .maybe_pop_layer(scene, blend_layer_pushed);
          self.layer_manager
 diff --git a/packages/blitz-paint/src/render/border.rs b/packages/blitz-paint/src/render/border.rs
-index 83c7d122f..db2248b48 100644
+index a23b16672..9795f1309 100644
 --- a/packages/blitz-paint/src/render/border.rs
 +++ b/packages/blitz-paint/src/render/border.rs
 @@ -6,7 +6,7 @@ use peniko::{Color, Fill};

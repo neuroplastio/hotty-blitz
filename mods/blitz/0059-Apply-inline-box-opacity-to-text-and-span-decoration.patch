@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rui Figueira <rfigueira@cloudflare.com>
+Date: Mon, 28 Sep 2026 19:24:35 +0100
+Subject: [PATCH 59/61] Apply inline-box opacity to text and span decorations
+
+A non-atomic inline box paints no layer of its own, so its opacity
+never took effect: `<span style="opacity:0">` painted fully opaque. The
+glyphs, text decorations and span backgrounds and borders now take the
+product of the opacities of the inline ancestors below the inline root,
+whose own opacity is already a layer.
+
+Text that fades by animating per-character span opacity showed every
+state on top of each other without this.
+---
+ packages/blitz-paint/src/text.rs             | 22 +++++++++++++++++---
+ packages/blitz-paint/src/text_decorations.rs | 13 ++++++++++++
+ 2 files changed, 32 insertions(+), 3 deletions(-)
+
+diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
+index f486fd86f..d458401ba 100644
+--- a/packages/blitz-paint/src/text.rs
++++ b/packages/blitz-paint/src/text.rs
+@@ -14,6 +14,19 @@ use crate::text_decorations::{
+ };
+ use crate::FONT_EMBOLDEN_ENABLED;
+ 
++fn inline_opacity(doc: &BaseDocument, node_id: NodeId, inline_root_id: NodeId) -> f32 {
++    let mut opacity = 1.0;
++    let mut current = Some(node_id);
++    while let Some(id) = current.filter(|&id| id != inline_root_id) {
++        let Some(node) = doc.get_node(id) else { break };
++        if let Some(styles) = node.primary_styles() {
++            opacity *= styles.get_effects().opacity;
++        }
++        current = node.parent;
++    }
++    opacity
++}
++
+ /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
+ ///
+ /// Each glyph run carries the node id of the innermost inline element it belongs to
+@@ -53,7 +66,8 @@ pub(crate) fn draw_inline_backgrounds<'a>(
+                 .get_background()
+                 .background_color
+                 .resolve_to_absolute(&current_color)
+-                .as_srgb_color();
++                .as_srgb_color()
++                .multiply_alpha(inline_opacity(doc, node_id, inline_root_id));
+             if bg_color == Color::TRANSPARENT {
+                 continue;
+             }
+@@ -262,7 +276,8 @@ pub(crate) fn stroke_text<'a>(
+                 .count();
+             stack.truncate(shared);
+             for &node_id in &path_scratch[shared..] {
+-                let entry = resolve_decoration_entry(doc, node_id, stack.last(), scale, selected);
++                let mut entry = resolve_decoration_entry(doc, node_id, stack.last(), scale, selected);
++                entry.apply_inline_opacity(inline_opacity(doc, node_id, inline_root_id));
+                 stack.push(entry);
+             }
+ 
+@@ -277,7 +292,8 @@ pub(crate) fn stroke_text<'a>(
+             let visible = doc.get_node(style.brush.id)
+                 .and_then(|node| node.primary_styles())
+                 .is_none_or(|styles| styles.get_inherited_box().visibility == Visibility::Visible);
+-            let fill_color = brush_override.unwrap_or(fill_color);
++            let fill_color = brush_override.unwrap_or(fill_color)
++                .multiply_alpha(inline_opacity(doc, style.brush.id, inline_root_id));
+             let shadows = shadows.filter(|_| visible && brush_override.is_none());
+             line_has_shadows |= shadows.is_some();
+             run_records.push(RunRecord {
+diff --git a/packages/blitz-paint/src/text_decorations.rs b/packages/blitz-paint/src/text_decorations.rs
+index fd1216fce..284851b91 100644
+--- a/packages/blitz-paint/src/text_decorations.rs
++++ b/packages/blitz-paint/src/text_decorations.rs
+@@ -105,6 +105,19 @@ pub(crate) struct DecorationStackEntry {
+     pub(crate) text_shadows: Option<Arc<[ResolvedTextShadow]>>,
+ }
+ 
++impl DecorationStackEntry {
++    pub(crate) fn apply_inline_opacity(&mut self, opacity: f32) {
++        if let Some(decoration) = &mut self.decoration {
++            decoration.color = decoration.color.multiply_alpha(opacity);
++        }
++        if let Some(shadows) = &mut self.text_shadows {
++            for shadow in Arc::make_mut(shadows) {
++                shadow.color = shadow.color.multiply_alpha(opacity);
++            }
++        }
++    }
++}
++
+ /// One `text-shadow` layer with all lengths resolved to device pixels.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub(crate) struct ResolvedTextShadow {

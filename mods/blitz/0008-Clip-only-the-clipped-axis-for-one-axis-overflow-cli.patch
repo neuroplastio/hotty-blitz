@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Fri, 9 Oct 2026 19:22:51 +0100
-Subject: [PATCH 08/62] Clip only the clipped axis for one-axis overflow: clip
+Subject: [PATCH 08/61] Clip only the clipped axis for one-axis overflow: clip
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -22,10 +22,10 @@ beep-boop-🤖
  1 file changed, 43 insertions(+), 20 deletions(-)
 
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 96b59221c..f2095235c 100644
+index b4c62fdb5..95df10360 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
-@@ -321,6 +321,46 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -320,6 +320,46 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                  || !matches!(box_style.overflow_y, Overflow::Visible))
      }
  
@@ -38,7 +38,7 @@ index 96b59221c..f2095235c 100644
 +    ) -> kurbo::BezPath {
 +        let element = node.element_data();
 +        if element.and_then(|e| e.text_input_data()).is_some() {
-+            return frame.text_input_clip_path();
++            return frame.text_input_clip_shape().to_path(0.1);
 +        }
 +        let box_style = styles.get_box();
 +        let display = styles.clone_display();
@@ -72,20 +72,20 @@ index 96b59221c..f2095235c 100644
      fn draw_text_mask(
          &self,
          scene: &mut impl PaintScene,
-@@ -342,11 +382,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -341,11 +381,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
              return;
          }
          let cx = self.element_cx(node, *node.final_layout(), transform, None);
 -        let clip = if cx.text_input.is_some() {
--            cx.frame.text_input_clip_path()
+-            cx.frame.text_input_clip_shape()
 -        } else {
--            cx.frame.padding_box_path()
+-            cx.frame.padding_box_shape()
 -        };
 +        let clip = self.overflow_clip_path(node, &styles, &cx.frame);
          let pushed = self.layer_manager.maybe_push_layer(
              scene,
              self.should_clip_node(node, &styles),
-@@ -443,11 +479,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -444,11 +480,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
          let has_opacity = opacity < 1.0;
  
          let should_clip = self.should_clip_node(node, &styles);
@@ -97,27 +97,27 @@ index 96b59221c..f2095235c 100644
          // Apply padding/border offset to inline root
          let taffy::Layout {
              size,
-@@ -529,11 +560,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -530,11 +561,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
          // scrolled out of view is culled rather than drawn and clipped away. The box used
          // here matches the clip applied to the content below.
          let child_clip_rect = if should_clip {
 -            let clip_box = if is_text_input {
--                cx.frame.text_input_clip_path()
+-                cx.frame.text_input_clip_shape()
 -            } else {
--                cx.frame.padding_box_path()
+-                cx.frame.padding_box_shape()
 -            };
 +            let clip_box = self.overflow_clip_path(node, &styles, &cx.frame);
              clip_rect.intersect(screen_transform.transform_rect_bbox(clip_box.bounding_box()))
          } else {
              clip_rect
-@@ -654,11 +681,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -655,11 +682,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                          cx.stroke_devtools(scene);
  
                          // TODO: allow layers with opacity to be unclipped (overflow: visible)
 -                        let clip = if is_text_input {
--                            &cx.frame.text_input_clip_path()
+-                            &cx.frame.text_input_clip_shape()
 -                        } else {
--                            &cx.frame.padding_box_path()
+-                            &cx.frame.padding_box_shape()
 -                        };
 +                        let clip = &self.overflow_clip_path(node, &styles, &cx.frame);
  

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 19:09:44 +0200
-Subject: [PATCH 03/62] blitz-dom, blitz-paint: a document can lock scrolling
+Subject: [PATCH 03/61] blitz-dom, blitz-paint: a document can lock scrolling
  along an axis
 
 An embedder that shows a document in an area of a fixed size, and
@@ -24,10 +24,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 54 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 873d1b4e9..d33ef0d65 100644
+index 04191d7df..9288735b0 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -369,6 +369,9 @@ pub struct BaseDocument {
+@@ -282,6 +282,9 @@ pub struct BaseDocument {
      /// When each scroll container's overlay scrollbars were last shown
      /// (scrolled, or the pointer left the thumb); drives their fade-out
      pub(crate) scrollbar_activity: HashMap<NodeId, Instant>,
@@ -37,7 +37,7 @@ index 873d1b4e9..d33ef0d65 100644
      /// Whether and what kind of scroll animation is currently in progress
      pub(crate) scroll_animation: ScrollAnimationState,
  
-@@ -609,6 +612,7 @@ impl BaseDocument {
+@@ -522,6 +525,7 @@ impl BaseDocument {
              drag_mode: DragMode::None,
              hovered_scrollbar: None,
              scrollbar_activity: HashMap::new(),
@@ -45,7 +45,7 @@ index 873d1b4e9..d33ef0d65 100644
              scroll_animation: ScrollAnimationState::None,
              text_selection: TextSelection::default(),
              scratch: DocumentScratch::default(),
-@@ -2007,7 +2011,7 @@ impl BaseDocument {
+@@ -1913,7 +1917,7 @@ impl BaseDocument {
          let hit = self
              .root_element()
              .hit_inner(x, y, self.viewport().scale_f64(), &mut scrollbar);
@@ -54,7 +54,7 @@ index 873d1b4e9..d33ef0d65 100644
      }
  
      pub fn set_hover_to(&mut self, x: f32, y: f32) -> bool {
-@@ -2429,6 +2433,39 @@ impl BaseDocument {
+@@ -2344,6 +2348,39 @@ impl BaseDocument {
          self.nodes.set_viewport_scroll(scroll);
      }
  
@@ -121,10 +121,10 @@ index 7de35eee0..1957daf94 100644
          match self.canonical_scroll_target(target) {
              ScrollTarget::Viewport => {
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index a32aa3072..96b59221c 100644
+index 9ca74356a..b4c62fdb5 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
-@@ -900,7 +900,7 @@ impl ElementCx<'_, '_> {
+@@ -901,7 +901,7 @@ impl ElementCx<'_, '_> {
          const ACTIVE_CONTRAST: f32 = 1.3;
  
          for axis in [AbsoluteAxis::Vertical, AbsoluteAxis::Horizontal] {

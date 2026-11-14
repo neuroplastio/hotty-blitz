@@ -1,6 +1,6 @@
 ---
 title: "An inline SVG's image draws what the document fetches for it"
-patch: 0034-blitz-dom-an-inline-SVG-s-image-draws-what-the-docum.patch
+patch: 0032-blitz-dom-an-inline-SVG-s-image-draws-what-the-docum.patch
 upstream-fit: yes
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "An inline's client rects skip the text of freed nodes"
-patch: 0057-blitz-dom-an-inline-s-client-rects-skip-the-text-of-.patch
+patch: 0054-blitz-dom-an-inline-s-client-rects-skip-the-text-of-.patch
 upstream-fit: yes
 ---
 

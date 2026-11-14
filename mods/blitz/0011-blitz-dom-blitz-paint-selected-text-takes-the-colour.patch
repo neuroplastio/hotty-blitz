@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Tue, 6 Oct 2026 23:00:08 +0200
-Subject: [PATCH 11/62] blitz-dom, blitz-paint: selected text takes the colours
+Subject: [PATCH 11/61] blitz-dom, blitz-paint: selected text takes the colours
  of its ::selection
 
 Selections were painted in a fixed highlight, with the text in its own
@@ -13,16 +13,17 @@ the selected text is stroked again over the highlight, clipped to it, in
 each run's ::selection colour (decorations in currentColor follow). Text
 inputs do the same with their editor's selection.
 ---
- packages/blitz-dom/src/node/node.rs |  9 ++-
- packages/blitz-paint/src/render.rs  | 94 ++++++++++++++++++++++++-----
- packages/blitz-paint/src/text.rs    | 38 +++++++-----
- 3 files changed, 111 insertions(+), 30 deletions(-)
+ packages/blitz-dom/src/node/node.rs          |  9 +-
+ packages/blitz-paint/src/render.rs           | 94 ++++++++++++++++----
+ packages/blitz-paint/src/text.rs             | 21 +++--
+ packages/blitz-paint/src/text_decorations.rs | 12 ++-
+ 4 files changed, 105 insertions(+), 31 deletions(-)
 
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index 0cb7c5d52..19e91eeb5 100644
+index 593c1b63a..ec3db1a73 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
-@@ -23,7 +23,7 @@ use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
+@@ -25,7 +25,7 @@ use style::dom::OpaqueNode;
  use style::invalidation::element::restyle_hints::RestyleHint;
  use style::properties::ComputedValues;
  use style::properties::generated::longhands::position::computed_value::T as Position;
@@ -31,7 +32,7 @@ index 0cb7c5d52..19e91eeb5 100644
  use style::servo_arc::Arc as ServoArc;
  use style::shared_lock::SharedRwLock;
  use style::stylesheets::UrlExtraData;
-@@ -1153,6 +1153,13 @@ impl Node {
+@@ -1194,6 +1194,13 @@ impl Node {
              .and_then(|stylo| stylo.primary_styles())
      }
  
@@ -46,10 +47,10 @@ index 0cb7c5d52..19e91eeb5 100644
      ///
      /// Panics if the node has no computed styles: layout always runs after
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 587763f39..145b568bf 100644
+index ba6543b3a..b5dc4c879 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
-@@ -415,6 +415,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+@@ -414,6 +414,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                      },
                      node.id,
                      &mut self.draw_text_context.borrow_mut(),
@@ -57,7 +58,7 @@ index 587763f39..145b568bf 100644
                  );
              }
          }
-@@ -1023,14 +1024,16 @@ impl ElementCx<'_, '_> {
+@@ -1024,14 +1025,16 @@ impl ElementCx<'_, '_> {
              );
  
              // Render text selection highlight (if any) using cached selection ranges
@@ -82,7 +83,7 @@ index 587763f39..145b568bf 100644
              }
  
              // Render text
-@@ -1046,10 +1049,52 @@ impl ElementCx<'_, '_> {
+@@ -1047,10 +1050,52 @@ impl ElementCx<'_, '_> {
                  },
                  self.node.id,
                  &mut draw_text_context,
@@ -135,7 +136,7 @@ index 587763f39..145b568bf 100644
      fn draw_text_input_text(&self, scene: &mut impl PaintScene, pos: Point) {
          // Render the text in text inputs
          if let Some(input_data) = self.text_input {
-@@ -1075,16 +1120,14 @@ impl ElementCx<'_, '_> {
+@@ -1076,16 +1121,14 @@ impl ElementCx<'_, '_> {
              let transform = self.transform
                  * Affine::translate((pos.x * self.scale - scroll_x, pos.y * self.scale - scroll_y));
  
@@ -157,7 +158,7 @@ index 587763f39..145b568bf 100644
                  }
                  if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
                      let color = self.style.get_inherited_text().color;
-@@ -1116,7 +1159,27 @@ impl ElementCx<'_, '_> {
+@@ -1117,7 +1160,27 @@ impl ElementCx<'_, '_> {
                  },
                  self.node.id,
                  &mut draw_text_context,
@@ -185,7 +186,7 @@ index 587763f39..145b568bf 100644
          }
      }
  
-@@ -1175,6 +1238,7 @@ impl ElementCx<'_, '_> {
+@@ -1176,6 +1239,7 @@ impl ElementCx<'_, '_> {
                  },
                  self.node.id,
                  &mut draw_text_context,
@@ -194,37 +195,83 @@ index 587763f39..145b568bf 100644
          }
      }
 diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
-index f0fa23622..fb1eacd8c 100644
+index b1ed129ac..9f647fdb1 100644
 --- a/packages/blitz-paint/src/text.rs
 +++ b/packages/blitz-paint/src/text.rs
-@@ -11,8 +11,8 @@ use style::values::computed::{
+@@ -11,7 +11,7 @@ use crate::text_decorations::{
+     DecorationRunGeometry, DecorationStackEntry, LineDecoration, ResolvedTextShadow,
+     WinAscentCache, draw_line_text_shadows, flush_line_decorations, resolve_decoration_entry,
  };
- use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecorationLength};
- 
-+use crate::FONT_EMBOLDEN_ENABLED;
- use crate::color::{Color, ToColorColor as _};
 -use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
++use crate::FONT_EMBOLDEN_ENABLED;
  
  /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
  ///
-@@ -154,8 +154,14 @@ struct DecorationStackEntry {
+@@ -99,6 +99,7 @@ pub(crate) fn stroke_text<'a>(
+     options: TextPaintOptions,
+     inline_root_id: NodeId,
+     context: &mut DrawTextContext,
++    selected: bool,
+ ) {
+     let TextPaintOptions {
+         scale,
+@@ -168,7 +169,7 @@ pub(crate) fn stroke_text<'a>(
+                 .count();
+             stack.truncate(shared);
+             for &node_id in &path_scratch[shared..] {
+-                let entry = resolve_decoration_entry(doc, node_id, stack.last(), scale);
++                let entry = resolve_decoration_entry(doc, node_id, stack.last(), scale, selected);
+                 stack.push(entry);
+             }
+ 
+@@ -339,23 +340,21 @@ pub(crate) fn glyph_run_rect(glyph_run: &GlyphRun<'_, TextBrush>) -> Rect {
+     Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
  }
  
- /// Resolve the cached style values for a single node into a [`DecorationStackEntry`].
--fn resolve_decoration_entry(doc: &BaseDocument, node_id: NodeId) -> DecorationStackEntry {
--    let Some(styles) = doc.get_node(node_id).and_then(|node| node.primary_styles()) else {
-+/// Its `selected` text takes the colour of its `::selection`, if it has one.
-+fn resolve_decoration_entry(
-+    doc: &BaseDocument,
-+    node_id: NodeId,
+-/// Draw selection highlight rectangles for the given byte range in a layout.
+-/// Uses Parley's Selection type for accurate geometry calculation.
+-pub(crate) fn draw_text_selection(
+-    scene: &mut impl PaintScene,
++/// The area covered by a selection in layout coordinates.
++pub(crate) fn text_selection_area(
+     layout: &Layout<TextBrush>,
+-    transform: Affine,
+     selection_start: usize,
+     selection_end: usize,
+-) {
++) -> kurbo::BezPath {
+     let anchor = Cursor::from_byte_index(layout, selection_start, Affinity::Downstream);
+     let focus = Cursor::from_byte_index(layout, selection_end, Affinity::Downstream);
+     let selection = Selection::new(anchor, focus);
+-
+-    selection.geometry_with(layout, |rect, _line_idx| {
++    let mut area = kurbo::BezPath::new();
++    selection.geometry_with(layout, |rect, _| {
+         let rect = kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1);
+-        scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
++        area.extend(kurbo::Shape::path_elements(&rect, 0.1));
+     });
++    area
+ }
+ 
+ /// Approximates macOS font smoothing (stem dilation). CoreGraphics dilates each side by an amount
+diff --git a/packages/blitz-paint/src/text_decorations.rs b/packages/blitz-paint/src/text_decorations.rs
+index c3404cfdf..e7dba85b0 100644
+--- a/packages/blitz-paint/src/text_decorations.rs
++++ b/packages/blitz-paint/src/text_decorations.rs
+@@ -126,8 +126,10 @@ pub(crate) fn resolve_decoration_entry(
+     node_id: NodeId,
+     parent: Option<&DecorationStackEntry>,
+     scale: f64,
 +    selected: bool,
-+) -> DecorationStackEntry {
+ ) -> DecorationStackEntry {
+-    let Some(styles) = doc.get_node(node_id).and_then(|node| node.primary_styles()) else {
 +    let node = doc.get_node(node_id);
 +    let Some(styles) = node.and_then(|node| node.primary_styles()) else {
          return DecorationStackEntry {
              node_id,
              fill_color: Color::BLACK,
-@@ -165,10 +171,12 @@ fn resolve_decoration_entry(doc: &BaseDocument, node_id: NodeId) -> DecorationSt
+@@ -138,10 +140,12 @@ pub(crate) fn resolve_decoration_entry(
  
      let itext = styles.get_inherited_text();
      let text = styles.get_text();
@@ -239,60 +286,4 @@ index f0fa23622..fb1eacd8c 100644
 +        .resolve_to_absolute(&colors.color)
          .as_srgb_color();
  
-     let drawn_lines = TextDecorationLine::UNDERLINE
-@@ -577,6 +585,7 @@ fn flush_line_decorations(
-     }
- }
- 
-+#[allow(clippy::too_many_arguments)]
- pub(crate) fn stroke_text<'a>(
-     scene: &mut impl PaintScene,
-     lines: impl Iterator<Item = Line<'a, TextBrush>>,
-@@ -585,6 +594,7 @@ pub(crate) fn stroke_text<'a>(
-     options: TextPaintOptions,
-     inline_root_id: NodeId,
-     context: &mut DrawTextContext,
-+    selected: bool,
- ) {
-     let TextPaintOptions {
-         scale,
-@@ -649,7 +659,7 @@ pub(crate) fn stroke_text<'a>(
-                     .count();
-                 stack.truncate(shared);
-                 for &node_id in &path_scratch[shared..] {
--                    stack.push(resolve_decoration_entry(doc, node_id));
-+                    stack.push(resolve_decoration_entry(doc, node_id, selected));
-                 }
- 
-                 let fill_color = brush_override
-@@ -748,23 +758,23 @@ pub(crate) fn stroke_text<'a>(
-     }
- }
- 
--/// Draw selection highlight rectangles for the given byte range in a layout.
--/// Uses Parley's Selection type for accurate geometry calculation.
--pub(crate) fn draw_text_selection(
--    scene: &mut impl PaintScene,
-+/// The area the given byte range of a layout covers, in the layout's
-+/// coordinates. Uses Parley's Selection type for accurate geometry calculation.
-+pub(crate) fn text_selection_area(
-     layout: &Layout<TextBrush>,
--    transform: Affine,
-     selection_start: usize,
-     selection_end: usize,
--) {
-+) -> kurbo::BezPath {
-     let anchor = Cursor::from_byte_index(layout, selection_start, Affinity::Downstream);
-     let focus = Cursor::from_byte_index(layout, selection_end, Affinity::Downstream);
-     let selection = Selection::new(anchor, focus);
- 
-+    let mut area = kurbo::BezPath::new();
-     selection.geometry_with(layout, |rect, _line_idx| {
-         let rect = kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1);
--        scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
-+        area.extend(kurbo::Shape::path_elements(&rect, 0.1));
-     });
-+    area
- }
- 
- /// Approximates macOS font smoothing (stem dilation). CoreGraphics dilates each side by an amount
+     // `text-shadow` inherits, so the run's innermost node carries the effective list.

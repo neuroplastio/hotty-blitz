@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Wed, 4 Nov 2026 14:51:12 +0100
+Subject: [PATCH 53/61] blitz-dom: the document says when an animation's output
+ next changes
+
+`has_active_animations` holds while any CSS animation or transition
+needs ticks, so an embedder that resolves only when something changes
+resolves every frame: a `steps()` countdown at ten steps a second, or an
+animation waiting out its delay, costs as much as one that moves every
+frame.
+
+`resolve_stylist` now also keeps the earliest of Stylo's
+`ElementAnimationSet::next_change` over the document's animation sets,
+and `next_animation_change()` returns it, on the timeline `resolve`
+takes its time on: the start of an animation in its delay, the next jump
+of a `steps()` easing, or the time of that resolve while an easing moves
+continuously. `None` when none will change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs        | 15 +++++++++++++++
+ packages/blitz-dom/src/stylo/traversal.rs |  1 +
+ 2 files changed, 16 insertions(+)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 73fe4d13a..aa93cb603 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -320,6 +320,9 @@ pub struct BaseDocument {
+     // TODO: collapse animating state into a bitflags
+     /// Whether there are active CSS animations/transitions (so we should re-render every frame)
+     pub(crate) has_active_animations: bool,
++    /// When an active CSS animation's or transition's output may next change,
++    /// on the animation timeline (see [`Self::next_animation_change`]).
++    pub(crate) next_animation_change: Option<f64>,
+     /// Whether there is a `<canvas>` element in the DOM (so we should re-render every frame)
+     pub(crate) has_canvas: bool,
+     /// Whether there are subdocuments that are animating (so we should re-render every frame)
+@@ -547,6 +550,7 @@ impl BaseDocument {
+             active_node_id: None,
+             mousedown_node_id: None,
+             has_active_animations: false,
++            next_animation_change: None,
+             subdoc_is_animating: false,
+             has_canvas: false,
+             sub_document_nodes: HashSet::new(),
+@@ -2374,6 +2378,17 @@ impl BaseDocument {
+         self.has_active_animations
+     }
+ 
++    /// When an active CSS animation's or transition's output may next change,
++    /// as the last resolve left it, on the timeline [`Self::resolve`] takes its
++    /// time on: the start of one in its delay, the next jump of a `steps()`
++    /// easing, or the time of that resolve itself while an easing moves
++    /// continuously. `None` when none will change. An embedder that resolves
++    /// only when something changes can wait until then, rather than resolve
++    /// every frame while [`Self::has_active_animations`] holds.
++    pub fn next_animation_change(&self) -> Option<f64> {
++        self.next_animation_change
++    }
++
+     /// The elements whose animated style the last resolve moved, with the
+     /// `::before`/`::after` boxes their style carries: a CSS animation or
+     /// transition changed their computed style, so what they paint or where
+diff --git a/packages/blitz-dom/src/stylo/traversal.rs b/packages/blitz-dom/src/stylo/traversal.rs
+index 35c5b9cde..1aeed8e5b 100644
+--- a/packages/blitz-dom/src/stylo/traversal.rs
++++ b/packages/blitz-dom/src/stylo/traversal.rs
+@@ -175,6 +175,7 @@ impl crate::document::BaseDocument {
+             }
+         }
+         self.has_active_animations = sets.values().any(|state| state.needs_animation_ticks());
++        self.next_animation_change = sets.values().filter_map(|state| state.next_change(now)).min_by(f64::total_cmp);
+ 
+         // Maybe run garbage collection. Stylo has internal to determine whether to run or not.
+         self.stylist.rule_tree().maybe_gc();

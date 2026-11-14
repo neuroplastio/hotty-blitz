@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 3 Nov 2026 17:53:13 +0100
+Subject: [PATCH 57/61] blitz-paint: glyphs are not hinted above a scale of 1
+
+blitz-paint asks for vertical hinting wherever it does not embolden, so
+on Linux and Windows glyphs are hinted at any scale. Hinting snaps a
+glyph's heights to whole device pixels: at 1x that keeps small text
+crisp, but at a denser scale it costs more of the glyph's shape than it
+buys, and with fonts whose own instructions round the x-height down, such
+as IBM Plex Sans, small text drawn at 1.5x to 2x comes out a row shorter
+and lighter than a browser draws it.
+
+Hint only at a scale of 1 or less, as before there.
+---
+ packages/blitz-paint/src/text.rs             | 9 +++++----
+ packages/blitz-paint/src/text_decorations.rs | 2 +-
+ 2 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/packages/blitz-paint/src/text.rs b/packages/blitz-paint/src/text.rs
+index 0a820f6ec..4f7e520b5 100644
+--- a/packages/blitz-paint/src/text.rs
++++ b/packages/blitz-paint/src/text.rs
+@@ -357,7 +357,7 @@ pub(crate) fn stroke_text<'a>(
+         // Pass 3: the glyphs themselves.
+         for (glyph_run, record) in glyph_runs(&line).zip(run_records.iter()) {
+             if record.visible {
+-                draw_glyph_run(scene, &glyph_run, record.fill_color, transform);
++                draw_glyph_run(scene, &glyph_run, record.fill_color, transform, scale);
+             }
+         }
+ 
+@@ -391,6 +391,7 @@ pub(crate) fn draw_glyph_run(
+     glyph_run: &GlyphRun<'_, TextBrush>,
+     color: Color,
+     transform: Affine,
++    scale: f64,
+ ) {
+     let run = glyph_run.run();
+     let font_size = run.font_size();
+@@ -414,7 +415,7 @@ pub(crate) fn draw_glyph_run(
+     scene.draw_glyphs(
+         run.font(),
+         font_size,
+-        !FONT_EMBOLDEN_ENABLED, // hint
++        !FONT_EMBOLDEN_ENABLED && scale <= 1.0, // hint
+         normalized_coords,
+         embolden,
+         Fill::NonZero,
+@@ -443,10 +444,10 @@ pub(crate) fn glyph_run_rect(glyph_run: &GlyphRun<'_, TextBrush>) -> Rect {
+ }
+ 
+ /// The area covered by a selection in layout coordinates.
+-pub(crate) fn fill_text<'a>(scene: &mut impl PaintScene, lines: impl Iterator<Item = Line<'a, TextBrush>>, transform: Affine, _scale: f64, color: Color) {
++pub(crate) fn fill_text<'a>(scene: &mut impl PaintScene, lines: impl Iterator<Item = Line<'a, TextBrush>>, transform: Affine, scale: f64, color: Color) {
+     for line in lines {
+         for run in glyph_runs(&line) {
+-            draw_glyph_run(scene, &run, color, transform);
++            draw_glyph_run(scene, &run, color, transform, scale);
+         }
+     }
+ }
+diff --git a/packages/blitz-paint/src/text_decorations.rs b/packages/blitz-paint/src/text_decorations.rs
+index e7dba85b0..fd1216fce 100644
+--- a/packages/blitz-paint/src/text_decorations.rs
++++ b/packages/blitz-paint/src/text_decorations.rs
+@@ -682,7 +682,7 @@ pub(crate) fn draw_line_text_shadows(
+ 
+             let shadow_transform = transform * Affine::translate(shadow.offset);
+             for run in batch() {
+-                draw_glyph_run(scene, &run, shadow.color, shadow_transform);
++                draw_glyph_run(scene, &run, shadow.color, shadow_transform, options.scale);
+             }
+             if has_decorations {
+                 flush_line_decorations(

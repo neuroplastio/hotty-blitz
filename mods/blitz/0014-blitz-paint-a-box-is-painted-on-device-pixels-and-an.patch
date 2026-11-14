@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Wed, 4 Nov 2026 11:26:23 +0100
+Subject: [PATCH 14/61] blitz-paint: a box is painted on device pixels, and an
+ inset ring's spread is whole
+
+At a fractional scale a box laid out on whole CSS pixels sits at a
+fraction of a device pixel: at 1.6 a box 4 CSS px in starts 6.4 device
+px in. Its background, border, shadows and outline were drawn there,
+anti-aliased, while an unblurred inset box-shadow's hole was snapped to
+device pixels, so `inset 0 0 0 1px` drew 1.25 to 2.1 device pixels a
+side by where the box sat, one side visibly thinner than the others.
+
+Snap the frame an element is painted with to device pixels when its
+transform is a translation, as browsers snap the boxes they paint: each
+edge of the border box rounded on its own, the border keeping its
+widths, and the content box left where layout put it, so text and
+images do not move. The unblurred inset ring's spread is rounded down to
+whole device pixels, at least one, as Stylo snaps a border's width, so
+the ring is as wide on every side and as wide as a 1px border or outline
+beside it: 1 device pixel for 1px at 1, 1.25, 1.5 and 1.6, 2 at 2 and
+2.5, 3 at 3.
+---
+ packages/blitz-paint/src/kurbo_css/css_box.rs | 10 ++++++++++
+ packages/blitz-paint/src/render.rs            |  8 ++++++++
+ packages/blitz-paint/src/render/box_shadow.rs |  5 ++++-
+ 3 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-paint/src/kurbo_css/css_box.rs b/packages/blitz-paint/src/kurbo_css/css_box.rs
+index 8e5452691..761d6628e 100644
+--- a/packages/blitz-paint/src/kurbo_css/css_box.rs
++++ b/packages/blitz-paint/src/kurbo_css/css_box.rs
+@@ -278,6 +278,16 @@ impl CssBox {
+         )
+     }
+ 
++    pub fn snapped(&self, offset: Vec2) -> CssBox {
++        let snap = |v: f64, t: f64| (v + t + 0.5).floor() - t;
++        let bb = self.border_box;
++        let border_box = Rect::new(snap(bb.x0, offset.x), snap(bb.y0, offset.y), snap(bb.x1, offset.x), snap(bb.y1, offset.y));
++        let padding_box = border_box - self.border_width;
++        let content = self.content_box();
++        let padding = Insets { x0: content.x0 - padding_box.x0, y0: content.y0 - padding_box.y0, x1: padding_box.x1 - content.x1, y1: padding_box.y1 - content.y1 };
++        CssBox::new(border_box, self.border_width, padding, self.outline_width, self.border_radii)
++    }
++
+     /// Construct a bezpath drawing the frame border
+     pub fn border_box_path(&self) -> BezPath {
+         let mut path = BezPath::new();
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index 05b97bd69..096006b75 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -789,6 +789,14 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+         // It is quite a bit of math to calculate during render/traverse
+         // Also! we can cache the bezpaths themselves, saving us a bunch of work
+         let frame = create_css_rect(&style, &layout, scale);
++        // Backgrounds, borders, shadows and outlines are drawn on device
++        // pixels, as browsers snap the boxes they paint: at a fractional
++        // scale a box sits at a fraction of a pixel, and a hairline drawn
++        // from its edge came out a different width on each side.
++        let frame = match transform.as_coeffs() {
++            [1.0, 0.0, 0.0, 1.0, tx, ty] => frame.snapped(Vec2::new(tx, ty)),
++            _ => frame,
++        };
+ 
+         let element = node.element_data().unwrap();
+ 
+diff --git a/packages/blitz-paint/src/render/box_shadow.rs b/packages/blitz-paint/src/render/box_shadow.rs
+index 02df4c451..2eaa6c0e3 100644
+--- a/packages/blitz-paint/src/render/box_shadow.rs
++++ b/packages/blitz-paint/src/render/box_shadow.rs
+@@ -78,7 +78,10 @@ impl ElementCx<'_, '_> {
+             shadow.base.horizontal.px() as f64,
+             shadow.base.vertical.px() as f64,
+         ) * self.scale;
+-        let spread = shadow.spread.px() as f64 * self.scale;
++        let mut spread = shadow.spread.px() as f64 * self.scale;
++        if matches!(kind, BoxShadowKind::Inset) && shadow.base.blur.px() == 0.0 && offset == Vec2::ZERO && spread > 0.0 && matches!(self.transform.as_coeffs(), [1.0, 0.0, 0.0, 1.0, _, _]) {
++            spread = spread.floor().max(1.0);
++        }
+         // The standard deviation of a CSS shadow's blur is half of its blur radius
+         let std_dev = shadow.base.blur.px() as f64 * self.scale / 2.0;
+ 

@@ -1,6 +1,6 @@
 ---
 title: Map CSS tab-size into text layout
-patch: 0030-Map-CSS-tab-size-into-text-layout.patch
+patch: 0028-Map-CSS-tab-size-into-text-layout.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0051-Map-more-stylo-text-properties-onto-parley.patch
 ---

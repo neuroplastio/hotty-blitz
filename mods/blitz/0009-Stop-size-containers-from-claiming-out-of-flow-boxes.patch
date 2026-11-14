@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Rui Figueira <rfigueira@cloudflare.com>
 Date: Mon, 12 Oct 2026 20:36:14 +0100
-Subject: [PATCH 09/62] Stop size containers from claiming out-of-flow boxes
+Subject: [PATCH 09/61] Stop size containers from claiming out-of-flow boxes
 
 blitz 0.3.0-beta.3's out-of-flow hoisting (#922) made container-type:
 size and inline-size establish a containing block for absolute and fixed

@@ -1,6 +1,6 @@
 ---
 title: "Honor media attributes on style and link elements"
-patch: 0039-Honor-media-attributes-on-style-and-link-elements.patch
+patch: 0037-Honor-media-attributes-on-style-and-link-elements.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0014-Honor-the-media-attribute-on-style-elements.patch; kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0035-Scope-linked-stylesheets-to-their-media-attribute.patch
 ---

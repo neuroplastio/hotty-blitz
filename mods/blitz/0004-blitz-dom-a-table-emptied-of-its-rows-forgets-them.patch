@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Fri, 9 Oct 2026 22:37:46 +0200
-Subject: [PATCH 04/62] blitz-dom: a table emptied of its rows forgets them
+Subject: [PATCH 04/61] blitz-dom: a table emptied of its rows forgets them
 
 Construction returns early for a node with no children, before the table
 branch that builds a table's context, so a table whose rows a mutation
@@ -16,10 +16,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 6 insertions(+)
 
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
-index b24ebf260..3159a4297 100644
+index 67a2f01ea..b22d74954 100644
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
-@@ -417,6 +417,12 @@ fn collect_layout_children_with_wrap(
+@@ -419,6 +419,12 @@ fn collect_layout_children_with_wrap(
          .reset_construction_flags();
      if let Some(element_data) = doc.nodes[container_node_id].element_data_mut() {
          element_data.take_inline_layout();

@@ -1,6 +1,6 @@
 ---
 title: "text-overflow draws its ellipsis"
-patch: 0029-Implement-text-overflow-ellipsis.patch
+patch: 0027-Implement-text-overflow-ellipsis.patch
 upstream-fit: yes
 ---
 

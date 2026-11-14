@@ -1,6 +1,6 @@
 ---
 title: "A measurement from the cache keeps its baselines"
-patch: 0048-blitz-dom-keep-baselines-in-measure-cache-entries.patch
+patch: 0045-blitz-dom-keep-baselines-in-measure-cache-entries.patch
 upstream-fit: yes
 ---
 

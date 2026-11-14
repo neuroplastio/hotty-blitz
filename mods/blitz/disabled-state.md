@@ -1,6 +1,6 @@
 ---
 title: "A control in the disabled state acts disabled"
-patch: 0018-blitz-dom-blitz-paint-a-control-in-the-disabled-stat.patch
+patch: 0016-blitz-dom-blitz-paint-a-control-in-the-disabled-stat.patch
 upstream-fit: yes
 ---
 

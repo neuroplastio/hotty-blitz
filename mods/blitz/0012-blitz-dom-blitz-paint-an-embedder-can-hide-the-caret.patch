@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: HOTTY Agent <hotty@neuroplast.io>
 Date: Thu, 8 Oct 2026 16:14:04 +0200
-Subject: [PATCH 12/62] blitz-dom, blitz-paint: an embedder can hide the caret,
+Subject: [PATCH 12/61] blitz-dom, blitz-paint: an embedder can hide the caret,
  to blink it
 
 BaseDocument::set_caret_shown turns the focused text input's caret off
@@ -14,10 +14,10 @@ input each time.
  2 files changed, 20 insertions(+), 1 deletion(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index f5b2274d4..fa88e0a75 100644
+index 9288735b0..0c25e2738 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -353,6 +353,8 @@ pub struct BaseDocument {
+@@ -265,6 +265,8 @@ pub struct BaseDocument {
      pub(crate) last_client_pointer_position: Option<taffy::Point<f32>>,
      /// The node which is currently focussed (if any)
      pub(crate) focus_node_id: Option<NodeId>,
@@ -26,7 +26,7 @@ index f5b2274d4..fa88e0a75 100644
      /// The node which is currently active (if any)
      pub(crate) active_node_id: Option<NodeId>,
      /// The node which recieved a mousedown event (if any)
-@@ -578,6 +580,7 @@ impl BaseDocument {
+@@ -490,6 +492,7 @@ impl BaseDocument {
              hover_node_is_text: false,
              last_client_pointer_position: None,
              focus_node_id: None,
@@ -34,7 +34,7 @@ index f5b2274d4..fa88e0a75 100644
              active_node_id: None,
              mousedown_node_id: None,
              has_active_animations: false,
-@@ -746,6 +749,18 @@ impl BaseDocument {
+@@ -658,6 +661,18 @@ impl BaseDocument {
              .or(self.try_root_element().map(|el| el.id))
      }
  
@@ -54,10 +54,10 @@ index f5b2274d4..fa88e0a75 100644
          DocumentMutator::new(self)
      }
 diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
-index 145b568bf..9e240a30b 100644
+index b5dc4c879..05b97bd69 100644
 --- a/packages/blitz-paint/src/render.rs
 +++ b/packages/blitz-paint/src/render.rs
-@@ -1129,7 +1129,11 @@ impl ElementCx<'_, '_> {
+@@ -1130,7 +1130,11 @@ impl ElementCx<'_, '_> {
                      scene.fill(Fill::NonZero, transform, highlight, None, &rect);
                      selection.extend(kurbo::Shape::path_elements(&rect, 0.1));
                  }

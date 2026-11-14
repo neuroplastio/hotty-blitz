@@ -1,6 +1,6 @@
 ---
 title: "A double click selects a word, and a triple click its block"
-patch: 0025-blitz-dom-a-double-click-selects-a-word-and-a-triple.patch
+patch: 0023-blitz-dom-a-double-click-selects-a-word-and-a-triple.patch
 upstream-fit: yes
 ---
 

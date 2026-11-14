@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 12:55:57 +0100
+Subject: [PATCH 60/61] Use whitespace-transparent inline edges in Parley
+
+Build span edges as Parley inline edges and resize them without changing their representation after shaping. This keeps collapsible whitespace across spans while retaining width and wrap behavior.
+---
+ packages/blitz-dom/src/layout/inline/build.rs |  7 +++---
+ .../blitz-dom/src/layout/inline/layout.rs     | 23 +++++++++++++------
+ 2 files changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/inline/build.rs b/packages/blitz-dom/src/layout/inline/build.rs
+index 39372c230..11334f7c9 100644
+--- a/packages/blitz-dom/src/layout/inline/build.rs
++++ b/packages/blitz-dom/src/layout/inline/build.rs
+@@ -139,13 +139,12 @@ pub(crate) fn build_inline_layout_into(
+     return;
+ 
+     /// A box for the margin, border and padding at the start or end of a non-atomic inline
+-    /// box, sized during layout (see `InlineBoxId`). It is built out-of-flow, so that white
+-    /// space collapses across it as across the element's own boundaries, and layout makes it
+-    /// in-flow once it has a width.
++    /// box, sized during layout (see `InlineBoxId`). Parley keeps its edge
++    /// transparent to whitespace processing and counts its width during line layout.
+     fn inline_edge_box(id: InlineBoxId) -> InlineBox {
+         InlineBox {
+             id: id.as_u64(),
+-            kind: InlineBoxKind::OutOfFlow,
++            kind: InlineBoxKind::InlineEdge,
+             // Overridden by push_inline_box method
+             index: 0,
+             width: 0.0,
+diff --git a/packages/blitz-dom/src/layout/inline/layout.rs b/packages/blitz-dom/src/layout/inline/layout.rs
+index 6547bdb12..84ee54f2f 100644
+--- a/packages/blitz-dom/src/layout/inline/layout.rs
++++ b/packages/blitz-dom/src/layout/inline/layout.rs
+@@ -1,5 +1,5 @@
+ use blitz_traits::node_id::NodeId;
+-use parley::{AlignmentOptions, BreakReason, IndentOptions, InlineBoxKind};
++use parley::{AlignmentOptions, BreakReason, IndentOptions};
+ use style::values::specified::box_::{DisplayInside, DisplayOutside};
+ use style::values::{
+     computed::{BaselineSource, CSSPixelLength, Contain},
+@@ -522,14 +522,19 @@ impl LayoutPassState<'_> {
+         let inline_box_count = inline_layout.layout.inline_boxes().len();
+         for index in 0..inline_box_count {
+             inline_layout.layout.edit_inline_box(index, |ibox| {
+-                if let edge @ (InlineBoxId::Start(id) | InlineBoxId::End(id)) = InlineBoxId::from_u64(ibox.id) {
+-                    let (margin, border_padding) = inline_edge_size(&self.nodes[id], edge, child_inputs.parent_size.width);
++                if let edge @ (InlineBoxId::Start(id) | InlineBoxId::End(id)) =
++                    InlineBoxId::from_u64(ibox.id)
++                {
++                    let (margin, border_padding) =
++                        inline_edge_size(&self.nodes[id], edge, child_inputs.parent_size.width);
+                     ibox.width = (margin + border_padding).max(0.0) * scale;
+-                    ibox.kind = if ibox.width > 0.0 { InlineBoxKind::InFlow } else { InlineBoxKind::OutOfFlow };
++
+                     return;
+                 }
+                 let style = self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+-                let margin = style.margin().resolve_or_zero(inputs.parent_size, resolve_calc_value);
++                let margin = style
++                    .margin()
++                    .resolve_or_zero(inputs.parent_size, resolve_calc_value);
+ 
+                 #[cfg(feature = "floats")]
+                 let is_floated = style.float().is_floated();
+@@ -642,7 +647,9 @@ impl LayoutPassState<'_> {
+                     AvailableSpace::MinContent => {
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes() {
+-                            if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) { continue; }
++                            if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) {
++                                continue;
++                            }
+                             let (is_floated, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);
+@@ -680,7 +687,9 @@ impl LayoutPassState<'_> {
+                         let mut right_band: f32 = 0.0;
+                         let mut width: f32 = 0.0;
+                         for ibox in inline_layout.layout.inline_boxes() {
+-                            if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) { continue; }
++                            if !matches!(InlineBoxId::from_u64(ibox.id), InlineBoxId::Node(_)) {
++                                continue;
++                            }
+                             let (float, clear, margin) = {
+                                 let style =
+                                     self.child_layout_style(&self.nodes[NodeId::from_u64(ibox.id)]);

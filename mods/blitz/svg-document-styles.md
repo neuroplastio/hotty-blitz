@@ -1,6 +1,6 @@
 ---
 title: "An inline svg is drawn with the styles the document gives it"
-patch: 0037-blitz-dom-an-inline-svg-is-drawn-with-the-styles-the.patch
+patch: 0035-blitz-dom-an-inline-svg-is-drawn-with-the-styles-the.patch
 upstream-fit: yes
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: "An item resized by its own style lays its container out again"
-patch: 0049-blitz-dom-an-item-resized-by-its-own-style-lays-its-.patch
+patch: 0046-blitz-dom-an-item-resized-by-its-own-style-lays-its-.patch
 upstream-fit: maybe
 ---
 

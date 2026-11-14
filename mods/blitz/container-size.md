@@ -1,6 +1,6 @@
 ---
 title: "Resolve container queries against laid-out container sizes"
-patch: 0051-Resolve-container-queries-against-laid-out-container.patch
+patch: 0048-Resolve-container-queries-against-laid-out-container.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0020-Implement-query_container_size-from-the-last-taffy-l.patch; kitesurf scripts/patches/blitz-dom-0.3.0-beta.4/0048-Restyle-container-queries-against-laid-out-container.patch
 ---

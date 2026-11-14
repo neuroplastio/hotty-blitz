@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Fri, 30 Oct 2026 10:51:07 +0100
-Subject: [PATCH 13/62] blitz-paint: limit the layers open at once, not the
+Subject: [PATCH 13/61] blitz-paint: limit the layers open at once, not the
  layers painted
 
 LayerManager counted every layer it pushed in a paint against

@@ -1,0 +1,466 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Toly <1397674+AnatolyRugalev@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 19:50:31 +0200
+Subject: [PATCH 33/61] Select image sources and update them when the device
+ changes
+
+Select an image from srcset, sizes and picture using the device, and load it again when its attributes, viewport, scale, colour scheme or media type change. Keep the old image until the new one arrives and ignore late arrivals for an outdated choice.
+
+Co-authored-by: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/document.rs     |  20 ++
+ packages/blitz-dom/src/image_source.rs | 323 +++++++++++++++++++++++++
+ packages/blitz-dom/src/lib.rs          |   1 +
+ packages/blitz-dom/src/mutator.rs      |  34 ++-
+ 4 files changed, 373 insertions(+), 5 deletions(-)
+ create mode 100644 packages/blitz-dom/src/image_source.rs
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 93e809b3e..4e5bdd120 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -339,6 +339,10 @@ pub struct BaseDocument {
+     /// Value is a list of (node_id, image_type) pairs waiting for the image.
+     pub(crate) pending_images: HashMap<String, Vec<(NodeId, ImageType)>>,
+ 
++    /// The source each `<img>` whose source the device chose loads, resolved
++    /// (image_source.rs): chosen again when the device changes.
++    pub(crate) chosen_image_sources: HashMap<NodeId, String>,
++
+     /// What inline SVG `<image>` elements refer to, by resolved URL
+     /// (svg_image.rs).
+     #[cfg(feature = "svg")]
+@@ -515,6 +519,7 @@ impl BaseDocument {
+             deferred_construction_nodes: Vec::new(),
+             image_cache: HashMap::new(),
+             pending_images: HashMap::new(),
++            chosen_image_sources: HashMap::new(),
+             #[cfg(feature = "svg")]
+             svg_images: HashMap::new(),
+             pending_style_image_nodes: Vec::new(),
+@@ -1491,6 +1496,10 @@ impl BaseDocument {
+ 
+             match image_type {
+                 ImageType::Image => {
++                    if !self.image_source_is_current(node_id, url) {
++                        continue;
++                    }
++                    let node = &mut self.nodes[node_id];
+                     let element = node.element_data_mut().unwrap();
+                     #[cfg(feature = "custom-widget")]
+                     if element.custom_widget_data().is_some() {
+@@ -2248,6 +2257,17 @@ impl BaseDocument {
+         self.restyle_for_device_change(viewport_units_changed);
+         self.scroll_viewport_by(0.0, 0.0); // Clamp scroll offset
+ 
++        // An <img> with a srcset, or in a <picture>, may choose another
++        // source for the new device.
++        if changes.intersects(
++            DeviceChanges::VIEWPORT_SIZE
++                | DeviceChanges::SCALE
++                | DeviceChanges::COLOR_SCHEME
++                | DeviceChanges::MEDIA_TYPE,
++        ) {
++            self.choose_image_sources_again();
++        }
++
+         // Text is shaped at a specific scale factor, so cached inline layouts
+         // must be invalidated when the scale changes, as must every node's
+         // transform and scrollable overflow (kept in device pixels).
+diff --git a/packages/blitz-dom/src/image_source.rs b/packages/blitz-dom/src/image_source.rs
+new file mode 100644
+index 000000000..bf8fa1e51
+--- /dev/null
++++ b/packages/blitz-dom/src/image_source.rs
+@@ -0,0 +1,323 @@
++//! Which URL an `<img>` shows: HTML's "select an image source", for
++//! `srcset`, `sizes` and the `<source>` elements of a `<picture>`.
++//!
++//! <https://html.spec.whatwg.org/multipage/images.html#select-an-image-source>
++
++use cssparser::Parser;
++use selectors::matching::QuirksMode;
++use style::media_queries::MediaList;
++use style::parser::ParserContext;
++use style::stylesheets::{CssRuleType, CustomMediaEvaluator, Origin};
++use style::values::specified::source_size_list::SourceSizeList;
++use style_traits::ParsingMode;
++
++use crate::{BaseDocument, Node, NodeId, local_name};
++
++/// How a candidate of a `srcset` says what it is for.
++#[derive(Clone, Copy, Debug, PartialEq)]
++enum Descriptor {
++    /// `2x`: pixels per CSS px.
++    Density(f32),
++    /// `640w`: its width in pixels, against the `sizes` it is shown at.
++    Width(f32),
++}
++
++/// The candidates of a `srcset`: each URL with its descriptor (1x when it
++/// has none). Candidates with a descriptor that does not parse are dropped.
++fn parse_srcset(srcset: &str) -> Vec<(&str, Descriptor)> {
++    let mut out = Vec::new();
++    let mut rest = srcset;
++    loop {
++        rest = rest.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ',');
++        if rest.is_empty() {
++            return out;
++        }
++        let end = rest
++            .find(|c: char| c.is_ascii_whitespace())
++            .unwrap_or(rest.len());
++        let (mut url, after) = rest.split_at(end);
++        rest = after;
++        let mut descriptors = "";
++        if url.ends_with(',') {
++            url = url.trim_end_matches(',');
++        } else {
++            // Descriptors run to the next comma outside parentheses.
++            let mut depth = 0;
++            let end = rest
++                .char_indices()
++                .find(|&(_, c)| {
++                    match c {
++                        '(' => depth += 1,
++                        ')' => depth -= 1,
++                        _ => {}
++                    }
++                    c == ',' && depth <= 0
++                })
++                .map_or(rest.len(), |(i, _)| i);
++            descriptors = &rest[..end];
++            rest = &rest[end..];
++        }
++        if url.is_empty() {
++            continue;
++        }
++        let mut descriptor = None;
++        let mut valid = true;
++        for d in descriptors.split_ascii_whitespace() {
++            let parsed = if let Some(x) = d.strip_suffix('x') {
++                x.parse()
++                    .ok()
++                    .filter(|x: &f32| *x > 0.0)
++                    .map(Descriptor::Density)
++            } else if let Some(w) = d.strip_suffix('w') {
++                w.parse()
++                    .ok()
++                    .filter(|w: &f32| *w > 0.0)
++                    .map(Descriptor::Width)
++            } else if d
++                .strip_suffix('h')
++                .is_some_and(|h| h.parse::<f32>().is_ok())
++            {
++                // A height descriptor: allowed, and of no use here.
++                continue;
++            } else {
++                None
++            };
++            match parsed {
++                Some(p) if descriptor.is_none() => descriptor = Some(p),
++                _ => valid = false,
++            }
++        }
++        if valid {
++            out.push((url, descriptor.unwrap_or(Descriptor::Density(1.0))));
++        }
++    }
++}
++
++impl BaseDocument {
++    /// The URL `<img>` node `img` shows, as written (unresolved): from the
++    /// first `<source>` of its `<picture>` whose `type` this build decodes
++    /// and whose `media` matches, else from its own `srcset`, else its `src`.
++    /// Of a `srcset`, the candidate with the smallest density at or above
++    /// the device's, else the densest; a `w` candidate's density is its
++    /// width over the size `sizes` gives it.
++    pub fn image_source(&self, img: NodeId) -> Option<String> {
++        let node = self.get_node(img)?;
++        if let Some(parent) = node.parent.and_then(|p| self.get_node(p))
++            && parent
++                .element_data()
++                .is_some_and(|e| e.name.local == local_name!("picture"))
++        {
++            for &child in &parent.children {
++                if child == img {
++                    break;
++                }
++                let Some(source) = self.get_node(child) else {
++                    continue;
++                };
++                if !source
++                    .element_data()
++                    .is_some_and(|e| e.name.local == local_name!("source"))
++                {
++                    continue;
++                }
++                if let Some(t) = source.attr(local_name!("type"))
++                    && !decodes(t)
++                {
++                    continue;
++                }
++                if let Some(media) = source.attr(local_name!("media"))
++                    && !self.media_matches(media)
++                {
++                    continue;
++                }
++                if let Some(url) = self.pick(source, None) {
++                    return Some(url);
++                }
++            }
++        }
++        let src = node.attr(local_name!("src")).filter(|s| !s.is_empty());
++        self.pick(node, src).or_else(|| src.map(str::to_string))
++    }
++
++    /// Whether what `<img>` node `img` shows depends on the device: it has
++    /// a `srcset`, or is in a `<picture>`.
++    fn chooses(&self, img: NodeId) -> bool {
++        let Some(node) = self.get_node(img) else {
++            return false;
++        };
++        node.attr(local_name!("srcset")).is_some()
++            || node.parent.and_then(|p| self.get_node(p)).is_some_and(|p| {
++                p.element_data()
++                    .is_some_and(|e| e.name.local == local_name!("picture"))
++            })
++    }
++
++    /// `<img>` node `img` loads `url` (resolved): remembered when the
++    /// device chose it, so that another device can choose again.
++    pub(crate) fn image_source_loading(&mut self, img: NodeId, url: &str) {
++        if self.chooses(img) {
++            self.chosen_image_sources.insert(img, url.to_string());
++        } else {
++            self.chosen_image_sources.remove(&img);
++        }
++    }
++
++    /// Whether `url` is what `<img>` node `img` shows now, as far as the
++    /// device's choice goes: an image chosen for another device that
++    /// arrives late is not shown.
++    pub(crate) fn image_source_is_current(&self, img: NodeId, url: &str) -> bool {
++        self.chosen_image_sources
++            .get(&img)
++            .is_none_or(|current| current == url)
++    }
++
++    /// The device changed (its size, scale, colour scheme or media type):
++    /// every `<img>` whose source the device chose chooses again, and loads
++    /// what it chose when that differs.
++    pub(crate) fn choose_image_sources_again(&mut self) {
++        let mut again = Vec::new();
++        let mut gone = Vec::new();
++        for (&img, current) in &self.chosen_image_sources {
++            let in_document = self.get_node(img).is_some_and(|n| {
++                n.flags.is_in_document()
++                    && n.element_data()
++                        .is_some_and(|e| e.name.local == local_name!("img"))
++            });
++            if !in_document {
++                gone.push(img);
++                continue;
++            }
++            let now = self
++                .image_source(img)
++                .filter(|s| !s.is_empty())
++                .and_then(|s| self.url.resolve_relative(&s));
++            if now.is_some_and(|now| now.as_str() != current) {
++                again.push(img);
++            }
++        }
++        for img in gone {
++            self.chosen_image_sources.remove(&img);
++        }
++        if !again.is_empty() {
++            let mut mutator = self.mutate();
++            for img in again {
++                mutator.load_image(img);
++            }
++        }
++    }
++
++    /// The candidate of `node`'s `srcset` for this device. `src`, an
++    /// `<img>`'s, counts as a 1x candidate when no other is 1x.
++    fn pick(&self, node: &Node, src: Option<&str>) -> Option<String> {
++        let mut candidates = parse_srcset(node.attr(local_name!("srcset"))?);
++        if candidates.is_empty() {
++            return None;
++        }
++        let size = if candidates
++            .iter()
++            .any(|(_, d)| matches!(d, Descriptor::Width(_)))
++        {
++            self.source_size(node.attr(local_name!("sizes")).unwrap_or(""))
++        } else {
++            0.0
++        };
++        if let Some(src) = src
++            && !candidates
++                .iter()
++                .any(|(_, d)| *d == Descriptor::Density(1.0))
++        {
++            candidates.push((src, Descriptor::Density(1.0)));
++        }
++        let density = |d: Descriptor| match d {
++            Descriptor::Density(x) => x,
++            Descriptor::Width(w) if size > 0.0 => w / size,
++            Descriptor::Width(_) => f32::INFINITY,
++        };
++        let want = self.viewport.hidpi_scale * self.viewport.zoom;
++        let mut best: Option<(&str, f32)> = None;
++        for (url, d) in candidates {
++            let x = density(d);
++            best = match best {
++                None => Some((url, x)),
++                Some((_, b)) if (b < want && x > b) || (x >= want && x < b) => Some((url, x)),
++                keep => keep,
++            };
++        }
++        best.map(|(url, _)| url.to_string())
++    }
++
++    /// The width in CSS px an image is shown at by a `sizes` attribute.
++    fn source_size(&self, sizes: &str) -> f32 {
++        let url_data = self.url.url_extra_data();
++        let context = ParserContext::new(
++            Origin::Author,
++            &url_data,
++            Some(CssRuleType::Style),
++            ParsingMode::DEFAULT,
++            QuirksMode::NoQuirks,
++            Default::default(),
++            None,
++            None,
++            Default::default(),
++        );
++        let list = SourceSizeList::parse(&context, &mut Parser::new(sizes));
++        list.evaluate(self.stylist.device(), QuirksMode::NoQuirks)
++            .to_f32_px()
++    }
++
++    /// Whether a `<source>`'s `media` matches the device.
++    fn media_matches(&self, media: &str) -> bool {
++        let url_data = self.url.url_extra_data();
++        let mut context = ParserContext::new(
++            Origin::Author,
++            &url_data,
++            Some(CssRuleType::Media),
++            ParsingMode::DEFAULT,
++            QuirksMode::NoQuirks,
++            Default::default(),
++            None,
++            None,
++            Default::default(),
++        );
++        let list = MediaList::parse(&mut context, &mut Parser::new(media));
++        list.evaluate(
++            self.stylist.device(),
++            QuirksMode::NoQuirks,
++            &mut CustomMediaEvaluator::none(),
++        )
++    }
++}
++
++/// Whether this build decodes images of MIME type `t`.
++fn decodes(t: &str) -> bool {
++    let t = t.trim().to_ascii_lowercase();
++    if t == "image/svg+xml" {
++        return cfg!(feature = "svg");
++    }
++    image::ImageFormat::from_mime_type(&t).is_some_and(|f| f.reading_enabled())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{Descriptor, parse_srcset};
++
++    #[test]
++    fn srcset_candidates() {
++        assert_eq!(
++            parse_srcset("a.png, b.png 2x,c.png 640w , d.png 1.5x 10h, bad.png 2q, e.png,"),
++            vec![
++                ("a.png", Descriptor::Density(1.0)),
++                ("b.png", Descriptor::Density(2.0)),
++                ("c.png", Descriptor::Width(640.0)),
++                ("d.png", Descriptor::Density(1.5)),
++                ("e.png", Descriptor::Density(1.0)),
++            ]
++        );
++        // A comma inside a URL stays in it.
++        assert_eq!(
++            parse_srcset("data:image/png;base64,AAAA 2x"),
++            vec![("data:image/png;base64,AAAA", Descriptor::Density(2.0))]
++        );
++        assert!(parse_srcset("  ,, ").is_empty());
++    }
++}
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index 67d0f4a85..037d3f333 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -49,6 +49,7 @@ mod form;
+ mod html;
+ /// Loading of `<iframe>` elements into sub-documents.
+ mod iframe;
++mod image_source;
+ /// Integration of taffy and the DOM.
+ mod layout;
+ mod mutator;
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index bc20ba983..9c4ad5f82 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -455,8 +455,32 @@ impl DocumentMutator<'_> {
+ 
+         if (tag, attr) == tag_and_attr!("input", "checked") {
+             set_input_checked_state(element, value.to_string());
+-        } else if (tag, attr) == tag_and_attr!("img", "src") {
++        } else if (tag, attr) == tag_and_attr!("img", "src")
++            || (tag, attr) == tag_and_attr!("img", "srcset")
++            || (tag, attr) == tag_and_attr!("img", "sizes")
++        {
+             self.load_image(node_id);
++        } else if tag == &local_name!("source")
++            && matches!(attr.as_ref(), "srcset" | "sizes" | "media" | "type")
++        {
++            // A <picture>'s <img> may pick another source.
++            let img = self.doc.nodes[node_id].parent.and_then(|p| {
++                let picture = &self.doc.nodes[p];
++                picture
++                    .element_data()
++                    .is_some_and(|e| e.name.local == local_name!("picture"))
++                    .then(|| {
++                        picture.children.iter().copied().find(|&c| {
++                            self.doc.nodes[c]
++                                .element_data()
++                                .is_some_and(|e| e.name.local == local_name!("img"))
++                        })
++                    })
++                    .flatten()
++            });
++            if let Some(img) = img {
++                self.load_image(img);
++            }
+         } else if cfg!(feature = "svg")
+             && **tag == *"image"
+             && **attr == *"href"
+@@ -1513,13 +1537,13 @@ impl<'doc> DocumentMutator<'doc> {
+         self.doc.stylesheet_generation += 1;
+     }
+ 
+-    fn load_image(&mut self, target_id: NodeId) {
+-        let node = &self.doc.nodes[target_id];
+-        if let Some(raw_src) = node.attr(local_name!("src")) {
++    pub(crate) fn load_image(&mut self, target_id: NodeId) {
++        if let Some(raw_src) = self.doc.image_source(target_id) {
+             if !raw_src.is_empty()
+-                && let Some(src) = self.doc.resolve_url(raw_src)
++                && let Some(src) = self.doc.resolve_url(&raw_src)
+             {
+                 let src_string = src.as_str();
++                self.doc.image_source_loading(target_id, src_string);
+ 
+                 // Check cache first
+                 if let Some(cached_image) = self.doc.image_cache.get(src_string) {

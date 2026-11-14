@@ -1,6 +1,6 @@
 ---
 title: "Size a textarea to its content"
-patch: 0059-Size-a-textarea-to-its-content.patch
+patch: 0056-Size-a-textarea-to-its-content.patch
 upstream-fit: maybe
 ---
 

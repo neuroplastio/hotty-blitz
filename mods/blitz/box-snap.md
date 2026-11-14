@@ -1,6 +1,6 @@
 ---
 title: "A box is painted on device pixels, and an inset ring is whole pixels wide"
-patch: 0015-blitz-paint-a-box-is-painted-on-device-pixels-and-an.patch
+patch: 0014-blitz-paint-a-box-is-painted-on-device-pixels-and-an.patch
 upstream-fit: yes
 ---
 
@@ -8,7 +8,7 @@ upstream-fit: yes
 pixels sits at a fraction of a device pixel (4 CSS px is 6.4 at 1.6). Its
 background, border, shadows and outline were painted there, anti-aliased,
 while an unblurred inset box-shadow's hole was snapped to device pixels
-(0048), so `inset 0 0 0 1px` drew 1.25 to 2.1 device pixels a side by
+(the inset-ring correction), so `inset 0 0 0 1px` drew 1.25 to 2.1 device pixels a side by
 where the box sat. Now the frame an element is painted with is snapped
 when its transform is a translation, as browsers snap the boxes they
 paint: each edge of the border box rounded on its own, so boxes that

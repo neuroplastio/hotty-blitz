@@ -9,8 +9,8 @@ span only, so its inline-start and inline-end margin, border and padding
 took no space: `A<i style="margin-left:2ch">x</i>` drew "Ax". Each such
 edge is now an empty inline box at the span's start or end, sized to
 margin + border + padding (percentages against the line's width) and put
-in flow only when it is wider than 0, so white space still collapses
-across it. A restyle that adds or removes an edge lays the paragraph out
+using Parley inline edges, which do not interrupt whitespace collapsing.
+An edge contributes a wrap opportunity only when it is wider than zero. A restyle that adds or removes an edge lays the paragraph out
 again. Client rects count border and padding, not margin. It matches
 Chromium for ems, `ch`, percentages, nested and wrapping spans, and
 `::before`.

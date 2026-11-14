@@ -1,6 +1,6 @@
 ---
 title: Apply opacity to inline text and backgrounds
-patch: 0062-Apply-inline-box-opacity-to-text-and-span-decoration.patch
+patch: 0059-Apply-inline-box-opacity-to-text-and-span-decoration.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-paint-0.3.0-beta.4/0018-Apply-inline-box-opacity-to-text-and-span-decoration.patch
 ---

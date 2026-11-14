@@ -1,6 +1,6 @@
 ---
 title: Honour visibility on inline text
-patch: 0017-Honour-visibility-hidden-on-inline-text.patch
+patch: 0015-Honour-visibility-hidden-on-inline-text.patch
 upstream-fit: yes
 source: kitesurf scripts/patches/blitz-paint-0.3.0-beta.4/0020-Honour-visibility-hidden-on-inline-text.patch
 ---

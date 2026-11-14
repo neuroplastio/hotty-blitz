@@ -1,6 +1,6 @@
 ---
 title: "Form controls follow the used color scheme"
-patch: 0019-blitz-dom-blitz-paint-form-controls-follow-the-used-.patch
+patch: 0017-blitz-dom-blitz-paint-form-controls-follow-the-used-.patch
 upstream-fit: yes
 ---
 

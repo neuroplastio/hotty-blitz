@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Sat, 31 Oct 2026 16:21:50 +0100
-Subject: [PATCH 06/62] blitz-dom: a scroll comes to rest at its snap position
+Subject: [PATCH 06/61] blitz-dom: a scroll comes to rest at its snap position
  (CSS Scroll Snap)
 
 scroll_snap.rs picks the snap position a scroll comes to rest at, from
@@ -23,26 +23,14 @@ Needs Stylo with these properties in Servo mode, behind
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- packages/blitz-dom/src/document.rs       |   1 +
  packages/blitz-dom/src/events/pointer.rs |   7 +-
  packages/blitz-dom/src/lib.rs            |   3 +
  packages/blitz-dom/src/scroll_snap.rs    | 720 +++++++++++++++++++++++
  packages/blitz-dom/src/scrolling.rs      |  47 +-
+ packages/blitz-dom/src/stylo/prefs.rs    |   1 +
  5 files changed, 772 insertions(+), 6 deletions(-)
  create mode 100644 packages/blitz-dom/src/scroll_snap.rs
 
-diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index d33ef0d65..f5b2274d4 100644
---- a/packages/blitz-dom/src/document.rs
-+++ b/packages/blitz-dom/src/document.rs
-@@ -96,6 +96,7 @@ pub(crate) fn init_stylo_prefs() {
-         style_config::set_pref!("layout.css.font-variations.enabled", true);
-         style_config::set_pref!("layout.css.text-indent-keywords.enabled", true);
-         style_config::set_pref!("layout.css.word-break.break-word.enabled", true);
-+        style_config::set_pref!("layout.css.scroll-snap.enabled", true);
-         #[cfg(feature = "writing-mode")]
-         {
-             style_config::set_pref!("layout.css.writing-mode.enabled", true);
 diff --git a/packages/blitz-dom/src/events/pointer.rs b/packages/blitz-dom/src/events/pointer.rs
 index 9617ee683..c0a2097c8 100644
 --- a/packages/blitz-dom/src/events/pointer.rs
@@ -69,7 +57,7 @@ index 9617ee683..c0a2097c8 100644
  
      let time_ms = SystemTime::now()
 diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
-index cf4e592d5..0cc8e9040 100644
+index f9d485ebd..300288317 100644
 --- a/packages/blitz-dom/src/lib.rs
 +++ b/packages/blitz-dom/src/lib.rs
 @@ -56,6 +56,8 @@ mod query_selector;
@@ -81,14 +69,14 @@ index cf4e592d5..0cc8e9040 100644
  /// Scrolling of nodes and the viewport, and scroll animations.
  mod scrolling;
  mod selection;
-@@ -104,6 +106,7 @@ pub use markup5ever::{
+@@ -101,6 +103,7 @@ pub use markup5ever::{
  pub use mutator::DocumentMutator;
  pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, TextNodeData};
  pub use parley::FontContext;
 +pub use scroll_snap::ScrollSnapIntent;
  pub use scrolling::{ScrollBehavior, ScrollLogicalPosition};
+ pub use stylo::UserAgentStylesheet;
  pub use tree::NodeTree;
- 
 diff --git a/packages/blitz-dom/src/scroll_snap.rs b/packages/blitz-dom/src/scroll_snap.rs
 new file mode 100644
 index 000000000..f010a5c80
@@ -947,3 +935,15 @@ index 1957daf94..d5189087b 100644
      }
  
      /// Resolve a URL fragment (the `#...` part of a URL) to a scroll target.
+diff --git a/packages/blitz-dom/src/stylo/prefs.rs b/packages/blitz-dom/src/stylo/prefs.rs
+index e9565a11c..16063fa4b 100644
+--- a/packages/blitz-dom/src/stylo/prefs.rs
++++ b/packages/blitz-dom/src/stylo/prefs.rs
+@@ -5,6 +5,7 @@ use std::sync::Once;
+ pub(crate) fn init_stylo_prefs() {
+     static INIT: Once = Once::new();
+     INIT.call_once(|| {
++        style_config::set_pref!("layout.css.scroll-snap.enabled", true);
+         style_config::set_pref!("layout.css.flexbox-balance.enabled", true);
+         style_config::set_pref!("layout.css.background-clip.text.enabled", true);
+         style_config::set_pref!("layout.css.webkit-text-fill-color.enabled", true);
