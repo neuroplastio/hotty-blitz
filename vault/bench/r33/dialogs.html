@@ -1,0 +1,30 @@
+<!-- R-33 leg 2: shadowed dialogs and panels. Nine panels (radius 4-16,
+     two-layer shadows), eight popovers overlapping each other and the panels,
+     a modal with a wide shadow over a dimmed backdrop. -->
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#f3f4f6;color:#1f2328;font:14px/1.35 sans-serif}
+.g{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;padding:28px}
+.p{background:#fff;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,.12),0 8px 24px rgba(0,0,0,.14)}
+.p h3{margin:0 0 6px;font-size:15px}.p p{margin:0;color:#57606a}
+.pop{position:absolute;width:180px;padding:10px;background:#fff;box-shadow:0 4px 12px rgba(0,0,0,.18),0 16px 40px rgba(0,0,0,.22)}
+.dim{position:absolute;inset:0;background:rgba(15,20,25,.35)}
+.modal{position:absolute;left:50%;top:50%;width:520px;height:300px;margin:-150px 0 0 -260px;background:#fff;border-radius:18px;padding:24px;box-shadow:0 24px 80px rgba(0,0,0,.45),inset 0 0 0 1px rgba(0,0,0,.06)}
+</style>
+<div class="g"><section class="p" style="border-radius:4px"><h3>Panel 0</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:8px"><h3>Panel 1</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:12px"><h3>Panel 2</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:16px"><h3>Panel 3</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:4px"><h3>Panel 4</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:8px"><h3>Panel 5</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:12px"><h3>Panel 6</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:16px"><h3>Panel 7</h3><p>settings row settings row settings row settings row settings row settings row </p></section>
+<section class="p" style="border-radius:4px"><h3>Panel 8</h3><p>settings row settings row settings row settings row settings row settings row </p></section></div>
+<div class="pop" style="left:120px;top:90px;border-radius:6px">menu 0<br>item<br>item</div>
+<div class="pop" style="left:270px;top:150px;border-radius:10px">menu 1<br>item<br>item</div>
+<div class="pop" style="left:420px;top:210px;border-radius:14px">menu 2<br>item<br>item</div>
+<div class="pop" style="left:570px;top:90px;border-radius:6px">menu 3<br>item<br>item</div>
+<div class="pop" style="left:720px;top:150px;border-radius:10px">menu 4<br>item<br>item</div>
+<div class="pop" style="left:870px;top:210px;border-radius:14px">menu 5<br>item<br>item</div>
+<div class="pop" style="left:1020px;top:90px;border-radius:6px">menu 6<br>item<br>item</div>
+<div class="pop" style="left:1170px;top:150px;border-radius:10px">menu 7<br>item<br>item</div>
+<div class="dim"></div><div class="modal"><h2>Dialog</h2><p>A modal with a wide blurred shadow over everything.</p></div>

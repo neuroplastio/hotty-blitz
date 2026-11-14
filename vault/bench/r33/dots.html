@@ -1,0 +1,26 @@
+<!-- R-33 leg 2: radial dot grids, the gradient LUT reuse case. The page is a
+     radial-gradient dot grid (12px tiles); 18 tiles carry a smaller dot grid,
+     rotated and scaled. -->
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background-color:#0d1117;background-image:radial-gradient(circle,#30363d 1.5px,transparent 2px);background-size:12px 12px;color:#c9d1d9}
+.g{display:grid;grid-template-columns:repeat(6,1fr);gap:40px;padding:48px}
+.t{height:110px;border-radius:12px;background-color:#161b22;background-image:radial-gradient(circle,#58a6ff 2px,transparent 2.5px);background-size:8px 8px}
+</style>
+<div class="g"><div class="t" style="transform:rotate(0deg) scale(1.0)"></div>
+<div class="t" style="transform:rotate(15deg) scale(1.15)"></div>
+<div class="t" style="transform:rotate(30deg) scale(1.3)"></div>
+<div class="t" style="transform:rotate(45deg) scale(1.0)"></div>
+<div class="t" style="transform:rotate(60deg) scale(1.15)"></div>
+<div class="t" style="transform:rotate(75deg) scale(1.3)"></div>
+<div class="t" style="transform:rotate(0deg) scale(1.0)"></div>
+<div class="t" style="transform:rotate(15deg) scale(1.15)"></div>
+<div class="t" style="transform:rotate(30deg) scale(1.3)"></div>
+<div class="t" style="transform:rotate(45deg) scale(1.0)"></div>
+<div class="t" style="transform:rotate(60deg) scale(1.15)"></div>
+<div class="t" style="transform:rotate(75deg) scale(1.3)"></div>
+<div class="t" style="transform:rotate(0deg) scale(1.0)"></div>
+<div class="t" style="transform:rotate(15deg) scale(1.15)"></div>
+<div class="t" style="transform:rotate(30deg) scale(1.3)"></div>
+<div class="t" style="transform:rotate(45deg) scale(1.0)"></div>
+<div class="t" style="transform:rotate(60deg) scale(1.15)"></div>
+<div class="t" style="transform:rotate(75deg) scale(1.3)"></div></div>

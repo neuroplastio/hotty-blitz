@@ -33,6 +33,23 @@ docs() {
   echo "gradients-same|$HERE/gradients-same.html|$S16"
   echo "scroll|$HERE/scroll.html|$S16"
   echo "scroll-wheel|$HERE/scroll.html|$S16 --wheel 96 --at 1200,500"
+  # Added for the patches (gov, 2026-11-14): shadows across scales, dot
+  # grids, CSS clip:rect, and hotty-kitesurf's pixel fixtures (ks-*).
+  S1="--cols 120 --rows 35 --scale 1 --cell 10x21"
+  S2="--cols 120 --rows 35 --scale 2 --cell 20x42"
+  echo "dialogs|$HERE/dialogs.html|$S16"
+  echo "dialogs@1|$HERE/dialogs.html|$S1"
+  echo "dialogs@2|$HERE/dialogs.html|$S2"
+  echo "shadows@1|$HERE/shadows.html|$S1"
+  echo "shadows@2|$HERE/shadows.html|$S2"
+  echo "dots|$HERE/dots.html|$S16"
+  echo "clips|$HERE/clips.html|$S16"
+  echo "clips@2|$HERE/clips.html|$S2"
+  for k in clip shadows wide-shadows gradients; do
+    for s in 1 1.6 2; do
+      echo "ks-$k@$s|$HERE/ks-$k.html|--cols 80 --scale $s --cell $(awk "BEGIN{printf \"%dx%d\", 10*$s+.5, 21*$s+.5}")"
+    done
+  done
 }
 
 r=0
