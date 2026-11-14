@@ -34,3 +34,10 @@ and the gate run again before the hottyterm pin.
 A changed patch (same count, new content) is still not caught: after
 changing a `mods/blitz` patch in a nest, change the fork the same way, or
 set it up again, before trusting the gate.
+
+For metadata-driven reconstruction, a set's `url` basename names both the
+local source repository and the checkout beside hotty-blitz by default.
+`source-path` and `fork-path` override those names, relative to the source
+nest and the reconstructed work directory respectively. `additional-sets`
+lists comma-separated sets to apply after this set in the same checkout;
+the Vello workspace applies Glifo as well as vello_cpu.

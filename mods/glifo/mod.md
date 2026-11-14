@@ -3,6 +3,8 @@ upstream: glifo
 url: https://github.com/linebender/vello
 license: Apache-2.0 OR MIT
 base: b7e8f523b45c07a5edb806bb7241ef5afe34a882
+source-path: vello_cpu
+fork-path: glifo
 builds: hotty-blitz
 public: true
 ---
