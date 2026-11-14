@@ -50,6 +50,7 @@ git_set parley "$(dirname "$HERE")/parley"
 git_set stylo "$(dirname "$HERE")/stylo"
 git_set usvg "$(dirname "$HERE")/resvg"
 git_set taffy "$(dirname "$HERE")/taffy"
+git_set anyrender "$(dirname "$HERE")/anyrender"
 
 # Both sets target a Git revision of the same upstream vello workspace.
 if [ "$AT" = base ]; then

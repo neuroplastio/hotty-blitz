@@ -45,6 +45,12 @@ blitz-traits = { path = "../blitz/packages/blitz-traits" }
 debug_timer = { path = "../blitz/packages/debug_timer" }
 stylo_taffy = { path = "../blitz/packages/stylo_taffy" }
 
+# AnyRender's renderer selects a zero-worker context for filtered scenes.
+[patch."https://github.com/DioxusLabs/anyrender"]
+anyrender = { path = "../anyrender/crates/anyrender" }
+anyrender_vello_cpu = { path = "../anyrender/crates/anyrender_vello_cpu" }
+anyrender_svg = { path = "../anyrender/crates/anyrender_svg" }
+
 # The parley fork (../parley, branch `hotty`, made by scripts/parley-fork.sh
 # from the release Blitz pins and the patches in mods/parley/): a cluster with
 # emoji presentation takes a colour font before a text font.

@@ -1,0 +1,126 @@
+From bb78ab82024559f6033e75f44904060384fd1620 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 18:55:38 +0100
+Subject: [PATCH] Allow filtered scenes in single-threaded renderers
+
+---
+ .../anyrender_vello_cpu/src/image_renderer.rs | 38 ++++++++++++++++++-
+ crates/anyrender_vello_cpu/src/scene.rs       | 19 +++++++++-
+ 2 files changed, 55 insertions(+), 2 deletions(-)
+
+diff --git a/crates/anyrender_vello_cpu/src/image_renderer.rs b/crates/anyrender_vello_cpu/src/image_renderer.rs
+index f331353..e204451 100644
+--- a/crates/anyrender_vello_cpu/src/image_renderer.rs
++++ b/crates/anyrender_vello_cpu/src/image_renderer.rs
+@@ -5,9 +5,18 @@ use vello_cpu::{PixmapMut, RenderContext};
+ 
+ pub struct VelloCpuImageRenderer {
+     scene: VelloCpuScenePainter,
++    single_threaded: bool,
+ }
+ 
+ impl VelloCpuImageRenderer {
++    /// Create a renderer whose scene is rasterized on the calling thread.
++    pub fn new_single_threaded(width: u32, height: u32) -> Self {
++        Self {
++            scene: VelloCpuScenePainter::single_threaded(width as u16, height as u16),
++            single_threaded: true,
++        }
++    }
++
+     /// Create a renderer with a custom image cache configuration.
+     pub fn with_image_cache_config(width: u32, height: u32, config: ImageCacheConfig) -> Self {
+         Self {
+@@ -16,6 +25,7 @@ impl VelloCpuImageRenderer {
+                 height as u16,
+                 config,
+             ),
++            single_threaded: false,
+         }
+     }
+ 
+@@ -35,17 +45,43 @@ impl VelloCpuImageRenderer {
+ }
+ 
+ impl AnyRenderContext for VelloCpuImageRenderer {}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn single_threaded_renderer_stays_single_threaded_after_resize() {
++        let mut renderer = VelloCpuImageRenderer::new_single_threaded(800, 600);
++        assert!(!renderer.scene.render_ctx.is_multi_threaded());
++        renderer.resize(900, 700);
++        assert!(!renderer.scene.render_ctx.is_multi_threaded());
++    }
++}
++
+ impl ImageRenderer for VelloCpuImageRenderer {
+     type ScenePainter<'a> = VelloCpuScenePainter;
+ 
+     fn new(width: u32, height: u32) -> Self {
+         Self {
+             scene: VelloCpuScenePainter::new(width as u16, height as u16),
++            single_threaded: false,
+         }
+     }
+ 
+     fn resize(&mut self, width: u32, height: u32) {
+-        self.scene.render_ctx = RenderContext::new(width as u16, height as u16);
++        self.scene.render_ctx = if self.single_threaded {
++            RenderContext::new_with(
++                width as u16,
++                height as u16,
++                vello_cpu::RenderSettings {
++                    num_threads: 0,
++                    ..Default::default()
++                },
++            )
++        } else {
++            RenderContext::new(width as u16, height as u16)
++        };
+     }
+ 
+     fn reset(&mut self) {
+diff --git a/crates/anyrender_vello_cpu/src/scene.rs b/crates/anyrender_vello_cpu/src/scene.rs
+index 05f5f0b..fb30838 100644
+--- a/crates/anyrender_vello_cpu/src/scene.rs
++++ b/crates/anyrender_vello_cpu/src/scene.rs
+@@ -124,6 +124,23 @@ impl VelloCpuScenePainter {
+         Self::with_image_cache_config(width, height, ImageCacheConfig::default())
+     }
+ 
++    pub(crate) fn single_threaded(width: u16, height: u16) -> Self {
++        Self {
++            render_ctx: vello_cpu::RenderContext::new_with(
++                width,
++                height,
++                vello_cpu::RenderSettings {
++                    num_threads: 0,
++                    ..Default::default()
++                },
++            ),
++            resources: vello_cpu::Resources::new(),
++            image_cache: ImageCache::new(ImageCacheConfig::default()),
++            layer_stack: Vec::new(),
++            glyph_caching: false,
++        }
++    }
++
+     pub fn with_image_cache_config(width: u16, height: u16, config: ImageCacheConfig) -> Self {
+         Self {
+             render_ctx: vello_cpu::RenderContext::new(width, height),
+@@ -197,7 +214,7 @@ impl PaintScene for VelloCpuScenePainter {
+         #[cfg(feature = "filters")]
+         let filter = filter
+             .and_then(crate::filters::convert_filter)
+-            .filter(|_| cfg!(not(feature = "multithreading")));
++            .filter(|_| !self.render_ctx.is_multi_threaded());
+ 
+         #[cfg(not(feature = "filters"))]
+         let filter = {
+-- 
+2.56.0
+

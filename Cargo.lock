@@ -23,7 +23,6 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "anyrender"
 version = "0.14.0"
-source = "git+https://github.com/DioxusLabs/anyrender?rev=1a314052b7b19cc510606d2d3c6145cf8b9a8a84#1a314052b7b19cc510606d2d3c6145cf8b9a8a84"
 dependencies = [
  "kurbo",
  "peniko",
@@ -34,7 +33,6 @@ dependencies = [
 [[package]]
 name = "anyrender_svg"
 version = "0.15.0"
-source = "git+https://github.com/DioxusLabs/anyrender?rev=1a314052b7b19cc510606d2d3c6145cf8b9a8a84#1a314052b7b19cc510606d2d3c6145cf8b9a8a84"
 dependencies = [
  "anyrender",
  "image",
@@ -46,7 +44,6 @@ dependencies = [
 [[package]]
 name = "anyrender_vello_cpu"
 version = "0.18.0"
-source = "git+https://github.com/DioxusLabs/anyrender?rev=1a314052b7b19cc510606d2d3c6145cf8b9a8a84#1a314052b7b19cc510606d2d3c6145cf8b9a8a84"
 dependencies = [
  "anyrender",
  "bytemuck",
