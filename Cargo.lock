@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "hotty-blitz"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
@@ -818,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "hotty-cli"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "base64 0.22.1",
  "flate2",
