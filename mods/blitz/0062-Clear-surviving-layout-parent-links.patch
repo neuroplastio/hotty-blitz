@@ -1,0 +1,72 @@
+From adfe07ead80dc80905d9b65c69e08091eb9f7f25 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 15:17:51 +0100
+Subject: [PATCH] Clear surviving children when a layout parent is removed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-authored-by: Luís Duarte <lduarte@cloudflare.com>
+---
+ packages/blitz-dom/src/document.rs | 41 ++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index fda4cac4c..04d064235 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -991,6 +991,23 @@ impl BaseDocument {
+     /// it so that stale NodeIds are never dereferenced after the slot is freed.
+     pub(crate) fn remove_node_from_tree(&mut self, node_id: NodeId) -> Option<Node> {
+         self.clear_interaction_state_for_removed_node(node_id);
++        // Layout children can outlive anonymous blocks and other layout parents.
++        let laid_out: Vec<NodeId> = self
++            .nodes
++            .get(node_id)
++            .map(|node| {
++                let mut ids = node.children.to_vec();
++                ids.extend(node.layout_children.borrow().iter().flatten().copied());
++                ids
++            })
++            .unwrap_or_default();
++        for child_id in laid_out {
++            if let Some(child) = self.nodes.get(child_id)
++                && child.layout_parent.get() == Some(node_id)
++            {
++                child.layout_parent.set(None);
++            }
++        }
+         self.nodes.remove(node_id)
+     }
+ 
+@@ -4475,3 +4492,27 @@ mod passed_over_box_tests {
+         );
+     }
+ }
++
++#[cfg(test)]
++mod detached_layout_parent_tests {
++    use super::*;
++    use crate::DocumentConfig;
++    use crate::qual_name;
++
++    #[test]
++    fn removing_layout_parent_clears_surviving_children() {
++        let mut doc = BaseDocument::new(DocumentConfig::default());
++        let mut mutator = doc.mutate();
++        let parent = mutator.create_element(qual_name!("div", html), vec![]);
++        let dom_child = mutator.create_element(qual_name!("span", html), vec![]);
++        let layout_child = mutator.create_element(qual_name!("span", html), vec![]);
++        mutator.append_children(parent, &[dom_child]);
++        drop(mutator);
++        doc.nodes[dom_child].layout_parent.set(Some(parent));
++        doc.nodes[layout_child].layout_parent.set(Some(parent));
++        *doc.nodes[parent].layout_children.borrow_mut() = Some(vec![layout_child].into());
++        doc.remove_node_from_tree(parent);
++        assert_eq!(doc.nodes[dom_child].layout_parent.get(), None);
++        assert_eq!(doc.nodes[layout_child].layout_parent.get(), None);
++    }
++}
+-- 
+2.56.0
+
