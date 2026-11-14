@@ -325,6 +325,8 @@ pub struct Inked<'a, S: PaintScene> {
     rule: Option<Fill>,
     /// Runs left out, for the tests.
     pub left_out: u32,
+    /// A filter was sent to this scene, including one from SVG or text.
+    pub filtered: bool,
 }
 
 impl<'a, S: PaintScene> Inked<'a, S> {
@@ -334,6 +336,7 @@ impl<'a, S: PaintScene> Inked<'a, S> {
             ink,
             rule: Some(Fill::NonZero),
             left_out: 0,
+            filtered: false,
         }
     }
 }
@@ -362,6 +365,7 @@ impl<S: PaintScene> PaintScene for Inked<'_, S> {
     #[inline]
     fn reset(&mut self) {
         self.rule = Some(Fill::NonZero);
+        self.filtered = false;
         self.inner.reset()
     }
 
@@ -376,6 +380,7 @@ impl<S: PaintScene> PaintScene for Inked<'_, S> {
         filter: Option<std::sync::Arc<anyrender::Filter>>,
         backdrop_filter: Option<std::sync::Arc<anyrender::Filter>>,
     ) {
+        self.filtered |= filter.is_some();
         self.inner
             .push_layer(fill, blend, alpha, transform, clip, filter, backdrop_filter)
     }
@@ -931,6 +936,39 @@ pub fn root_bar_strip(doc: &blitz_dom::BaseDocument, vertical: bool) -> DevRect 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_filters_in_forwarded_and_appended_layers() {
+        let mut target = anyrender::Scene::new();
+        let mut ink = Ink::default();
+        let mut wrapper = Inked::new(&mut target, &mut ink);
+        let rect = kurbo::Rect::new(0.0, 0.0, 10.0, 10.0);
+        wrapper.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &rect,
+            None,
+            None,
+        );
+        assert!(!wrapper.filtered);
+        let mut fragment = anyrender::Scene::new();
+        let filter = std::sync::Arc::new(anyrender::Filter::single(
+            anyrender::filters::FilterEffect::blur(2.0),
+        ));
+        fragment.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &rect,
+            Some(filter),
+            None,
+        );
+        wrapper.append_scene(fragment, Affine::IDENTITY);
+        assert!(wrapper.filtered);
+    }
 
     /// The merge as it was: start over after every union.
     fn merge_restarting(mut rects: Vec<Rect>, slack: u32) -> Vec<Rect> {

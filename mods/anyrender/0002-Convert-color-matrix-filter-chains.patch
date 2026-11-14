@@ -1,0 +1,148 @@
+From 4f103958b649d6e0896d346dbadf574efcd5a7e5 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 19:05:54 +0100
+Subject: [PATCH] Convert color-matrix filter chains
+
+---
+ crates/anyrender_vello_cpu/src/filters.rs | 107 ++++++++++++++++++++--
+ 1 file changed, 99 insertions(+), 8 deletions(-)
+
+diff --git a/crates/anyrender_vello_cpu/src/filters.rs b/crates/anyrender_vello_cpu/src/filters.rs
+index 4e57e27..085a587 100644
+--- a/crates/anyrender_vello_cpu/src/filters.rs
++++ b/crates/anyrender_vello_cpu/src/filters.rs
+@@ -2,7 +2,7 @@ use std::sync::Arc;
+ 
+ use anyrender::{
+     Filter,
+-    filters::{EdgeMode, FilterEffect},
++    filters::{EdgeMode, FilterEffect, FilterId, FilterInput},
+ };
+ use vello_common::filter_effects::FilterPrimitive;
+ 
+@@ -12,12 +12,66 @@ pub(crate) fn convert_filter(filter: Arc<Filter>) -> Option<vello_common::filter
+         return None;
+     }
+ 
+-    // Vello CPU only supports single-node filters at the moment
+-    let node = &filter.nodes()[0];
+-    let primitive = convert_filter_effect(&node.effect)?;
+-    Some(vello_common::filter_effects::Filter::from_primitive(
+-        primitive,
+-    ))
++    let first = convert_filter_effect(&nodes[0].effect)?;
++    let linear = filter.output() == FilterId((nodes.len() - 1) as u16)
++        && nodes.iter().enumerate().skip(1).all(|(index, node)| {
++            node.inputs.primary == Some(FilterInput::Result(FilterId((index - 1) as u16)))
++                && node.inputs.secondary.is_none()
++        });
++    if linear
++        && nodes
++            .iter()
++            .all(|node| matches!(node.effect, FilterEffect::ColorMatrix(_)))
++        && let FilterPrimitive::ColorMatrix { mut matrix } = first
++    {
++        let mut runs = Vec::new();
++        for node in nodes.iter().skip(1) {
++            let FilterEffect::ColorMatrix(next) = &node.effect else {
++                break;
++            };
++            if matrix_stays_in_range(&matrix) {
++                matrix = compose_matrices(&next.0, &matrix);
++            } else {
++                runs.push(matrix);
++                matrix = next.0;
++            }
++        }
++        runs.push(matrix);
++        let mut graph = vello_common::filter_effects::FilterGraph::new();
++        for matrix in runs {
++            let id = graph.add(FilterPrimitive::ColorMatrix { matrix }, None);
++            graph.set_output(id);
++        }
++        return Some(vello_common::filter_effects::Filter {
++            graph: Arc::new(graph),
++        });
++    }
++    // Other filter graphs retain upstream's first-primitive behavior.
++    Some(vello_common::filter_effects::Filter::from_primitive(first))
++}
++
++/// Is every output in [0, 1] for any input in the same range?
++fn matrix_stays_in_range(matrix: &[f32; 20]) -> bool {
++    matrix.chunks_exact(5).all(|row| {
++        let low = row[4] + row[..4].iter().map(|v| v.min(0.0)).sum::<f32>();
++        let high = row[4] + row[..4].iter().map(|v| v.max(0.0)).sum::<f32>();
++        low >= 0.0 && high <= 1.0
++    })
++}
++
++/// Apply `first`, then `second`, to a straight RGBA vector.
++fn compose_matrices(second: &[f32; 20], first: &[f32; 20]) -> [f32; 20] {
++    let mut out = [0.0; 20];
++    for r in 0..4 {
++        for c in 0..4 {
++            out[r * 5 + c] = (0..4).map(|k| second[r * 5 + k] * first[k * 5 + c]).sum();
++        }
++        out[r * 5 + 4] = second[r * 5 + 4]
++            + (0..4)
++                .map(|k| second[r * 5 + k] * first[k * 5 + 4])
++                .sum::<f32>();
++    }
++    out
+ }
+ 
+ pub(crate) fn convert_filter_effect(effect: &FilterEffect) -> Option<FilterPrimitive> {
+@@ -39,7 +93,7 @@ pub(crate) fn convert_filter_effect(effect: &FilterEffect) -> Option<FilterPrimi
+             dx: offset.x as f32,
+             dy: offset.y as f32,
+         },
+-        FilterEffect::ColorMatrix(_matrix) => return None,
++        FilterEffect::ColorMatrix(matrix) => FilterPrimitive::ColorMatrix { matrix: matrix.0 },
+         FilterEffect::ComponentTransfer(_component_transfer_filter) => return None,
+         FilterEffect::Blend(_mode) => return None,
+         FilterEffect::Composite(_composite_operator) => return None,
+@@ -62,3 +116,40 @@ fn convert_edge_mode(edge_mode: EdgeMode) -> vello_common::filter_effects::EdgeM
+         EdgeMode::None => vello_common::filter_effects::EdgeMode::None,
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn matrices_compose_in_order() {
++        let graph = Filter::linear_list(
++            [FilterEffect::brightness(0.5), FilterEffect::invert(1.0)].into_iter(),
++        );
++        let converted = convert_filter(Arc::new(graph)).unwrap();
++        let [FilterPrimitive::ColorMatrix { matrix }] = converted.graph.primitives.as_slice()
++        else {
++            panic!("expected one color matrix");
++        };
++        assert_eq!(
++            (matrix[0], matrix[4], matrix[6], matrix[9]),
++            (-0.5, 1.0, -0.5, 1.0)
++        );
++    }
++
++    #[test]
++    fn matrix_that_needs_intermediate_clamping_is_not_folded() {
++        let graph = Filter::linear_list(
++            [FilterEffect::brightness(2.0), FilterEffect::invert(1.0)].into_iter(),
++        );
++        let converted = convert_filter(Arc::new(graph)).unwrap();
++        let [
++            FilterPrimitive::ColorMatrix { matrix },
++            FilterPrimitive::ColorMatrix { .. },
++        ] = converted.graph.primitives.as_slice()
++        else {
++            panic!("expected separate matrix passes");
++        };
++        assert_eq!((matrix[0], matrix[4]), (2.0, 0.0));
++    }
++}
+-- 
+2.56.0
+

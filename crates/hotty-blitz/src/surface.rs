@@ -135,7 +135,7 @@ pub(crate) enum Fault {
 /// They also keep which glyphs draw nothing (`paint::Ink`), for every
 /// surface's painter.
 #[derive(Default)]
-pub(crate) struct Renderers(Vec<((u32, u32), VelloCpuImageRenderer)>, paint::Ink);
+pub(crate) struct Renderers(Vec<(((u32, u32), bool), VelloCpuImageRenderer)>, paint::Ink);
 
 impl Renderers {
     /// How many contexts a host keeps: 16 worker threads at most, since
@@ -175,15 +175,24 @@ impl Renderers {
 
     /// The context for `bucket`, made if there is none; it becomes the most
     /// recently used, and one goes as `evicted` says.
-    fn get(&mut self, bucket: (u32, u32)) -> (&mut VelloCpuImageRenderer, &mut paint::Ink) {
-        let entry = match self.0.iter().position(|(k, _)| *k == bucket) {
+    fn get(
+        &mut self,
+        bucket: (u32, u32),
+        single: bool,
+    ) -> (&mut VelloCpuImageRenderer, &mut paint::Ink) {
+        let entry = match self.0.iter().position(|(k, _)| *k == (bucket, single)) {
             Some(i) => self.0.remove(i),
             None => {
-                let kept: Vec<(u32, u32)> = self.0.iter().map(|(k, _)| *k).collect();
+                let kept: Vec<(u32, u32)> = self.0.iter().map(|(k, _)| k.0).collect();
                 if let Some(i) = Self::evicted(&kept, bucket) {
                     self.0.remove(i);
                 }
-                (bucket, VelloCpuImageRenderer::new(bucket.0, bucket.1))
+                let renderer = if single {
+                    VelloCpuImageRenderer::new_single_threaded(bucket.0, bucket.1)
+                } else {
+                    VelloCpuImageRenderer::new(bucket.0, bucket.1)
+                };
+                ((bucket, single), renderer)
             }
         };
         self.0.push(entry);
@@ -1409,7 +1418,6 @@ impl Surface {
         // Render into a context of the rectangle's size rounded up to 64 px,
         // reused across frames; only `r` is copied out.
         let bucket = (r.w.div_ceil(64) * 64, r.h.div_ceil(64) * 64);
-        let (renderer, ink) = renderers.get(bucket);
         let r_render = Rect {
             x: r.x,
             y: r.y,
@@ -1419,7 +1427,6 @@ impl Surface {
         self.scratch.clear();
         self.scratch
             .resize((r_render.w * r_render.h * 4) as usize, 0);
-        renderer.reset();
         let p0 = trace::now();
         #[cfg(test)]
         let fault = self.fault;
@@ -1432,47 +1439,63 @@ impl Surface {
             &self.root_bar,
             self.root_bar.opacity(Instant::now()),
         );
-        if has_fixed_root_children(doc) {
-            // Blitz cancels viewport scroll for fixed boxes, so the scroll
-            // window below would misplace them: translate instead (slower:
-            // Blitz then walks everything on screen, and Window drops what
-            // falls outside).
-            renderer.render(
-                |scene| {
-                    let mut inked = paint::Inked::new(scene, ink);
-                    let mut window =
-                        paint::Window::new(&mut inked, r.x, r.y, r_render.w, r_render.h);
-                    paint_scene(&mut window, doc, scale, w, h, 0, 0);
-                    #[cfg(test)]
-                    assert!(fault != Some(Fault::Paint), "a fault while painting");
-                    bars.paint(&mut window, kurbo::Affine::IDENTITY);
-                    scened = trace::now();
-                },
-                &mut self.scratch,
-            );
-        } else {
-            // Paint the rectangle as a viewport scrolled on to its corner:
-            // the painter then culls against exactly this rectangle, so the
-            // cost is what lies inside it. The scroll is put back before
-            // anything else reads it.
-            let saved = doc.viewport_scroll();
-            doc.set_viewport_scroll(blitz_dom::Point {
-                x: saved.x + r.x as f64 / scale,
-                y: saved.y + r.y as f64 / scale,
-            });
-            renderer.render(
-                |scene| {
-                    let mut scene = paint::Inked::new(scene, ink);
-                    paint_scene(&mut scene, doc, scale, r_render.w, r_render.h, 0, 0);
-                    #[cfg(test)]
-                    assert!(fault != Some(Fault::Paint), "a fault while painting");
-                    let shift = kurbo::Affine::translate((-(r.x as f64), -(r.y as f64)));
-                    bars.paint(&mut scene, shift);
-                    scened = trace::now();
-                },
-                &mut self.scratch,
-            );
-            doc.set_viewport_scroll(saved);
+        // Paint directly in the normal renderer. Only scenes that actually
+        // contain a filter need a second pass in the zero-worker renderer.
+        for single in [false, true] {
+            if single {
+                self.scratch.fill(0);
+            }
+            let (renderer, ink) = renderers.get(bucket, single);
+            renderer.reset();
+            let mut filtered = false;
+            if has_fixed_root_children(doc) {
+                // Blitz cancels viewport scroll for fixed boxes, so the scroll
+                // window below would misplace them: translate instead (slower:
+                // Blitz then walks everything on screen, and Window drops what
+                // falls outside).
+                renderer.render(
+                    |scene| {
+                        let mut inked = paint::Inked::new(scene, ink);
+                        let mut window =
+                            paint::Window::new(&mut inked, r.x, r.y, r_render.w, r_render.h);
+                        paint_scene(&mut window, doc, scale, w, h, 0, 0);
+                        #[cfg(test)]
+                        assert!(fault != Some(Fault::Paint), "a fault while painting");
+                        bars.paint(&mut window, kurbo::Affine::IDENTITY);
+                        drop(window);
+                        filtered = inked.filtered;
+                        scened = trace::now();
+                    },
+                    &mut self.scratch,
+                );
+            } else {
+                // Paint the rectangle as a viewport scrolled on to its corner:
+                // the painter then culls against exactly this rectangle, so the
+                // cost is what lies inside it. The scroll is put back before
+                // anything else reads it.
+                let saved = doc.viewport_scroll();
+                doc.set_viewport_scroll(blitz_dom::Point {
+                    x: saved.x + r.x as f64 / scale,
+                    y: saved.y + r.y as f64 / scale,
+                });
+                renderer.render(
+                    |scene| {
+                        let mut scene = paint::Inked::new(scene, ink);
+                        paint_scene(&mut scene, doc, scale, r_render.w, r_render.h, 0, 0);
+                        #[cfg(test)]
+                        assert!(fault != Some(Fault::Paint), "a fault while painting");
+                        let shift = kurbo::Affine::translate((-(r.x as f64), -(r.y as f64)));
+                        bars.paint(&mut scene, shift);
+                        filtered = scene.filtered;
+                        scened = trace::now();
+                    },
+                    &mut self.scratch,
+                );
+                doc.set_viewport_scroll(saved);
+            }
+            if !filtered || single {
+                break;
+            }
         }
         if trace::on() {
             // The closure builds the scene; vello_cpu's workers raster it
