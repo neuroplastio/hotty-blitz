@@ -1,0 +1,32 @@
+From 85e00ad5e242f15eaa2e364adca361220ab1cb6f Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Sat, 14 Nov 2026 18:13:06 +0100
+Subject: [PATCH] Keep table captions out of anonymous grid cells
+
+Table caption layout is not yet implemented. Do not turn a caption into a cell inside the grid while fixing other misparented table content.
+---
+ packages/blitz-dom/src/layout/table.rs | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
+index a3fd3316b..3ba93cec4 100644
+--- a/packages/blitz-dom/src/layout/table.rs
++++ b/packages/blitz-dom/src/layout/table.rs
+@@ -573,6 +573,14 @@ fn collect_table_cells(
+         return;
+     }
+ 
++    // Captions are not table grid cells. This engine does not yet lay out
++    // table captions; preserve that behavior instead of inserting them into
++    // an anonymous grid row.
++    if display.outside() == DisplayOutside::TableCaption {
++        pass_over(&mut doc.nodes, node_id);
++        return;
++    }
++
+     match display.inside() {
+         DisplayInside::TableRowGroup
+         | DisplayInside::TableHeaderGroup
+-- 
+2.56.0
+

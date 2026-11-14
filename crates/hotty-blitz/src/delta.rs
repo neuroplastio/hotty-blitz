@@ -803,6 +803,23 @@ mod taffy_baseline_tests {
     }
 
     #[test]
+    fn table_caption_is_not_misplaced_as_an_anonymous_cell() {
+        let mut doc = HtmlDocument::from_html(
+            "<style>body{margin:0}td{height:20px;width:40px}</style><table id=t1><caption>Caption</caption><tr><td id=a>A</td></tr></table><table id=t2><tr><td id=b>B</td></tr></table>",
+            DocumentConfig {
+                viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+                ..Default::default()
+            },
+        );
+        doc.resolve(0.0);
+        let rect = |id| {
+            doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
+                .unwrap()
+        };
+        assert_eq!(rect("a").y - rect("t1").y, rect("b").y - rect("t2").y);
+    }
+
+    #[test]
     fn anonymous_table_survives_contents_and_parent_restyle() {
         let mut doc = HtmlDocument::from_html(
             "<style>body{margin:0}.cell{display:table-cell;width:40px;height:20px}.contents{display:contents}</style><div id=parent><div class=contents><div id=a class=cell>A</div> <div id=b class=cell>B</div></div></div>",
