@@ -1,7 +1,5 @@
-//! The versions the host speaks (SPEC §4, §15; HOST.md §4): 0.7 and 0.6, a
-//! query answered in the highest it shares, and a 0.6 session, which has no
-//! secondary press (HOST.md §4.1). The shared vectors cover the common path;
-//! these the corners.
+//! The host speaks 0.7 and 0.8 (SPEC §4, §15; HOST.md §5), answers
+//! in the highest shared version, and presses alike in both sessions.
 
 mod common;
 
@@ -58,13 +56,13 @@ fn ask(h: &mut Host, v: &str) -> (String, Value) {
 #[test]
 fn a_query_is_answered_in_the_highest_version_it_shares() {
     for (v, want) in [
-        ("0.6,0.7", "0.7"),
-        ("0.7,0.6", "0.7"),
+        ("0.7,0.8", "0.8"),
+        ("0.8,0.7", "0.8"),
+        ("0.8", "0.8"),
         ("0.7", "0.7"),
-        ("0.6", "0.6"),
-        ("0.5,0.6", "0.6"),
-        ("0.6,99.0", "0.6"),
-        ("0.5,0.7,1.0", "0.7"),
+        ("0.5,0.7", "0.7"),
+        ("0.7,99.0", "0.7"),
+        ("0.5,0.8,1.0", "0.8"),
     ] {
         let mut h = host();
         assert_eq!(ask(&mut h, v), ("ok".into(), json!(want)), "{v}");
@@ -73,11 +71,11 @@ fn a_query_is_answered_in_the_highest_version_it_shares() {
 
 #[test]
 fn a_query_that_shares_no_version_is_eversion_with_the_versions_spoken_lowest_first() {
-    for v in ["0.5", "0.8", "1.0", "", "0.60,0.70"] {
+    for v in ["0.5", "0.6", "0.9", "1.0", "", "0.70,0.80"] {
         let mut h = host();
         assert_eq!(
             ask(&mut h, v),
-            ("err".into(), json!(["EVERSION", "0.6,0.7"])),
+            ("err".into(), json!(["EVERSION", "0.7,0.8"])),
             "{v:?}"
         );
     }
@@ -86,17 +84,17 @@ fn a_query_that_shares_no_version_is_eversion_with_the_versions_spoken_lowest_fi
     let fx = h.handle(&cmd(&[("a", "q"), ("n", "1")], ""));
     let r = replies(&fx);
     assert_eq!(r[0].0, "err");
-    assert_eq!(r[0].1["detail"], "0.6,0.7");
+    assert_eq!(r[0].1["detail"], "0.7,0.8");
 }
 
 #[test]
 fn the_host_names_the_highest_version_it_speaks() {
-    assert_eq!(hotty_blitz::VERSION, "0.7");
+    assert_eq!(hotty_blitz::VERSION, "0.8");
     assert_eq!(hotty_blitz::VERSION, hotty::VERSION);
-    assert_eq!(hotty::VERSIONS, ["0.7", "0.6"]);
+    assert_eq!(hotty::VERSIONS, ["0.7", "0.8"]);
 }
 
-// A 0.6 session.
+// Supported sessions.
 
 /// Boxes in cells of 10×20 px, on a surface of 30×4 cells.
 const DOC: &str = "<style>body{margin:0}\
@@ -148,32 +146,8 @@ fn press(h: &mut Host, c: u32, r: u32, mods: Mods) -> (bool, Vec<Effect>) {
 }
 
 #[test]
-fn a_zero_point_six_session_takes_no_secondary_press_and_leaves_the_surface_as_it_was() {
-    let mut h = session("0.6");
-    // The caret in the field, then the pointer over #i.
-    h.pointer("x", PointerKind::Down, 115.0, 50.0, none());
-    h.pointer("x", PointerKind::Up, 115.0, 50.0, none());
-    assert_eq!(h.focused_surface(), Some("x"));
-    h.pointer("x", PointerKind::Move, 45.0, 30.0, none());
-    for m in [none(), alt()] {
-        let (taken, fx) = press(&mut h, 4, 1, m);
-        assert!(!taken);
-        // No press, and no hover out with Alt.
-        assert!(fx.is_empty(), "{:?}", replies(&fx));
-        assert_eq!(h.focused_surface(), Some("x"));
-    }
-    // The pointer is still over #i: leaving the surface ends the hover.
-    let fx = h.pointer("x", PointerKind::Leave, 45.0, 30.0, none());
-    assert!(
-        replies(&fx).iter().any(|(_, b)| b == &json!({"out": true})),
-        "{:?}",
-        replies(&fx)
-    );
-}
-
-#[test]
-fn a_zero_point_seven_session_is_as_it_was() {
-    for v in ["0.7", "0.6,0.7"] {
+fn both_supported_sessions_take_secondary_presses() {
+    for v in ["0.7", "0.8", "0.7,0.8"] {
         let mut h = session(v);
         h.pointer("x", PointerKind::Move, 45.0, 30.0, none());
         let (taken, fx) = press(&mut h, 4, 1, none());
@@ -203,12 +177,12 @@ fn a_zero_point_seven_session_is_as_it_was() {
 
 #[test]
 fn the_next_query_changes_the_session_and_a_reset_ends_it() {
-    let mut h = session("0.6");
-    assert!(!press(&mut h, 4, 1, none()).0);
-    assert_eq!(ask(&mut h, "0.6,0.7").0, "ok");
+    let mut h = session("0.7");
     assert!(press(&mut h, 4, 1, none()).0);
-    assert_eq!(ask(&mut h, "0.6").0, "ok");
-    assert!(!press(&mut h, 4, 1, none()).0);
+    assert_eq!(ask(&mut h, "0.7,0.8"), ("ok".into(), json!("0.8")));
+    assert!(press(&mut h, 4, 1, none()).0);
+    assert_eq!(ask(&mut h, "0.7"), ("ok".into(), json!("0.7")));
+    assert!(press(&mut h, 4, 1, none()).0);
     // A query no version of which is shared leaves the session as it was.
     assert_eq!(ask(&mut h, "0.5").0, "err");
     // RIS, or the end of the program's output: the next program asks again,
@@ -238,20 +212,16 @@ fn long_press(h: &mut Host, c: u32, r: u32, mods: Mods) -> (Touch, usize, Touch,
 }
 
 #[test]
-fn a_long_press_in_a_zero_point_six_session_is_no_secondary_press() {
-    // As in 0.6.9: the terminal's, and the lift is no tap.
-    let mut h = session("0.6");
-    for (c, r) in [(4, 1), (1, 0)] {
+fn a_long_press_is_a_secondary_press_in_both_supported_sessions() {
+    for v in ["0.7", "0.8"] {
+        let mut h = session(v);
         assert_eq!(
-            long_press(&mut h, c, r, none()),
-            (Touch::Terminal, 0, Touch::Terminal, 0),
-            "({c}, {r})"
+            long_press(&mut h, 4, 1, none()),
+            (Touch::Surface, 1, Touch::Surface, 0)
+        );
+        assert_eq!(
+            long_press(&mut h, 4, 1, alt()),
+            (Touch::Terminal, 0, Touch::Terminal, 0)
         );
     }
-    // In 0.7 it is one.
-    let mut h = session("0.7");
-    assert_eq!(
-        long_press(&mut h, 4, 1, none()),
-        (Touch::Surface, 1, Touch::Surface, 0)
-    );
 }

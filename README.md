@@ -10,25 +10,32 @@ host and program shares:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of hotty 0.7 (and 0.6): surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play, and CSS animations and transitions run), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of hotty 0.8 (and 0.7): surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play, and CSS animations and transitions run), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty` | the `hotty` CLI (package `hotty-cli`): `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout), vello_cpu (its renderer), glifo (vello_cpu's glyph renderer) and Stylo (its style engine), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
-The host speaks hotty 0.7, and 0.6 as well (SPEC §15, HOST.md §4). It
-answers a query that lists either among the versions its program speaks
-(`a=q:n=1:v=0.6,0.7`, SPEC §4) with its capabilities, in the highest version
-the two share, and speaks that version to the program until the session
-ends. A 0.6 session has no secondary press (HOST.md §4.1). Any other query,
-one with no `v` too, is answered with `EVERSION`, its detail `0.6,0.7`: a
-program of 0.5 finds no host.
+The host speaks hotty 0.8, and 0.7 as well (SPEC §15, HOST.md §5). It
+answers a query listing either (`a=q:n=1:v=0.7,0.8`, SPEC §4) in the
+highest version the two share, and speaks that version until the session
+ends. Other queries, one with no `v` too, get `EVERSION`, its detail
+`0.7,0.8`.
 
-0.7.x speaks hotty 0.7, and 0.6 too; the patch number is this repository's own. The
-capabilities name it: `"host": "hotty-blitz"`, `"version": "0.7.0"`.
+0.8.x speaks hotty 0.8 and 0.7; the patch number is this repository's own.
+The capabilities name it: `"host": "hotty-blitz"`, `"version": "0.8.0"`.
+
+A program can scroll with a `scroll` delta op, by the steps a bound key
+would take from its target, or from the root without one. `a=hit` asks
+what a drag would name at the centre of a surface cell, with a drop
+target's steps, without changing hover or focus. A text field can give Tab
+to the program with `tab=program`; `key=default` gives a key back to the
+host. Reset ends the session and drops its resources. The terminal passes
+the system's reduced-motion setting to `hotty_host_set_reduced_motion`.
 
 ## Try it
 
 Needs [mise](https://mise.jdx.dev) and a checkout of `neuroplastio/hotty`
-next to this repository (or `HOTTY_DIR`).
+next to this repository (or `HOTTY_DIR`), with tag `v0.8.0` for the
+conformance vectors.
 
 ```
 mise install && make release       # also patches Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, glifo at ../glifo and Stylo at ../stylo
@@ -59,7 +66,7 @@ then its body as JSON with each value's type in sight, or what a program
 sent as its text.
 
 ```
-a=ok:n=1:re=q  {"v": "0.7", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
+a=ok:n=1:re=q  {"v": "0.8", "cellcss": {"w": 10.0, "h": 21.0}, "scale": 2.0, …}
 a=delta:s=form:q=2  {"ops": [{"op": "text", "t": "status", "v": "saved ✓"}]}
 a=ev:s=form:e=fit  {"r": 3}
 ```

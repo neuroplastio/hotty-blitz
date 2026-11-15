@@ -40,13 +40,9 @@ pub use surface::{Damage, Frame, Timings};
 /// and the one a session is in until a query says otherwise. It is a string
 /// literal on one line, which hottyterm's scripts/versions.sh reads; a test
 /// holds it to the hotty crate's, which also lists the lower one it speaks
-/// ([`hotty::VERSIONS`]: 0.7 and 0.6, HOST.md §4). A query that lists
+/// ([`hotty::VERSIONS`]: 0.7 and 0.8, HOST.md §5). A query that lists
 /// neither is answered with `EVERSION`.
-pub const VERSION: &str = "0.7";
-
-/// The version a 0.6 session is in (HOST.md §4.1): a program that lists 0.6
-/// and not 0.7 is answered in it.
-const V06: &str = "0.6";
+pub const VERSION: &str = "0.8";
 
 /// The most bytes one command's payload decodes to, after base64 and zlib
 /// (SPEC §3.4): what the capabilities report as `limits.message` (§13). A
@@ -319,9 +315,8 @@ pub struct Host {
     /// asked for them: it hears `caps` when they change (SPEC §4, §9).
     heard: Option<Heard>,
     /// The version the program's session is in (SPEC §4): what the last
-    /// query was answered in, [`VERSION`] before one. A 0.6 session has no
-    /// secondary press (HOST.md §4.1). A full reset or the end of the
-    /// program's output ends the session ([`Host::reset`]).
+    /// query was answered in, [`VERSION`] before one (HOST.md §5). A full
+    /// reset or the end of the program's output ends it ([`Host::reset`]).
     version: &'static str,
     /// `caps` events that settings changed, for [`Host::take_events`].
     owed: Vec<Effect>,
@@ -1486,12 +1481,11 @@ impl Host {
                 // `v` lists the versions the program speaks, comma-separated
                 // (SPEC §4), and this host answers in the highest it shares
                 // (`answer_in`), whatever the order, and speaks it to the
-                // program from then on (HOST.md §4.1). Otherwise, a query
+                // program from then on (HOST.md §5.1). Otherwise, a query
                 // with no `v` too, EVERSION, its detail the versions this
                 // host speaks, lowest first, as a query lists them.
                 let Some(v) = hotty::host::answer_in(cmd) else {
-                    let spoken: Vec<&str> = hotty::VERSIONS.iter().rev().copied().collect();
-                    return Err(("EVERSION", spoken.join(",")));
+                    return Err(("EVERSION", hotty::VERSIONS.join(",")));
                 };
                 self.version = v;
                 let now = self.snapshot();
@@ -2114,8 +2108,7 @@ impl Host {
     ///   terminal's.
     /// - `LongPress`: the terminal took the touch for one before it
     ///   dragged. It never drags, nor taps. Over an element that takes
-    ///   the secondary press it is one ([`Host::secondary`]), except in a 0.6
-    ///   session (HOST.md §4.1).
+    ///   the secondary press it is one ([`Host::secondary`]).
     ///
     /// A touch that drags is a press when it does (SPEC §9.1), at the cell
     /// where it began: `press`, `dragstart`, then what the press causes,
@@ -2227,13 +2220,11 @@ impl Host {
                 }
                 // A long press over an element that takes the secondary
                 // press is one (SPEC §9.1), unless Shift or Alt is held
-                // (§9.2): the terminal's, as any long press is. In a 0.6
-                // session it never is one (HOST.md §4.1), and does what it
-                // did in 0.6.9: the touch is the terminal's.
+                // (§9.2): the terminal's, as any other long press is.
                 let (name, tap) = (f.surface.clone(), f.tap);
                 let keys = f.mods;
                 let held = |m: Mods| m.shift || m.alt;
-                let taken = if tap && self.version != V06 && !held(mods) && !held(keys) {
+                let taken = if tap && !held(mods) && !held(keys) {
                     self.secondary_at(&name, x, y, mods)
                 } else {
                     None
@@ -2885,16 +2876,7 @@ impl Host {
     /// [`Host::pointer`]: the surface is left (`hover` out), the selection
     /// dropped and the keyboard given back; the rest of the gesture
     /// (moves, release) is the host's to keep from the surface.
-    ///
-    /// In a 0.6 session (HOST.md §4.1) there is no secondary press: this
-    /// takes nothing and does nothing, Alt or not, and the outcome says the
-    /// press is the terminal's, as it was before 0.7, with Alt too (not the
-    /// program's, SGR button 10). The surface is not left, the selection
-    /// stays and the keyboard is not given back.
     pub fn secondary(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> SecondaryOutcome {
-        if self.version == V06 {
-            return SecondaryOutcome::default();
-        }
         enter(&mut self.working, surface);
         if mods.alt && self.secondary_over(surface, x, y) {
             self.gesture = None;

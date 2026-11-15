@@ -67,9 +67,20 @@ fn vectors() -> Value {
         .expect(
             "no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository",
         );
-    let path = dir.join("conformance/vectors.json");
-    serde_json::from_str(&std::fs::read_to_string(&path).expect("conformance/vectors.json"))
-        .unwrap()
+    // Pin the host contract to the released spec, even if that checkout
+    // later moves on. The vectors themselves stay in the hotty repository.
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["show", "v0.8.0:conformance/vectors.json"])
+        .output()
+        .expect("read hotty v0.8.0 vectors");
+    assert!(
+        output.status.success(),
+        "hotty checkout needs tag v0.8.0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("v0.8.0 conformance/vectors.json")
 }
 
 fn decode(bytes: &[u8]) -> (Vec<Message>, usize) {
@@ -931,8 +942,8 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
 
 /// The version is the spec's (gov P-5 rule 6): the package's MAJOR.MINOR,
 /// which the capabilities send in `version`, is the highest hotty version the
-/// host speaks and the one the vectors are for. hotty 0.7 is hotty-blitz
-/// 0.7.x, which speaks 0.6 as well (HOST.md §4).
+/// host speaks and the one the vectors are for. hotty 0.8 is hotty-blitz
+/// 0.8.x, which speaks 0.7 as well (HOST.md §5).
 #[test]
 fn the_version_is_the_specs() {
     let pkg = env!("CARGO_PKG_VERSION");
@@ -961,7 +972,7 @@ fn protocol_vectors() {
         // commands, shows menus, draws backdrops and reports the mouse as
         // hottyterm does, and hotty-blitz sends hover, scrolls, takes touch,
         // drags in steps, takes drop targets, tells `view`, keeps a history
-        // for its text fields and speaks 0.6 as well.
+        // for its text fields and speaks 0.7 as well.
         let has = |r: &Value| {
             matches!(
                 r.as_str(),
@@ -980,7 +991,7 @@ fn protocol_vectors() {
                         | "drop"
                         | "view"
                         | "pressed"
-                        | "speaks-0.6"
+                        | "speaks-0.7"
                 )
             )
         };
@@ -1037,10 +1048,9 @@ fn protocol_vectors() {
         failures.len()
     );
     // It has every feature and platform capability a vector may require.
-    assert_eq!(skipped, 0, "vectors this runner skips");
     assert!(
-        failures.is_empty(),
-        "{} vector(s) failed:\n{}",
+        skipped == 0 && failures.is_empty(),
+        "{skipped} vector(s) skipped; {} vector(s) failed:\n{}",
         failures.len(),
         failures.join("\n")
     );

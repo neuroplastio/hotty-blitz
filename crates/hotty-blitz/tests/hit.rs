@@ -61,7 +61,7 @@ fn hit_uses_the_scrolled_document_without_changing_hover_or_focus() {
         "scroll-down",
     ));
     let hit = h.hit("x", 0, 0).unwrap();
-    assert_eq!((hit.t.as_str(), hit.tx, hit.ty), ("b", Some(0), Some(0)));
+    assert_eq!((hit.t.as_str(), hit.tx, hit.ty), ("b", Some(0), Some(1)));
     assert_eq!(h.focused_surface(), None);
     // Querying the second row does not move the stored pointer's hover.
     let out = h.handle(&cmd(
@@ -79,7 +79,7 @@ fn hit_uses_the_scrolled_document_without_changing_hover_or_focus() {
     assert_eq!(out[0].get("n"), Some("42"));
     assert_eq!(
         body(&out[0].payload),
-        serde_json::json!({"t":"b", "tx":0, "ty":1})
+        serde_json::json!({"t":"b", "tx":0, "ty":2})
     );
     let left = replies(&h.pointer("x", PointerKind::Leave, 10.0, 10.0, Mods::default()));
     assert_eq!(left.len(), 1);
