@@ -1,0 +1,127 @@
+From 6116e7ea9f34de9bdb0d1a5c8fb2c3ed01ad29b2 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 16 Nov 2026 00:00:19 +0100
+Subject: [PATCH] blitz-dom: an auto-layout table is not narrower than its
+ minimum content
+
+The used width of a table with `table-layout: auto` is the greater of its
+`width` and its minimum content width (CSS 2.1 section 17.5.2.2). Blitz
+sized the table's grid at `width` alone, so a `width: 100%` table in a
+narrow wrapper came out as wide as the wrapper, its columns overflowed the
+table box and, as a table's scrollable overflow is capped at its own size,
+the wrapper had nothing to scroll.
+
+When `width` resolves to a definite size and the layout is auto, measure the
+grid under a min-content constraint and use that as the known width if it
+is larger. A table with `table-layout: fixed` and a width is left alone.
+---
+ packages/blitz-dom/src/layout/mod.rs   | 64 ++++++++++++++++++++++++--
+ packages/blitz-dom/src/layout/table.rs |  3 ++
+ 2 files changed, 63 insertions(+), 4 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 94cb12a7b..3f0a8343d 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -17,10 +17,10 @@ use stylo_taffy::CopyStyleGetters;
+ use stylo_taffy::TaffyStyloStyle;
+ use taffy::{
+     AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
+-    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, NodeId, OofCandidate,
+-    ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree, compute_block_layout,
+-    compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
+-    compute_oof_layout, prelude::*,
++    FlexDirection, LayoutContainingBlock, LayoutPartialTree, MaybeMath as _, MaybeResolve as _,
++    NodeId, OofCandidate, ResolveOrZero, RoundTree, RunMode, TraversePartialTree, TraverseTree,
++    compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout,
++    compute_leaf_layout, compute_oof_layout, prelude::*,
+ };
+ 
+ pub(crate) mod cache;
+@@ -671,6 +671,62 @@ impl LayoutPassState<'_> {
+                         doc: self,
+                         ctx: context,
+                     };
++
++                    // An auto-layout table is never narrower than its minimum content
++                    // width, whatever its `width` says (CSS 2.1 section 17.5.2.2): its
++                    // used width is the greater of the two. Measure the grid under a
++                    // min-content constraint only when `width` gives a definite size
++                    // that could be smaller.
++                    let mut inputs = inputs;
++                    if !table_wrapper.ctx.is_fixed
++                        && inputs.known_dimensions.width.is_none()
++                        && inputs.sizing_mode == taffy::SizingMode::InherentSize
++                    {
++                        let style = &table_wrapper.ctx.style;
++                        if let Some(width) = style
++                            .size
++                            .width
++                            .maybe_resolve(inputs.parent_size.width, resolve_calc_value)
++                        {
++                            let box_sizing_adjustment = if style.box_sizing == BoxSizing::ContentBox
++                            {
++                                let padding = style
++                                    .padding
++                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                                let border = style
++                                    .border
++                                    .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
++                                (padding + border).horizontal_axis_sum()
++                            } else {
++                                0.0
++                            };
++                            let min_content = compute_grid_layout(
++                                &mut table_wrapper,
++                                node_id,
++                                taffy::LayoutInput {
++                                    run_mode: RunMode::ComputeSize,
++                                    sizing_mode: taffy::SizingMode::ContentSize,
++                                    axis: taffy::RequestedAxis::Horizontal,
++                                    known_dimensions: taffy::Size::NONE,
++                                    known_dimensions_are_definite: taffy::Size {
++                                        width: true,
++                                        height: true,
++                                    },
++                                    available_space: taffy::Size {
++                                        width: AvailableSpace::MinContent,
++                                        height: AvailableSpace::MaxContent,
++                                    },
++                                    ..inputs
++                                },
++                            )
++                            .size
++                            .width;
++                            if width + box_sizing_adjustment < min_content {
++                                inputs.known_dimensions.width = Some(min_content);
++                            }
++                        }
++                    }
++
+                     let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
+ 
+                     // Absolutely positioned children take no part in the table grid. Their
+diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
+index 3ba93cec4..17debdc20 100644
+--- a/packages/blitz-dom/src/layout/table.rs
++++ b/packages/blitz-dom/src/layout/table.rs
+@@ -49,6 +49,8 @@ pub struct TableContext {
+     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
+     pub border_style: Option<ServoArc<Border>>,
+     pub border_collapse: BorderCollapse,
++    /// Whether `table-layout: fixed` applies: the table has that layout and a width.
++    pub is_fixed: bool,
+     /// Backing storage for `calc()` track sizes synthesised by the table layout code.
+     /// Taffy stores calc values as raw pointers, so these must outlive the `style`.
+     #[allow(dead_code)]
+@@ -445,6 +447,7 @@ pub(crate) fn build_table_context(
+             columns,
+             computed_grid_info: AtomicRefCell::new(None),
+             border_collapse,
++            is_fixed,
+             border_style: first_cell_border,
+             calc_values,
+         },
+-- 
+2.56.0
+
