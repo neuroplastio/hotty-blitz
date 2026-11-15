@@ -108,6 +108,14 @@ pub type HottyFrameFn = extern "C" fn(
     full: bool,
 );
 
+/// A borrowed hit result. An absent step is -1; `t` is empty for no target.
+#[repr(C)]
+pub struct HottyHit {
+    pub t: *const c_char,
+    pub tx: i64,
+    pub ty: i64,
+}
+
 pub struct HottyHost {
     host: Host,
     /// Set after a panic the host could not recover from (see `guard`):
@@ -124,6 +132,8 @@ pub struct HottyHost {
     hyperlink: Option<CString>,
     /// The text returned by `hotty_host_selected_text`.
     selected: Option<CString>,
+    /// The target returned by `hotty_host_hit`.
+    hit: Option<CString>,
 }
 
 /// Runs `f` on a live host, catching panics at the C boundary. A panic
@@ -270,6 +280,51 @@ fn run_effects(effects: Vec<Effect>, fx: Option<&HottyEffects>) {
     }
 }
 
+/// What a drag would name in surface cell (`c`, `r`) (SPEC §9.7), using
+/// the surface's own document, even beneath other surfaces or the cells.
+/// Returns false for a missing or detached surface, a null output, or an
+/// unavailable host; `out` is then unchanged. The target is borrowed until
+/// the next hit call or host destruction. Emits nothing and changes no input.
+/// Wire queries are also handled by `hotty_host_osc`, with their n and q.
+///
+/// # Safety
+/// `h` must be live, `surface` a NUL-terminated UTF-8 string, and `out`
+/// writable for one `HottyHit`; `surface` and `out` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_hit(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    c: i64,
+    r: i64,
+    out: *mut HottyHit,
+) -> bool {
+    guard(h, false, |h| {
+        h.hit = None;
+        let Some(out) = (unsafe { out.as_mut() }) else {
+            return false;
+        };
+        if surface.is_null() {
+            return false;
+        }
+        let Ok(surface) = (unsafe { CStr::from_ptr(surface) }).to_str() else {
+            return false;
+        };
+        let Ok(hit) = h.host.hit(surface, c, r) else {
+            return false;
+        };
+        let Ok(t) = CString::new(hit.t) else {
+            return false;
+        };
+        h.hit = Some(t);
+        *out = HottyHit {
+            t: h.hit.as_ref().unwrap().as_ptr(),
+            tx: hit.tx.unwrap_or(-1),
+            ty: hit.ty.unwrap_or(-1),
+        };
+        true
+    })
+}
+
 /// # Safety
 /// `cfg` must point to a valid `HottyConfig`.
 #[unsafe(no_mangle)]
@@ -287,6 +342,7 @@ pub unsafe extern "C" fn hotty_host_new(cfg: *const HottyConfig) -> *mut HottyHo
         cursor: None,
         hyperlink: None,
         selected: None,
+        hit: None,
     }))
 }
 
@@ -1461,6 +1517,30 @@ mod tests {
         let derived = unsafe { config(&c_config(0.0)) };
         assert_eq!(derived.font_size, None);
         assert!(crate::style::host_css(&derived).contains("font-size: 13.6px;"));
+    }
+
+    #[test]
+    fn hit_through_the_c_abi_borrows_a_target_and_leaves_failed_outputs_alone() {
+        let h = two_surfaces();
+        let host = unsafe { &mut (*h).host };
+        host.handle(&hotty::Message::new(
+            [("a", "doc"), ("s", "a")].into_iter().collect(),
+            b"<style>body{margin:0}</style><div id=d data-on=drop style='height:100px' data-steps='2 2'>d</div>".to_vec(),
+        ));
+        let mut out = HottyHit {
+            t: std::ptr::null(),
+            tx: -2,
+            ty: -2,
+        };
+        assert!(unsafe { hotty_host_hit(h, c"a".as_ptr(), 0, 0, &mut out) });
+        assert_eq!(unsafe { CStr::from_ptr(out.t) }.to_str().unwrap(), "d");
+        assert_eq!((out.tx, out.ty), (0, 0));
+        assert!(!unsafe { hotty_host_hit(h, c"missing".as_ptr(), 0, 0, &mut out) });
+        assert_eq!((out.tx, out.ty), (0, 0));
+        assert!(unsafe { hotty_host_hit(h, c"a".as_ptr(), -1, 0, &mut out) });
+        assert_eq!(unsafe { CStr::from_ptr(out.t) }.to_bytes(), b"");
+        assert_eq!((out.tx, out.ty), (-1, -1));
+        unsafe { hotty_host_free(h) };
     }
 
     /// A host with surfaces `a` and `b`, placed and drawn.

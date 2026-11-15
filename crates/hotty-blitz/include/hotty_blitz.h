@@ -76,6 +76,15 @@ void hotty_host_free(hotty_host *h);
  * hears a new theme, as a caps event (SPEC 4, 9) through the next
  * hotty_host_events; a zoom (the cell and scale together) tells it nothing. */
 void hotty_host_configure(hotty_host *h, const hotty_config *cfg);
+/* A drag target at the centre of a cell of this surface (SPEC 9.7), from
+ * its own document even beneath other surfaces or the cells. No input state
+ * changes and no events. t is empty for no target; tx and ty are -1 when
+ * absent. t is borrowed until the next hit call or host destruction.
+ * False for a missing/detached surface, null output, or unavailable host;
+ * out is then unchanged. Hidden/unplaced surfaces succeed with no target.
+ * Wire a=hit also goes through hotty_host_osc, preserving n and q. */
+typedef struct { const char *t; int64_t tx, ty; } hotty_hit;
+bool hotty_host_hit(hotty_host *h, const char *surface, int64_t c, int64_t r, hotty_hit *out);
 void hotty_host_osc(hotty_host *h, const uint8_t *body, size_t len, const hotty_effects *fx);
 bool hotty_host_has_dirty(const hotty_host *h);
 /* Milliseconds until an animated image (GIF, APNG, WebP) on a placed surface

@@ -2649,7 +2649,10 @@ impl Surface {
         if !self.in_window(cell) {
             return String::new();
         }
-        let mut node = self.doc.get_hover_node_id();
+        self.drag_target(self.doc.get_hover_node_id(), drops)
+    }
+
+    fn drag_target(&self, mut node: Option<NodeId>, drops: bool) -> String {
         while let Some(n) = node {
             if (self.listens(n, "drag") || drops && self.listens(n, "drop"))
                 && let Some(id) = self.id_of(n).filter(|id| !id.is_empty())
@@ -2659,6 +2662,31 @@ impl Surface {
             node = self.doc.get_node(n).and_then(|x| x.parent);
         }
         String::new()
+    }
+
+    /// The drag target at the centre of a cell, from this document's own
+    /// hit test. Reading it never moves the pointer or changes hover.
+    pub fn hit(&mut self, c: i64, r: i64, m: &Metrics) -> hotty::HitCell {
+        let empty = hotty::HitCell::default();
+        let (Ok(c), Ok(r)) = (i32::try_from(c), i32::try_from(r)) else {
+            return empty;
+        };
+        if !self.placed || !self.in_window((c, r)) {
+            return empty;
+        }
+        let (w, h) = (self.cols as u32 * m.cell_w, self.rows as u32 * m.cell_h);
+        self.ensure_viewport(m, w, h, self.viewport.3);
+        self.resolve();
+        let x = (c as f32 + 0.5) * m.cell_w as f32 / m.scale;
+        let y = (r as f32 + 0.5) * m.cell_h as f32 / m.scale;
+        let (px, py) = self.page(x, y);
+        let t = self.drag_target(self.doc.hit(px, py).map(|h| h.node_id), true);
+        let steps = self.target_steps(&t, x, y);
+        hotty::HitCell {
+            t,
+            tx: steps.x.map(|n| n as i64),
+            ty: steps.y.map(|n| n as i64),
+        }
     }
 
     /// Whether `node`'s `user-select` is `none`, as CSS UI 4 resolves it:

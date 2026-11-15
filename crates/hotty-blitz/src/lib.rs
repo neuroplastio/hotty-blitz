@@ -1372,6 +1372,26 @@ impl Host {
             .unwrap_or_default()
     }
 
+    /// What a drag would name at the centre of surface cell (`c`, `r`)
+    /// (SPEC §9.7). Uses only this surface, including a backdrop, without
+    /// changing focus, hover or input state. Hidden surfaces answer empty.
+    pub fn hit(&mut self, name: &str, c: i64, r: i64) -> Result<hotty::HitCell, hotty::Error> {
+        enter(&mut self.working, name);
+        let s = self.surfaces.get_mut(name).ok_or_else(|| hotty::Error {
+            code: "ENOENT".into(),
+            detail: format!("no surface {name}"),
+            ..hotty::Error::default()
+        })?;
+        if s.is_detached() {
+            return Err(hotty::Error {
+                code: "EDETACHED".into(),
+                detail: name.to_string(),
+                ..hotty::Error::default()
+            });
+        }
+        Ok(s.hit(c, r, &self.config.metrics))
+    }
+
     pub fn handle(&mut self, cmd: &Message) -> Vec<Effect> {
         let start = self.frame_log.is_some().then(std::time::Instant::now);
         let t0 = trace::now();
@@ -1688,6 +1708,19 @@ impl Host {
                     ],
                     None,
                 ))
+            }
+            "hit" => {
+                let name = surface_name()?;
+                let cell = hotty::host::hit_of(cmd).map_err(|e| ("EINVAL", e.detail))?;
+                let hit = self.hit(name, cell.c, cell.r).map_err(|e| {
+                    let code = if e.code == "EDETACHED" {
+                        "EDETACHED"
+                    } else {
+                        "ENOENT"
+                    };
+                    (code, e.detail)
+                })?;
+                Ok((Vec::new(), Some(hotty::host::hit_body(&hit))))
             }
             "delta" => {
                 let name = surface_name()?.to_string();
