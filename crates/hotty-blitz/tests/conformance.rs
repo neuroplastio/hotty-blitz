@@ -498,6 +498,12 @@ fn check_mouse(step: &Value, got: &[MouseReport]) -> Result<(), String> {
 /// change nothing here.
 fn write_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), String> {
     let text = step["write"].as_str().ok_or("write is not text")?;
+    // RIS ends the session, including its resources, as a real terminal
+    // calls hotty_host_reset. The vectors also use writes for mouse modes.
+    if text.contains("\x1bc") {
+        host.reset();
+        *mouse = Mouse::default();
+    }
     let mut rest = text;
     while let Some(i) = rest.find("\x1b[?") {
         rest = &rest[i + 3..];

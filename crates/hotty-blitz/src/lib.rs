@@ -1103,7 +1103,10 @@ impl Host {
     pub fn reset(&mut self) -> Vec<Effect> {
         self.areas = Default::default();
         self.version = VERSION;
-        self.delete_all()
+        let effects = self.delete_all();
+        self.store = self.store.next_session();
+        self.gesture = None;
+        effects
     }
 
     /// Every surface goes (`a=del`): what [`Host::reset`] drops, but the

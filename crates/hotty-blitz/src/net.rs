@@ -77,6 +77,21 @@ impl Store {
         })
     }
 
+    /// A fresh session gets a fresh store. Host policy, fetch limits and
+    /// the terminal's waker survive; outstanding fetches keep only the old
+    /// store, with its waker removed, and cannot deliver to the new one.
+    pub fn next_session(&self) -> Arc<Store> {
+        let next = Self::new(self.quota);
+        {
+            let inner = self.inner.lock().unwrap();
+            let mut fresh = next.inner.lock().unwrap();
+            fresh.host_policy = inner.host_policy.clone();
+            fresh.limits = inner.limits;
+        }
+        *next.waker.lock().unwrap() = self.waker.lock().unwrap().take();
+        next
+    }
+
     /// Stores (or replaces) a resource. Returns the documents that use it, so
     /// the caller can have them process the delivered bytes and restyle.
     pub fn put(&self, name: &str, mime: &str, bytes: Vec<u8>) -> Result<BTreeSet<usize>, String> {
