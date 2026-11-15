@@ -1562,6 +1562,7 @@ impl Surface {
             let res = match op.op.as_str() {
                 // `reveal` changes no node: it scrolls (SPEC §6.1).
                 "reveal" => self.reveal(t, v, m),
+                "scroll" => self.scroll_op(t, v, m),
                 name => self.delta(name, t, (!op.key.is_empty()).then_some(op.key.as_str()), v),
             };
             if let Err(e) = res {
@@ -2043,6 +2044,51 @@ impl Surface {
             self.scrolled(s);
         }
         Ok(())
+    }
+
+    /// A program's scroll step (SPEC §6.1), routed and snapped as a key
+    /// bound to the action with focus on `t`, or from the root without it.
+    fn scroll_op(
+        &mut self,
+        t: Option<&str>,
+        action: &str,
+        m: &Metrics,
+    ) -> Result<(), delta::DeltaError> {
+        let k = scroll::action_scroll(action).ok_or_else(|| delta::DeltaError {
+            code: "EINVAL",
+            detail: format!("op=scroll needs a scroll action, not {action:?}"),
+        })?;
+        let from = t
+            .map(|t| {
+                self.doc
+                    .get_element_by_id(t)
+                    .ok_or_else(|| delta::DeltaError {
+                        code: "ENOTARGET",
+                        detail: t.to_string(),
+                    })
+            })
+            .transpose()?;
+        if !self.placed || self.scroll_axes & k.axis.bit() == 0 {
+            return Ok(());
+        }
+        let (w, h) = (self.cols as u32 * m.cell_w, self.rows as u32 * m.cell_h);
+        self.ensure_viewport(m, w, h, self.viewport.3);
+        self.resolve();
+        if from.is_some_and(|id| !scroll::laid_out(&self.doc, id)) {
+            return Ok(());
+        }
+        // The op takes over from the wheel and snaps by its own step.
+        self.wheel_from = None;
+        self.scroll_step(from, k);
+        Ok(())
+    }
+
+    fn scroll_step(&mut self, from: Option<NodeId>, k: scroll::KeyScroll) {
+        if let Route::Doc(s) = scroll::route(&self.doc, from, self.scroll_axes, k.axis, k.sign)
+            && scroll::scroll_key(&mut self.doc, s, self.scroll_axes, k)
+        {
+            self.scrolled(s);
+        }
     }
 
     pub fn blur(&mut self) -> Vec<Event> {
@@ -2891,12 +2937,7 @@ impl Surface {
             return None;
         }
         self.resolve();
-        let route = scroll::route(&self.doc, Some(id), self.scroll_axes, k.axis, k.sign);
-        if let Route::Doc(s) = route
-            && scroll::scroll_key(&mut self.doc, s, self.scroll_axes, k)
-        {
-            self.scrolled(s);
-        }
+        self.scroll_step(Some(id), k);
         Some((true, Vec::new()))
     }
 

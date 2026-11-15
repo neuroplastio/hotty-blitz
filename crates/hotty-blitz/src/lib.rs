@@ -1701,6 +1701,11 @@ impl Host {
                     *failed = e.op.map(|i| i as usize);
                     ("EINVAL", e.detail)
                 })?;
+                if ops.iter().any(|op| op.op == "scroll")
+                    && self.gesture.as_ref().is_some_and(|g| g.surface == name)
+                {
+                    self.gesture = None;
+                }
                 s.apply(&ops, &self.config.metrics).map_err(|(i, e)| {
                     *failed = Some(i);
                     (e.code, e.detail)

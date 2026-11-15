@@ -523,3 +523,38 @@ fn along_an_axis_not_asked_for_a_scroll_binding_goes_on_as_if_unbound() {
     ));
     assert!(!key(&mut h, ch("j")));
 }
+
+#[test]
+fn scroll_ops_take_the_same_steps_as_keys_without_moving_focus() {
+    let page = BOX.replace("<div id=box>",
+        "<div id=box tabindex=0 data-keys=\"j=scroll-down d=scroll-half-page-down g=scroll-start shift+g=scroll-end\">");
+    let mut program = host();
+    let mut keyboard = host();
+    for h in [&mut program, &mut keyboard] {
+        place(h, Some("1"), &page, "20", "4");
+    }
+    keyboard.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "box")], ""));
+    for (name, action) in [
+        ("j", "scroll-down"),
+        ("d", "scroll-half-page-down"),
+        ("G", "scroll-end"),
+        ("G", "scroll-end"),
+        ("j", "scroll-down"),
+        ("g", "scroll-start"),
+    ] {
+        assert!(key(&mut keyboard, ch(name)));
+        let out = program.handle(&delta_cmd(
+            &[("s", "x")],
+            "scroll",
+            Some("box"),
+            None,
+            action,
+        ));
+        assert!(replies(&out).iter().all(|m| m.get("a") != Some("err")));
+        render(&mut program);
+        render(&mut keyboard);
+        assert_eq!(y(&program, "b0"), y(&keyboard, "b0"), "{action}");
+        assert_eq!(y(&program, "top"), y(&keyboard, "top"), "{action}");
+        assert_eq!(program.focused_surface(), None);
+    }
+}
