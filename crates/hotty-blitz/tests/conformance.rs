@@ -1244,7 +1244,11 @@ fn keymap_vectors() {
                         .collect()
                 }),
         };
-        if k.get("program").is_some() || k.get("prefix").is_some() || k.get("scroll").is_some() {
+        if k.get("lookup").is_none()
+            && (k.get("program").is_some()
+                || k.get("prefix").is_some()
+                || k.get("scroll").is_some())
+        {
             // An element's keymap outside a text field: no default (§10.2).
             let values: Vec<&str> = k["keys"]
                 .as_array()
@@ -1316,6 +1320,17 @@ fn keymap_vectors() {
             let got = m.lookup(key);
             if got != want.as_str() {
                 failures.push(format!("{name}: {key}: {got:?}, want {want:?}"));
+            }
+        }
+        for (key, want) in k
+            .get("program")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            let got = m.program(key);
+            if Some(got) != want.as_bool() {
+                failures.push(format!("{name}: {key}: program {got}, want {want}"));
             }
         }
         for (key, want) in k

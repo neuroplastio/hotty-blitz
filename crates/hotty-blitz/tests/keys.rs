@@ -588,3 +588,31 @@ fn a_press_given_to_the_program_stays_its_as_bytes() {
     focus(&mut h, "b");
     assert!(h.key_bytes("f", b"x").consumed);
 }
+
+#[test]
+fn a_fields_tab_program_survives_both_offers_and_default_restores_focus_order() {
+    let mut h = host(KeySettings::default());
+    surface(
+        &mut h,
+        "<div data-keys='tab=program'><input id=k><input id=d data-keys='tab=default'><button id=b>b</button></div>",
+    );
+    let pressed = h.key_pressed("x", "tab", "");
+    assert!(!pressed.consumed && pressed.effects.is_empty());
+    let typed = h.key_bytes("x", b"\t");
+    assert!(!typed.consumed && typed.effects.is_empty());
+    assert_eq!(h.focused_surface(), Some("x"));
+    // Shift+Tab still leaves this first field and returns the keyboard.
+    assert!(h.key_bytes("x", b"\x1b[Z").consumed);
+    assert_eq!(h.focused_surface(), None);
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "d")], b""));
+    let out = h.key_pressed("x", "tab", "");
+    assert!(out.consumed);
+    assert!(
+        replies(&out.effects)
+            .iter()
+            .any(|e| e.get("e") == Some("focus") && e.get("t") == Some("b"))
+    );
+    // The button ignores the inherited Tab binding and leaves the surface.
+    assert!(h.key_bytes("x", b"\t").consumed);
+    assert_eq!(h.focused_surface(), None);
+}

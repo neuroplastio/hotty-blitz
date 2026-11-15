@@ -2832,7 +2832,7 @@ impl Surface {
         let plain = !key.mods.ctrl && !key.mods.alt && !key.mods.super_;
         let gives = focused.map_or(Gives::No, |id| self.gives(id, key, kind));
         match (&key.name, kind) {
-            (KeyName::Tab, _) if plain => {
+            (KeyName::Tab, _) if plain && gives == Gives::No => {
                 let before = focused;
                 // Tab passes over what isn't rendered, which a delta since
                 // the last frame may have changed: Blitz reads the styles.
