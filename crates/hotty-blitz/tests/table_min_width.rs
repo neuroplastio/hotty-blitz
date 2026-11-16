@@ -107,3 +107,74 @@ fn a_fixed_table_has_the_width_it_is_given() {
 fn a_table_in_a_wrapper_that_does_not_scroll_overflows_it_visibly() {
     assert_eq!(table_width("width:100%"), 270);
 }
+
+/// A wrapper 200 px wide holding a table of three cells with 10 px of padding
+/// either side, laid out as Basecoat's and shadcn's Tasks tables are: a green
+/// 50 px box, then a flex row of a 30 px badge and a title truncated at
+/// `max-width: 100px` (Tailwind's `truncate`) over 300 px of content, then a
+/// red 50 px box. The title adds 100 px to its column, not 300 px, so the
+/// table's minimum content is 70 + 160 + 70 = 300 px, as Chromium has it.
+/// `table` is the table's style, and `outer` the wrapper's.
+fn titles(outer: &str, table: &str) -> String {
+    format!(
+        "<style>body{{margin:0;background:#fff}}#w{{width:200px;{outer}}}\
+         table{{background:#00f;border-spacing:0;{table}}}td{{padding:0 10px;height:40px;vertical-align:top;white-space:nowrap}}\
+         i,em{{display:block;width:50px;height:20px;background:#f00}}em{{background:#0f0}}.f{{display:flex;gap:10px}}\
+         .f b{{display:block;width:30px;height:20px;background:#0f0}}\
+         .t{{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}\
+         .t u{{display:inline-block;width:300px;height:20px}}</style>\
+         <div id=w><table><tr><td><em></em></td><td><div class=f><b></b><span class=t><u></u></span></div></td>\
+         <td><i></i></td></tr></table></div>"
+    )
+}
+
+/// The runs of `rgb` along row `y` of `h`'s frame, as `[start, end)` pixels.
+fn runs(h: &Host, y: u32, rgb: [u8; 3]) -> Vec<(u32, u32)> {
+    let f = h.frame("x").unwrap();
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for x in 0..f.width {
+        let i = ((y * f.width + x) * 4) as usize;
+        if f.rgba[i..i + 3] == rgb {
+            match out.last_mut() {
+                Some(r) if r.1 == x => r.1 = x + 1,
+                _ => out.push((x, x + 1)),
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_truncated_title_adds_its_max_width_to_the_table() {
+    for table in ["width:100%", ""] {
+        let h = placed(&titles("", table));
+        assert_eq!(
+            runs(&h, 30, [0, 0, 255]),
+            [(0, 300)],
+            "{table:?}: the table's box"
+        );
+        // The last column lies inside the table's box, at its right edge.
+        assert_eq!(
+            runs(&h, 10, [255, 0, 0]),
+            [(240, 290)],
+            "{table:?}: the last cell"
+        );
+    }
+}
+
+#[test]
+fn a_wheel_across_a_table_of_truncated_titles_reaches_its_last_column() {
+    let mut h = placed(&titles("overflow-x:auto", "width:100%"));
+    assert!(runs(&h, 10, [255, 0, 0]).is_empty(), "past the wrapper");
+    // 50 px across, half the overflow: the last cell's left edge comes in.
+    // With the title's whole content in its column, it would be 240 px away.
+    assert!(h.wheel("x", 50.0, 10.0, 50.0, 0.0, Mods::default()).taken);
+    h.end_gesture();
+    h.render_dirty(&mut |_, _, _| {});
+    assert_eq!(runs(&h, 10, [255, 0, 0]), [(190, 200)]);
+    // The rest of the way: the whole last cell is in the wrapper.
+    assert!(h.wheel("x", 50.0, 10.0, 1000.0, 0.0, Mods::default()).taken);
+    h.end_gesture();
+    h.render_dirty(&mut |_, _, _| {});
+    assert_eq!(runs(&h, 10, [255, 0, 0]), [(140, 190)]);
+}
