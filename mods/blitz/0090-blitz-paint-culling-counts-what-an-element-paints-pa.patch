@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 16 Nov 2026 01:53:39 +0100
+Subject: [PATCH 90/90] blitz-paint: culling counts what an element paints past
+ its box
+
+render_element culls an element whose border box and scrollable overflow
+fall outside the clip rectangle. Its outer box shadows and its outline
+paint past that box, so an element just outside the viewport, or the
+rectangle a partial repaint asks for, was culled with its shadow still
+reaching in: the shadow's edge went missing there. The cull box now grows
+by each outer shadow's offset, spread and blur (three standard deviations,
+as draw_box_shadow blurs) and by the outline's width and offset.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-paint/src/render.rs | 34 +++++++++++++++++++++++++++++-
+ 1 file changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index b82859bf8..aa0b496dd 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -511,7 +511,10 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             x: -self.initial_x,
+             y: -self.initial_y,
+         }) * transform;
+-        let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(border_box));
++        // What the element paints past its border box (shadows, an outline)
++        // counts, or a rectangle painted just past it would lose that part.
++        let inked = border_box + ink_outset(&styles, self.scale);
++        let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(inked));
+ 
+         // Cull elements that fall entirely outside the current clip rectangle. In addition to
+         // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this
+@@ -1698,6 +1701,35 @@ fn insets_from_taffy_rect(input: taffy::Rect<f64>) -> Insets {
+     }
+ }
+ 
++/// How far an element paints outside its border box on each side, in device
++/// pixels: its outer box shadows, which reach three standard deviations of
++/// their blur past their spread, and its outline.
++fn ink_outset(style: &ComputedValues, scale: f64) -> kurbo::Insets {
++    let mut out = kurbo::Insets::ZERO;
++    for shadow in style.get_effects().box_shadow.0.iter().filter(|s| !s.inset) {
++        let (dx, dy) = (
++            shadow.base.horizontal.px() as f64,
++            shadow.base.vertical.px() as f64,
++        );
++        // As `draw_box_shadow` blurs it.
++        let blur = shadow.base.blur.px() as f64 * std::f64::consts::FRAC_1_SQRT_2;
++        let reach = shadow.spread.px() as f64 + 3.0 * blur;
++        out.x0 = out.x0.max(reach - dx);
++        out.y0 = out.y0.max(reach - dy);
++        out.x1 = out.x1.max(reach + dx);
++        out.y1 = out.y1.max(reach + dy);
++    }
++    let outline = style.get_outline();
++    let ring = outline.outline_width.0.to_f64_px() + outline.outline_offset.to_f64_px();
++    let ring = ring.max(0.0);
++    kurbo::Insets {
++        x0: out.x0.max(ring).max(0.0) * scale,
++        y0: out.y0.max(ring).max(0.0) * scale,
++        x1: out.x1.max(ring).max(0.0) * scale,
++        y1: out.y1.max(ring).max(0.0) * scale,
++    }
++}
++
+ /// Convert Stylo and Taffy types into Kurbo types
+ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBox {
+     // Resolve and rescale

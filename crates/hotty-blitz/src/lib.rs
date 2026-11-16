@@ -2627,14 +2627,17 @@ impl Host {
                 out.taken = true;
                 let m = self.config.metrics;
                 let passthrough = self.passthrough;
+                // A finger's pan scrolls through here, and hovers nothing
+                // (SPEC §9.4: a touch's moves scroll, and hover nothing).
+                let finger = self.finger.is_some();
                 if let Some(s) = self.surfaces.get_mut(surface) {
-                    s.wheel_scroll(scroller, cx, cy, dx, dy);
+                    s.wheel_scroll(scroller, cx, cy, dx, dy, !finger);
                     // What the pointer is over changed under it (SPEC §9.4).
                     let cell = (
                         (x / m.cell_w.max(1) as f32).floor() as i32,
                         (y / m.cell_h.max(1) as f32).floor() as i32,
                     );
-                    if !s.held() {
+                    if !s.held() && !finger {
                         out.effects.extend(
                             s.hovered(cell, passthrough)
                                 .map(|e| Effect::Reply(e.encode(surface))),

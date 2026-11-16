@@ -259,6 +259,19 @@ pub(crate) struct Surface {
     paint_modes: Vec<bool>,
     /// What to repaint at the next render (paint.rs).
     damage: paint::Tracker,
+    /// The root's scroll that `frame` shows, in whole device pixels: a
+    /// render that finds it scrolled since moves those pixels rather than
+    /// painting them again (`blit`). None: nothing painted to move.
+    shown_scroll: Option<(i64, i64)>,
+    /// The root's scroll, in CSS pixels, that `damage`'s records are
+    /// relative to (`track_root_scroll`).
+    tracked_scroll: (f64, f64),
+    /// Renders that moved the frame's pixels (`blit`), and the pixels
+    /// the last render painted.
+    #[cfg(test)]
+    blits: u32,
+    #[cfg(test)]
+    painted: u64,
     viewport: (u32, u32, f32, bool, bool),
     /// The user's `prefers-reduced-motion` (Host::set_reduced_motion): the
     /// viewport takes it at the next render.
@@ -793,6 +806,12 @@ impl Surface {
             #[cfg(test)]
             paint_modes: Vec::new(),
             damage: paint::Tracker::full(),
+            shown_scroll: None,
+            tracked_scroll: (0.0, 0.0),
+            #[cfg(test)]
+            blits: 0,
+            #[cfg(test)]
+            painted: 0,
             viewport: (w, h, m.scale, dark, reduced_motion),
             reduced_motion,
             nav,
@@ -1238,17 +1257,86 @@ impl Surface {
         trace::span_to("blitz.resolve", s0, s1, &[]);
         self.dirty = false;
         let redeliver = std::mem::take(&mut self.redeliver);
-        let full = self.damage.full || self.frame.width != w || self.frame.height != h;
         let scale = m.scale as f64;
+        // The root's scroll as painted is whole device pixels, as a
+        // browser snaps it: a scroll then moves pixels already painted
+        // (`blit`), and they are the ones a whole repaint would paint.
+        let exact = self.doc.viewport_scroll();
+        let dev = (
+            (exact.x * scale).round() as i64,
+            (exact.y * scale).round() as i64,
+        );
+        self.doc.set_viewport_scroll(blitz_dom::Point {
+            x: dev.0 as f64 / scale,
+            y: dev.1 as f64 / scale,
+        });
+        // What was touched is measured again at the scroll it paints at: the
+        // old extents go there too, or a node would seem to have moved by
+        // the part of a pixel the scroll was snapped by.
+        self.track_root_scroll();
+        let out = self.paint_damage((w, h), scale, dev, redeliver, renderers, (t0, t1, s1));
+        self.doc.set_viewport_scroll(exact);
+        self.track_root_scroll();
+        out
+    }
+
+    /// `render`'s paint, at the root's scroll in device pixels `dev`: what
+    /// is damaged, or the whole frame.
+    fn paint_damage(
+        &mut self,
+        (w, h): (u32, u32),
+        scale: f64,
+        dev: (i64, i64),
+        redeliver: bool,
+        renderers: &mut Renderers,
+        (t0, t1, s1): (std::time::Instant, std::time::Instant, u64),
+    ) -> Option<Damage> {
+        // Why the frame is painted whole, for the trace: 1 damage said so,
+        // 2 its size changed, 3 it scrolled and could not be moved, 4 the
+        // rectangles cost more than one paint.
+        let mut whole = if self.damage.full {
+            1
+        } else if self.frame.width != w || self.frame.height != h {
+            2
+        } else {
+            0
+        };
+        let mut full = whole != 0;
+        let mut moved = false;
+        let mut uncovered = Vec::new();
+        if !full && self.shown_scroll != Some(dev) {
+            let shown = self.shown_scroll;
+            let margin = (8.0 * scale).ceil();
+            match shown.and_then(|prev| self.blit(prev, dev, w, h, margin)) {
+                Some(rects) => {
+                    moved = true;
+                    uncovered = rects;
+                    #[cfg(test)]
+                    {
+                        self.blits += 1;
+                    }
+                }
+                None => {
+                    full = true;
+                    whole = 3;
+                }
+            }
+        }
+        self.shown_scroll = Some(dev);
+        let mut asked = (0, 0);
         let rects = if full {
             self.damage.clear();
             vec![Rect { x: 0, y: 0, w, h }]
-        } else if self.damage.is_empty() {
+        } else if self.damage.is_empty() && uncovered.is_empty() {
             // Nothing to paint; a placement still gets the frame as it is.
             return redeliver.then_some(Damage::Full);
         } else {
             let margin = (8.0 * scale).ceil();
-            let rects = self.damage.take(&self.doc, scale, w, h, margin);
+            let mut rects = self.damage.take(&self.doc, scale, w, h, margin);
+            // What a move uncovered goes unmerged: the strip it uncovered
+            // and a scrollbar's strip meet at a corner, and as one
+            // rectangle they would be the whole frame.
+            rects.extend(uncovered);
             // Many small rectangles can cost more than one full paint: each
             // carries a fixed overhead (the scene walked again, the render
             // context dispatched to its workers). Measured with `hotty
@@ -1265,7 +1353,12 @@ impl Surface {
                 .iter()
                 .map(|r| r.w as u64 * r.h as u64 + per_rect)
                 .sum();
+            asked = (
+                rects.len(),
+                rects.iter().map(|r| r.w as u64 * r.h as u64).sum(),
+            );
             if cost > area {
+                whole = 4;
                 vec![Rect { x: 0, y: 0, w, h }]
             } else {
                 rects
@@ -1273,7 +1366,22 @@ impl Surface {
         };
         let t2 = std::time::Instant::now();
         let s2 = trace::now();
-        trace::span_to("blitz.damage", s1, s2, &[]);
+        if trace::on() {
+            trace::span_to(
+                "blitz.damage",
+                s1,
+                s2,
+                &[
+                    ("whole", trace::Arg::U(whole)),
+                    ("asked", trace::Arg::U(asked.0 as u64)),
+                    ("asked_px", trace::Arg::U(asked.1)),
+                ],
+            );
+        }
+        #[cfg(test)]
+        {
+            self.painted = rects.iter().map(|r| r.w as u64 * r.h as u64).sum();
+        }
         if rects.is_empty() {
             return redeliver.then_some(Damage::Full);
         }
@@ -1309,6 +1417,7 @@ impl Surface {
                     ("px", trace::Arg::U(px)),
                     ("w", trace::Arg::U(w as u64)),
                     ("h", trace::Arg::U(h as u64)),
+                    ("moved", trace::Arg::U(moved as u64)),
                 ],
             );
         }
@@ -1319,11 +1428,105 @@ impl Surface {
             diff_us: (t2 - t1).as_micros() as u32,
         };
         self.frame.generation += 1;
-        Some(if full || redeliver {
+        // Moved pixels are all new to the host.
+        Some(if full || redeliver || moved {
             Damage::Full
         } else {
             Damage::Rects(rects)
         })
+    }
+
+    /// Moves the frame's pixels as the root scrolled from `prev` to `now`
+    /// (device pixels), as a browser moves a page it has painted. Returns
+    /// what is left to paint: what the move uncovered, and the strips of
+    /// the root's scrollbars, which stay where they are, each `margin`
+    /// wider for what paints past its box (a shadow). None where the
+    /// frame can't be moved so, and is painted whole: a box fixed to the
+    /// viewport, which stays put while the rest moves, or a move past the
+    /// whole surface.
+    fn blit(
+        &mut self,
+        prev: (i64, i64),
+        now: (i64, i64),
+        w: u32,
+        h: u32,
+        margin: f64,
+    ) -> Option<Vec<Rect>> {
+        let (dx, dy) = (now.0 - prev.0, now.1 - prev.1);
+        let (wi, hi) = (w as i64, h as i64);
+        if dx.abs() >= wi || dy.abs() >= hi || has_fixed_root_children(&self.doc) {
+            return None;
+        }
+        let stride = w as usize * 4;
+        let len = (wi - dx.abs()) as usize * 4;
+        let (from, to) = if dx >= 0 {
+            (dx as usize * 4, 0)
+        } else {
+            (0, (-dx) as usize * 4)
+        };
+        let rows = (hi - dy.abs()) as usize;
+        let rgba = &mut self.frame.rgba;
+        let mut row = |src: usize, dst: usize| {
+            rgba.copy_within(
+                src * stride + from..src * stride + from + len,
+                dst * stride + to,
+            );
+        };
+        // Rows move towards where they go, so none is overwritten first.
+        if dy >= 0 {
+            (0..rows).for_each(|y| row(y + dy as usize, y));
+        } else {
+            (0..rows).rev().for_each(|y| row(y, y + (-dy) as usize));
+        }
+        let mut out = Vec::new();
+        let mut strip = |x: i64, y: i64, sw: i64, sh: i64| {
+            let r = paint::DevRect {
+                x0: x as f64,
+                y0: y as f64,
+                x1: (x + sw) as f64,
+                y1: (y + sh) as f64,
+            };
+            out.extend(r.to_rect(margin, w, h));
+        };
+        if dy > 0 {
+            strip(0, hi - dy, wi, dy);
+        } else if dy < 0 {
+            strip(0, 0, wi, -dy);
+        }
+        if dx > 0 {
+            strip(wi - dx, 0, dx, hi);
+        } else if dx < 0 {
+            strip(0, 0, -dx, hi);
+        }
+        // The root's thumbs stay where they are, but the pixels moved
+        // them: paint their strips again, where they are and where the move
+        // took what they showed, along the axes the root scrolls.
+        let (_, max) = scroll::state(&self.doc, Scroller::Viewport, self.scroll_axes);
+        for (vertical, along) in [(true, max.1), (false, max.0)] {
+            if along > 0.0 {
+                let r = paint::root_bar_strip(&self.doc, vertical);
+                let was = paint::DevRect {
+                    x0: r.x0 - dx as f64,
+                    y0: r.y0 - dy as f64,
+                    x1: r.x1 - dx as f64,
+                    y1: r.y1 - dy as f64,
+                };
+                out.extend(r.union(was).to_rect(margin, w, h));
+            }
+        }
+        Some(out)
+    }
+
+    /// Keeps `damage`'s records where the pixels they stand for are, as
+    /// the root scrolls (`tracked_scroll`).
+    fn track_root_scroll(&mut self) {
+        let at = self.doc.viewport_scroll();
+        let scale = self.viewport.2 as f64;
+        self.damage.shift(
+            (at.x - self.tracked_scroll.0) * scale,
+            (at.y - self.tracked_scroll.1) * scale,
+        );
+        self.tracked_scroll = (at.x, at.y);
     }
 
     /// `view` (SPEC §9.5) for the frame being drawn: the elements that ask
@@ -3484,9 +3687,11 @@ impl Surface {
 
     /// Scrolls `s`, which the wheel gesture at CSS pixel (`x`, `y`) is
     /// latched to, by (`dx`, `dy`) CSS pixels, as far as it goes. It snaps
-    /// when the gesture comes to rest ([`Surface::wheel_rest`]).
-    pub fn wheel_scroll(&mut self, s: Scroller, x: f32, y: f32, dx: f64, dy: f64) {
-        self.pointer_at = Some((x, y));
+    /// when the gesture comes to rest ([`Surface::wheel_rest`]). A pointer's
+    /// scroll (`hover`) then hovers what came under it; a finger's hovers
+    /// nothing, and what a pointer last hovered stays as it was.
+    pub fn wheel_scroll(&mut self, s: Scroller, x: f32, y: f32, dx: f64, dy: f64, hover: bool) {
+        let pointer = std::mem::replace(&mut self.pointer_at, hover.then_some((x, y)));
         if self.wheel_from.is_some_and(|(w, _)| w != s) {
             self.wheel_rest();
         }
@@ -3496,6 +3701,9 @@ impl Surface {
         }
         if scroll::scroll_by(&mut self.doc, s, self.scroll_axes, dx, dy) {
             self.scrolled(s);
+        }
+        if !hover {
+            self.pointer_at = pointer;
         }
     }
 
@@ -3525,7 +3733,8 @@ impl Surface {
         let now = Instant::now();
         match s {
             Scroller::Viewport => {
-                self.damage.full = true;
+                // Its pixels move at the next render (`blit`).
+                self.track_root_scroll();
                 self.root_bar.shown = Some(now);
             }
             Scroller::Node(id) => {
@@ -4292,34 +4501,28 @@ fn push_row(rows: &mut [String], doc: &BaseDocument, element: NodeId, text: &str
     }
 }
 
-/// Whether any child of the root element is `position: fixed`.
+/// Whether the root element contains a `position: fixed` box, one that
+/// stays put as the viewport scrolls. Blitz hoists such a box, however deep
+/// in the document, into the root's paint children (as it hoists every
+/// out-of-flow box into its containing block's), so those are the ones to
+/// look at. A fixed box inside a transformed ancestor is contained there,
+/// and scrolls with it.
 fn has_fixed_root_children(doc: &BaseDocument) -> bool {
     let Some(root) = doc.try_root_element() else {
         return false;
     };
-    let mut stack: Vec<NodeId> = root.children.to_vec();
-    // Fixed boxes are hoisted to the root; checking the body's subtree top
-    // levels is enough for the documents hotty renders, and cheap.
-    let mut seen = 0;
-    while let Some(id) = stack.pop() {
-        seen += 1;
-        if seen > 4096 {
-            return true; // unknown: be correct rather than fast
-        }
-        let Some(node) = doc.get_node(id) else {
-            continue;
-        };
-        if format!("{:?}", node.taffy_position()) == "Fixed" {
-            return true;
-        }
-        if node
-            .element_data()
-            .is_some_and(|e| &*e.name.local == "body")
-        {
-            stack.extend(node.children.iter().copied());
-        }
+    let fixed = |ids: &[NodeId]| {
+        ids.iter().any(|&id| {
+            doc.get_node(id)
+                // hotty-blitz does not depend on taffy for its `Position`.
+                .is_some_and(|n| format!("{:?}", n.taffy_position()) == "Fixed")
+        })
+    };
+    match &*root.paint_children.borrow() {
+        Some(children) => fixed(children),
+        // Not laid out yet: what layout would hoist.
+        None => fixed(&root.children),
     }
-    false
 }
 
 fn viewport(w: u32, h: u32, scale: f32, dark: bool, reduced_motion: bool) -> Viewport {
@@ -4417,6 +4620,173 @@ mod tests {
         host.repaint();
         host.render_dirty(&mut |_, _, _| {});
         assert_eq!(host.surfaces["x"].paint_modes, [false]);
+    }
+
+    fn host_at(scale: f32) -> crate::Host {
+        crate::Host::new(crate::Config {
+            metrics: crate::Metrics {
+                cell_w: 10,
+                cell_h: 20,
+                scale,
+            },
+            ..Default::default()
+        })
+    }
+
+    fn command(pairs: &[(&str, &str)], payload: &str) -> hotty::Message {
+        hotty::Message::new(pairs.iter().copied().collect(), payload.as_bytes().to_vec())
+    }
+
+    /// Scrolls two hosts showing `html` by each of `moves` (device
+    /// pixels, a wheel's at the middle of the surface): one renders what
+    /// changed, which a root's scroll moves rather than paints, and one
+    /// paints in full every time. Every frame must be the same. Returns
+    /// how many renders moved pixels.
+    fn scrolls_as_a_full_paint(scale: f32, scroll: &str, html: &str, moves: &[(f32, f32)]) -> u32 {
+        // Large enough that a few strips cost less than one full paint.
+        let (c, r) = ("120", "50");
+        let (x, y) = (600.0, 500.0);
+        let mut moved = host_at(scale);
+        let mut full = host_at(scale);
+        for h in [&mut moved, &mut full] {
+            h.handle(&command(
+                &[("a", "doc"), ("s", "x"), ("scroll", scroll)],
+                html,
+            ));
+            h.handle(&command(
+                &[("a", "place"), ("s", "x"), ("c", c), ("r", r)],
+                "",
+            ));
+            h.render_dirty(&mut |_, _, _| {});
+            h.pointer("x", crate::PointerKind::Move, x, y, crate::Mods::default());
+            h.render_dirty(&mut |_, _, _| {});
+        }
+        for (i, &(dx, dy)) in moves.iter().enumerate() {
+            for h in [&mut moved, &mut full] {
+                h.wheel("x", x, y, dx, dy, crate::Mods::default());
+            }
+            let before = moved.surfaces["x"].blits;
+            moved.render_dirty(&mut |_, _, _| {});
+            let s = &moved.surfaces["x"];
+            let area = s.frame.width as u64 * s.frame.height as u64;
+            // A move of a few rows paints a few rows, the scrollbar's
+            // strip and what the pointer now hovers, not the frame.
+            if s.blits > before && (dx.abs() + dy.abs()) * scale < 40.0 {
+                assert!(
+                    s.painted * 3 < area,
+                    "scale {scale}, move {i} ({dx}, {dy}) painted {} of {area} pixels",
+                    s.painted
+                );
+            }
+            full.repaint();
+            full.render_dirty(&mut |_, _, _| {});
+            let (a, b) = (moved.frame("x").unwrap(), full.frame("x").unwrap());
+            assert_eq!((a.width, a.height), (b.width, b.height));
+            let off: Vec<(u32, u32)> = a
+                .rgba
+                .chunks(4)
+                .zip(b.rgba.chunks(4))
+                .enumerate()
+                .filter(|(_, (p, q))| p.iter().zip(q.iter()).any(|(a, b)| a.abs_diff(*b) > 1))
+                .map(|(k, _)| (k as u32 % a.width, k as u32 / a.width))
+                .collect();
+            let bounds = off
+                .iter()
+                .fold(None, |b: Option<(u32, u32, u32, u32)>, &(x, y)| {
+                    Some(b.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+                        (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                    }))
+                });
+            assert!(
+                off.is_empty(),
+                "scale {scale}, move {i} ({dx}, {dy}): {} pixels differ, within {bounds:?} of {}x{}",
+                off.len(),
+                a.width,
+                a.height
+            );
+        }
+        moved.surfaces["x"].blits
+    }
+
+    /// Fractional moves both ways, small and large, and one past the
+    /// whole surface, which paints in full.
+    const MOVES: &[(f32, f32)] = &[
+        (0.0, 13.3),
+        (0.0, 7.7),
+        (0.0, 0.4),
+        (0.0, 0.4),
+        (0.0, 25.0),
+        (0.0, -9.1),
+        (0.0, -30.6),
+        (0.0, 300.0),
+        (0.0, -2.2),
+        (0.0, 900.0),
+        (0.0, 61.0),
+        (0.0, -45.5),
+    ];
+
+    fn rows(style: &str, top: &str) -> String {
+        let mut html = format!(
+            "<style>body{{margin:0;font:14px sans-serif;color:#ddd;background:#111}}\
+             .r{{height:31px;border-bottom:1px solid #444;padding:0 8px;display:flex;align-items:center;gap:8px}}\
+             .r:nth-child(odd){{background:#1b1b1b}}\
+             .b{{border-radius:6px;background:linear-gradient(90deg,#246,#642);padding:2px 6px;box-shadow:0 1px 3px #000}}\
+             {style}</style>{top}"
+        );
+        for i in 0..80 {
+            html.push_str(&format!(
+                "<div class=r id=r{i}><input type=checkbox><span class=b>TASK-{i}</span>\
+                 <svg width=12 height=12><circle cx=6 cy=6 r=5 fill=#8c8 /></svg>\
+                 We need to index the neural TCP card number {i}!</div>"
+            ));
+        }
+        html
+    }
+
+    #[test]
+    fn a_root_scroll_moves_its_pixels_and_they_are_a_full_paints() {
+        for scale in [1.0, 1.6, 2.0] {
+            let blits = scrolls_as_a_full_paint(scale, "1", &rows("", ""), MOVES);
+            assert!(blits >= 9, "scale {scale}: {blits} moves");
+        }
+    }
+
+    #[test]
+    fn hover_and_sticky_boxes_move_with_the_scroll_as_a_full_paint_draws_them() {
+        let html = rows(
+            ".r:hover{background:#a33} .s{position:sticky;top:0;height:30px;background:#335;z-index:1}",
+            "<div class=s>Tasks</div>",
+        );
+        for scale in [1.0, 1.6] {
+            let blits = scrolls_as_a_full_paint(scale, "1", &html, MOVES);
+            assert!(blits >= 9, "scale {scale}: {blits} moves");
+        }
+    }
+
+    #[test]
+    fn a_box_fixed_to_the_viewport_paints_the_scroll_in_full() {
+        let html = rows(
+            ".f{position:fixed;top:4px;right:4px;background:#a60}",
+            "<div class=f>fixed</div>",
+        );
+        assert_eq!(scrolls_as_a_full_paint(1.6, "1", &html, MOVES), 0);
+    }
+
+    #[test]
+    fn a_box_fixed_to_the_viewport_deep_inside_paints_the_scroll_in_full() {
+        let html = rows(
+            ".f{position:fixed;bottom:4px;left:40px;background:#a60}",
+            "<main><section><div><p class=f>a toast</p></div></section></main>",
+        );
+        assert_eq!(scrolls_as_a_full_paint(1.6, "1", &html, MOVES), 0);
+    }
+
+    #[test]
+    fn a_sideways_root_scroll_moves_its_pixels_too() {
+        let html = rows(".r{width:1400px}", "");
+        let moves: Vec<(f32, f32)> = MOVES.iter().map(|&(_, d)| (d / 2.0, d)).collect();
+        let blits = scrolls_as_a_full_paint(1.6, "3", &html, &moves);
+        assert!(blits >= 9, "{blits} moves");
     }
 
     /// `Renderers::get` on bucket sizes alone: whether each was kept.

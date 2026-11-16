@@ -377,3 +377,39 @@ fn a_touch_over_no_surface_or_a_detached_one_is_the_terminals() {
         (Touch::Terminal, vec![])
     );
 }
+
+/// A finger that pans a document scrolls it with wheels (hottyterm sends
+/// its moves so while the finger is down), and hovers nothing (SPEC §9.4):
+/// no `:hover` comes on under it, as a pointer's wheel brings one on.
+#[test]
+fn a_fingers_pan_scrolls_and_hovers_nothing() {
+    let rows: String = (0..20)
+        .map(|i| format!("<div id=r{i}>row {i}</div>"))
+        .collect();
+    let mut h = host();
+    place(
+        &mut h,
+        Some("1"),
+        &format!("<style>div:hover{{background:#f00}}</style>{rows}"),
+    );
+    let red = |h: &Host| {
+        let f = h.frame("x").unwrap();
+        f.rgba
+            .chunks(4)
+            .any(|p| p[0] > 200 && p[1] < 60 && p[2] < 60)
+    };
+    let none = Mods::default();
+    touch(&mut h, TouchPhase::Down, 15.0, 50.0, none);
+    let (pans, _) = touch(&mut h, TouchPhase::Move, 15.0, 30.0, none);
+    assert_eq!(pans, Touch::Terminal);
+    let out = h.wheel("x", 15.0, 30.0, 0.0, 20.0, none);
+    assert!(out.taken);
+    assert_eq!(events(&out.effects), Vec::<String>::new());
+    h.render_dirty(&mut |_, _, _| {});
+    assert!(!red(&h), "a finger's pan hovers nothing");
+    touch(&mut h, TouchPhase::Up, 15.0, 30.0, none);
+    h.end_gesture();
+    assert!(h.wheel("x", 15.0, 30.0, 0.0, 20.0, none).taken);
+    h.render_dirty(&mut |_, _, _| {});
+    assert!(red(&h), "a pointer's wheel hovers what came under it");
+}

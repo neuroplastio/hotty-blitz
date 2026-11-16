@@ -718,6 +718,28 @@ impl Tracker {
         !self.full && self.touched.is_empty() && self.rects.is_empty()
     }
 
+    /// The root scrolled by (`dx`, `dy`) device pixels: what was recorded
+    /// (the touched nodes' old extents, the rectangles) moves with the
+    /// pixels it stands for, which the next render shifts rather than
+    /// paints again (`Surface::render`).
+    pub fn shift(&mut self, dx: f64, dy: f64) {
+        if self.full || (dx == 0.0 && dy == 0.0) {
+            return;
+        }
+        let by = |r: &mut DevRect| {
+            r.x0 -= dx;
+            r.x1 -= dx;
+            r.y0 -= dy;
+            r.y1 -= dy;
+        };
+        self.rects.iter_mut().for_each(by);
+        for (old, _) in self.old.values_mut() {
+            if let Some(r) = old {
+                by(r);
+            }
+        }
+    }
+
     /// Damage after layout, grown by `margin` (shadows, outlines,
     /// antialiasing), clamped to the surface, merged.
     pub fn take(
