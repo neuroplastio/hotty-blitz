@@ -4502,11 +4502,14 @@ fn push_row(rows: &mut [String], doc: &BaseDocument, element: NodeId, text: &str
 }
 
 /// Whether the root element contains a `position: fixed` box, one that
-/// stays put as the viewport scrolls. Blitz hoists such a box, however deep
-/// in the document, into the root's paint children (as it hoists every
+/// stays put as the viewport scrolls. Layout hoists such a box, however deep
+/// in the document, into the root's `hoisted_children` (as it hoists every
 /// out-of-flow box into its containing block's), so those are the ones to
-/// look at. A fixed box inside a transformed ancestor is contained there,
-/// and scrolls with it.
+/// look at. Not the root's paint children: a fixed box with a `z-index`
+/// paints from the root's stacking context instead, or from a nearer one
+/// (an ancestor with `opacity`), and Blitz holds it still all the same. A
+/// fixed box inside a transformed ancestor is contained there, and scrolls
+/// with it.
 fn has_fixed_root_children(doc: &BaseDocument) -> bool {
     let Some(root) = doc.try_root_element() else {
         return false;
@@ -4518,6 +4521,9 @@ fn has_fixed_root_children(doc: &BaseDocument) -> bool {
                 .is_some_and(|n| format!("{:?}", n.taffy_position()) == "Fixed")
         })
     };
+    if fixed(&root.hoisted_children.borrow()) {
+        return true;
+    }
     match &*root.paint_children.borrow() {
         Some(children) => fixed(children),
         // Not laid out yet: what layout would hoist.
@@ -4680,32 +4686,42 @@ mod tests {
             }
             full.repaint();
             full.render_dirty(&mut |_, _, _| {});
-            let (a, b) = (moved.frame("x").unwrap(), full.frame("x").unwrap());
-            assert_eq!((a.width, a.height), (b.width, b.height));
-            let off: Vec<(u32, u32)> = a
-                .rgba
-                .chunks(4)
-                .zip(b.rgba.chunks(4))
-                .enumerate()
-                .filter(|(_, (p, q))| p.iter().zip(q.iter()).any(|(a, b)| a.abs_diff(*b) > 1))
-                .map(|(k, _)| (k as u32 % a.width, k as u32 / a.width))
-                .collect();
-            let bounds = off
-                .iter()
-                .fold(None, |b: Option<(u32, u32, u32, u32)>, &(x, y)| {
-                    Some(b.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
-                        (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
-                    }))
-                });
-            assert!(
-                off.is_empty(),
-                "scale {scale}, move {i} ({dx}, {dy}): {} pixels differ, within {bounds:?} of {}x{}",
-                off.len(),
-                a.width,
-                a.height
+            same_frames(
+                &moved,
+                &full,
+                &format!("scale {scale}, move {i} ({dx}, {dy})"),
             );
         }
         moved.surfaces["x"].blits
+    }
+
+    /// Asserts that `partial`'s frame is `full`'s, ±1 per channel on
+    /// anti-aliased edges.
+    fn same_frames(partial: &crate::Host, full: &crate::Host, what: &str) {
+        let (a, b) = (partial.frame("x").unwrap(), full.frame("x").unwrap());
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        let off: Vec<(u32, u32)> = a
+            .rgba
+            .chunks(4)
+            .zip(b.rgba.chunks(4))
+            .enumerate()
+            .filter(|(_, (p, q))| p.iter().zip(q.iter()).any(|(a, b)| a.abs_diff(*b) > 1))
+            .map(|(k, _)| (k as u32 % a.width, k as u32 / a.width))
+            .collect();
+        let bounds = off
+            .iter()
+            .fold(None, |b: Option<(u32, u32, u32, u32)>, &(x, y)| {
+                Some(b.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+                    (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                }))
+            });
+        assert!(
+            off.is_empty(),
+            "{what}: {} pixels differ, within {bounds:?} of {}x{}",
+            off.len(),
+            a.width,
+            a.height
+        );
     }
 
     /// Fractional moves both ways, small and large, and one past the
@@ -4779,6 +4795,108 @@ mod tests {
             "<main><section><div><p class=f>a toast</p></div></section></main>",
         );
         assert_eq!(scrolls_as_a_full_paint(1.6, "1", &html, MOVES), 0);
+    }
+
+    /// A bar fixed to the viewport over rows that light up under the
+    /// pointer, its buttons lighting up too (a table's bulk actions). The
+    /// root's scrollbar is hidden: it fades in time, which two hosts would
+    /// paint at different instants.
+    fn bar(z: &str, wrap: bool) -> String {
+        rows(
+            &format!(
+                "html{{scrollbar-width:none}}.r:hover{{background:#a33}}\
+                 .bar{{position:fixed;left:0;right:0;bottom:24px;margin:0 auto;width:fit-content;\
+                 display:flex;align-items:center;gap:8px;{z}background:#222;border:1px solid #555;\
+                 border-radius:8px;padding:8px 12px;box-shadow:0 4px 12px #000}}\
+                 .bar button{{font:inherit;padding:4px 40px;background:#333;color:#eee;border:0;border-radius:6px}}\
+                 .bar button:hover{{background:#c33;color:#fff}}"
+            ),
+            &format!(
+                "{}<div class=bar><span>1 selected</span><button>Status</button>\
+                 <button>Delete</button><button>Clear</button></div>{}",
+                if wrap { "<div style=opacity:.99>" } else { "" },
+                if wrap { "</div>" } else { "" },
+            ),
+        )
+    }
+
+    /// Moves the pointer over each of `points` (fractions of the frame) on
+    /// two hosts showing `html`, the root scrolled by `scroll` (device
+    /// pixels) first: one renders what changed, one paints in full. Every
+    /// frame must be the same.
+    fn hovers_as_a_full_paint(scale: f32, html: &str, scroll: f32, points: &[(f32, f32)]) {
+        let (c, r) = ("120", "50");
+        let mut partial = host_at(scale);
+        let mut full = host_at(scale);
+        for h in [&mut partial, &mut full] {
+            h.handle(&command(&[("a", "doc"), ("s", "x"), ("scroll", "1")], html));
+            h.handle(&command(
+                &[("a", "place"), ("s", "x"), ("c", c), ("r", r)],
+                "",
+            ));
+            h.render_dirty(&mut |_, _, _| {});
+            if scroll != 0.0 {
+                h.wheel("x", 600.0, 500.0, 0.0, scroll, crate::Mods::default());
+                h.render_dirty(&mut |_, _, _| {});
+            }
+        }
+        let (w, hh) = {
+            let f = partial.frame("x").unwrap();
+            (f.width as f32, f.height as f32)
+        };
+        for (i, &(fx, fy)) in points.iter().enumerate() {
+            for h in [&mut partial, &mut full] {
+                h.pointer(
+                    "x",
+                    crate::PointerKind::Move,
+                    fx * w,
+                    fy * hh,
+                    crate::Mods::default(),
+                );
+            }
+            partial.render_dirty(&mut |_, _, _| {});
+            full.repaint();
+            full.render_dirty(&mut |_, _, _| {});
+            same_frames(
+                &partial,
+                &full,
+                &format!("scale {scale}, scroll {scroll}, point {i} ({fx}, {fy})"),
+            );
+        }
+    }
+
+    /// Over the rows, then along the bar from one end to the other.
+    fn bar_points(scale: f32) -> Vec<(f32, f32)> {
+        // The bar's middle: 24px up, half its ~44px height.
+        let y = 1.0 - (24.0 + 20.0) * scale / 1000.0;
+        let mut p = vec![(0.5, 0.2), (0.5, 0.25), (0.3, 0.5), (0.5, 0.9), (0.5, 0.95)];
+        p.extend((2..=18).map(|i| (i as f32 / 20.0, y)));
+        p.extend([(0.5, 0.3), (0.5, y)]);
+        p
+    }
+
+    /// A fixed box with a `z-index` paints from a stacking context, not
+    /// from the root's paint children, under an ancestor with `opacity`
+    /// from that ancestor's: it stays put all the same.
+    #[test]
+    fn a_fixed_bar_stays_over_rows_hovered_under_it() {
+        for (z, wrap) in [("", false), ("z-index:50;", false), ("z-index:50;", true)] {
+            for scale in [1.0, 1.6] {
+                for scroll in [0.0, 37.0] {
+                    hovers_as_a_full_paint(scale, &bar(z, wrap), scroll, &bar_points(scale));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_fixed_bar_with_a_z_index_paints_the_scroll_in_full() {
+        for wrap in [false, true] {
+            assert_eq!(
+                scrolls_as_a_full_paint(1.6, "1", &bar("z-index:50;", wrap), MOVES),
+                0
+            );
+        }
     }
 
     #[test]
