@@ -2,7 +2,7 @@
 //! browser draws it: a cluster with emoji presentation takes a colour font
 //! before a text font that has outlines for it (the parley patch,
 //! mods/parley/colour-emoji-first.md). A text-presentation cluster stays
-//! text. Whatever the stack, the emoji is OpenMoji's, the host's own
+//! text. Whatever the stack, the emoji is the host's own Noto Color Emoji
 //! (src/fonts.rs's tests).
 
 use hotty::Message;
@@ -105,8 +105,7 @@ fn disc(px: u32, family: &str) -> (Vec<f32>, usize) {
     (red.iter().map(|r| r / max).collect(), f.width as usize)
 }
 
-/// A bitmap emoji (Noto Color Emoji's, which the system may have; ours is
-/// outlines) is drawn from a strike several times its size: shrunk by
+/// A bitmap emoji (Noto Color Emoji's, the host's own) is drawn from a strike several times its size: shrunk by
 /// averaging (mods/glifo/shrink-bitmap-glyphs.md), its round edge is a band
 /// of part-covered pixels, as a browser's is, rather than a staircase of
 /// pixels either in or out. Sampled from the strike, the disc had 15 to 20
@@ -114,12 +113,7 @@ fn disc(px: u32, family: &str) -> (Vec<f32>, usize) {
 /// has 0 to 3, where the edge runs along the pixel grid.
 #[test]
 fn a_shrunk_emoji_has_soft_edges() {
-    const NOTO: &str = "'Noto Color Emoji'";
-    if drawn("😀", NOTO) == drawn("😀", "OpenMoji") {
-        eprintln!("skipped: no Noto Color Emoji on this system");
-        return;
-    }
-    for family in [NOTO] {
+    for family in ["'Noto Color Emoji'", "sans-serif"] {
         for px in [14, 20, 28] {
             soft_edges(px, family);
         }

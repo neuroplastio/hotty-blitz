@@ -1,5 +1,5 @@
-//! The fonts a host ships (fonts/: AdwaitaMono and Plex are OFL-1.1,
-//! OpenMoji CC-BY-SA-4.0; the sources and the icon sets' licences are in
+//! The fonts a host ships (fonts/: AdwaitaMono, Plex and Noto Color Emoji
+//! are OFL-1.1; the sources and the icon sets' licences are in
 //! fonts/NOTICE.txt).
 //!
 //! AdwaitaMono Nerd Font Propo, Regular, Bold, Italic and Bold Italic. It is
@@ -19,9 +19,10 @@
 //! family. A collection looks a name up among the fonts registered in it
 //! before the system's, so these faces win over an installed Plex.
 //!
-//! OpenMoji Color 17.0, HfG Schwäbisch Gmünd's COLRv0 build as they publish
-//! it, so an emoji draws alike on every host, and not in whichever emoji font
-//! the system has. It is the first `emoji` font. In every other generic
+//! Noto Color Emoji v2.051, Google's CBDT build as they publish it and as
+//! Ghostty embeds it, byte for byte, so an emoji draws alike on every host
+//! and as hottyterm's cells draw it, and not in whichever emoji font the
+//! system has. Registered, it wins over an installed Noto Color Emoji. It is the first `emoji` font. In every other generic
 //! family it goes just before the first of the system's colour emoji fonts
 //! (those it lists first for `emoji`) that the system lists there, as
 //! fontconfig lists Noto Color Emoji under monospace and sans-serif, and
@@ -58,9 +59,9 @@ const PLEX_FACES: [&[u8]; 3] = [
 ];
 
 /// The family of the emoji font, as a document names it.
-pub const OPENMOJI: &str = "OpenMoji";
+pub const EMOJI: &str = "Noto Color Emoji";
 
-const OPENMOJI_FACE: &[u8] = include_bytes!("../fonts/OpenMoji-color-glyf_colr_0.woff2");
+const EMOJI_FACE: &[u8] = include_bytes!("../fonts/NotoColorEmoji.ttf");
 
 /// The families that take it first.
 const FIRST: [GenericFamily; 2] = [GenericFamily::Monospace, GenericFamily::UiMonospace];
@@ -84,7 +85,7 @@ pub fn context() -> FontContext {
 }
 
 /// Builds the process's font context on a thread of its own, so the first
-/// surface seldom waits for it: decompressing the faces takes about 85 ms.
+/// surface seldom waits for it: decompressing the WOFF2 faces takes tens of milliseconds.
 pub fn warm() {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if !STARTED.swap(true, Ordering::Relaxed) {
@@ -102,7 +103,7 @@ fn build() -> FontContext {
         let decoding: Vec<_> = FACES
             .iter()
             .chain(&PLEX_FACES)
-            .chain([&OPENMOJI_FACE])
+            .chain([&EMOJI_FACE])
             .map(|f| s.spawn(|| blitz_dom::decode_font_bytes(f).into_owned()))
             .collect();
         decoding
@@ -148,7 +149,7 @@ fn build() -> FontContext {
         let list = choice.iter().chain(&ours).chain(rest).copied();
         c.set_generic_families(g, list.collect::<Vec<_>>().into_iter());
     }
-    // OpenMoji goes ahead of the system's colour fonts: those it lists
+    // Ours goes ahead of the system's colour fonts: those it lists
     // first for emoji, before its first text font. Fontconfig lists every
     // family for emoji, and checking them all would take 300 ms.
     let FontContext {
@@ -313,10 +314,13 @@ mod tests {
         let mut ctx = context();
         let mut system = FontContext::default();
         for g in SECOND {
+            // Ours moves the system's Noto Color Emoji, the same name, to
+            // its own place: the other families keep their order.
             let mut want = names(&mut system, g);
+            want.retain(|n| n != EMOJI);
             want.insert(want.len().min(1), FAMILY.to_owned());
             let mut have = names(&mut ctx, g);
-            have.retain(|n| n != OPENMOJI);
+            have.retain(|n| n != EMOJI);
             assert_eq!(have[..want.len()], want[..], "{g:?}");
         }
         // md-apple_keyboard_command, from ours whatever Nerd Fonts the
@@ -336,9 +340,9 @@ mod tests {
     }
 
     #[test]
-    fn openmoji_is_the_first_emoji_font() {
+    fn ours_is_the_first_emoji_font() {
         let mut ctx = context();
-        let ours = ctx.collection.family_id(OPENMOJI).expect("registered");
+        let ours = ctx.collection.family_id(EMOJI).expect("registered");
         let list: Vec<FamilyId> = ctx
             .collection
             .generic_families(GenericFamily::Emoji)
@@ -349,9 +353,9 @@ mod tests {
     }
 
     #[test]
-    fn openmoji_comes_before_every_colour_font_the_system_lists() {
+    fn ours_comes_before_every_colour_font_the_system_lists() {
         let mut ctx = context();
-        let ours = ctx.collection.family_id(OPENMOJI).expect("registered");
+        let ours = ctx.collection.family_id(EMOJI).expect("registered");
         for g in FIRST.into_iter().chain(SECOND) {
             let list: Vec<FamilyId> = ctx.collection.generic_families(g).collect();
             let first = list
@@ -368,9 +372,9 @@ mod tests {
     }
 
     #[test]
-    fn openmoji_draws_in_colour() {
+    fn ours_draws_in_colour() {
         let mut ctx = context();
-        let ours = ctx.collection.family_id(OPENMOJI).expect("registered");
+        let ours = ctx.collection.family_id(EMOJI).expect("registered");
         assert!(is_colour(&mut ctx.collection, &mut ctx.source_cache, ours));
     }
 
@@ -395,11 +399,11 @@ mod tests {
     }
 
     #[test]
-    fn an_emoji_draws_from_openmoji_whatever_the_stack() {
+    fn an_emoji_draws_from_ours_whatever_the_stack() {
         let mut ctx = context();
-        let ours = blitz_dom::decode_font_bytes(OPENMOJI_FACE).into_owned();
-        // As fontconfig names it on most systems, and lists it under
-        // sans-serif.
+        let ours = blitz_dom::decode_font_bytes(EMOJI_FACE).into_owned();
+        // As fontconfig names the system's copy on most systems, and lists
+        // it under sans-serif.
         let noto = "'Noto Color Emoji'";
         for stack in [
             "emoji",
@@ -409,6 +413,7 @@ mod tests {
             "system-ui",
             "'DejaVu Sans', monospace",
             "'No Such Font'",
+            noto,
         ] {
             for text in ["😀", "⚡", "❤️", "🇩🇪", "👍🏽", "🏳️‍🌈", "1️⃣"]
             {
@@ -418,11 +423,6 @@ mod tests {
                     "{text} in {stack}"
                 );
             }
-        }
-        // A document that names another emoji font gets it, if the system
-        // has it.
-        if ctx.collection.family_id("Noto Color Emoji").is_some() {
-            assert!(drawn_from(&mut ctx, noto, "😀").iter().all(|b| *b != ours));
         }
         // Text stays the text font's.
         assert!(

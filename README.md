@@ -300,17 +300,17 @@ draws alike on a machine that has Plex and one that does not. The files are
 IBM's v6.4.0 release, byte for byte (the name "Plex" is reserved, so they
 are never subsetted or re-encoded).
 
-OpenMoji Color 17.0 (the COLRv0 build, as OpenMoji publishes it) draws every
-emoji, whatever font the document asks for, rather than whichever emoji font
-the system has. It is the first `emoji` font. In every other generic family
+Noto Color Emoji v2.051 (Google's CBDT build, byte for byte the file Ghostty
+embeds) draws every emoji, whatever font the document asks for, rather than
+whichever emoji font the system has. It is the first `emoji` font. In every other generic family
 it comes just before the system's colour emoji font (fontconfig lists Noto
 Color Emoji under `monospace` and `sans-serif`), so an emoji cluster, which
-takes the first colour font of its stack, takes OpenMoji, and text draws as
-before. A document that names another emoji font, such as "Noto Color
-Emoji", gets that font. hottyterm draws its cells' emoji from OpenMoji too.
+takes the first colour font of its stack, takes ours, and text draws as
+before. A document that names "Noto Color Emoji" gets ours too, whatever
+copy the system has. hottyterm draws its cells' emoji from the same file.
 
 The faces are decompressed on a thread of their own when a host starts
-(about 85 ms; OpenMoji's alone takes about 50).
+(tens of milliseconds).
 
 The spec names none of these fonts: a document can't count on them on another
 host.
@@ -342,10 +342,9 @@ Apache-2.0 ([LICENSE](LICENSE)).
 - Blitz is MIT OR Apache-2.0, parley Apache-2.0 OR MIT, vello_cpu
   and glifo Apache-2.0 OR MIT, and Stylo MPL-2.0. Our patches on each, in `mods/`, are
   offered under that upstream's licence, the one its `mod.md` names (gov P-7).
-- AdwaitaMono and IBM Plex Sans in `crates/hotty-blitz/fonts/` are OFL-1.1:
-  AdwaitaMono's in `OFL.txt`, IBM Plex Sans's (Reserved Font Name "Plex") in
-  `IBM-Plex-OFL.txt`. AdwaitaMono's Nerd Fonts icon sets keep their own
+- AdwaitaMono, IBM Plex Sans and Noto Color Emoji in `crates/hotty-blitz/fonts/`
+  are OFL-1.1: AdwaitaMono's in `OFL.txt`, IBM Plex Sans's (Reserved Font Name
+  "Plex") in `IBM-Plex-OFL.txt`, Noto Color Emoji's in `NotoColorEmoji-OFL.txt`. AdwaitaMono's Nerd Fonts icon sets keep their own
   licences, listed with their texts in `NOTICE.txt`, which also records where
-  Plex's and OpenMoji's files came from. OpenMoji, by HfG Schwäbisch Gmünd,
-  is CC-BY-SA-4.0, in `OpenMoji-CC-BY-SA-4.0.txt`. A program that ships the
+  Plex's and Noto Color Emoji's files came from. A program that ships the
   library ships all four files.
