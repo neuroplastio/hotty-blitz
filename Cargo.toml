@@ -63,8 +63,11 @@ anyrender_svg = { path = "../anyrender/crates/anyrender_svg" }
 taffy = { path = "../taffy" }
 
 [patch.crates-io]
-# usvg 0.50.0 is built from the resvg release revision in mods/usvg.
+# usvg 0.50.0 is built from the resvg release revision in mods/usvg, and so
+# is svgtypes 0.16.2, which usvg builds from its own workspace: everything
+# else that parses SVG values gets the same copy.
 usvg = { path = "../resvg/crates/usvg" }
+svgtypes = { path = "../resvg/crates/svgtypes" }
 parley = { path = "../parley/parley" }
 fontique = { path = "../parley/fontique" }
 parley_engine = { path = "../parley/parley_engine" }

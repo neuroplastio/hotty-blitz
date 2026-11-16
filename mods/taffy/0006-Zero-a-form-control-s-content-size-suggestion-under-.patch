@@ -1,0 +1,79 @@
+From e3a06673d2f60285510310acc4a0c24b81996c54 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 16 Nov 2026 20:39:15 +0100
+Subject: [PATCH] Zero a form control's content size suggestion under a
+ percentage width
+
+A flex item's automatic minimum size is the smaller of its specified size
+suggestion and its content size suggestion. For a form control (a
+compressible replaced element that is not a replaced element: a text
+field, a select, a textarea) with a percentage width, browsers resolve
+that width against zero for its min-content contribution, so the content
+size suggestion is zero and the control shrinks with its row. Chromium
+gives `<input style="width:100%">` beside a 16px icon and an 8px gap in a
+200px row 176px whatever its size attribute; Taffy kept 200px, the
+control's whole width, and it overflowed.
+
+A fixed width caps the suggestion at that width, as before. Images keep
+their content size suggestion, as do a percentage max-width and the
+block axis, which is what Chromium does.
+---
+ src/compute/flexbox.rs | 25 +++++++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/src/compute/flexbox.rs b/src/compute/flexbox.rs
+index 9be8b79a..2ad9e310 100644
+--- a/src/compute/flexbox.rs
++++ b/src/compute/flexbox.rs
+@@ -62,6 +62,12 @@ struct FlexItem {
+     /// Whether the item's used flex basis is definite (rather than derived from the item's content)
+     flex_basis_is_definite: bool,
+ 
++    /// For a form control (a compressible replaced element that is not a replaced element) in a
++    /// row, its `width` resolved against zero: a percentage width makes its content size
++    /// suggestion zero, as browsers do, so that `width: 100%` beside other items shrinks
++    /// <https://drafts.csswg.org/css-sizing-3/#replaced-percentage-min-contribution>
++    min_content_main_cap: Option<f32>,
++
+     /// The minimum size of the item. This differs from min_size above because it also
+     /// takes into account content based automatic minimum sizes
+     resolved_minimum_main_size: f32,
+@@ -891,9 +897,22 @@ fn generate_anonymous_flex_items(
+             } else {
+                 Size::ZERO
+             };
++            // Images keep their content size suggestion: only a form control's percentage width
++            // resolves against zero, and only in its inline axis.
++            let min_content_main_cap =
++                if constants.dir.is_row() && child_style.is_compressible_replaced() && !child_style.is_replaced() {
++                    child_style
++                        .size()
++                        .width
++                        .maybe_resolve(Some(0.0), |val, basis| tree.calc(val, basis))
++                        .maybe_add(box_sizing_adjustment.width)
++                } else {
++                    None
++                };
+             FlexItem {
+                 node: child,
+                 order: index as u32,
++                min_content_main_cap,
+                 size: child_style
+                     .size()
+                     .maybe_resolve(percent_resolution_size, |val, basis| tree.calc(val, basis))
+@@ -1272,8 +1291,10 @@ fn determine_flex_base_size(
+ 
+             // 4.5. Automatic Minimum Size of Flex Items
+             // https://www.w3.org/TR/css-flexbox-1/#min-size-auto
+-            let clamped_min_content_size =
+-                min_content_main_size.maybe_min(child.size.main(dir)).maybe_min(transferred_max_size.main(dir));
++            let clamped_min_content_size = min_content_main_size
++                .maybe_min(child.size.main(dir))
++                .maybe_min(transferred_max_size.main(dir))
++                .maybe_min(child.min_content_main_cap);
+             clamped_min_content_size.maybe_max(padding_border_axes_sums.main(dir))
+         });
+ 
+-- 
+2.56.0
+

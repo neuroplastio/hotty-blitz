@@ -1,0 +1,159 @@
+From debea8fdcceef6ec9cc976b05825af3f23f3e5cc Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 16 Nov 2026 20:29:17 +0100
+Subject: [PATCH] svgtypes: parse oklab() and oklch() colors
+
+CSS Color 4's Oklab and Oklch notations, as presentation attributes and
+style properties: lightness, chroma or a/b as numbers or percentages, a
+hue as an angle, `none` for a missing component, and an optional alpha.
+The color is converted to sRGB and each channel clipped to its gamut.
+
+Tailwind CSS 4 writes its palette in oklch(), so an SVG icon made from
+its colors (a data: URL in a background-image, say) drew no stroke.
+---
+ crates/svgtypes/src/color.rs | 108 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 108 insertions(+)
+
+diff --git a/crates/svgtypes/src/color.rs b/crates/svgtypes/src/color.rs
+index 58bd682e..19a88e70 100644
+--- a/crates/svgtypes/src/color.rs
++++ b/crates/svgtypes/src/color.rs
+@@ -256,6 +256,38 @@ impl Stream<'_> {
+                     color.alpha = (self.parse_number_or_percent()? * 255.0).round() as u8;
+                 }
+ 
++                self.skip_spaces();
++                self.consume_byte(b')')?;
++            } else if name == "oklab" || name == "oklch" {
++                // https://www.w3.org/TR/css-color-4/#specifying-oklab-oklch
++                self.consume_byte(b'(')?;
++
++                let lightness = f64_bound(0.0, self.parse_oklab_component(1.0)?, 1.0);
++                let (a, b) = if name == "oklab" {
++                    let a = self.parse_oklab_component(0.4)?;
++                    (a, self.parse_oklab_component(0.4)?)
++                } else {
++                    let chroma = self.parse_oklab_component(0.4)?.max(0.0);
++                    self.skip_spaces();
++                    let hue = if self.starts_with(b"none") {
++                        self.advance(4);
++                        0.0
++                    } else {
++                        self.parse_angle()?.to_degrees()
++                    };
++                    let (sin, cos) = hue.to_radians().sin_cos();
++                    (chroma * cos, chroma * sin)
++                };
++
++                color = oklab_to_rgb(lightness, a, b);
++
++                self.skip_spaces();
++                if self.is_curr_byte_eq(b'/') {
++                    self.advance(1);
++                    let alpha = f64_bound(0.0, self.parse_number_or_percent()?, 1.0);
++                    color.alpha = (alpha * 255.0).round() as u8;
++                }
++
+                 self.skip_spaces();
+                 self.consume_byte(b')')?;
+             } else {
+@@ -273,6 +305,21 @@ impl Stream<'_> {
+         Ok(color)
+     }
+ 
++    /// An Oklab or Oklch component: a number, a percentage of `full`, or `none` (zero).
++    fn parse_oklab_component(&mut self, full: f64) -> Result<f64, Error> {
++        self.skip_spaces();
++        if self.starts_with(b"none") {
++            self.advance(4);
++            return Ok(0.0);
++        }
++        let n = self.parse_number()?;
++        if self.starts_with(b"%") {
++            self.advance(1);
++            return Ok(n / 100.0 * full);
++        }
++        Ok(n)
++    }
++
+     fn parse_hwb_component(&mut self) -> Result<f64, Error> {
+         let n = self.parse_number()?;
+         if self.starts_with(b"%") {
+@@ -305,6 +352,29 @@ fn hex_pair(c1: u8, c2: u8) -> u8 {
+     (h1 << 4) | h2
+ }
+ 
++// Oklab to sRGB, each channel clipped to the gamut.
++// Based on https://www.w3.org/TR/css-color-4/#color-conversion-code
++fn oklab_to_rgb(lightness: f64, a: f64, b: f64) -> Color {
++    let l = lightness + 0.396_337_777_4 * a + 0.215_803_757_3 * b;
++    let m = lightness - 0.105_561_345_8 * a - 0.063_854_172_8 * b;
++    let s = lightness - 0.089_484_177_5 * a - 1.291_485_548_0 * b;
++    let (l, m, s) = (l * l * l, m * m * m, s * s * s);
++
++    let red = 4.076_741_662_1 * l - 3.307_711_591_3 * m + 0.230_969_929_2 * s;
++    let green = -1.268_438_004_6 * l + 2.609_757_401_1 * m - 0.341_319_396_5 * s;
++    let blue = -0.004_196_086_3 * l - 0.703_418_614_7 * m + 1.707_614_701_0 * s;
++
++    fn gamma(linear: f64) -> f32 {
++        let encoded = if linear <= 0.003_130_8 {
++            12.92 * linear
++        } else {
++            1.055 * linear.powf(1.0 / 2.4) - 0.055
++        };
++        f64_bound(0.0, encoded, 1.0) as f32
++    }
++    Color::new_rgb_f32(gamma(red), gamma(green), gamma(blue))
++}
++
+ // `hue` is in a 0..6 range, while `saturation` and `lightness` are in a 0..1 range.
+ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
+     let (red, green, blue) = hsl_to_rgb_f32(hue, saturation, lightness);
+@@ -384,6 +454,44 @@ mod tests {
+         };
+     }
+ 
++    // Tailwind's neutral-500, `#737373` in its sRGB fallback.
++    test!(
++        oklch_gray,
++        "oklch(0.556 0 0)",
++        Color::new_rgb(115, 115, 115)
++    );
++
++    test!(
++        oklch_percent_and_alpha,
++        "oklch(55.6% 0% none / 50%)",
++        Color::new_rgba(115, 115, 115, 128)
++    );
++
++    // Tailwind's red-500, `#fb2c36` in its sRGB fallback.
++    test!(
++        oklch_red,
++        "oklch(0.637 0.237 25.331)",
++        Color::new_rgb(251, 44, 54)
++    );
++
++    test!(
++        oklch_hue_units,
++        "oklch(0.637 0.237 0.0703639turn)",
++        Color::new_rgb(251, 44, 54)
++    );
++
++    test!(
++        oklab_white,
++        "oklab(1 0 0)",
++        Color::new_rgb(255, 255, 255)
++    );
++
++    test!(
++        oklab_black_alpha,
++        "OKLab(0 0 0 / 0.25)",
++        Color::new_rgba(0, 0, 0, 64)
++    );
++
+     test!(
+         rrggbb,
+         "#ff0000",
+-- 
+2.56.0
+

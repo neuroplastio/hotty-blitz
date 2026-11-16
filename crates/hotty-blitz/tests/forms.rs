@@ -161,9 +161,13 @@ fn an_empty_number_field_is_as_wide_as_a_text_field() {
         input{display:block;border:1px solid #000;margin:0 0 20px}</style>
         <input><input type=number>",
     );
-    let f = h.frame("x").unwrap();
+    // Each field's own rows: a field is no longer as wide as the line
+    // (mods/blitz 0091), and below the document the frame is dark.
     let text = right_edge(&h, (0, 15)).expect("the text field");
-    let number = right_edge(&h, (45, f.height)).expect("the number field");
-    assert!(text > 100, "a text field of 20 characters, not {text}px");
+    let number = right_edge(&h, (45, 55)).expect("the number field");
+    assert!(
+        (100..199).contains(&text),
+        "a text field of 20 characters, not {text}px"
+    );
     assert_eq!(number, text, "the number field ends at {number}px");
 }

@@ -1,0 +1,101 @@
+From 01b8dbad30217f07478f58c34677585c1906f6f7 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 16 Nov 2026 20:39:47 +0100
+Subject: [PATCH] blitz-dom: text fields, selects and textareas are
+ compressible replaced elements
+
+CSS Sizing 3 counts form controls with an intrinsic size among the
+compressible replaced elements, and Taffy's style trait asks for them
+(is_compressible_replaced). Blitz answered only for replaced elements
+(img, svg, canvas, ...), so a form control was laid out as an ordinary
+box: stretched to its container's width as a block, and with a
+percentage width in a flex row, as wide as the row however little room
+it left.
+
+A new style flag, IS_FORM_CONTROL, marks every input but the button
+types, image and hidden, and every select and textarea. Taffy then
+stops stretching such a control as a block (Chromium gives a
+display:block text field its size, not the line's width), caps its
+min-content contribution by a percentage width resolved against zero,
+and in a flex row lets a width:100% field shrink beside its siblings.
+---
+ packages/blitz-dom/src/node/element.rs | 16 ++++++++++++++++
+ packages/blitz-dom/src/node/node.rs    |  2 ++
+ packages/stylo_taffy/src/wrapper.rs    |  7 ++++++-
+ 3 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
+index 9869d6273..aedf804e5 100644
+--- a/packages/blitz-dom/src/node/element.rs
++++ b/packages/blitz-dom/src/node/element.rs
+@@ -962,6 +962,22 @@ impl ElementData {
+             )
+     }
+ 
++    /// A form control that sizes like a replaced element: a text field, check box, range
++    /// or other non-button `input`, a `select` or a `textarea`. CSS Sizing 3 calls it a
++    /// compressible replaced element: with a percentage width its content-based minimum is
++    /// zero, so it shrinks in a row.
++    /// <https://drafts.csswg.org/css-sizing-3/#compressible-replaced>
++    pub(crate) fn is_form_control_with_intrinsic_size(&self) -> bool {
++        match &*self.name.local {
++            "select" | "textarea" => true,
++            "input" => !matches!(
++                self.attr(local_name!("type")),
++                Some("button" | "submit" | "reset" | "image" | "hidden")
++            ),
++            _ => false,
++        }
++    }
++
+     pub fn is_submit_button(&self) -> bool {
+         if self.name.local != local_name!("button") {
+             return false;
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index a3f51c0c3..5c4c97578 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1242,6 +1242,8 @@ impl Node {
+             }
+             if el.is_button_input() {
+                 flags |= stylo_taffy::StyleFlags::IS_BUTTON_INPUT;
++            } else if el.is_form_control_with_intrinsic_size() {
++                flags |= stylo_taffy::StyleFlags::IS_FORM_CONTROL;
+             }
+             if let Some(inline_layout) = el.inline_layout_data.as_deref() {
+                 flags |= inline_layout.span_cb_flags;
+diff --git a/packages/stylo_taffy/src/wrapper.rs b/packages/stylo_taffy/src/wrapper.rs
+index 3fd6731aa..f25ceeb50 100644
+--- a/packages/stylo_taffy/src/wrapper.rs
++++ b/packages/stylo_taffy/src/wrapper.rs
+@@ -34,6 +34,9 @@ bitflags! {
+         const IS_BUTTON = 1 << 3;
+         /// Whether the node is a button-type input whose label always uses block layout
+         const IS_BUTTON_INPUT = 1 << 4;
++        /// Whether the node is a form control with an intrinsic size (a text field, `select`,
++        /// `textarea`, ...): a compressible replaced element that is not a replaced element
++        const IS_FORM_CONTROL = 1 << 5;
+     }
+ }
+ 
+@@ -168,6 +171,7 @@ impl<T: Deref<Target = ComputedValues>> From<TaffyStyloStyle<T>> for taffy::Styl
+         let mut style = convert::to_taffy_style(&value.style);
+         value.layout_wm().transpose_style(&mut style);
+         style.item_is_replaced = value.flags.contains(StyleFlags::IS_REPLACED);
++        style.item_is_compressible_replaced = value.flags.contains(StyleFlags::IS_FORM_CONTROL);
+         style
+     }
+ }
+@@ -190,7 +194,8 @@ impl<T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle<T>
+ 
+     #[inline]
+     fn is_compressible_replaced(&self) -> bool {
+-        self.flags.contains(StyleFlags::IS_REPLACED)
++        self.flags
++            .intersects(StyleFlags::IS_REPLACED | StyleFlags::IS_FORM_CONTROL)
+     }
+ 
+     #[inline]
+-- 
+2.56.0
+
