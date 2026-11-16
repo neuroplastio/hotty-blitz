@@ -4670,6 +4670,7 @@ mod tests {
         for (i, &(dx, dy)) in moves.iter().enumerate() {
             for h in [&mut moved, &mut full] {
                 h.wheel("x", x, y, dx, dy, crate::Mods::default());
+                hold_root_bar(h);
             }
             let before = moved.surfaces["x"].blits;
             moved.render_dirty(&mut |_, _, _| {});
@@ -4693,6 +4694,15 @@ mod tests {
             );
         }
         moved.surfaces["x"].blits
+    }
+
+    /// Keeps the root's scrollbars shown whatever the clock says: they fade
+    /// from half a second after a scroll (`scroll::FADE_DELAY`), at the time
+    /// each host paints, and a host painting after another on a loaded
+    /// machine would paint them fainter.
+    fn hold_root_bar(h: &mut crate::Host) {
+        let s = h.surfaces.get_mut("x").unwrap();
+        s.root_bar.shown = Some(std::time::Instant::now() + std::time::Duration::from_secs(3600));
     }
 
     /// Asserts that `partial`'s frame is `full`'s, ±1 per channel on
