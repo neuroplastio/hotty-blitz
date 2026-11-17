@@ -4646,3 +4646,76 @@ fn inline_svg_sprite_updates_when_external_definition_changes() {
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 255]);
 }
+
+/// `:placeholder-shown` matches a field with a placeholder and no text, and
+/// follows the text as the user types and deletes it, `:has()` over it
+/// included: the page draws as the same page with the matches written out
+/// as classes.
+#[test]
+fn placeholder_shown_follows_what_the_user_types() {
+    const BASE: &str = "<style>*{margin:0;padding:0;border:0;outline:0}
+        body{background:#000}
+        input{display:block;width:200px;height:20px;background:#333;color:transparent;caret-color:transparent}
+        input::placeholder{color:transparent}
+        .box{height:40px} hr{height:10px;background:#0a0}";
+    let live = format!(
+        "{BASE}
+        .box:has(> input:not(:placeholder-shown)) hr{{display:none}}
+        input:placeholder-shown{{background:#08f}}</style>
+        <div class=box><input id=a placeholder=p><hr></div>
+        <div class=box><input id=b placeholder=p value=x><hr></div>
+        <div class=box><input id=c value=''><hr></div>"
+    );
+    // What it draws with `a` showing its placeholder, and with text in `a`.
+    let written_out = |a_shown: bool| {
+        let a = if a_shown {
+            "<input style=background:#08f placeholder=p><hr>"
+        } else {
+            "<input placeholder=p value=z>"
+        };
+        format!(
+            "{BASE}</style>
+            <div class=box>{a}</div>
+            <div class=box><input placeholder=p value=x></div>
+            <div class=box><input value=''></div>"
+        )
+    };
+    let same = |h: &Host, a_shown: bool, what: &str| {
+        let fresh = doc_placed(&written_out(a_shown));
+        let (fa, fb) = (h.frame("f").unwrap(), fresh.frame("f").unwrap());
+        let differing = fa
+            .rgba
+            .chunks(4)
+            .zip(fb.rgba.chunks(4))
+            .filter(|(p, q)| p != q)
+            .count();
+        assert_eq!(differing, 0, "{what}: {differing} pixels differ");
+    };
+
+    let mut h = doc_placed(&live);
+    same(&h, true, "as loaded");
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "a")], ""));
+    type_text(&mut h, "z");
+    h.blur("f");
+    render(&mut h);
+    same(&h, false, "after typing");
+    h.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "a")], ""));
+    assert!(
+        h.key("f", &Key::new(KeyName::Backspace, Mods::default()))
+            .consumed
+    );
+    h.blur("f");
+    render(&mut h);
+    same(&h, true, "after deleting it again");
+}
+
+fn doc_placed(html: &str) -> Host {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "f")], html));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "5")],
+        "",
+    ));
+    render(&mut h);
+    h
+}
