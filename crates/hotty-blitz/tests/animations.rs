@@ -4,7 +4,7 @@ mod common;
 
 use common::delta_cmd;
 use hotty::Message;
-use hotty_blitz::{Config, Damage, Host, Metrics};
+use hotty_blitz::{Config, Damage, Host, Metrics, Mods, PointerKind};
 use std::time::{Duration, Instant};
 
 fn host() -> Host {
@@ -353,4 +353,81 @@ fn forwards_fill_survives_restyle_and_is_removed_when_canceled() {
     render(&mut h);
     assert_eq!(pixel(&h, "x", 10, 10), GREEN, "canceling removes the fill");
     assert!(h.next_frame().is_none());
+}
+
+/// A host's loop for `secs` of real time: `input` hands the host what the
+/// pointer does every 8ms (120 Hz), and between inputs the host renders
+/// when `next_frame` says a frame is due, asking again after every call,
+/// as `hotty_host_next_frame` says to. The frames that drew something.
+fn under_input(h: &mut Host, secs: f64, mut input: impl FnMut(&mut Host, u32)) -> usize {
+    let start = Instant::now();
+    let end = start + Duration::from_secs_f64(secs);
+    let mut drawn = 0;
+    let mut i = 0;
+    let mut next_input = start;
+    while Instant::now() < end {
+        let now = Instant::now();
+        if now >= next_input {
+            input(h, i);
+            i += 1;
+            next_input += Duration::from_millis(8);
+        }
+        // The one timer: armed for the deadline next_frame gives now.
+        if h.next_frame().is_some_and(|t| t <= Instant::now()) {
+            drawn += render(h).len();
+        }
+        let wake = h
+            .next_frame()
+            .map_or(next_input, |t| t.min(next_input))
+            .max(Instant::now());
+        std::thread::sleep(wake - Instant::now());
+    }
+    drawn
+}
+
+/// The pointer moves over a surface whose animation plays, at 120 Hz, as a
+/// terminal hands the moves on: each asks whether the surface takes the
+/// pointer, then is a move. The animation keeps playing, at its frames'
+/// cadence, rather than waiting for the pointer to rest.
+#[test]
+fn an_animation_plays_on_while_the_pointer_moves() {
+    let mut h = host();
+    animated(&mut h, "go 2s linear");
+    let drawn = under_input(&mut h, 0.5, |h, i| {
+        let x = 100.0 + (i % 40) as f32;
+        if h.takes_pointer("x", x, 100.0) {
+            h.pointer("x", PointerKind::Move, x, 100.0, Mods::default());
+        }
+    });
+    assert!(
+        drawn >= 20,
+        "{drawn} frames drawn in half a second of moves"
+    );
+    let got = pixel(&h, "x", 10, 10);
+    assert!(got[2] > 30, "the animation has moved on: {got:?}");
+}
+
+/// A touchpad or touchscreen scrolls the surface at 120 Hz while an
+/// animation plays on it: the animation keeps playing.
+#[test]
+fn an_animation_plays_on_while_the_surface_scrolls() {
+    let mut h = host();
+    doc(
+        &mut h,
+        &format!(
+            "<style>@keyframes go{{from{{background:rgb(255,0,0)}}to{{background:rgb(0,0,255)}}}}</style>\
+<body style='margin:0;height:4000px'><div id=a style='position:fixed;left:0;top:0;width:50px;height:50px;animation:go 2s linear'></div></body>"
+        ),
+    );
+    let drawn = under_input(&mut h, 0.5, |h, i| {
+        let dy = if (i / 30) % 2 == 0 { 4.0 } else { -4.0 };
+        h.takes_pointer("x", 400.0, 100.0);
+        h.wheel("x", 400.0, 100.0, 0.0, dy, Mods::default());
+    });
+    assert!(
+        drawn >= 20,
+        "{drawn} frames drawn in half a second of scrolling"
+    );
+    let got = pixel(&h, "x", 10, 10);
+    assert!(got[2] > 30, "the animation has moved on: {got:?}");
 }

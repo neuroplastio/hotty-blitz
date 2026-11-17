@@ -309,6 +309,12 @@ pub(crate) struct Surface {
     /// only a later `advance` moves it, so a test can render a document at
     /// any moment it names.
     tick: Instant,
+    /// The document's time in the last frame drawn (`render`), which the
+    /// next frame of a CSS animation or transition counts from. Not
+    /// `tick`: a resolve between frames (a pointer's hit test, a scroll)
+    /// moves that, and a pointer moving faster than frames come would
+    /// otherwise push the next one out for as long as it moves.
+    framed: Instant,
     /// The document's base URL (SPEC §7.3), when it declares an absolute
     /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
     /// this host fetches nothing from the network.
@@ -832,6 +838,7 @@ impl Surface {
             base,
             started: std::time::Instant::now(),
             tick: Instant::now(),
+            framed: Instant::now(),
             store,
             playing: Vec::new(),
             anim_stale: true,
@@ -915,7 +922,8 @@ impl Surface {
     /// when its output next changes, as the document's last resolve says
     /// (the start of one in its delay, the next jump of a `steps()` easing),
     /// [`CSS_STEP`] after so that the resolve lands past the jump, and never
-    /// sooner than one frame after the last, at [`CSS_FRAME`]'s cadence,
+    /// sooner than one frame after the last drawn (`framed`), at
+    /// [`CSS_FRAME`]'s cadence,
     /// which an easing that moves continuously keeps. The render that
     /// answers resolves again; when none is left it stops asking, and one
     /// paused stops too.
@@ -925,7 +933,7 @@ impl Surface {
         }
         let at = self.doc.next_animation_change()?;
         let at = self.started + std::time::Duration::from_secs_f64(at.max(0.0)) + CSS_STEP;
-        Some(at.max(self.tick + CSS_FRAME))
+        Some(at.max(self.framed + CSS_FRAME))
     }
 
     /// The text field whose caret shows: the focused element, if it edits
@@ -1236,6 +1244,7 @@ impl Surface {
             panic!("a fault while styling");
         }
         self.resolve();
+        self.framed = self.tick;
         if self.doc.has_pending_critical_resources() {
             // A stylesheet has not arrived yet; the `res` that brings it marks
             // this surface dirty again. The frame drawn then finds `view`.
