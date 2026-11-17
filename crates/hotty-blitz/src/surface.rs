@@ -31,6 +31,7 @@ use std::time::Instant;
 use style::values::computed::UserSelect;
 use stylo_dom::ElementState;
 
+mod date;
 mod field;
 
 /// A surface's pixels: **premultiplied** RGBA8, `width`×`height`, row-major,
@@ -350,6 +351,9 @@ pub(crate) struct Surface {
     /// for and what the program last heard of it, sent with the next frame
     /// (Surface::new_frame).
     caret_owed: Option<(NodeId, field::Caret)>,
+    /// The date or time field being typed into (surface/date.rs): which,
+    /// the number, and how many digits it has had.
+    date_typed: Option<(NodeId, usize, usize)>,
     /// Whether a `caret` went out in this frame.
     caret_sent: bool,
     /// The host reads the clipboard for `paste` (Host::set_paste): without
@@ -842,6 +846,7 @@ impl Surface {
             histories: BTreeMap::new(),
             revs: BTreeMap::new(),
             caret_owed: None,
+            date_typed: None,
             caret_sent: false,
             can_paste: false,
             clipboard: None,
@@ -930,6 +935,10 @@ impl Surface {
             return None;
         }
         let id = self.focused()?;
+        if self.date_type(id).is_some() {
+            // Its number shows selected instead.
+            return None;
+        }
         self.doc
             .get_node(id)?
             .element_data()?
@@ -2551,6 +2560,7 @@ impl Surface {
             if node
                 .element_data()
                 .is_some_and(|e| e.text_input_data().is_some())
+                && self.date_type(id).is_none()
             {
                 return Some(id);
             }
@@ -3121,6 +3131,13 @@ impl Surface {
                         (true, events)
                     }
                     None => self.scroll_key(key, focused),
+                }
+            }
+            (_, Control::Date) => {
+                let id = focused.expect("a date field is focused");
+                match self.date_key(id, key) {
+                    Some(events) => (true, events),
+                    None => self.unused_key(key, focused),
                 }
             }
             (KeyName::Space | KeyName::Enter, Control::Activatable) if plain => {
@@ -4168,6 +4185,10 @@ impl Surface {
     }
 
     fn text_value(&self, id: NodeId) -> Option<String> {
+        if self.date_type(id).is_some() {
+            // Its every change was sent (surface/date.rs).
+            return None;
+        }
         let el = self.doc.get_node(id)?.element_data()?;
         el.text_input_data().map(|t| t.value())
     }
@@ -4208,6 +4229,9 @@ impl Surface {
         let Some(el) = self.doc.get_node(id).and_then(|n| n.element_data()) else {
             return Control::None;
         };
+        if self.date_type(id).is_some() {
+            return Control::Date;
+        }
         if el.text_input_data().is_some() {
             return if &*el.name.local == "textarea" {
                 Control::TextArea
@@ -4230,6 +4254,8 @@ enum Control {
     TextArea,
     Activatable,
     Select,
+    /// A date or time input (surface/date.rs).
+    Date,
 }
 
 /// What a surface hands Blitz's event driver: input from the host, or a

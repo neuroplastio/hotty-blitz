@@ -1,0 +1,335 @@
+From 61b131802303d83f917a4445cf9d446a4b2faef9 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 06:31:04 +0100
+Subject: [PATCH 92/93] blitz-dom: date and time inputs are one-line fields
+ showing their value
+
+A date, time, datetime-local, month or week input had no editor, so it was
+laid out with no content and drew nothing: only its border and padding
+showed. Blitz has no picker for these types, so lay each out as a one-line
+text field showing its value as HTML gives it (ISO 8601, which needs no
+locale), sanitized as HTML sanitizes it (a string that is not a valid one of
+the type's is empty), and, while it is empty, its format as the placeholder.
+It is as wide as its format and a character more; `size` is not its. Form
+submission sends the field's text once it is a valid value, and nothing
+before.
+---
+ packages/blitz-dom/src/date_time.rs        | 172 +++++++++++++++++++++
+ packages/blitz-dom/src/form.rs             |   7 +-
+ packages/blitz-dom/src/layout/construct.rs |  17 +-
+ packages/blitz-dom/src/layout/mod.rs       |  28 +++-
+ packages/blitz-dom/src/lib.rs              |   1 +
+ packages/blitz-dom/src/mutator.rs          |   4 +
+ 6 files changed, 217 insertions(+), 12 deletions(-)
+ create mode 100644 packages/blitz-dom/src/date_time.rs
+
+diff --git a/packages/blitz-dom/src/date_time.rs b/packages/blitz-dom/src/date_time.rs
+new file mode 100644
+index 000000000..41b9a7f60
+--- /dev/null
++++ b/packages/blitz-dom/src/date_time.rs
+@@ -0,0 +1,172 @@
++//! Date and time inputs (`date`, `time`, `datetime-local`, `month`, `week`).
++//!
++//! Blitz has no picker for them. It lays each out as a one-line field showing
++//! its value in the form HTML gives it (ISO 8601, which needs no locale), and,
++//! while it is empty, its format as the placeholder. The value is sanitized as
++//! HTML sanitizes it: a string that is not a valid one of the type's is empty.
++//! <https://html.spec.whatwg.org/multipage/input.html#date-state-(type=date)>
++
++/// The input types this module covers, lowercase.
++pub const TYPES: [&str; 5] = ["date", "time", "datetime-local", "month", "week"];
++
++/// The type of a date or time input, lowercase, for a `type` attribute value.
++pub fn date_time_type(ty: Option<&str>) -> Option<&'static str> {
++    let ty = ty?.trim();
++    TYPES.into_iter().find(|t| t.eq_ignore_ascii_case(ty))
++}
++
++/// The format an empty field of type `ty` shows: its value's form, with
++/// letters (or `--` for a time) for the numbers.
++pub fn placeholder(ty: &str) -> &'static str {
++    match ty {
++        "date" => "yyyy-mm-dd",
++        "time" => "--:--",
++        "datetime-local" => "yyyy-mm-ddT--:--",
++        "month" => "yyyy-mm",
++        "week" => "yyyy-Www",
++        _ => "",
++    }
++}
++
++/// `v` as HTML's value sanitization leaves it for an input of type `ty`: the
++/// value, if it is a valid one of the type's, and otherwise empty. A
++/// `datetime-local` may have a space for its `T`.
++pub fn sanitize(ty: &str, v: &str) -> String {
++    match ty {
++        "date" if date(v) => v.to_string(),
++        "month" if month(v).is_some() => v.to_string(),
++        "week" if week(v) => v.to_string(),
++        "time" if time(v) => v.to_string(),
++        "datetime-local" => match v.split_once(['T', ' ']) {
++            Some((d, t)) if date(d) && time(t) => format!("{d}T{t}"),
++            _ => String::new(),
++        },
++        _ => String::new(),
++    }
++}
++
++/// `YYYY-MM`, its year four digits or more and above 0: (year, month).
++pub fn month(s: &str) -> Option<(u32, u32)> {
++    let (y, m) = s.rsplit_once('-')?;
++    let year = (y.len() >= 4 && y.bytes().all(|b| b.is_ascii_digit()))
++        .then(|| y.parse::<u32>().ok())
++        .flatten()
++        .filter(|&y| y > 0)?;
++    let month = (m.len() == 2 && m.bytes().all(|b| b.is_ascii_digit()))
++        .then(|| m.parse::<u32>().ok())
++        .flatten()
++        .filter(|m| (1..=12).contains(m))?;
++    Some((year, month))
++}
++
++fn leap(y: u32) -> bool {
++    y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
++}
++
++/// The number of days month `m` (1 to 12) has in year `y`.
++pub fn days_in_month(y: u32, m: u32) -> u32 {
++    match m {
++        2 if leap(y) => 29,
++        2 => 28,
++        4 | 6 | 9 | 11 => 30,
++        _ => 31,
++    }
++}
++
++/// The number of ISO weeks year `y` has: 53 in a year that starts on a
++/// Thursday, or a leap year that starts on a Wednesday, and otherwise 52.
++pub fn weeks_in_year(y: u32) -> u32 {
++    // The day of the week of 1 January, 0 for Sunday.
++    let p = y.saturating_sub(1);
++    let jan1 = (1 + 5 * (p % 4) + 4 * (p % 100) + 6 * (p % 400)) % 7;
++    if jan1 == 4 || (leap(y) && jan1 == 3) {
++        53
++    } else {
++        52
++    }
++}
++
++/// `YYYY-MM-DD`, a day the month has.
++pub fn date(s: &str) -> bool {
++    let Some((ym, d)) = s.rsplit_once('-') else {
++        return false;
++    };
++    let Some((y, m)) = month(ym) else {
++        return false;
++    };
++    d.len() == 2
++        && d.bytes().all(|b| b.is_ascii_digit())
++        && d.parse::<u32>()
++            .is_ok_and(|d| (1..=days_in_month(y, m)).contains(&d))
++}
++
++/// `YYYY-Www`, a week the year has.
++pub fn week(s: &str) -> bool {
++    let Some((y, w)) = s.split_once("-W") else {
++        return false;
++    };
++    let Some(year) = (y.len() >= 4 && y.bytes().all(|b| b.is_ascii_digit()))
++        .then(|| y.parse::<u32>().ok())
++        .flatten()
++        .filter(|&y| y > 0)
++    else {
++        return false;
++    };
++    w.len() == 2
++        && w.bytes().all(|b| b.is_ascii_digit())
++        && w.parse::<u32>()
++            .is_ok_and(|w| (1..=weeks_in_year(year)).contains(&w))
++}
++
++/// `HH:MM`, with `:SS` and a fraction of up to three digits.
++pub fn time(s: &str) -> bool {
++    let two = |p: &str, max: u32| {
++        p.len() == 2
++            && p.bytes().all(|b| b.is_ascii_digit())
++            && p.parse::<u32>().is_ok_and(|n| n <= max)
++    };
++    let mut parts = s.split(':');
++    let (Some(h), Some(m)) = (parts.next(), parts.next()) else {
++        return false;
++    };
++    let sec = parts.next();
++    if parts.next().is_some() || !two(h, 23) || !two(m, 59) {
++        return false;
++    }
++    sec.is_none_or(|sec| match sec.split_once('.') {
++        Some((s, f)) => {
++            two(s, 59) && (1..=3).contains(&f.len()) && f.bytes().all(|b| b.is_ascii_digit())
++        }
++        None => two(sec, 59),
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn sanitizes() {
++        assert_eq!(sanitize("date", "2026-11-17"), "2026-11-17");
++        assert_eq!(sanitize("date", "2026-02-29"), "");
++        assert_eq!(sanitize("date", "2024-02-29"), "2024-02-29");
++        assert_eq!(sanitize("time", "09:30"), "09:30");
++        assert_eq!(sanitize("time", "9:30"), "");
++        assert_eq!(sanitize("time", "23:59:59.999"), "23:59:59.999");
++        assert_eq!(
++            sanitize("datetime-local", "2026-11-17 09:30"),
++            "2026-11-17T09:30"
++        );
++        assert_eq!(sanitize("month", "2026-11"), "2026-11");
++        assert_eq!(sanitize("month", "2026-13"), "");
++        assert_eq!(sanitize("week", "2026-W53"), "2026-W53");
++        assert_eq!(sanitize("week", "2025-W53"), "");
++    }
++
++    #[test]
++    fn types() {
++        assert_eq!(date_time_type(Some("Date")), Some("date"));
++        assert_eq!(date_time_type(Some("text")), None);
++        assert_eq!(date_time_type(None), None);
++    }
++}
+diff --git a/packages/blitz-dom/src/form.rs b/packages/blitz-dom/src/form.rs
+index be4248ce2..c90da84a8 100644
+--- a/packages/blitz-dom/src/form.rs
++++ b/packages/blitz-dom/src/form.rs
+@@ -326,7 +326,12 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
+         else if let Some(text) = element.text_input_data() {
+             let value = match text.password() {
+                 Some(password) => password.to_string(),
+-                None => text.editor.text().to_string(),
++                // A date or time field's text is its value once it is a valid one
++                // (crate::date_time).
++                None => match crate::date_time::date_time_type(element_type) {
++                    Some(ty) => crate::date_time::sanitize(ty, &text.editor.text().to_string()),
++                    None => text.editor.text().to_string(),
++                },
+             };
+             create_entry(name, value.as_str().into());
+         } else if let Some(value) = element.attr(local_name!("value")) {
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index 7df47c4b6..93033cc48 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -653,7 +653,10 @@ fn collect_layout_children_with_wrap(
+             } else if matches!(
+                 type_attr,
+                 None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
+-            ) {
++            ) || crate::date_time::date_time_type(type_attr).is_some()
++            {
++                // A date or time input is a one-line field showing its value
++                // (crate::date_time).
+                 create_text_editor(doc, container_node_id, false);
+                 return;
+             } else if matches!(type_attr, Some("checkbox" | "radio")) {
+@@ -1151,7 +1154,11 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
+     let initial_text = if is_multiline {
+         node.text_content()
+     } else {
+-        node.attr(local_name!("value")).unwrap_or("").to_string()
++        let value = node.attr(local_name!("value")).unwrap_or("");
++        match crate::date_time::date_time_type(node.attr(local_name!("type"))) {
++            Some(ty) => crate::date_time::sanitize(ty, value),
++            None => value.to_string(),
++        }
+     };
+     let is_focussed = node.is_focussed();
+     let is_password = !is_multiline && node.attr(local_name!("type")) == Some("password");
+@@ -1241,7 +1248,11 @@ pub(crate) fn flush_placeholder(doc: &mut BaseDocument, node_id: NodeId) {
+         return;
+     };
+     let is_multiline = input.is_multiline;
+-    let text = node.attr(local_name!("placeholder")).unwrap_or("");
++    // A date or time input without one shows its format.
++    let text = node.attr(local_name!("placeholder")).unwrap_or_else(|| {
++        crate::date_time::date_time_type(node.attr(local_name!("type")))
++            .map_or("", crate::date_time::placeholder)
++    });
+     // An input shows its placeholder with the line breaks stripped.
+     let text: String = if is_multiline {
+         text.to_string()
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 3f0a8343d..a80652c0a 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -447,17 +447,29 @@ impl LayoutPassState<'_> {
+                                 },
+                             );
+                         }
+-                        None
+-                        | Some(
+-                            "text" | "password" | "email" | "number" | "tel" | "url" | "search",
+-                        ) => {
+-                            // Chromium adds the widest glyph less one character,
+-                            // as Internet Explorer did.
+-                            let size = control_count(element_data.attr(local_name!("size")), 20);
++                        ty if matches!(
++                            ty,
++                            None | Some(
++                                "text" | "password" | "email" | "number" | "tel" | "url" | "search"
++                            )
++                        ) || crate::date_time::date_time_type(ty).is_some() =>
++                        {
++                            // A date or time input is as wide as its format and a
++                            // character more (crate::date_time); `size` is not its.
++                            let date_time = crate::date_time::date_time_type(ty);
++                            let size = match date_time {
++                                Some(ty) => crate::date_time::placeholder(ty).len() as f32 + 1.0,
++                                None => control_count(element_data.attr(local_name!("size")), 20),
++                            };
+                             let size = match control_metrics(node) {
++                                // Chromium adds the widest glyph less one character to a
++                                // text field, as Internet Explorer did.
+                                 Some((metrics, line_height)) => taffy::Size {
+                                     width: (size * metrics.avg
+-                                        + metrics.max.map_or(0.0, |max| max - metrics.avg))
++                                        + metrics
++                                            .max
++                                            .filter(|_| date_time.is_none())
++                                            .map_or(0.0, |max| max - metrics.avg))
+                                     .ceil(),
+                                     height: line_height,
+                                 },
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index 7c2a937ae..23a440120 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -43,6 +43,7 @@ mod config;
+ mod css_compat;
+ /// CSSOM stylesheet access (`document.styleSheets`, `CSSStyleSheet`, `CSSRule`)
+ mod cssom;
++pub mod date_time;
+ mod debug;
+ mod events;
+ mod font_metrics;
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index 63c6b5280..cb68955c4 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -423,6 +423,10 @@ impl DocumentMutator<'_> {
+         }
+ 
+         if *attr == local_name!("value") {
++            // A date or time input shows its value sanitized (crate::date_time).
++            let sanitized = crate::date_time::date_time_type(element.attr(local_name!("type")))
++                .map(|ty| crate::date_time::sanitize(ty, value));
++            let value = sanitized.as_deref().unwrap_or(value);
+             if let Some(input_data) = element.text_input_data_mut() {
+                 // Update text input value
+                 let before = input_data.line_metrics();
+-- 
+2.56.0
+

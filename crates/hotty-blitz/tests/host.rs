@@ -3725,6 +3725,164 @@ fn a_select_picks_with_keys_repaints_as_a_full_paint_and_submits_its_pick() {
     assert_eq!(sent(&fields, "env"), "dev", "{fields}");
 }
 
+/// Frames of the same size that differ in no pixel.
+fn same_frame(a: &Host, b: &Host, what: &str) {
+    let (a, b) = (a.frame("f").unwrap(), b.frame("f").unwrap());
+    assert_eq!((a.width, a.height), (b.width, b.height), "{what}");
+    let differing = a
+        .rgba
+        .chunks(4)
+        .zip(b.rgba.chunks(4))
+        .filter(|(p, q)| p != q)
+        .count();
+    assert_eq!(differing, 0, "{what}: {differing} pixels differ");
+}
+
+const DATE_STYLE: &str = "<style>*{margin:0}input{display:block;width:200px;font:16px/20px sans-serif;border:1px solid #888;padding:2px;color:#fff;background:#222}</style>";
+
+#[test]
+fn a_date_or_time_field_draws_its_value_on_one_line_as_a_text_field_would() {
+    let draw = |body: &str| {
+        let mut h = host();
+        h.handle(&cmd(
+            &[("a", "doc"), ("s", "f")],
+            &format!("{DATE_STYLE}{body}"),
+        ));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "8")],
+            "",
+        ));
+        render(&mut h);
+        h
+    };
+    // Its value as HTML gives it, one line tall; empty, its format; a value
+    // that is not one of its type's, empty.
+    for (ty, value, shown) in [
+        ("date", "2026-11-17", "value='2026-11-17'"),
+        ("time", "09:30", "value='09:30'"),
+        (
+            "datetime-local",
+            "2026-11-17T09:30",
+            "value='2026-11-17T09:30'",
+        ),
+        ("month", "2026-11", "value='2026-11'"),
+        ("week", "2026-W47", "value='2026-W47'"),
+        ("date", "", "placeholder='yyyy-mm-dd'"),
+        ("time", "", "placeholder='--:--'"),
+        ("date", "2026-02-30", "placeholder='yyyy-mm-dd'"),
+    ] {
+        let a = draw(&format!("<input type={ty} value='{value}'>"));
+        let b = draw(&format!("<input {shown}>"));
+        same_frame(&a, &b, &format!("{ty} {value:?}"));
+    }
+}
+
+#[test]
+fn a_date_field_edits_a_number_at_a_time_and_submits_its_value() {
+    const DOC: &str = "<form id=go><input id=d name=d type=date value='2026-11-17' data-on=input>
+        <button type=submit>Go</button></form>";
+    let place = |h: &mut Host, doc: &str| {
+        h.handle(&cmd(
+            &[("a", "doc"), ("s", "f")],
+            &format!("{DATE_STYLE}{doc}"),
+        ));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "f"), ("c", "30"), ("r", "4")],
+            "",
+        ));
+    };
+    let mut inc = host();
+    place(&mut inc, DOC);
+    render(&mut inc);
+    inc.handle(&cmd(&[("a", "focus"), ("s", "f"), ("t", "d")], ""));
+    render(&mut inc);
+    let heard = |out: &hotty_blitz::KeyOutcome| {
+        assert!(out.consumed);
+        events(&out.effects)
+    };
+    let both = |rev: i64, value: &str| {
+        let d = format!(r#"{{"rev":{rev},"value":"{value}"}}"#);
+        vec![
+            ("input".to_string(), "d".to_string(), d.clone()),
+            ("change".to_string(), "d".to_string(), d),
+        ]
+    };
+    // Focus is on the year; Right goes to the month, Up steps it.
+    assert!(heard(&named(&mut inc, "f", KeyName::Right)).is_empty());
+    assert_eq!(
+        heard(&named(&mut inc, "f", KeyName::Up)),
+        both(1, "2026-12-17")
+    );
+    // Up wraps; Backspace clears it, and the value is empty.
+    assert_eq!(
+        heard(&named(&mut inc, "f", KeyName::Up)),
+        both(2, "2026-01-17")
+    );
+    assert_eq!(
+        heard(&named(&mut inc, "f", KeyName::Backspace)),
+        both(3, "")
+    );
+    // A digit that another could follow waits for it; the second moves on.
+    assert!(heard(&key(&mut inc, "f", "0")).is_empty());
+    assert_eq!(heard(&key(&mut inc, "f", "3")), both(4, "2026-03-17"));
+    // Now on the day: 4 takes it at once (40 is past 31), and is the last.
+    assert_eq!(heard(&key(&mut inc, "f", "4")), both(5, "2026-03-04"));
+    // End gives the month's last day; a letter, Space and Left change nothing.
+    assert_eq!(
+        heard(&named(&mut inc, "f", KeyName::End)),
+        both(6, "2026-03-31")
+    );
+    assert!(heard(&key(&mut inc, "f", "x")).is_empty());
+    assert!(heard(&named(&mut inc, "f", KeyName::Space)).is_empty());
+    // Keys with `ctrl` are the program's.
+    let out = inc.key(
+        "f",
+        &Key {
+            name: KeyName::Up,
+            names: Vec::new(),
+            mods: Mods {
+                ctrl: true,
+                ..Mods::default()
+            },
+        },
+    );
+    assert!(!out.consumed);
+    // Enter submits the form with the value.
+    let out = named(&mut inc, "f", KeyName::Enter);
+    let submit = replies(&out.effects)
+        .into_iter()
+        .find(|c| c.get("e") == Some("submit"))
+        .expect("submit");
+    assert_eq!(sent(&body(&submit.payload), "d"), "2026-03-31");
+    // Leaving it sends no second change, and it repaints as a document that
+    // had the value from the start.
+    let fx = inc.handle(&cmd(&[("a", "blur"), ("s", "f")], ""));
+    assert!(events(&fx).iter().all(|(e, _, _)| e != "change"));
+    render(&mut inc);
+    let mut full = host();
+    place(&mut full, &DOC.replace("2026-11-17", "2026-03-31"));
+    render(&mut full);
+    same_frame(&inc, &full, "edited");
+    // The program sets it as a script would: a date that does not parse is
+    // empty, and shows the format.
+    let body =
+        rmp_serde::to_vec_named(&serde_json::json!({"rev": 6, "value": "2026-02-30"})).unwrap();
+    let r = replies(
+        &inc.handle(&Message::new(
+            [("a", "field"), ("s", "f"), ("t", "d"), ("q", "0")]
+                .into_iter()
+                .collect(),
+            body,
+        )),
+    );
+    assert_eq!(r[0].get("a"), Some("ok"), "{r:?}");
+    render(&mut inc);
+    let mut empty = host();
+    place(&mut empty, &DOC.replace("2026-11-17", ""));
+    render(&mut empty);
+    same_frame(&inc, &empty, "set empty");
+}
+
 #[test]
 fn a_select_picks_by_its_labels_first_letters_going_round() {
     let mut h = host();

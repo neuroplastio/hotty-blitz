@@ -93,6 +93,9 @@ impl Surface {
                 }
             }
             ControlKind::Other => {
+                if self.date_typed.is_some_and(|(n, ..)| n == id) {
+                    self.date_typed = None;
+                }
                 if let Some(v) = &change.value {
                     let ty = ty.as_deref().unwrap_or("").to_ascii_lowercase();
                     let v = sanitize_other(&ty, &self.doc, id, v);
@@ -248,7 +251,7 @@ impl Surface {
     /// Where text field `id` has its selection, and its rev, when it has
     /// `caret` in its `data-on` and an id to name it by.
     fn caret_state(&self, id: NodeId) -> Option<Caret> {
-        if !self.listens(id, "caret") || self.id_of(id).is_none() {
+        if !self.listens(id, "caret") || self.id_of(id).is_none() || self.date_type(id).is_some() {
             return None;
         }
         let (_, anchor, focus) = self.doc.text_input_selection(id)?;
@@ -490,15 +493,7 @@ fn sanitize_other(ty: &str, doc: &BaseDocument, id: NodeId, v: &str) -> String {
                 "#000000".to_string()
             }
         }
-        "date" if date(&v) => v,
-        "month" if month(&v).is_some() => v,
-        "week" if week(&v) => v,
-        "time" if time(&v) => v,
-        "datetime-local" => match v.split_once(['T', ' ']) {
-            Some((d, t)) if date(d) && time(t) => format!("{d}T{t}"),
-            _ => String::new(),
-        },
-        _ => String::new(),
+        _ => blitz_dom::date_time::sanitize(ty, &v),
     }
 }
 
@@ -519,92 +514,6 @@ fn valid_float(s: &str) -> bool {
     mantissa_ok && exp_ok
 }
 
-/// `YYYY-MM`, its year four digits or more and above 0: (year, month).
-fn month(s: &str) -> Option<(u32, u32)> {
-    let (y, m) = s.rsplit_once('-')?;
-    let year = (y.len() >= 4 && y.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| y.parse::<u32>().ok())
-        .flatten()
-        .filter(|&y| y > 0)?;
-    let month = (m.len() == 2 && m.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| m.parse::<u32>().ok())
-        .flatten()
-        .filter(|m| (1..=12).contains(m))?;
-    Some((year, month))
-}
-
-fn leap(y: u32) -> bool {
-    y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
-}
-
-/// `YYYY-MM-DD`, a day the month has.
-fn date(s: &str) -> bool {
-    let Some((ym, d)) = s.rsplit_once('-') else {
-        return false;
-    };
-    let Some((y, m)) = month(ym) else {
-        return false;
-    };
-    let days = match m {
-        2 if leap(y) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    };
-    d.len() == 2
-        && d.bytes().all(|b| b.is_ascii_digit())
-        && d.parse::<u32>().is_ok_and(|d| (1..=days).contains(&d))
-}
-
-/// `YYYY-Www`, a week the year has (52, or 53 in a year that starts on a
-/// Thursday, or a leap year that starts on a Wednesday).
-fn week(s: &str) -> bool {
-    let Some((y, w)) = s.split_once("-W") else {
-        return false;
-    };
-    let Some(year) = (y.len() >= 4 && y.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| y.parse::<u32>().ok())
-        .flatten()
-        .filter(|&y| y > 0)
-    else {
-        return false;
-    };
-    // The day of the week of 1 January, 0 for Sunday.
-    let p = year - 1;
-    let jan1 = (1 + 5 * (p % 4) + 4 * (p % 100) + 6 * (p % 400)) % 7;
-    let weeks = if jan1 == 4 || (leap(year) && jan1 == 3) {
-        53
-    } else {
-        52
-    };
-    w.len() == 2
-        && w.bytes().all(|b| b.is_ascii_digit())
-        && w.parse::<u32>().is_ok_and(|w| (1..=weeks).contains(&w))
-}
-
-/// `HH:MM`, with `:SS` and a fraction of up to three digits.
-fn time(s: &str) -> bool {
-    let two = |p: &str, max: u32| {
-        p.len() == 2
-            && p.bytes().all(|b| b.is_ascii_digit())
-            && p.parse::<u32>().is_ok_and(|n| n <= max)
-    };
-    let mut parts = s.split(':');
-    let (Some(h), Some(m)) = (parts.next(), parts.next()) else {
-        return false;
-    };
-    let sec = parts.next();
-    if parts.next().is_some() || !two(h, 23) || !two(m, 59) {
-        return false;
-    }
-    sec.is_none_or(|sec| match sec.split_once('.') {
-        Some((s, f)) => {
-            two(s, 59) && (1..=3).contains(&f.len()) && f.bytes().all(|b| b.is_ascii_digit())
-        }
-        None => two(sec, 59),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,20 +526,6 @@ mod tests {
         for bad in ["", "+1", "1.", "-", "e3", "1e", " 1", "1 ", "0x1", "1.2.3"] {
             assert!(!valid_float(bad), "{bad}");
         }
-    }
-
-    #[test]
-    fn dates() {
-        assert!(date("2026-10-22"));
-        assert!(date("2024-02-29"));
-        assert!(!date("2026-02-29"));
-        assert!(!date("2026-13-01"));
-        assert!(!date("26-10-22"));
-        assert!(week("2026-W53"));
-        assert!(!week("2025-W53"));
-        assert!(time("09:30") && time("23:59:59.999"));
-        assert!(!time("24:00") && !time("9:30"));
-        assert_eq!(month("2026-10"), Some((2026, 10)));
     }
 
     #[test]
