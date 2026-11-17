@@ -271,3 +271,72 @@ fn a_table_lays_its_captions_out_above_and_below_its_grid() {
         assert_eq!(differing, 0, "{captioned}: {differing} pixels differ");
     }
 }
+
+/// With `border-collapse: collapse` a table's borders are lines between its
+/// cells, each the winner of the borders of the cells, rows and table that
+/// meet there (CSS 2.2 §17.6.2.1), centred on the cells' edge: each cell
+/// holds half of each line around it, the table half its outer lines. A
+/// row's border is drawn and takes its room, a cell's wins over its row's
+/// of the same width, and a table's lines are around and between its cells.
+/// Each draws as the boxes written out do.
+#[test]
+fn a_collapsed_table_draws_each_line_its_borders_resolve_to() {
+    const STYLE: &str = "<style>*{margin:0;padding:0;border:0 solid}body{background:#000}
+        table{border-collapse:collapse}td{background:#06c}
+        .c{width:40px;height:20px}
+        .w{position:relative}.w>div{position:absolute;background:#06c}</style>";
+    // Two rows, each with a 2px red bottom border; the first cell's own
+    // 2px yellow bottom border wins over its row's.
+    let rows = "<table><tr style='border-bottom:2px solid #f00'><td style='border-bottom:2px solid #ff0'><div class=c></div></td></tr>
+        <tr style='border-bottom:2px solid #f00'><td><div class=c></div></td></tr></table>";
+    let rows_written_out = "<div style='width:40px'><div style='height:20px;background:#06c'></div>
+        <div style='height:2px;background:#ff0'></div><div style='height:20px;background:#06c'></div>
+        <div style='height:2px;background:#f00'></div></div>";
+    // A 2px table border and a 4px line between two cells, all one colour:
+    // the cells' padding boxes are inside the halves they hold.
+    let grid = "<table style='border:2px solid #0f0'><tr><td style='border-right:4px solid #0f0'><div class=c></div></td>
+        <td><div class=c></div></td></tr></table>";
+    let grid_written_out = "<div class=w style='width:88px;height:24px;background:#0f0'>
+        <div style='left:2px;top:2px;width:40px;height:20px'></div>
+        <div style='left:46px;top:2px;width:40px;height:20px'></div></div>";
+    for (table, written_out) in [(rows, rows_written_out), (grid, grid_written_out)] {
+        let a = placed(&format!("{STYLE}{table}"), 30, 8);
+        let b = placed(&format!("{STYLE}{written_out}"), 30, 8);
+        let (fa, fb) = (a.frame("x").unwrap(), b.frame("x").unwrap());
+        let differing = fa
+            .rgba
+            .chunks(4)
+            .zip(fb.rgba.chunks(4))
+            .filter(|(p, q)| p != q)
+            .count();
+        assert_eq!(differing, 0, "{table}: {differing} pixels differ");
+    }
+
+    // A class giving a row its border later draws as the table drawn so from
+    // the start.
+    let page = |class: &str| {
+        format!(
+            "{STYLE}<style>.line{{border-bottom:2px solid #f00}}</style>
+            <table><tr id=r class='{class}'><td><div class=c></div></td></tr><tr><td><div class=c></div></td></tr></table>"
+        )
+    };
+    let mut h = placed(&page(""), 30, 8);
+    let body = rmp_serde::to_vec_named(&serde_json::json!({
+        "ops": [{"op": "attr", "t": "r", "k": "class", "v": "line"}]
+    }))
+    .unwrap();
+    h.handle(&Message::new(
+        [("a", "delta"), ("s", "x")].into_iter().collect(),
+        body,
+    ));
+    render(&mut h);
+    let fresh = placed(&page("line"), 30, 8);
+    let (fa, fb) = (h.frame("x").unwrap(), fresh.frame("x").unwrap());
+    let differing = fa
+        .rgba
+        .chunks(4)
+        .zip(fb.rgba.chunks(4))
+        .filter(|(p, q)| p != q)
+        .count();
+    assert_eq!(differing, 0, "restyled row: {differing} pixels differ");
+}
