@@ -115,6 +115,22 @@ pub(crate) enum Fault {
     Paint,
 }
 
+/// The nodes, `::before` and `::after` boxes among them, whose style names
+/// a CSS animation: what a frame may move without anything mutating them.
+fn css_animated(doc: &blitz_dom::BaseDocument) -> Vec<NodeId> {
+    doc.tree()
+        .iter()
+        .filter(|(_, n)| {
+            n.primary_styles().is_some_and(|s| {
+                s.get_ui()
+                    .animation_name_iter()
+                    .any(|a| a.as_atom().is_some())
+            })
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Render contexts by bucketed size, shared by a host's surfaces, so that
 /// painting a rectangle does not allocate one (the fixed cost that dominated
 /// small deltas). vello_cpu paints each context on a pool of worker threads
@@ -315,6 +331,9 @@ pub(crate) struct Surface {
     /// moves that, and a pointer moving faster than frames come would
     /// otherwise push the next one out for as long as it moves.
     framed: Instant,
+    /// The nodes a CSS animation or transition moved at the last resolve:
+    /// the next one records where they paint before it moves them again.
+    animated: Vec<NodeId>,
     /// The document's base URL (SPEC §7.3), when it declares an absolute
     /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
     /// this host fetches nothing from the network.
@@ -839,6 +858,7 @@ impl Surface {
             started: std::time::Instant::now(),
             tick: Instant::now(),
             framed: Instant::now(),
+            animated: Vec::new(),
             store,
             playing: Vec::new(),
             anim_stale: true,
@@ -1135,6 +1155,14 @@ impl Surface {
         if now > self.tick {
             self.tick = now;
         }
+        // What an animation moves, it moves in the resolve, before the
+        // damage below can see where it was: a box a `transform` carries
+        // would leave its old place unpainted. So the nodes the last
+        // resolve animated say where they paint now, first.
+        let scale = self.viewport.2 as f64;
+        for &id in &self.animated {
+            self.damage.touch(&self.doc, id, scale);
+        }
         self.doc.resolve(
             self.tick
                 .saturating_duration_since(self.started)
@@ -1147,8 +1175,8 @@ impl Surface {
         // A CSS animation or transition moved a style: nothing mutated the
         // nodes it plays on, so the damage they need is said here, as a
         // delta's is where it mutates.
-        let scale = self.viewport.2 as f64;
-        for id in self.doc.take_animated_nodes() {
+        self.animated = self.doc.take_animated_nodes();
+        for &id in &self.animated {
             self.damage.touch(&self.doc, id, scale);
         }
     }
@@ -1245,6 +1273,12 @@ impl Surface {
         }
         self.resolve();
         self.framed = self.tick;
+        if self.damage.full {
+            // A whole frame: the nodes whose animation started in it are
+            // not among those its resolve moved (their style is new, not
+            // moved), and the next frame moves them from where this paints.
+            self.animated = css_animated(&self.doc);
+        }
         if self.doc.has_pending_critical_resources() {
             // A stylesheet has not arrived yet; the `res` that brings it marks
             // this surface dirty again. The frame drawn then finds `view`.

@@ -431,3 +431,64 @@ fn an_animation_plays_on_while_the_surface_scrolls() {
     let got = pixel(&h, "x", 10, 10);
     assert!(got[2] > 30, "the animation has moved on: {got:?}");
 }
+
+/// A spinner plays, and the pointer comes onto a sibling whose `:hover`
+/// rule restyles it, and onto the spinner's own parent, whose rule does
+/// too: the spinner goes on from where it was, as in a browser, where an
+/// animation starts over only when its name changes or its element goes.
+#[test]
+fn a_hover_elsewhere_does_not_restart_an_animation() {
+    let mut h = host();
+    doc(
+        &mut h,
+        "<style>@keyframes go{from{background:rgb(255,0,0)}to{background:rgb(0,0,255)}}\
+#p{position:absolute;left:0;top:0;width:100px;height:100px}#p:hover{outline:2px solid white}\
+#b{position:absolute;left:200px;top:0;width:100px;height:100px;background:#444}#b:hover{background:#888}\
+#a{position:absolute;left:0;top:0;width:50px;height:50px;animation:go 4s linear}</style>\
+<body style='margin:0'><div id=p><div id=a></div></div><div id=b></div></body>",
+    );
+    let start = h.next_frame().expect("the animation wants frames");
+    h.animate(start + Duration::from_secs(2));
+    render(&mut h);
+    let half = pixel(&h, "x", 10, 10);
+    between(half, RED, BLUE, 0.45, 0.55);
+    // Onto the sibling, then off it onto the spinner's parent (a point
+    // of the parent outside the spinner).
+    for (x, y, secs) in [(250.0, 50.0, 2.1), (80.0, 80.0, 2.2), (500.0, 150.0, 2.3)] {
+        h.pointer("x", PointerKind::Move, x, y, Mods::default());
+        h.animate(start + Duration::from_secs_f64(secs));
+        render(&mut h);
+        let got = pixel(&h, "x", 10, 10);
+        assert!(
+            got[2] >= half[2],
+            "after a hover change at {secs}s the spinner went back: {got:?}, was {half:?}"
+        );
+    }
+}
+
+/// A box whose animation moves it with `transform` leaves nothing where it
+/// was: each frame repaints its old place as well as its new one, as the
+/// render before the move painted it.
+#[test]
+fn a_box_a_transform_animation_moves_leaves_no_trail() {
+    let mut h = host();
+    doc(
+        &mut h,
+        "<style>@keyframes sp{from{transform:translateX(0)}to{transform:translateX(400px)}}\
+#a{position:absolute;left:0;top:0;width:20px;height:20px;background:rgb(255,0,0);animation:sp 1s linear infinite}</style>\
+<body style='margin:0'><div id=a></div></body>",
+    );
+    let start = h.next_frame().expect("the animation wants frames");
+    for k in 1..=40u64 {
+        h.animate(start + Duration::from_millis(16 * k));
+        render(&mut h);
+        let red: Vec<u32> = (0..800).filter(|&x| pixel(&h, "x", x, 10) == RED).collect();
+        assert!(
+            red.len() <= 20 && red.last().unwrap_or(&0) - red.first().unwrap_or(&0) < 20,
+            "frame {k}: red from {:?} to {:?}, {} px: a trail",
+            red.first(),
+            red.last(),
+            red.len()
+        );
+    }
+}
