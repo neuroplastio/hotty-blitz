@@ -1,0 +1,151 @@
+From 810369e7bfffe581267aa3a7e02fd6225a49ca5e Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 06:39:48 +0100
+Subject: [PATCH 93/93] blitz-dom, blitz-paint: a check box with appearance:
+ none is an ordinary box
+
+The UA sheet never gave form controls `appearance: auto`, and nothing read
+`appearance`: a check box or radio button was always laid out as a square
+and drawn as the native widget, and its ::before and ::after were never
+built. Give the widgets `appearance: auto` as HTML's rendering section does,
+and when a page sets `none` on a check box or radio button, lay it out by its
+display with its pseudo-elements as children, draw no native widget, and do
+not size it as a compressible form control.
+---
+ packages/blitz-dom/assets/default.css           | 11 +++++++++++
+ packages/blitz-dom/src/layout/construct.rs      | 16 ++++++++++++++++
+ packages/blitz-dom/src/layout/mod.rs            |  3 ++-
+ packages/blitz-dom/src/node/node.rs             | 17 ++++++++++++++++-
+ .../blitz-paint/src/render/form_controls.rs     |  4 ++++
+ 5 files changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
+index 9df61ea93..a7588a0f8 100644
+--- a/packages/blitz-dom/assets/default.css
++++ b/packages/blitz-dom/assets/default.css
+@@ -68,6 +68,17 @@ input[type="hidden" i] {
+  * so a page with `color-scheme: dark` gets dark fields and buttons. The
+  * borders are the ones Chromium draws in each scheme. */
+ 
++/* https://html.spec.whatwg.org/#form-controls: the widgets have their native
++ * appearance until a page says `appearance: none`. */
++input,
++button,
++select,
++textarea,
++meter,
++progress {
++    appearance: auto;
++}
++
+ /* Checkboxes and radio buttons are drawn whole by blitz-paint (form_controls.rs),
+  * so nothing of the box is painted under them. */
+ input[type="checkbox"],
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index 93033cc48..f35f9a552 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -661,6 +661,12 @@ fn collect_layout_children_with_wrap(
+                 return;
+             } else if matches!(type_attr, Some("checkbox" | "radio")) {
+                 create_checkbox_input(doc, container_node_id);
++                // With `appearance: none` it is an ordinary box, with its pseudo-elements
++                // as its children.
++                if doc.nodes[container_node_id].has_native_appearance() {
++                    return;
++                }
++                collect_box_children(doc, container_node_id, out, wrap);
+                 return;
+             } else if matches!(type_attr, Some("range")) {
+                 // Seed the slider's live value from the
+@@ -734,6 +740,16 @@ fn collect_layout_children_with_wrap(
+         collect_list_item_children(doc, &mut index, reversed, container_node_id);
+     }
+ 
++    collect_box_children(doc, container_node_id, out, wrap)
++}
++
++/// The layout children of `container_node_id` as its `display` lays them out.
++fn collect_box_children(
++    doc: &mut BaseDocument,
++    container_node_id: NodeId,
++    out: &mut LayoutChildren,
++    wrap: Option<WrapContext>,
++) {
+     // Skip further construction if the node has no children or psuedo-children
+     {
+         let node = &doc.nodes[container_node_id];
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index a80652c0a..33133edfa 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -256,6 +256,7 @@ impl LayoutPassState<'_> {
+         });
+         let font_size = font_styles.map(|s| s.0);
+         let resolved_line_height = font_styles.map(|s| s.1);
++        let native_appearance = node.has_native_appearance();
+ 
+         match &mut node.data {
+             NodeData::Text(data) => {
+@@ -424,7 +425,7 @@ impl LayoutPassState<'_> {
+                         Some("hidden") => {
+                             return taffy::LayoutOutput::HIDDEN;
+                         }
+-                        Some("checkbox") => {
++                        Some("checkbox") if native_appearance => {
+                             return compute_leaf_layout(
+                                 inputs,
+                                 &node.layout_style(),
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 5c4c97578..110409f29 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -1242,7 +1242,12 @@ impl Node {
+             }
+             if el.is_button_input() {
+                 flags |= stylo_taffy::StyleFlags::IS_BUTTON_INPUT;
+-            } else if el.is_form_control_with_intrinsic_size() {
++            } else if el.is_form_control_with_intrinsic_size()
++                && (self.has_native_appearance()
++                    || !matches!(el.attr(local_name!("type")), Some("checkbox" | "radio")))
++            {
++                // A check box or radio button with `appearance: none` is an ordinary box,
++                // which a flex row does not compress as it does a widget.
+                 flags |= stylo_taffy::StyleFlags::IS_FORM_CONTROL;
+             }
+             if let Some(inline_layout) = el.inline_layout_data.as_deref() {
+@@ -1304,6 +1309,16 @@ impl Node {
+             .unwrap_or(stylo_taffy::WritingMode::empty())
+     }
+ 
++    /// Whether the node is drawn as its native widget: a form control whose `appearance`
++    /// is not `none` (<https://drafts.csswg.org/css-ui-4/#appearance-switching>). With
++    /// `none`, a check box or radio button is an ordinary box: its own styles and its
++    /// `::before` and `::after` draw it.
++    pub fn has_native_appearance(&self) -> bool {
++        self.primary_styles().is_some_and(|s| {
++            s.get_box().appearance != style::values::specified::box_::Appearance::None
++        })
++    }
++
+     /// The node's `display` as a [`taffy::Display`]. Returns [`taffy::Display::Block`]
+     /// for nodes without computed styles (e.g. text nodes).
+     pub fn taffy_display(&self) -> taffy::Display {
+diff --git a/packages/blitz-paint/src/render/form_controls.rs b/packages/blitz-paint/src/render/form_controls.rs
+index 519f7fe02..c62794f84 100644
+--- a/packages/blitz-paint/src/render/form_controls.rs
++++ b/packages/blitz-paint/src/render/form_controls.rs
+@@ -57,6 +57,10 @@ impl ElementCx<'_, '_> {
+         let Some(checked) = self.element.checkbox_input_checked() else {
+             return;
+         };
++        // With `appearance: none` the page draws it (Node::has_native_appearance).
++        if !self.node.has_native_appearance() {
++            return;
++        }
+ 
+         // The control is a square, centred in the border box.
+         let frame = self.frame.border_box;
+-- 
+2.56.0
+

@@ -3883,6 +3883,59 @@ fn a_date_field_edits_a_number_at_a_time_and_submits_its_value() {
     same_frame(&inc, &empty, "set empty");
 }
 
+/// A switch as kits draw one: a check box with `appearance: none`, its
+/// thumb a `::before`. `.on` gives a span what `:checked` gives the input.
+const SWITCH_STYLE: &str = "<style>*{margin:0;box-sizing:content-box}
+    body{background:#fff;padding:4px}
+    .sw{appearance:none;display:inline-flex;align-items:center;width:32px;height:18px;
+        border-radius:9999px;background:#ccc;border:1px solid transparent;padding:0}
+    .sw::before{content:'';display:block;width:16px;height:16px;border-radius:9999px;background:#fff}
+    .sw:checked,.sw.on{background:#111}
+    .sw:checked::before,.sw.on::before{transform:translateX(14px)}
+    .box{appearance:none;display:inline-block;width:16px;height:16px;border:1px solid #888;
+        border-radius:4px;background:#fff;padding:0}
+    .box:checked,.box.on{background:#111}</style>";
+
+#[test]
+fn a_check_box_with_appearance_none_is_drawn_by_its_styles_and_pseudo_elements() {
+    let draw = |body: &str| {
+        let mut h = host();
+        h.handle(&cmd(
+            &[("a", "doc"), ("s", "f")],
+            &format!("{SWITCH_STYLE}{body}"),
+        ));
+        h.handle(&cmd(
+            &[("a", "place"), ("s", "f"), ("c", "10"), ("r", "2")],
+            "",
+        ));
+        render(&mut h);
+        h
+    };
+    // No native box or tick: what a span with its styles draws, its
+    // `::before` included, and as large.
+    for (input, span) in [
+        ("<input type=checkbox class=sw>", "<span class=sw></span>"),
+        (
+            "<input type=checkbox class=sw checked>",
+            "<span class='sw on'></span>",
+        ),
+        ("<input type=radio class=box>", "<span class=box></span>"),
+        (
+            "<input type=checkbox class=box checked>",
+            "<span class='box on'></span>",
+        ),
+    ] {
+        same_frame(&draw(input), &draw(span), input);
+    }
+    // A click checks it, and it repaints as one checked from the start
+    // (once it is blurred: the UA sheet outlines a focused input).
+    let mut h = draw("<input type=checkbox class=sw id=s>");
+    click(&mut h, "f", 10.0, 10.0);
+    h.handle(&cmd(&[("a", "blur"), ("s", "f")], ""));
+    render(&mut h);
+    same_frame(&h, &draw("<span class='sw on'></span>"), "clicked");
+}
+
 #[test]
 fn a_select_picks_by_its_labels_first_letters_going_round() {
     let mut h = host();
