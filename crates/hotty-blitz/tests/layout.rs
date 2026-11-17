@@ -134,3 +134,29 @@ fn typing_moves_the_baseline_as_the_text_would_from_the_start() {
         "{differing} pixels differ from a page with the text from the start"
     );
 }
+
+/// A flex item holding an inline-flex button on its line is as tall as that
+/// line is in a block: the button sits on its text's baseline while the
+/// column measures the item too, not on its bottom edge.
+#[test]
+fn a_flex_item_measures_an_inline_flex_box_on_its_baseline() {
+    let page = |display: &str| {
+        format!(
+            "<style>body{{margin:0;background:#000;font:16px/24px sans-serif}}
+            .col{{display:{display};flex-direction:column}}.item{{background:#c00}}
+            button{{display:inline-flex;align-items:center;height:36px;padding:0 12px;border:0;
+                margin:0;font:14px/20px sans-serif;background:#06c;color:#fff}}
+            p{{margin:0;background:#080;height:20px}}</style>
+            <div class=col><div class=item><button>button</button></div><p></p></div>"
+        )
+    };
+    let (flex, block) = (placed(&page("flex"), 30, 4), placed(&page("block"), 30, 4));
+    let (a, b) = (flex.frame("x").unwrap(), block.frame("x").unwrap());
+    let differing = a
+        .rgba
+        .chunks(4)
+        .zip(b.rgba.chunks(4))
+        .filter(|(p, q)| p != q)
+        .count();
+    assert_eq!(differing, 0, "{differing} pixels differ from the block");
+}

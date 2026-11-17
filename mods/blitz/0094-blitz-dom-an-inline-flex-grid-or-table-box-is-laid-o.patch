@@ -1,0 +1,45 @@
+From 12c6501536d0336816ec70e42ff0a2b97995f391 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 06:59:30 +0100
+Subject: [PATCH] blitz-dom: an inline flex, grid or table box is laid out for
+ its baseline when the line is sized
+
+An inline box's baseline sets where the line puts it, so it is part of the
+size the line gets. A line sized in ComputeSize mode (a flex item being
+measured) passed that mode on to its inline boxes, and Taffy computes the
+baselines of a flex, grid or table container in a full layout only: the box
+came back with none and sat on its bottom edge. A flex column holding a
+div with an inline-flex button in it measured the div several pixels too
+tall. Lay such a box out in full while the line is sized too.
+---
+ packages/blitz-dom/src/layout/inline/layout.rs | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/layout/inline/layout.rs b/packages/blitz-dom/src/layout/inline/layout.rs
+index 1c0642d2d..9fb6a78ad 100644
+--- a/packages/blitz-dom/src/layout/inline/layout.rs
++++ b/packages/blitz-dom/src/layout/inline/layout.rs
+@@ -600,12 +600,19 @@ impl LayoutPassState<'_> {
+                 let contain_layout = box_style.slow_clone_contain().contains(Contain::LAYOUT);
+                 let exports_baseline = !(contain_layout
+                     || (baseline_source == BaselineSource::Auto && is_block_axis_scroll_container));
+-                let box_inputs = inline_box_inputs(
++                let mut box_inputs = inline_box_inputs(
+                     style.size().width,
+                     style.size().height,
+                     margin,
+                     child_inputs,
+                 );
++                // The box's baseline is where the line puts it, so it is part of the size the
++                // line gets: a flex, grid or table box is laid out for it while the line is only
++                // being sized too, since Taffy computes their baselines in a full layout alone.
++                // (A flex item that holds an inline-flex button is sized so.)
++                if exports_baseline && !is_flow {
++                    box_inputs.run_mode = RunMode::PerformLayout;
++                }
+                 drop(style);
+ 
+                 if is_out_of_flow || is_floated {
+-- 
+2.56.0
+
