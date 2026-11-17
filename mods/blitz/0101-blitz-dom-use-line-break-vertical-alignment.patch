@@ -1,0 +1,31 @@
+From fe98f14339c763f3d31159fecb6bc0e1ba2937c7 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 12:25:32 +0100
+Subject: [PATCH] blitz-dom: use line break vertical alignment
+
+---
+ packages/blitz-dom/src/layout/inline/build.rs | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/packages/blitz-dom/src/layout/inline/build.rs b/packages/blitz-dom/src/layout/inline/build.rs
+index 11334f7c9..8bcdbf394 100644
+--- a/packages/blitz-dom/src/layout/inline/build.rs
++++ b/packages/blitz-dom/src/layout/inline/build.rs
+@@ -254,6 +254,14 @@ pub(crate) fn build_inline_layout_into(
+                                 parley::StyleProperty::WhiteSpaceCollapse(
+                                     WhiteSpaceCollapse::Preserve,
+                                 ),
++                                // The break is its own inline box. In particular,
++                                // a table cell's vertical-align positions the cell's
++                                // content; it is not inherited by this line break.
++                                parley::StyleProperty::VerticalAlign(
++                                    node.primary_styles()
++                                        .map(|s| stylo_to_parley::vertical_align(&s))
++                                        .unwrap_or_default(),
++                                ),
+                             ]);
+                             builder.push_text("\n");
+                             builder.pop_style_span();
+-- 
+2.56.0
+
