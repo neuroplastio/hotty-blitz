@@ -160,3 +160,74 @@ fn a_flex_item_measures_an_inline_flex_box_on_its_baseline() {
         .count();
     assert_eq!(differing, 0, "{differing} pixels differ from the block");
 }
+
+/// A fieldset's rendered legend is laid out outside the box its content is
+/// laid out in: a flex or grid fieldset's `gap` is between its content's
+/// items, not after the legend, which is as wide as its text, and the
+/// fieldset's padding is around its content, below the legend. It draws as
+/// the same boxes written out do.
+#[test]
+fn a_fieldset_lays_its_legend_out_outside_its_content() {
+    const STYLE: &str = "<style>body{margin:0;background:#000;font:16px/20px sans-serif}
+        fieldset,.fs{border:0;margin:0;padding:6px 10px;background:#333;min-inline-size:auto}
+        legend,.lg{padding:0;margin:0;background:#c00;color:#fff}
+        .lg{display:block;width:fit-content}
+        p{margin:0;background:#06c;height:20px}
+        .col{display:flex;flex-direction:column;gap:40px}
+        .grid{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+        fieldset.tight{gap:8px;padding:2px}</style>";
+    for (fieldset, written_out) in [
+        (
+            "<fieldset class=col><legend>legend</legend><p></p><p></p></fieldset>",
+            "<div class=fs style=padding:0><span class=lg>legend</span>
+                <div class=col style='padding:6px 10px'><p></p><p></p></div></div>",
+        ),
+        (
+            "<fieldset class=grid><p></p><legend>legend</legend><p></p></fieldset>",
+            "<div class=fs style=padding:0><span class=lg>legend</span>
+                <div class=grid style='padding:6px 10px'><p></p><p></p></div></div>",
+        ),
+        (
+            "<fieldset><legend>legend</legend><p></p></fieldset>",
+            "<div class=fs style=padding:0><span class=lg>legend</span>
+                <div style='padding:6px 10px;display:flow-root'><p></p></div></div>",
+        ),
+    ] {
+        let a = placed(&format!("{STYLE}{fieldset}"), 30, 8);
+        let b = placed(&format!("{STYLE}{written_out}"), 30, 8);
+        let (fa, fb) = (a.frame("x").unwrap(), b.frame("x").unwrap());
+        let differing = fa
+            .rgba
+            .chunks(4)
+            .zip(fb.rgba.chunks(4))
+            .filter(|(p, q)| p != q)
+            .count();
+        assert_eq!(differing, 0, "{fieldset}: {differing} pixels differ");
+    }
+    // A class that changes the fieldset's gap and padding restyles its content
+    // box too, and it repaints as one drawn so from the start.
+    let page = |class: &str| {
+        format!(
+            "{STYLE}<fieldset id=f class='{class}'><legend>legend</legend><p></p><p></p></fieldset>"
+        )
+    };
+    let mut h = placed(&page("col"), 30, 8);
+    let body = rmp_serde::to_vec_named(&serde_json::json!({
+        "ops": [{"op": "attr", "t": "f", "k": "class", "v": "col tight"}]
+    }))
+    .unwrap();
+    h.handle(&Message::new(
+        [("a", "delta"), ("s", "x")].into_iter().collect(),
+        body,
+    ));
+    render(&mut h);
+    let fresh = placed(&page("col tight"), 30, 8);
+    let (fa, fb) = (h.frame("x").unwrap(), fresh.frame("x").unwrap());
+    let differing = fa
+        .rgba
+        .chunks(4)
+        .zip(fb.rgba.chunks(4))
+        .filter(|(p, q)| p != q)
+        .count();
+    assert_eq!(differing, 0, "restyled: {differing} pixels differ");
+}

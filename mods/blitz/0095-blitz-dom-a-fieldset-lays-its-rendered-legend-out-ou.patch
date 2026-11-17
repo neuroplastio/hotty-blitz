@@ -1,0 +1,323 @@
+From 4630aae82aa0a31d35d4820a24df9e364a1e4477 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 07:07:42 +0100
+Subject: [PATCH] blitz-dom: a fieldset lays its rendered legend out outside
+ its content
+
+HTML renders a fieldset as its rendered legend (its first legend child, if
+neither floated nor absolutely positioned) and an anonymous fieldset content
+box holding the rest, which takes the fieldset's display, its flex and grid
+container properties and its padding. Blitz laid the legend out as one more
+child: in a flex fieldset it was a flex item, stretched and followed by the
+gap, and in any fieldset it sat inside the padding.
+
+Construction now gives such a fieldset two layout children, the legend and
+an anonymous content box styled from the fieldset, and the fieldset lays
+them out in a flow root of its own with no padding. A restyle of the
+fieldset gives the content box that style again. The UA sheet makes the
+rendered legend as wide as its content.
+---
+ packages/blitz-dom/assets/default.css      |   5 +
+ packages/blitz-dom/src/layout/construct.rs | 142 +++++++++++++++++++++
+ packages/blitz-dom/src/layout/damage.rs    |  11 +-
+ packages/blitz-dom/src/node/node.rs        |  12 +-
+ packages/stylo_taffy/src/wrapper.rs        |  24 +++-
+ 5 files changed, 188 insertions(+), 6 deletions(-)
+
+diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
+index a7588a0f8..427290a0e 100644
+--- a/packages/blitz-dom/assets/default.css
++++ b/packages/blitz-dom/assets/default.css
+@@ -196,6 +196,11 @@ legend {
+     padding-inline-end: 2px;
+ }
+ 
++/* A fieldset's rendered legend (its first) is as wide as its content. */
++fieldset > legend:first-of-type {
++    width: fit-content;
++}
++
+ option {
+     display: none;
+ }
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index f35f9a552..ddb55a33b 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -740,9 +740,151 @@ fn collect_layout_children_with_wrap(
+         collect_list_item_children(doc, &mut index, reversed, container_node_id);
+     }
+ 
++    // A fieldset's rendered legend is laid out outside the box its content is laid out in
++    // (https://html.spec.whatwg.org/#the-fieldset-and-legend-elements).
++    if let Some(legend) = rendered_legend(doc, container_node_id) {
++        collect_fieldset_children(doc, container_node_id, legend, out);
++        return;
++    }
++
+     collect_box_children(doc, container_node_id, out, wrap)
+ }
+ 
++/// The style of the anonymous content box of fieldset `id` (`collect_fieldset_children`): an
++/// anonymous box's, laid out as the fieldset's `display` says, with the fieldset's flex and
++/// grid container properties and its padding.
++pub(crate) fn fieldset_content_style(
++    doc: &BaseDocument,
++    id: NodeId,
++) -> style::servo_arc::Arc<style::properties::ComputedValues> {
++    use style::properties::StyleBuilder;
++    use style::selector_parser::PseudoElement;
++
++    let parent_style = doc.nodes[id].primary_styles().unwrap();
++    let read_guard = doc.guard.read();
++    let guards = StylesheetGuards::same(&read_guard);
++    let anon_style = doc.stylist.style_for_anonymous::<BlitzNode>(
++        &guards,
++        &PseudoElement::ServoAnonymousBox,
++        &parent_style,
++    );
++    let mut builder = StyleBuilder::for_derived_style(
++        doc.stylist.device(),
++        Some(&doc.stylist),
++        &anon_style,
++        Some(&parent_style),
++    );
++    builder.mutate_box().set_display(match parent_style.clone_display().inside() {
++        DisplayInside::Flex => Display::Flex,
++        DisplayInside::Grid => Display::Grid,
++        _ => Display::FlowRoot,
++    });
++    let from = parent_style.get_position();
++    let to = builder.mutate_position();
++    to.copy_flex_direction_from(from);
++    to.copy_flex_wrap_from(from);
++    to.copy_justify_content_from(from);
++    to.copy_align_content_from(from);
++    to.copy_align_items_from(from);
++    to.copy_justify_items_from(from);
++    to.copy_row_gap_from(from);
++    to.copy_column_gap_from(from);
++    to.copy_grid_template_rows_from(from);
++    to.copy_grid_template_columns_from(from);
++    to.copy_grid_template_areas_from(from);
++    to.copy_grid_auto_rows_from(from);
++    to.copy_grid_auto_columns_from(from);
++    to.copy_grid_auto_flow_from(from);
++    let from = parent_style.get_padding();
++    let to = builder.mutate_padding();
++    to.copy_padding_top_from(from);
++    to.copy_padding_right_from(from);
++    to.copy_padding_bottom_from(from);
++    to.copy_padding_left_from(from);
++    builder.build()
++}
++
++/// The rendered legend of fieldset `id`: its first `legend` child, if that is
++/// neither floated nor absolutely positioned, and the fieldset is laid out as
++/// a flow, flex or grid container.
++fn rendered_legend(doc: &BaseDocument, id: NodeId) -> Option<NodeId> {
++    let node = &doc.nodes[id];
++    if !node.data.is_element_with_tag_name(&local_name!("fieldset"))
++        || !matches!(
++            node.display_style()?.inside(),
++            DisplayInside::Flow | DisplayInside::FlowRoot | DisplayInside::Flex | DisplayInside::Grid
++        )
++    {
++        return None;
++    }
++    let legend = node
++        .children
++        .iter()
++        .copied()
++        .find(|&c| doc.nodes[c].data.is_element_with_tag_name(&local_name!("legend")))?;
++    let style = doc.nodes[legend].primary_styles()?;
++    let rendered = !matches!(
++        style.clone_display().inside(),
++        DisplayInside::None | DisplayInside::Contents
++    ) && !style.clone_float().is_floating()
++        && !style.clone_position().is_absolutely_positioned();
++    rendered.then_some(legend)
++}
++
++/// A fieldset with a rendered legend: the legend, and then an anonymous
++/// fieldset content box holding the rest. The content box is laid out as the
++/// fieldset's `display` says (flow, flex or grid), with its flex and grid
++/// container properties and its padding; the fieldset itself lays the two out
++/// in a flow of its own (`NodeFlags::IS_FIELDSET_WITH_CONTENT_BOX`). So a
++/// flex fieldset's `gap` is between its content's items and not after the
++/// legend, and the legend is not stretched as a flex item would be.
++fn collect_fieldset_children(
++    doc: &mut BaseDocument,
++    id: NodeId,
++    legend: NodeId,
++    out: &mut LayoutChildren,
++) {
++    const NAME: QualName = QualName {
++        prefix: None,
++        ns: ns!(html),
++        local: local_name!("div"),
++    };
++    let content: Vec<NodeId> = {
++        let node = &doc.nodes[id];
++        node.before()
++            .into_iter()
++            .chain(node.children.iter().copied().filter(|&c| c != legend))
++            .chain(node.after())
++            .collect()
++    };
++    let anon = doc.create_node(NodeData::AnonymousBlock(Box::new(ElementData::new(
++        NAME,
++        Vec::new(),
++    ))));
++
++    let style = fieldset_content_style(doc, id);
++    let mut stylo_element_data = StyloElementData {
++        damage: ALL_DAMAGE,
++        ..Default::default()
++    };
++    stylo_element_data.styles.primary = Some(style);
++    stylo_element_data.set_restyled();
++    *doc.nodes[anon].stylo_element_data_mut().ensure_init_mut() = stylo_element_data;
++    if doc.nodes[id].flags.contains(NodeFlags::IS_IN_DOCUMENT) {
++        doc.nodes[anon].flags.insert(NodeFlags::IS_IN_DOCUMENT);
++    }
++    doc.nodes[anon].parent = Some(id);
++    doc.nodes[anon].layout_parent.set(Some(id));
++    doc.nodes[anon].children = content.into();
++
++    out.children.push(legend);
++    out.children.push(anon);
++    out.anonymous_blocks.push(anon);
++    doc.nodes[id]
++        .flags
++        .insert(NodeFlags::IS_FIELDSET_WITH_CONTENT_BOX);
++}
++
+ /// The layout children of `container_node_id` as its `display` lays them out.
+ fn collect_box_children(
+     doc: &mut BaseDocument,
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index bbb1ed509..ff8da902f 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -294,8 +294,15 @@ impl BaseDocument {
+         let anonymous_blocks = std::mem::take(&mut self.nodes[node_id].anonymous_blocks);
+         let mut damage_for_parent = RestyleDamage::empty();
+         for &anonymous_id in &anonymous_blocks {
+-            let style = match &table_style {
+-                Some(table_style) if is_table(self, anonymous_id) => table_style,
++            // A fieldset's content box has the fieldset's layout properties
++            // (construct::fieldset_content_style).
++            let fieldset_style = self.nodes[node_id]
++                .flags
++                .contains(crate::node::NodeFlags::IS_FIELDSET_WITH_CONTENT_BOX)
++                .then(|| crate::layout::construct::fieldset_content_style(self, node_id));
++            let style = match (&table_style, &fieldset_style) {
++                (_, Some(fieldset_style)) => fieldset_style,
++                (Some(table_style), _) if is_table(self, anonymous_id) => table_style,
+                 _ => &style,
+             };
+             let (mut damage, changed) = {
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 110409f29..eba20acc4 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -67,6 +67,9 @@ bitflags! {
+         /// Whether construction last passed over the node, building no box
+         /// for it (`layout::damage::pass_over`)
+         const PASSED_OVER = 0b00010000;
++        /// Whether the node is a fieldset laid out as its rendered legend and an anonymous
++        /// content box (`layout::construct::collect_fieldset_children`)
++        const IS_FIELDSET_WITH_CONTENT_BOX = 0b00100000;
+     }
+ }
+ 
+@@ -92,6 +95,7 @@ impl NodeFlags {
+         self.remove(Self::IS_TABLE_ROOT);
+         self.remove(Self::IS_INLINE_WITH_ONLY_BLOCK_CHILDREN);
+         self.remove(Self::PASSED_OVER);
++        self.remove(Self::IS_FIELDSET_WITH_CONTENT_BOX);
+     }
+ }
+ 
+@@ -1240,6 +1244,9 @@ impl Node {
+             if el.name.local == local_name!("button") {
+                 flags |= stylo_taffy::StyleFlags::IS_BUTTON;
+             }
++            if self.flags.contains(NodeFlags::IS_FIELDSET_WITH_CONTENT_BOX) {
++                flags |= stylo_taffy::StyleFlags::IS_FIELDSET;
++            }
+             if el.is_button_input() {
+                 flags |= stylo_taffy::StyleFlags::IS_BUTTON_INPUT;
+             } else if el.is_form_control_with_intrinsic_size()
+@@ -1325,7 +1332,10 @@ impl Node {
+         self.primary_styles()
+             .map(|style| {
+                 let display = style.clone_display();
+-                if self.element_data().is_some_and(|el| el.is_button_input())
++                if self.flags.contains(NodeFlags::IS_FIELDSET_WITH_CONTENT_BOX) {
++                    // Its legend and content box are laid out in a flow (construct.rs).
++                    taffy::Display::FlowRoot
++                } else if self.element_data().is_some_and(|el| el.is_button_input())
+                     && !matches!(
+                         display.inside(),
+                         DisplayInside::None | DisplayInside::Contents
+diff --git a/packages/stylo_taffy/src/wrapper.rs b/packages/stylo_taffy/src/wrapper.rs
+index f25ceeb50..cd124f10f 100644
+--- a/packages/stylo_taffy/src/wrapper.rs
++++ b/packages/stylo_taffy/src/wrapper.rs
+@@ -37,6 +37,10 @@ bitflags! {
+         /// Whether the node is a form control with an intrinsic size (a text field, `select`,
+         /// `textarea`, ...): a compressible replaced element that is not a replaced element
+         const IS_FORM_CONTROL = 1 << 5;
++        /// Whether the node is a fieldset whose rendered legend and anonymous content box are
++        /// its children: it lays them out in a flow of its own, and its padding is the
++        /// content box's
++        const IS_FIELDSET = 1 << 6;
+     }
+ }
+ 
+@@ -68,7 +72,10 @@ impl<T: Deref<Target = ComputedValues>> TaffyStyloStyle<T> {
+     #[inline]
+     pub fn effective_display(&self) -> stylo::Display {
+         let display = self.style.clone_display();
+-        if self.flags.contains(StyleFlags::IS_BUTTON_INPUT) {
++        if self
++            .flags
++            .intersects(StyleFlags::IS_BUTTON_INPUT | StyleFlags::IS_FIELDSET)
++        {
+             convert::button_input_display(display)
+         } else {
+             display
+@@ -187,8 +194,10 @@ impl<T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle<T>
+ 
+     #[inline]
+     fn is_block(&self) -> bool {
+-        // Button inputs always establish an independent formatting context.
+-        !self.flags.contains(StyleFlags::IS_BUTTON_INPUT)
++        // Button inputs and fieldsets always establish an independent formatting context.
++        !self
++            .flags
++            .intersects(StyleFlags::IS_BUTTON_INPUT | StyleFlags::IS_FIELDSET)
+             && convert::is_block(self.effective_display())
+     }
+ 
+@@ -298,6 +307,15 @@ impl<T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle<T>
+ 
+     #[inline]
+     fn padding(&self) -> taffy::Rect<taffy::LengthPercentage> {
++        if self.flags.contains(StyleFlags::IS_FIELDSET) {
++            // A fieldset's padding is its content box's: the legend sits above it.
++            return taffy::Rect {
++                left: taffy::LengthPercentage::length(0.0),
++                right: taffy::LengthPercentage::length(0.0),
++                top: taffy::LengthPercentage::length(0.0),
++                bottom: taffy::LengthPercentage::length(0.0),
++            };
++        }
+         let padding_styles = self.style.get_padding();
+         if let Some(basis) = self.percent_basis() {
+             let resolve = |value: &stylo::LengthPercentage| {
+-- 
+2.56.0
+
