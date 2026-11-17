@@ -1,0 +1,136 @@
+From c6888b301f545e88f8194e644f1390f24757bd1f Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 12:02:37 +0100
+Subject: [PATCH] blitz-dom: track only changed snapshot attributes
+
+---
+ packages/blitz-dom/src/document.rs       | 29 ++++++------
+ packages/blitz-dom/src/stylo/relative.rs | 57 +++++++++++++++++++++++-
+ 2 files changed, 69 insertions(+), 17 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index c159b599e..d14cdbfbe 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -1896,15 +1896,11 @@ impl BaseDocument {
+                     .collect()
+             });
+ 
+-            let mut changed_attrs: Vec<_> = attrs
+-                .as_ref()
+-                .map(|attrs| attrs.iter().map(|attr| attr.0.name.clone()).collect())
++            // Keep all old attributes for selector matching, but report only
++            // the names actually changed, accumulating later mutations below.
++            let changed_attrs = changed_attr
++                .map(|attr| vec![GenericAtomIdent(attr.clone())])
+                 .unwrap_or_default();
+-            if let Some(attr) = changed_attr {
+-                if !changed_attrs.iter().any(|name| name.0 == *attr) {
+-                    changed_attrs.push(GenericAtomIdent(attr.clone()));
+-                }
+-            }
+ 
+             (attrs, changed_attrs)
+         } else {
+@@ -1917,10 +1913,12 @@ impl BaseDocument {
+             if needs_attrs {
+                 snapshot.attrs = attrs;
+                 snapshot.changed_attrs = changed_attrs;
+-                snapshot.class_changed = true;
+-                snapshot.id_changed = true;
+-                snapshot.other_attributes_changed = true;
+-            } else if let Some(attr) = changed_attr {
++            }
++            if let Some(attr) = changed_attr {
++                snapshot.class_changed |= *attr == local_name!("class");
++                snapshot.id_changed |= *attr == local_name!("id");
++                snapshot.other_attributes_changed |=
++                    *attr != local_name!("class") && *attr != local_name!("id");
+                 if !snapshot.changed_attrs.iter().any(|name| name.0 == *attr) {
+                     snapshot.changed_attrs.push(GenericAtomIdent(attr.clone()));
+                 }
+@@ -1932,9 +1930,10 @@ impl BaseDocument {
+                     state: Some(*self.nodes[node_id].element_state()),
+                     attrs,
+                     changed_attrs,
+-                    class_changed: needs_attrs,
+-                    id_changed: needs_attrs,
+-                    other_attributes_changed: needs_attrs,
++                    class_changed: changed_attr.is_some_and(|a| *a == local_name!("class")),
++                    id_changed: changed_attr.is_some_and(|a| *a == local_name!("id")),
++                    other_attributes_changed: changed_attr
++                        .is_some_and(|a| *a != local_name!("class") && *a != local_name!("id")),
+                 },
+             );
+         }
+diff --git a/packages/blitz-dom/src/stylo/relative.rs b/packages/blitz-dom/src/stylo/relative.rs
+index cdf55cf29..b59e914b6 100644
+--- a/packages/blitz-dom/src/stylo/relative.rs
++++ b/packages/blitz-dom/src/stylo/relative.rs
+@@ -142,8 +142,61 @@ impl crate::document::BaseDocument {
+     /// Whether the next style resolve may change a relative selector anchor.
+     /// Hosts doing partial paint must preserve the old appearance of such anchors.
+     pub fn relative_selector_invalidation_pending(&self) -> bool {
+-        self.has_relative_selectors()
+-            && (self.relative_dom_mutation.get() || !self.snapshots.is_empty())
++        if !self.has_relative_selectors() {
++            return false;
++        }
++        if self.relative_dom_mutation.get() {
++            return true;
++        }
++        // A snapshot alone does not mean a relative selector depends on the
++        // change. Check its old and new keys against Stylo's dependency maps;
++        // retain whole-frame damage whenever a matching dependency may move
++        // an anchor, descendant, or sibling outside the touched boxes.
++        let quirks = self.stylist.quirks_mode();
++        self.snapshots.iter().any(|(opaque, snapshot)| {
++            let Some(node) = self.nodes.get(NodeId::from_u64(opaque.id() as u64)) else {
++                return true;
++            };
++            let Some(element) = TNode::as_element(&BlitzNode(node)) else {
++                return true;
++            };
++            let states = snapshot
++                .state
++                .map_or_else(ElementState::empty, |s| s ^ element.state());
++            self.stylist.iter_origins().any(|(data, _)| {
++                let map = data.relative_selector_invalidation_map();
++                let mut affected = false;
++                if snapshot.id_changed() {
++                    for id in element.id().into_iter().chain(snapshot.id_attr()) {
++                        affected |= map.id_to_selector.get(id, quirks).is_some();
++                    }
++                }
++                if snapshot.class_changed() {
++                    let mut check = |class: &AtomIdent| {
++                        affected |= map.class_to_selector.get(class, quirks).is_some();
++                    };
++                    element.each_class(&mut check);
++                    snapshot.each_class(&mut check);
++                }
++                snapshot.each_attr_changed(|name| {
++                    affected |= map.other_attribute_affecting_selectors.get(name).is_some();
++                });
++                if !states.is_empty() {
++                    map.state_affecting_selectors.lookup_with_additional(
++                        element,
++                        quirks,
++                        None,
++                        &[],
++                        states,
++                        |dep| {
++                            affected |= dep.state.intersects(states);
++                            true
++                        },
++                    );
++                }
++                affected
++            })
++        })
+     }
+ 
+     /// Structural sibling of the pass above, for tree mutations rather than
+-- 
+2.56.0
+
