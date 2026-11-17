@@ -1,0 +1,80 @@
+From ce2d520f9a587715bf6c64ed8982117e8ed2d847 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 09:31:48 +0100
+Subject: [PATCH] blitz-dom: a table's baseline is its first row's
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A table took its first cell's first baseline from the grid. CSS 2.2 §17.5.3
+gives a row with no cell aligned on its baseline (and a cell's
+vertical-align is middle by default, from the row groups) the bottom of the
+content box of its lowest cell, so an inline table, or one in a baseline
+flex row, sat several pixels higher than in Chromium and Firefox.
+
+first_row_baseline gives that edge, from the cells of the first row that
+span only it, when none of them is aligned on its baseline; the grid's
+baseline stands otherwise.
+---
+ packages/blitz-dom/src/layout/mod.rs   |  5 +++++
+ packages/blitz-dom/src/layout/table.rs | 28 ++++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+)
+
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 3b4da6b79..5bf0fb832 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -784,6 +784,11 @@ impl LayoutPassState<'_> {
+                     let mut output = compute_grid_layout(&mut table_wrapper, node_id, grid_inputs);
+ 
+                     let context = table_wrapper.ctx;
++                    if inputs.run_mode == RunMode::PerformLayout
++                        && let Some(baseline) = table::first_row_baseline(self, &context)
++                    {
++                        output.baselines.first = Some(baseline);
++                    }
+                     let mut caption_top = 0.0;
+                     if lays_out_captions {
+                         let (above, below) = table::layout_captions(
+diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
+index 0cda1aa78..3eee11094 100644
+--- a/packages/blitz-dom/src/layout/table.rs
++++ b/packages/blitz-dom/src/layout/table.rs
+@@ -624,6 +624,34 @@ pub(crate) fn layout_captions(
+     (above, below)
+ }
+ 
++/// The table's first baseline when no cell of its first row is aligned on its baseline: the
++/// bottom of the content box of the lowest cell in that row (CSS 2.2 §17.5.3). The cells'
++/// `vertical-align` is usually `middle`, from the UA sheet's row groups. When a cell is
++/// aligned on its baseline, the grid's own (the first cell's) stands: `None`.
++pub(crate) fn first_row_baseline(tree: &LayoutPassState<'_>, ctx: &TableContext) -> Option<f32> {
++    let first_row: Vec<&TableCell> = ctx.cells.iter().filter(|cell| cell.row == 0).collect();
++    let baseline_aligned = |cell: &TableCell| {
++        tree.nodes[cell.node_id]
++            .primary_styles()
++            .is_none_or(|style| {
++                cell.implicit || stylo_taffy::convert::table_cell_vertical_align(&style).is_none()
++            })
++    };
++    if first_row.is_empty() || first_row.iter().any(|cell| baseline_aligned(cell)) {
++        return None;
++    }
++    // A cell spanning rows below reaches past the row: the row's own cells decide.
++    let in_row = first_row.iter().any(|cell| cell.row_span == 1);
++    first_row
++        .iter()
++        .filter(|cell| !in_row || cell.row_span == 1)
++        .map(|cell| {
++            let l = tree.nodes[cell.node_id].unrounded_layout();
++            l.location.y + l.size.height - l.padding.bottom - l.border.bottom
++        })
++        .reduce(f32::max)
++}
++
+ /// Moves the table's grid down by `dy`, the height of its top captions: its cells, and the
+ /// row positions its collapsed borders are painted from.
+ pub(crate) fn shift_grid(tree: &mut LayoutPassState<'_>, ctx: &TableContext, dy: f32) {
+-- 
+2.56.0
+

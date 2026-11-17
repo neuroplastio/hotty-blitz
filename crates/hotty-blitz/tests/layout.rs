@@ -340,3 +340,37 @@ fn a_collapsed_table_draws_each_line_its_borders_resolve_to() {
         .count();
     assert_eq!(differing, 0, "restyled row: {differing} pixels differ");
 }
+
+/// A table's baseline is its first row's (CSS 2.2 §17.5.3). With no cell
+/// in that row aligned on its baseline (a cell's `vertical-align` is
+/// `middle` by default), it is the bottom of the lowest cell's content, as
+/// an inline-block's that clips its overflow is its bottom edge; a cell that
+/// is aligned on its baseline gives its text's, as an inline-block does.
+/// (The text inside is transparent: it sits a fraction of a pixel apart in
+/// the two, and the boxes against the text beside them are what is checked.)
+#[test]
+fn a_table_sits_on_its_first_rows_baseline() {
+    const STYLE: &str = "<style>body{margin:0;background:#000;color:#fff;font:16px/20px sans-serif}
+        table{border-spacing:0}td{padding:0}td,span{background:#06c;color:transparent}</style>";
+    for (table, written_out) in [
+        (
+            "<div>before <table style=display:inline-table><tr><td>middle</td></tr></table> after</div>",
+            "<div>before <span style=display:inline-block;overflow:hidden>middle</span> after</div>",
+        ),
+        (
+            "<div>before <table style=display:inline-table><tr><td style=vertical-align:baseline>text</td></tr></table> after</div>",
+            "<div>before <span style=display:inline-block>text</span> after</div>",
+        ),
+    ] {
+        let a = placed(&format!("{STYLE}{table}"), 30, 8);
+        let b = placed(&format!("{STYLE}{written_out}"), 30, 8);
+        let (fa, fb) = (a.frame("x").unwrap(), b.frame("x").unwrap());
+        let differing = fa
+            .rgba
+            .chunks(4)
+            .zip(fb.rgba.chunks(4))
+            .filter(|(p, q)| p != q)
+            .count();
+        assert_eq!(differing, 0, "{table}: {differing} pixels differ");
+    }
+}
