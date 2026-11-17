@@ -1,0 +1,349 @@
+From d128e76cc8358628f407c4bdc39339f221e76cfe Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 07:33:00 +0100
+Subject: [PATCH 96/96] blitz-dom, blitz-paint: lay a table's captions out
+ above and below its grid
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A table-caption child of a table was passed over: neither laid out nor
+drawn. CSS 2.2 §17.4 puts a table's captions above its grid (caption-side:
+top) or below it, in the table wrapper box, each as wide as the table.
+
+The table context now collects its captions and makes them layout children
+of the table, outside the grid. After the grid, layout_captions lays each
+out at the table's border-box width less its margins and stacks them above
+and below; the cells and the grid's row positions move down by the height
+above, and the table's size and baselines grow by it. A height given to the
+table is its box's, so the grid gets what the captions leave. Paint draws
+the table's own background and border around the grid alone.
+---
+ packages/blitz-dom/src/layout/mod.rs   |  65 +++++++++++-
+ packages/blitz-dom/src/layout/table.rs | 131 ++++++++++++++++++++++++-
+ packages/blitz-paint/src/render.rs     |  30 +++++-
+ 3 files changed, 221 insertions(+), 5 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
+index 33133edfa..3b4da6b79 100644
+--- a/packages/blitz-dom/src/layout/mod.rs
++++ b/packages/blitz-dom/src/layout/mod.rs
+@@ -740,11 +740,70 @@ impl LayoutPassState<'_> {
+                         }
+                     }
+ 
+-                    let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
++                    // Captions are laid out outside the grid, above and below it
++                    // (table::layout_captions). They take no part in its width, and
++                    // when only that is asked for they are not laid out at all.
++                    let lays_out_captions = !table_wrapper.ctx.captions.is_empty()
++                        && match inputs.run_mode {
++                            RunMode::PerformLayout => true,
++                            RunMode::ComputeSize => inputs.axis != taffy::RequestedAxis::Horizontal,
++                            RunMode::PerformHiddenLayout => false,
++                        };
++                    let mut grid_inputs = inputs;
++                    if lays_out_captions && let Some(height) = inputs.known_dimensions.height {
++                        // A height given to the table is its box's, captions included: the
++                        // grid gets what they leave.
++                        let width = match inputs.known_dimensions.width {
++                            Some(width) => width,
++                            None => {
++                                compute_grid_layout(
++                                    &mut table_wrapper,
++                                    node_id,
++                                    taffy::LayoutInput {
++                                        run_mode: RunMode::ComputeSize,
++                                        known_dimensions: taffy::Size::NONE,
++                                        ..inputs
++                                    },
++                                )
++                                .size
++                                .width
++                            }
++                        };
++                        let context = Arc::clone(&table_wrapper.ctx);
++                        let (above, below) = table::layout_captions(
++                            table_wrapper.doc,
++                            &context,
++                            width,
++                            0.0,
++                            RunMode::ComputeSize,
++                        );
++                        grid_inputs.known_dimensions.height =
++                            Some((height - above - below).max(0.0));
++                    }
++
++                    let mut output = compute_grid_layout(&mut table_wrapper, node_id, grid_inputs);
++
++                    let context = table_wrapper.ctx;
++                    let mut caption_top = 0.0;
++                    if lays_out_captions {
++                        let (above, below) = table::layout_captions(
++                            self,
++                            &context,
++                            output.size.width,
++                            output.size.height,
++                            inputs.run_mode,
++                        );
++                        if inputs.run_mode == RunMode::PerformLayout && above != 0.0 {
++                            table::shift_grid(self, &context, above);
++                        }
++                        caption_top = above;
++                        output.size.height += above + below;
++                        output.baselines.first = output.baselines.first.map(|b| b + above);
++                        output.baselines.last = output.baselines.last.map(|b| b + above);
++                    }
+ 
+                     // Absolutely positioned children take no part in the table grid. Their
+                     // static position is the top-left of the table's content box.
+-                    let context = table_wrapper.ctx;
+                     if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
+                     {
+                         let style = &context.style;
+@@ -757,7 +816,7 @@ impl LayoutPassState<'_> {
+                             .resolve_or_zero(parent_width, resolve_calc_value);
+                         let static_position = taffy::Point {
+                             x: padding.left + border.left,
+-                            y: padding.top + border.top,
++                            y: caption_top + padding.top + border.top,
+                         }
+                         .map(|pos| AxisStaticPosition::from_edge(pos, AxisStaticEdge::Start));
+                         let in_flow_count = context.cells.len();
+diff --git a/packages/blitz-dom/src/layout/table.rs b/packages/blitz-dom/src/layout/table.rs
+index 17debdc20..628a563a9 100644
+--- a/packages/blitz-dom/src/layout/table.rs
++++ b/packages/blitz-dom/src/layout/table.rs
+@@ -13,6 +13,7 @@ use style::values::computed::calc::CalcPercentageLeaf;
+ use style::values::computed::length_percentage::{
+     CalcLengthPercentage, CalcNode, ComputedLeaf, Unpacked as UnpackedLengthPercentage,
+ };
++use style::values::computed::table::CaptionSide;
+ use style::values::computed::{Length, LengthPercentage};
+ use style::values::generics::Optional;
+ use style::values::specified::box_::{DisplayInside, DisplayOutside};
+@@ -22,7 +23,8 @@ use style::{
+ };
+ use style_traits::values::specified::AllowedNumericType;
+ use taffy::{
+-    DetailedGridInfo, LayoutPartialTree as _, ResolveOrZero, TrackSizingFunction, style_helpers,
++    CoreStyle as _, DetailedGridInfo, LayoutPartialTree as _, ResolveOrZero, TrackSizingFunction,
++    style_helpers,
+ };
+ 
+ use crate::BaseDocument;
+@@ -51,6 +53,10 @@ pub struct TableContext {
+     pub border_collapse: BorderCollapse,
+     /// Whether `table-layout: fixed` applies: the table has that layout and a width.
+     pub is_fixed: bool,
++    /// The table's captions, in order, and whether each is above the table (`caption-side:
++    /// top`) or below it. They are laid out outside the table grid, as wide as the table
++    /// (`compute_child_layout`), and the table's own box is painted around the grid alone.
++    pub captions: Vec<(NodeId, bool)>,
+     /// Backing storage for `calc()` track sizes synthesised by the table layout code.
+     /// Taffy stores calc values as raw pointers, so these must outlive the `style`.
+     #[allow(dead_code)]
+@@ -216,6 +222,113 @@ fn percent_plus_length(
+     dim.into()
+ }
+ 
++/// Lays the table's captions out above and below its grid, each as wide as the table
++/// (`width`, its border box) less the caption's margins (CSS 2.2 §17.4), and returns the
++/// height they take above the grid and below it, margins included. In `PerformLayout` it
++/// places them: the top captions from the table's top edge, the bottom ones after
++/// `grid_height`.
++pub(crate) fn layout_captions(
++    tree: &mut LayoutPassState<'_>,
++    ctx: &TableContext,
++    width: f32,
++    grid_height: f32,
++    run_mode: taffy::RunMode,
++) -> (f32, f32) {
++    let mut above = 0.0;
++    let mut below = 0.0;
++    for side_top in [true, false] {
++        let mut y = if side_top { 0.0 } else { above + grid_height };
++        for &(id, _) in ctx.captions.iter().filter(|(_, top)| *top == side_top) {
++            let node = crate::taffy_node_id(id);
++            let (margin, padding, border) = {
++                let style = tree.nodes[id].layout_style();
++                let parent = Some(width);
++                (
++                    style
++                        .margin()
++                        .resolve_or_zero(parent, super::resolve_calc_value),
++                    style
++                        .padding()
++                        .resolve_or_zero(parent, super::resolve_calc_value),
++                    style
++                        .border()
++                        .resolve_or_zero(parent, super::resolve_calc_value),
++                )
++            };
++            let inner = (width - margin.left - margin.right).max(0.0);
++            let output = tree.compute_child_layout(
++                node,
++                taffy::LayoutInput {
++                    run_mode,
++                    sizing_mode: taffy::SizingMode::InherentSize,
++                    axis: taffy::RequestedAxis::Vertical,
++                    known_dimensions: taffy::Size {
++                        width: Some(inner),
++                        height: None,
++                    },
++                    known_dimensions_are_definite: taffy::Size {
++                        width: true,
++                        height: true,
++                    },
++                    parent_size: taffy::Size {
++                        width: Some(width),
++                        height: None,
++                    },
++                    available_space: taffy::Size {
++                        width: taffy::AvailableSpace::Definite(inner),
++                        height: taffy::AvailableSpace::MaxContent,
++                    },
++                    vertical_margins_are_collapsible: taffy::Line::FALSE,
++                },
++            );
++            if run_mode == taffy::RunMode::PerformLayout {
++                let layout = taffy::Layout {
++                    order: 0,
++                    location: taffy::Point {
++                        x: margin.left,
++                        y: y + margin.top,
++                    },
++                    size: output.size,
++                    scrollable_overflow_rect: output.scrollable_overflow_rect,
++                    scrollbar_size: taffy::Size::ZERO,
++                    border,
++                    padding,
++                    margin,
++                };
++                tree.set_unrounded_layout(node, &layout);
++            }
++            let height = margin.top + output.size.height + margin.bottom;
++            y += height;
++            if side_top {
++                above += height;
++            } else {
++                below += height;
++            }
++        }
++    }
++    (above, below)
++}
++
++/// Moves the table's grid down by `dy`, the height of its top captions: its cells, and the
++/// row positions its collapsed borders are painted from.
++pub(crate) fn shift_grid(tree: &mut LayoutPassState<'_>, ctx: &TableContext, dy: f32) {
++    for cell in &ctx.cells {
++        let node = crate::taffy_node_id(cell.node_id);
++        let mut layout = *tree.nodes[cell.node_id].unrounded_layout();
++        layout.location.y += dy;
++        tree.set_unrounded_layout(node, &layout);
++    }
++    if let Some(info) = ctx.computed_grid_info.borrow_mut().as_mut() {
++        for line in &mut info.rows.positions {
++            line.start += dy;
++            line.end += dy;
++        }
++        if let Some(line) = &mut info.rows.empty_axis_line {
++            *line += dy;
++        }
++    }
++}
++
+ pub(crate) fn build_table_context(
+     doc: &mut BaseDocument,
+     table_root_node_id: NodeId,
+@@ -286,8 +399,22 @@ pub(crate) fn build_table_context(
+         }
+     };
+     let mut stray_run = false;
++    let mut captions: Vec<(NodeId, bool)> = Vec::new();
+     for order in 0..3 {
+         for child_id in children.iter().copied() {
++            // A caption of the table is no grid cell: it is laid out above or below
++            // the grid (CSS 2.2 §17.4).
++            let caption = doc.nodes[child_id].primary_styles().and_then(|s| {
++                (s.clone_display().outside() == DisplayOutside::TableCaption
++                    && !s.clone_position().is_absolutely_positioned())
++                .then(|| s.get_inherited_table().caption_side == CaptionSide::Top)
++            });
++            if let Some(top) = caption {
++                if order == 0 {
++                    captions.push((child_id, top));
++                }
++                continue;
++            }
+             if row_group_order(doc, child_id) != order {
+                 continue;
+             }
+@@ -434,6 +561,7 @@ pub(crate) fn build_table_context(
+         .iter()
+         .map(|cell| cell.node_id)
+         .chain(oof_children.iter().map(|(node_id, _)| *node_id))
++        .chain(captions.iter().map(|(node_id, _)| *node_id))
+         .collect();
+     let root_node = &mut doc.nodes[table_root_node_id];
+     root_node.children = children;
+@@ -448,6 +576,7 @@ pub(crate) fn build_table_context(
+             computed_grid_info: AtomicRefCell::new(None),
+             border_collapse,
+             is_fixed,
++            captions,
+             border_style: first_cell_border,
+             calc_values,
+         },
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index aa0b496dd..b8578e76d 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -818,7 +818,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+         // todo: maybe cache this so we don't need to constantly be figuring it out
+         // It is quite a bit of math to calculate during render/traverse
+         // Also! we can cache the bezpaths themselves, saving us a bunch of work
+-        let frame = create_css_rect(&style, &layout, scale);
++        let (layout, grid_top) = table_grid_layout(self.dom, node, layout);
++        let mut frame = create_css_rect(&style, &layout, scale);
++        frame.border_box = frame.border_box + Vec2::new(0.0, grid_top as f64 * scale);
+         // Backgrounds, borders, shadows and outlines are drawn on device
+         // pixels, as browsers snap the boxes they paint: at a fractional
+         // scale a box sits at a fraction of a pixel, and a hairline drawn
+@@ -1731,6 +1733,32 @@ fn ink_outset(style: &ComputedValues, scale: f64) -> kurbo::Insets {
+ }
+ 
+ /// Convert Stylo and Taffy types into Kurbo types
++/// A table's own box, its background and border, is drawn around its grid: Taffy's box for
++/// the table holds its captions too, above and below the grid (blitz-dom's
++/// `table::layout_captions`). Returns the grid's layout and how far down it starts.
++fn table_grid_layout(dom: &BaseDocument, node: &Node, layout: Layout) -> (Layout, f32) {
++    let Some(blitz_dom::node::SpecialElementData::TableRoot(table)) =
++        node.element_data().map(|el| &el.special_data)
++    else {
++        return (layout, 0.0);
++    };
++    let (mut top, mut bottom) = (0.0f32, layout.size.height);
++    for &(id, is_top) in &table.captions {
++        let Some(caption) = dom.get_node(id) else {
++            continue;
++        };
++        let l = caption.final_layout();
++        if is_top {
++            top = top.max(l.location.y + l.size.height + l.margin.bottom);
++        } else {
++            bottom = bottom.min(l.location.y - l.margin.top);
++        }
++    }
++    let mut grid = layout;
++    grid.size.height = (bottom - top).max(0.0);
++    (grid, top)
++}
++
+ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBox {
+     // Resolve and rescale
+     // We have to scale since document pixels are not same same as rendered pixels
+-- 
+2.56.0
+

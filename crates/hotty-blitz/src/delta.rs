@@ -805,7 +805,7 @@ mod taffy_baseline_tests {
     #[test]
     fn table_caption_is_not_misplaced_as_an_anonymous_cell() {
         let mut doc = HtmlDocument::from_html(
-            "<style>body{margin:0}td{height:20px;width:40px}</style><table id=t1><caption>Caption</caption><tr><td id=a>A</td></tr></table><table id=t2><tr><td id=b>B</td></tr></table>",
+            "<style>body{margin:0}td{height:20px;width:40px}</style><table id=t1><caption id=cap>Caption</caption><tr><td id=a>A</td></tr></table><table id=t2><tr><td id=b>B</td></tr></table>",
             DocumentConfig {
                 viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
                 ..Default::default()
@@ -816,7 +816,16 @@ mod taffy_baseline_tests {
             doc.get_client_bounding_rect(doc.get_element_by_id(id).unwrap())
                 .unwrap()
         };
-        assert_eq!(rect("a").y - rect("t1").y, rect("b").y - rect("t2").y);
+        // The caption is laid out above the grid, as wide as the table, and
+        // the cell is where it would be without it, moved down by the caption.
+        assert!(rect("cap").height > 0.0);
+        assert_eq!(rect("cap").y, rect("t1").y);
+        assert_eq!(rect("cap").width, rect("t1").width);
+        assert_eq!(
+            rect("a").y - rect("t1").y,
+            rect("b").y - rect("t2").y + rect("cap").height
+        );
+        assert_eq!(rect("a").x - rect("t1").x, rect("b").x - rect("t2").x);
     }
 
     #[test]

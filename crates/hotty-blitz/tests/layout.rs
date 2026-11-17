@@ -231,3 +231,43 @@ fn a_fieldset_lays_its_legend_out_outside_its_content() {
         .count();
     assert_eq!(differing, 0, "restyled: {differing} pixels differ");
 }
+
+/// A table's captions are laid out above and below its grid, as wide as the
+/// table, and the table's own box (background and border) is drawn around
+/// the grid alone: it draws as a caption box written out beside a table
+/// without one does, collapsed borders included.
+#[test]
+fn a_table_lays_its_captions_out_above_and_below_its_grid() {
+    const STYLE: &str = "<style>body{margin:0;background:#000;color:#fff;font:16px/20px sans-serif}
+        table{margin:0;width:204px;background:#333;border:2px solid #fa0;border-spacing:2px}
+        td{padding:2px 4px;background:#06c}
+        caption,.cap{background:#c00;padding:2px}
+        .cap{width:204px;box-sizing:border-box;text-align:center}
+        .bottom caption{caption-side:bottom;margin-top:6px}
+        .collapse{border-collapse:collapse}.collapse td{border:1px solid #fff}</style>";
+    for (captioned, written_out) in [
+        (
+            "<table><caption>top</caption><tr><td>a</td><td>b</td></tr></table>",
+            "<div class=cap>top</div><table><tr><td>a</td><td>b</td></tr></table>",
+        ),
+        (
+            "<table class=bottom><caption>bottom</caption><tr><td>a</td></tr><tr><td>b</td></tr></table>",
+            "<table><tr><td>a</td></tr><tr><td>b</td></tr></table><div class=cap style=margin-top:6px>bottom</div>",
+        ),
+        (
+            "<table class=collapse><caption>top</caption><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>",
+            "<div class=cap>top</div><table class=collapse><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>",
+        ),
+    ] {
+        let a = placed(&format!("{STYLE}{captioned}"), 30, 8);
+        let b = placed(&format!("{STYLE}{written_out}"), 30, 8);
+        let (fa, fb) = (a.frame("x").unwrap(), b.frame("x").unwrap());
+        let differing = fa
+            .rgba
+            .chunks(4)
+            .zip(fb.rgba.chunks(4))
+            .filter(|(p, q)| p != q)
+            .count();
+        assert_eq!(differing, 0, "{captioned}: {differing} pixels differ");
+    }
+}
