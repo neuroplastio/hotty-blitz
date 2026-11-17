@@ -1,8 +1,8 @@
-From 4630aae82aa0a31d35d4820a24df9e364a1e4477 Mon Sep 17 00:00:00 2001
+From 99d252ebc94f8878232f83472fa05512c7c0bf17 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Tue, 17 Nov 2026 07:07:42 +0100
-Subject: [PATCH] blitz-dom: a fieldset lays its rendered legend out outside
- its content
+Subject: [PATCH 95/96] blitz-dom: a fieldset lays its rendered legend out
+ outside its content
 
 HTML renders a fieldset as its rendered legend (its first legend child, if
 neither floated nor absolutely positioned) and an anonymous fieldset content
@@ -18,11 +18,11 @@ fieldset gives the content box that style again. The UA sheet makes the
 rendered legend as wide as its content.
 ---
  packages/blitz-dom/assets/default.css      |   5 +
- packages/blitz-dom/src/layout/construct.rs | 142 +++++++++++++++++++++
+ packages/blitz-dom/src/layout/construct.rs | 147 +++++++++++++++++++++
  packages/blitz-dom/src/layout/damage.rs    |  11 +-
  packages/blitz-dom/src/node/node.rs        |  12 +-
  packages/stylo_taffy/src/wrapper.rs        |  24 +++-
- 5 files changed, 188 insertions(+), 6 deletions(-)
+ 5 files changed, 193 insertions(+), 6 deletions(-)
 
 diff --git a/packages/blitz-dom/assets/default.css b/packages/blitz-dom/assets/default.css
 index a7588a0f8..427290a0e 100644
@@ -41,10 +41,10 @@ index a7588a0f8..427290a0e 100644
      display: none;
  }
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
-index f35f9a552..ddb55a33b 100644
+index f35f9a552..0fc3e7fa5 100644
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
-@@ -740,9 +740,151 @@ fn collect_layout_children_with_wrap(
+@@ -740,9 +740,156 @@ fn collect_layout_children_with_wrap(
          collect_list_item_children(doc, &mut index, reversed, container_node_id);
      }
  
@@ -82,11 +82,13 @@ index f35f9a552..ddb55a33b 100644
 +        &anon_style,
 +        Some(&parent_style),
 +    );
-+    builder.mutate_box().set_display(match parent_style.clone_display().inside() {
-+        DisplayInside::Flex => Display::Flex,
-+        DisplayInside::Grid => Display::Grid,
-+        _ => Display::FlowRoot,
-+    });
++    builder
++        .mutate_box()
++        .set_display(match parent_style.clone_display().inside() {
++            DisplayInside::Flex => Display::Flex,
++            DisplayInside::Grid => Display::Grid,
++            _ => Display::FlowRoot,
++        });
 +    let from = parent_style.get_position();
 +    let to = builder.mutate_position();
 +    to.copy_flex_direction_from(from);
@@ -120,16 +122,19 @@ index f35f9a552..ddb55a33b 100644
 +    if !node.data.is_element_with_tag_name(&local_name!("fieldset"))
 +        || !matches!(
 +            node.display_style()?.inside(),
-+            DisplayInside::Flow | DisplayInside::FlowRoot | DisplayInside::Flex | DisplayInside::Grid
++            DisplayInside::Flow
++                | DisplayInside::FlowRoot
++                | DisplayInside::Flex
++                | DisplayInside::Grid
 +        )
 +    {
 +        return None;
 +    }
-+    let legend = node
-+        .children
-+        .iter()
-+        .copied()
-+        .find(|&c| doc.nodes[c].data.is_element_with_tag_name(&local_name!("legend")))?;
++    let legend = node.children.iter().copied().find(|&c| {
++        doc.nodes[c]
++            .data
++            .is_element_with_tag_name(&local_name!("legend"))
++    })?;
 +    let style = doc.nodes[legend].primary_styles()?;
 +    let rendered = !matches!(
 +        style.clone_display().inside(),
