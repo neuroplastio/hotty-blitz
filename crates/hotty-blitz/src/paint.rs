@@ -627,6 +627,27 @@ pub fn extent(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) 
             y1: y + ov.y1,
         });
     }
+    // Client bounds are layout bounds: Blitz applies CSS transforms later,
+    // while painting. Map the damage through the same transforms, from the
+    // node outwards, around each ancestor's untransformed border-box origin.
+    let mut cur = Some(id);
+    while let Some(n) = cur {
+        let node = doc.get_node(n)?;
+        if let Some(transform) = node.transform().as_deref() {
+            let bounds = doc.get_client_bounding_rect(n)?;
+            let origin = (bounds.x * scale, bounds.y * scale);
+            let map =
+                Affine::translate(origin) * *transform * Affine::translate((-origin.0, -origin.1));
+            let r = map.transform_rect_bbox(kurbo::Rect::new(d.x0, d.y0, d.x1, d.y1));
+            d = DevRect {
+                x0: r.x0,
+                y0: r.y0,
+                x1: r.x1,
+                y1: r.y1,
+            };
+        }
+        cur = node.parent;
+    }
     Some(d)
 }
 
