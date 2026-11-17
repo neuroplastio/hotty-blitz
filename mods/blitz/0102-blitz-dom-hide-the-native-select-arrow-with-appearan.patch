@@ -1,0 +1,102 @@
+From 7e0ac1c044aac28e172a6ea2eb5243dbf2a605be Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Tue, 17 Nov 2026 14:24:17 +0100
+Subject: [PATCH] blitz-dom: hide the native select arrow with appearance none
+
+---
+ packages/blitz-dom/src/layout/construct.rs | 59 ++++++++++++++++++++++
+ packages/blitz-dom/src/layout/damage.rs    |  1 +
+ 2 files changed, 60 insertions(+)
+
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index 0fc3e7fa5..c56525aed 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -1123,6 +1123,21 @@ fn flush_pseudo_elements(doc: &mut BaseDocument, node_id: NodeId) {
+             .as_ref()
+             .and_then(|d| d.styles.pseudos.as_array()[0].clone());
+ 
++        // The select arrow is a UA ::after, not author-generated content.
++        // `appearance: none` removes that widget decoration while leaving an
++        // author's own ::after intact.
++        let after_style = if node
++            .element_data()
++            .is_some_and(|e| e.name.local == local_name!("select"))
++            && !node.has_native_appearance()
++            && after_style
++                .as_ref()
++                .is_some_and(|s| content_is_from_ua(doc, s))
++        {
++            None
++        } else {
++            after_style
++        };
+         (before_style, after_style, before_node_id, after_node_id)
+     };
+ 
+@@ -1231,6 +1246,50 @@ fn flush_pseudo_elements(doc: &mut BaseDocument, node_id: NodeId) {
+     }
+ }
+ 
++/// Whether the winning `content` declaration is from the user-agent sheet.
++fn content_is_from_ua(doc: &BaseDocument, style: &style::properties::ComputedValues) -> bool {
++    use style::applicable_declarations::{CascadePriority, RevertKind};
++    use style::properties::{LonghandId, PropertyDeclaration, PropertyDeclarationId};
++    use style::rule_tree::CascadeOrigin;
++
++    let guard = doc.guard.read();
++    let guards = StylesheetGuards {
++        author: &guard,
++        ua_or_user: &guard,
++    };
++    let mut reverted: Option<(CascadePriority, RevertKind)> = None;
++    for rule in style.rules().self_and_ancestors() {
++        let Some(source) = rule.style_source() else {
++            continue;
++        };
++        let level = rule.cascade_level();
++        let priority = rule.cascade_priority();
++        if let Some((from, kind)) = reverted
++            && !from.allows_when_reverted(&priority, kind)
++        {
++            continue;
++        }
++        let declarations = source.read(level.guard(&guards));
++        if let Some((decl, _)) =
++            declarations
++                .declaration_importance_iter()
++                .find(|(decl, importance)| {
++                    *importance == level.importance()
++                        && decl.id() == PropertyDeclarationId::Longhand(LonghandId::Content)
++                })
++        {
++            if let PropertyDeclaration::CSSWideKeyword(wide) = decl
++                && let Some(kind) = wide.keyword.revert_kind()
++            {
++                reverted = Some((priority, kind));
++                continue;
++            }
++            return level.origin() == CascadeOrigin::UA;
++        }
++    }
++    false
++}
++
+ /// Handles the cases where there are text nodes or inline nodes that need to be wrapped in an anonymous block node
+ fn collect_complex_layout_children(
+     doc: &mut BaseDocument,
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index 1d5e6b50b..8f984a301 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -546,6 +546,7 @@ pub(crate) fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues)
+         let new_box = new.get_box();
+ 
+         if old_box.display != new_box.display
++            || old_box.appearance != new_box.appearance
+             || old_box.float != new_box.float
+             || old_box.position != new_box.position
+             || old_box.contain != new_box.contain
+-- 
+2.56.0
+
