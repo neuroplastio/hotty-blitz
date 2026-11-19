@@ -1057,6 +1057,13 @@ impl Host {
 
     /// The fetch limits ([`fetch::MAX_BYTES`], [`fetch::TIMEOUT`]), for
     /// tests that cannot wait for the real ones.
+    /// How many times this session parsed a `cid:` stylesheet to share it
+    /// between its documents: a test's view of that cache.
+    #[doc(hidden)]
+    pub fn sheets_parsed(&self) -> usize {
+        self.store.sheets_parsed()
+    }
+
     #[doc(hidden)]
     pub fn set_fetch_limits(&mut self, max_bytes: usize, timeout: std::time::Duration) {
         self.store.set_limits(fetch::Limits { max_bytes, timeout });
@@ -1751,10 +1758,11 @@ impl Host {
                     .store
                     .put(id, mime, cmd.payload.clone())
                     .map_err(|e| ("EQUOTA", e))?;
-                let href = format!("cid:{id}");
-                for s in self.surfaces.values_mut() {
-                    if users.contains(&s.doc_id()) {
-                        s.resource_changed(&href);
+                for (href, users) in &users {
+                    for s in self.surfaces.values_mut() {
+                        if users.contains(&s.doc_id()) {
+                            s.resource_changed(href);
+                        }
                     }
                 }
                 Ok((Vec::new(), None))

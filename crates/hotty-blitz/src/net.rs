@@ -11,16 +11,32 @@ use crate::anim::{self, Animation};
 use crate::fetch;
 use crate::policy::{Directive, Policy};
 use base64::Engine as _;
+use blitz_dom::net::{SharedStylesheets, parse_shared_stylesheet};
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use style::servo_arc::Arc as ServoArc;
+use style::stylesheets::StylesheetContents;
 use url::Url;
 
 #[derive(Clone)]
 pub struct Resource {
     pub mime: String,
     pub bytes: Bytes,
+    /// Which sending of the resource this is: each `a=res` is a new one.
+    pub generation: u64,
+}
+
+/// A `cid:` stylesheet, parsed once for every document of the session
+/// that links it (blitz_dom's `SharedStylesheets`).
+struct Sheet {
+    generation: u64,
+    contents: ServoArc<StylesheetContents>,
+    /// The resources it imports, all the way down: any of them sent again
+    /// or deleted, and it is parsed again.
+    imports: Vec<String>,
 }
 
 /// A document's request, parked until its resource arrives.
@@ -29,6 +45,12 @@ type Waiting = Vec<(usize, Box<dyn NetHandler>)>;
 #[derive(Default)]
 struct Inner {
     resources: HashMap<String, Resource>,
+    generation: u64,
+    /// Stylesheets among `resources`, parsed, by resource name. An entry
+    /// lives as long as the sending it was parsed from.
+    sheets: HashMap<String, Sheet>,
+    /// How many times a stylesheet was parsed to be shared.
+    sheets_parsed: usize,
     /// Requests for resources that have not arrived yet.
     waiting: HashMap<String, Waiting>,
     /// Which documents asked for which resource, so a re-send can reach them.
@@ -92,9 +114,16 @@ impl Store {
         next
     }
 
-    /// Stores (or replaces) a resource. Returns the documents that use it, so
-    /// the caller can have them process the delivered bytes and restyle.
-    pub fn put(&self, name: &str, mime: &str, bytes: Vec<u8>) -> Result<BTreeSet<usize>, String> {
+    /// Stores (or replaces) a resource. Returns the documents that use it,
+    /// by the `cid:` URL they use it through, so the caller can have them
+    /// process the delivered bytes and restyle: the resource's own, and
+    /// those of the stylesheets that import it.
+    pub fn put(
+        &self,
+        name: &str,
+        mime: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Vec<(String, BTreeSet<usize>)>, String> {
         let bytes = Bytes::from(bytes);
         let (waiting, users) = {
             let mut inner = self.inner.lock().unwrap();
@@ -107,15 +136,24 @@ impl Store {
                 ));
             }
             inner.total = total;
+            inner.generation += 1;
+            let generation = inner.generation;
             inner.resources.insert(
                 name.to_string(),
                 Resource {
                     mime: mime.to_string(),
                     bytes: bytes.clone(),
+                    generation,
                 },
             );
             let waiting = inner.waiting.remove(name).unwrap_or_default();
-            let users = inner.users.get(name).cloned().unwrap_or_default();
+            let users = std::iter::once(name.to_string())
+                .chain(inner.forget_sheets(name))
+                .map(|n| {
+                    let docs = inner.users.get(&n).cloned().unwrap_or_default();
+                    (format!("cid:{n}"), docs)
+                })
+                .collect();
             inner.animations.remove(&format!("cid:{name}"));
             (waiting, users)
         };
@@ -131,6 +169,7 @@ impl Store {
     pub fn remove(&self, name: &str) -> bool {
         let mut inner = self.inner.lock().unwrap();
         inner.animations.remove(&format!("cid:{name}"));
+        inner.forget_sheets(name);
         match inner.resources.remove(name) {
             Some(r) => {
                 inner.total -= r.bytes.len();
@@ -227,6 +266,12 @@ impl Store {
             self.has_started.store(false, Ordering::Release);
         }
         mine
+    }
+
+    /// How many times a `cid:` stylesheet was parsed to be shared, in this
+    /// session: once for each sending a document linked.
+    pub fn sheets_parsed(&self) -> usize {
+        self.inner.lock().unwrap().sheets_parsed
     }
 
     pub fn total_bytes(&self) -> usize {
@@ -361,6 +406,101 @@ impl Store {
         let mut inner = self.inner.lock().unwrap();
         self.has_delivered.store(false, Ordering::Release);
         std::mem::take(&mut inner.delivered)
+    }
+}
+
+impl Inner {
+    /// Drops the parsed sheet of resource `name` and of every sheet that
+    /// imports it, which are parsed again when next linked. Returns the
+    /// names of the sheets that import it.
+    fn forget_sheets(&mut self, name: &str) -> Vec<String> {
+        self.sheets.remove(name);
+        let importers: Vec<String> = self
+            .sheets
+            .iter()
+            .filter(|(_, s)| s.imports.iter().any(|i| i == name))
+            .map(|(n, _)| n.clone())
+            .collect();
+        for n in &importers {
+            self.sheets.remove(n);
+        }
+        importers
+    }
+
+    /// The resources sheet `name` imports are used by `doc_id` too: sent
+    /// again, they reach it.
+    fn use_imports(&mut self, doc_id: usize, imports: &[String]) {
+        for i in imports {
+            self.users.entry(i.clone()).or_default().insert(doc_id);
+        }
+    }
+}
+
+impl SharedStylesheets for Provider {
+    /// A `cid:` stylesheet, parsed the first time a document of the
+    /// session links it and shared after that, until it is sent again or
+    /// deleted. One that imports a resource not sent yet is not shared:
+    /// each document parses it, and gets the import when it arrives.
+    fn contents(
+        &self,
+        doc_id: usize,
+        url: &Url,
+        bytes: &Bytes,
+    ) -> Option<ServoArc<StylesheetContents>> {
+        if url.scheme() != "cid" {
+            return None;
+        }
+        let name = url.path();
+        let generation = {
+            let mut inner = self.0.inner.lock().unwrap();
+            let r = inner.resources.get(name)?;
+            // Not the resource as it is now (a delivery that crossed a
+            // sending): parsed as delivered.
+            if r.bytes.as_ptr() != bytes.as_ptr() || r.bytes.len() != bytes.len() {
+                return None;
+            }
+            let generation = r.generation;
+            if let Some(sheet) = inner.sheets.get(name)
+                && sheet.generation == generation
+            {
+                let (contents, imports) = (sheet.contents.clone(), sheet.imports.clone());
+                inner.use_imports(doc_id, &imports);
+                return Some(contents);
+            }
+            generation
+        };
+        // Parsed outside the lock, which each import takes.
+        let imports = RefCell::new(Vec::new());
+        let import = |u: &Url| {
+            if u.scheme() != "cid" {
+                return None;
+            }
+            let inner = self.0.inner.lock().unwrap();
+            let r = inner.resources.get(u.path())?;
+            imports
+                .borrow_mut()
+                .push((u.path().to_string(), r.generation));
+            Some(r.bytes.clone())
+        };
+        let contents = parse_shared_stylesheet(bytes, url, &import)?;
+        let imports = imports.into_inner();
+        let mut inner = self.0.inner.lock().unwrap();
+        inner.sheets_parsed += 1;
+        let current = |n: &str, g: u64| inner.resources.get(n).is_some_and(|r| r.generation == g);
+        // Anything sent again while it was parsed: used, not kept.
+        if current(name, generation) && imports.iter().all(|(n, g)| current(n, *g)) {
+            let imports: Vec<String> = imports.into_iter().map(|(n, _)| n).collect();
+            inner.use_imports(doc_id, &imports);
+            inner.sheets.insert(
+                name.to_string(),
+                Sheet {
+                    generation,
+                    contents: contents.clone(),
+                    imports,
+                },
+            );
+        }
+        Some(contents)
     }
 }
 

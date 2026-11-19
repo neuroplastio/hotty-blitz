@@ -757,6 +757,7 @@ impl Surface {
         let (w, h) = (cols as u32 * m.cell_w, rows as u32 * m.cell_h);
         let dark = config.theme.dark;
         let nav = Arc::new(NavQueue::default());
+        let provider = Arc::new(net::Provider(store.clone()));
         let build = |base: &str| {
             HtmlDocument::from_html(
                 html,
@@ -769,7 +770,9 @@ impl Surface {
                         host_css.to_string(),
                         crate::style::scroll_css(scroll_axes).to_string(),
                     ],
-                    net_provider: Some(Arc::new(net::Provider(store.clone()))),
+                    net_provider: Some(provider.clone()),
+                    // A `cid:` stylesheet is parsed once for the session.
+                    shared_stylesheets: Some(provider.clone()),
                     navigation_provider: Some(nav.clone()),
                     html_parser_provider: Some(Arc::new(HtmlProvider)),
                     font_ctx: Some(font_ctx.clone()),
