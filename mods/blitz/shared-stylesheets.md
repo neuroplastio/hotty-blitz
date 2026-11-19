@@ -8,11 +8,12 @@ upstream-fit: maybe
 `SharedStylesheets` the embedder implements, and
 `parse_shared_stylesheet`. When a linked sheet's bytes arrive, the
 document asks for its parsed contents first, naming the `<link>`, and if
-it gets them wraps them in a stylesheet of its own, with its own lock and
-`media`, rather than parsing. The embedder is not to give a document the
-same contents for two links: Stylo tells sheets' media results apart by
-their contents, and the second link's `media` changing would go unseen. Shared contents are parsed on a read-only lock, as Stylo's
-user agent sheets are, so that any document's guard reads them. Their
+it gets them wraps them in a stylesheet of its own, with its own lock
+and `media`, rather than parsing. The embedder is not to give a document
+the same contents for two links: Stylo tells sheets' media results apart
+by their contents, and the second link's `media` changing would go
+unseen. Shared contents are parsed on a read-only lock, as Stylo's user
+agent sheets are, so that any document's guard reads them. Their
 `@import`s are resolved while they are parsed; one that cannot be is a
 sheet each document parses for itself, since a pending import is written
 in later through the sheet's lock. A shared sheet's imports get their

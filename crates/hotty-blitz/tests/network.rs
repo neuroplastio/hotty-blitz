@@ -829,7 +829,8 @@ fn a_use_of_another_svg_is_not_an_image() {
 }
 
 /// A sprite whose `#s` is a green square.
-const SPRITE: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg'><symbol id='s' viewBox='0 0 20 20'>\
+const SPRITE: &[u8] =
+    b"<svg xmlns='http://www.w3.org/2000/svg'><symbol id='s' viewBox='0 0 20 20'>\
 <rect width='20' height='20' fill='#0f0'/></symbol></svg>";
 
 #[test]
