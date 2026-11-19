@@ -425,18 +425,27 @@ impl Store {
 impl Inner {
     /// Drops the parsed sheet of resource `name` and of every sheet that
     /// imports it, which are parsed again when next linked. Returns the
-    /// names of the sheets that import it.
+    /// names of the sheets that import it, or were parsed without it.
     fn forget_sheets(&mut self, name: &str) -> Vec<String> {
         self.sheets.remove(name);
         self.incomplete.remove(name);
+        // Those that import it, and those parsed while it was missing, by
+        // their documents: linked again, each gets a parse with it.
         let importers: Vec<String> = self
             .sheets
             .iter()
             .filter(|(_, s)| s.imports.iter().any(|i| i == name))
             .map(|(n, _)| n.clone())
+            .chain(
+                self.incomplete
+                    .iter()
+                    .filter(|(_, (_, missing))| missing.iter().any(|m| m == name))
+                    .map(|(n, _)| n.clone()),
+            )
             .collect();
         for n in &importers {
             self.sheets.remove(n);
+            self.incomplete.remove(n);
         }
         importers
     }

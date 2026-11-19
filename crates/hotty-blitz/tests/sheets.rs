@@ -426,3 +426,18 @@ fn a_sheet_no_document_holds_is_not_kept() {
     assert_eq!(pixel(&h, "x", 99, 39), RED);
     assert_eq!(h.sheets_parsed(), 2);
 }
+
+#[test]
+fn an_import_sent_after_a_documents_own_parse_is_drawn_when_sent_again() {
+    // The import missing when the document parsed the sheet itself: it
+    // arrives, and is then sent again (p-846's review item 5).
+    let mut h = host();
+    res(&mut h, "a", "@import url(cid:b); p.t{color:#00f}");
+    doc(&mut h, "x", &linking("cid:a", ""));
+    res(&mut h, "b", "html{background:#f00}");
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 99, 39), RED, "the late import arrives");
+    res(&mut h, "b", "html{background:#00f}");
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 99, 39), BLUE, "the import sent again");
+}
