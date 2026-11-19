@@ -1,7 +1,8 @@
-From 9edb95f244fcc11a54425988c02e1070a9ccdfeb Mon Sep 17 00:00:00 2001
+From 985245411e528a3cdbf833828ba92fce75323e2c Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 19 Nov 2026 16:35:25 +0100
-Subject: [PATCH] blitz-dom: a <use> draws an element of another SVG resource
+Subject: [PATCH 104/104] blitz-dom: a <use> draws an element of another SVG
+ resource
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

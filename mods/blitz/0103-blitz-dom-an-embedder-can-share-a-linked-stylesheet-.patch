@@ -1,14 +1,18 @@
-From 8959dbf638797d75d5250844991efea8199416ab Mon Sep 17 00:00:00 2001
+From 1132def142f9496d0d1c71ad830445412965d9e3 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 19 Nov 2026 16:16:37 +0100
-Subject: [PATCH] blitz-dom: an embedder can share a linked stylesheet's parsed
- contents
+Subject: [PATCH 103/104] blitz-dom: an embedder can share a linked
+ stylesheet's parsed contents
 
 A document parses every stylesheet it links, even when the embedder
 delivers the same bytes to many documents. `DocumentConfig` now takes
 `SharedStylesheets`: when a linked sheet's bytes arrive, the document
-asks it for the sheet's parsed contents, and wraps them in a stylesheet
-of its own (its own lock, its own `media`) instead of parsing.
+asks it for the sheet's parsed contents, naming the `<link>` they are
+for, and wraps them in a stylesheet of its own (its own lock, its own
+`media`) instead of parsing. The embedder is not to give one document
+the same contents for two links: Stylo tells sheets' media results
+apart by their contents, so the second link's `media` changing would go
+unseen.
 
 `parse_shared_stylesheet` parses contents any document can read: on a
 read-only lock, as Stylo's user agent sheets are, with `@import`s
@@ -21,8 +25,8 @@ fonts fetched by the document, as its own imports do.
  packages/blitz-dom/src/document.rs |   4 +
  packages/blitz-dom/src/iframe.rs   |   1 +
  packages/blitz-dom/src/mutator.rs  |   1 +
- packages/blitz-dom/src/net.rs      | 172 ++++++++++++++++++++++++++++-
- 5 files changed, 180 insertions(+), 2 deletions(-)
+ packages/blitz-dom/src/net.rs      | 178 ++++++++++++++++++++++++++++-
+ 5 files changed, 186 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/config.rs b/packages/blitz-dom/src/config.rs
 index f08bf6074..f13a217b7 100644
@@ -100,7 +104,7 @@ index cb68955c4..8e48aabb9 100644
          );
  
 diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
-index 6bf2c68df..cd25cd8c0 100644
+index 6bf2c68df..b570edf94 100644
 --- a/packages/blitz-dom/src/net.rs
 +++ b/packages/blitz-dom/src/net.rs
 @@ -14,8 +14,8 @@ use style::{
@@ -114,7 +118,7 @@ index 6bf2c68df..cd25cd8c0 100644
          import_rule::{ImportLayer, ImportSheet, ImportSupportsCondition},
      },
      values::{CssUrl, SourceLocation},
-@@ -148,6 +148,139 @@ pub struct StylesheetHandler {
+@@ -148,6 +148,144 @@ pub struct StylesheetHandler {
      pub guard: SharedRwLock,
      pub net_provider: Arc<dyn NetProvider>,
      pub abort_signal: Option<AbortSignal>,
@@ -127,13 +131,18 @@ index 6bf2c68df..cd25cd8c0 100644
 +/// arrive. Contents it gets here are the ones [`parse_shared_stylesheet`]
 +/// made: on a read-only lock, so that any document can read them, and with
 +/// their `@import`s already in. The document wraps them in a stylesheet of
-+/// its own, with its own `media`, and parses nothing.
++/// its own, with its own `media`, and parses nothing. A document is not to
++/// get the same contents for two of its links: Stylo tells a sheet's media
++/// results apart by its contents, so the second link's `media` coming to
++/// match or not would go unseen.
 +pub trait SharedStylesheets: Send + Sync + 'static {
 +    /// The parsed contents of the stylesheet at `url`, delivered as `bytes`
-+    /// to document `doc_id`; `None` and the document parses `bytes` itself.
++    /// to node `link` (a `<link>`) of document `doc_id`; `None` and the
++    /// document parses `bytes` itself.
 +    fn contents(
 +        &self,
 +        doc_id: usize,
++        link: Option<NodeId>,
 +        url: &Url,
 +        bytes: &Bytes,
 +    ) -> Option<ServoArc<StylesheetContents>>;
@@ -254,12 +263,13 @@ index 6bf2c68df..cd25cd8c0 100644
  }
  
  impl NetHandler for ResourceHandler<StylesheetHandler> {
-@@ -156,6 +289,41 @@ impl NetHandler for ResourceHandler<StylesheetHandler> {
+@@ -156,6 +294,42 @@ impl NetHandler for ResourceHandler<StylesheetHandler> {
      }
  
      fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
 +        if let Some(shared) = &self.data.shared_stylesheets
-+            && let Some(contents) = shared.contents(self.doc_id, &self.data.source_url, &bytes)
++            && let Some(contents) =
++                shared.contents(self.doc_id, self.node_id, &self.data.source_url, &bytes)
 +        {
 +            let guard = &self.data.guard;
 +            let sheet = Stylesheet {

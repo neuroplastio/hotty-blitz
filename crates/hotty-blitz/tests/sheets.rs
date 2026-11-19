@@ -276,3 +276,153 @@ fn documents_with_the_same_sheets_keep_their_own_media_query_results() {
     assert_eq!(pixel(&h, "z", 99, 39), RED);
     assert_eq!(pixel(&h, "x", 299, 39), BLUE);
 }
+
+#[test]
+fn a_sheet_sent_again_at_the_end_of_an_import_chain_is_drawn() {
+    let mut h = host();
+    res(&mut h, "c", "html{background:#f00}");
+    res(&mut h, "b", "@import url(cid:c);");
+    res(&mut h, "a", "@import url(cid:b); p.t{color:#00f}");
+    doc(&mut h, "x", &linking("cid:a", ""));
+    doc(&mut h, "y", &linking("cid:a", ""));
+    assert_eq!(pixel(&h, "x", 99, 39), RED);
+    assert_eq!(h.sheets_parsed(), 1);
+    res(&mut h, "c", "html{background:#00f}");
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 99, 39), BLUE);
+    assert_eq!(pixel(&h, "y", 99, 39), BLUE);
+    assert_eq!(h.sheets_parsed(), 2);
+}
+
+#[test]
+fn documents_sharing_a_sheet_follow_the_theme() {
+    let mut h = host();
+    res(
+        &mut h,
+        "theme",
+        "html{background:#f00} @media (prefers-color-scheme: dark){html{background:#00f}}",
+    );
+    let mut config = h.config().clone();
+    config.theme.dark = true;
+    h.set_config(config.clone());
+    doc(&mut h, "x", &linking("cid:theme", ""));
+    doc(&mut h, "y", &linking("cid:theme", ""));
+    assert_eq!(
+        (pixel(&h, "x", 99, 39), pixel(&h, "y", 99, 39)),
+        (BLUE, BLUE)
+    );
+    config.theme.dark = false;
+    h.set_config(config.clone());
+    draw(&mut h);
+    assert_eq!((pixel(&h, "x", 99, 39), pixel(&h, "y", 99, 39)), (RED, RED));
+    // One made under the new theme shares with them.
+    doc(&mut h, "z", &linking("cid:theme", ""));
+    assert_eq!(pixel(&h, "z", 99, 39), RED);
+    config.theme.dark = true;
+    h.set_config(config);
+    draw(&mut h);
+    for s in ["x", "y", "z"] {
+        assert_eq!(pixel(&h, s, 99, 39), BLUE, "{s}");
+    }
+    assert_eq!(h.sheets_parsed(), 1);
+}
+
+#[test]
+fn keyframes_of_a_shared_sheet_play_in_each_document() {
+    let mut h = host();
+    res(
+        &mut h,
+        "theme",
+        "@keyframes k{from{background:#f00}to{background:#f00}} \
+         html{background:#008000;animation:k 1000s infinite}",
+    );
+    doc(&mut h, "x", &linking("cid:theme", ""));
+    doc(&mut h, "y", &linking("cid:theme", ""));
+    assert_eq!(pixel(&h, "x", 99, 39), RED);
+    assert_eq!(pixel(&h, "y", 99, 39), RED);
+    assert_eq!(h.sheets_parsed(), 1);
+}
+
+#[test]
+fn a_font_of_an_imported_shared_sheet_loads_in_each_document() {
+    let mut h = host();
+    let font = include_bytes!("../fonts/IBMPlexSans-Regular.woff2");
+    h.handle(&Message::new(
+        [("a", "res"), ("id", "plex"), ("type", "font/woff2")]
+            .into_iter()
+            .collect(),
+        font.to_vec(),
+    ));
+    res(
+        &mut h,
+        "fonts",
+        "@font-face{font-family:plex;src:url(cid:plex)}",
+    );
+    res(
+        &mut h,
+        "theme",
+        "@import url(cid:fonts); p{font:40px/1 plex, monospace;color:#fff;margin:0}",
+    );
+    let page = |s: &str| {
+        format!(
+            "<body style='margin:0;background:#000'><p>Hg</p>\
+             <link rel=stylesheet href='cid:{s}'></body>"
+        )
+    };
+    doc(&mut h, "x", &page("theme"));
+    doc(&mut h, "y", &page("theme"));
+    assert_eq!(h.sheets_parsed(), 1);
+    // Without the font, as a reference.
+    res(
+        &mut h,
+        "bare",
+        "p{font:40px/1 plex, monospace;color:#fff;margin:0}",
+    );
+    doc(&mut h, "z", &page("bare"));
+    let (x, y, z) = (
+        h.frame("x").unwrap().rgba.clone(),
+        h.frame("y").unwrap().rgba.clone(),
+        h.frame("z").unwrap().rgba.clone(),
+    );
+    assert!(x == y, "the second document draws the font as the first");
+    assert!(x != z, "and the font is drawn");
+}
+
+#[test]
+fn two_links_to_one_sheet_keep_their_own_media() {
+    // Stylo tells a sheet's media results apart by its contents: a second
+    // link to a sheet the document holds gets a parse of its own.
+    let mut h = host();
+    res(&mut h, "a", "html{background:#f00}");
+    res(&mut h, "b", "html{background:#00f}");
+    let html = "<body style='margin:0'><p class=t>text</p>\
+                <link rel=stylesheet href='cid:a'><link rel=stylesheet href='cid:b'>\
+                <link rel=stylesheet href='cid:a' media='(min-width: 200px)'></body>";
+    doc(&mut h, "x", html);
+    assert_eq!(pixel(&h, "x", 99, 39), BLUE, "the second a does not apply");
+    place(&mut h, "x", "30");
+    assert_eq!(pixel(&h, "x", 299, 39), RED, "now it does, after b");
+    place(&mut h, "x", "10");
+    assert_eq!(pixel(&h, "x", 99, 39), BLUE);
+    assert_eq!(
+        h.sheets_parsed(),
+        2,
+        "a and b; the second a is the document's"
+    );
+}
+
+#[test]
+fn a_sheet_no_document_holds_is_not_kept() {
+    let mut h = host();
+    res(&mut h, "theme", "html{background:#f00}");
+    doc(&mut h, "x", &linking("cid:theme", ""));
+    // Replaced: the new document is built before the old one goes.
+    doc(&mut h, "x", &linking("cid:theme", " data-n=2"));
+    assert_eq!(h.sheets_parsed(), 1);
+    // Gone: the parse goes with it, and the next document parses again.
+    cmd(&mut h, &[("a", "doc"), ("s", "x")], "<p>nothing</p>");
+    draw(&mut h);
+    doc(&mut h, "x", &linking("cid:theme", ""));
+    assert_eq!(pixel(&h, "x", 99, 39), RED);
+    assert_eq!(h.sheets_parsed(), 2);
+}

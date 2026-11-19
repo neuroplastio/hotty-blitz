@@ -13,6 +13,7 @@ use crate::policy::{Directive, Policy};
 use base64::Engine as _;
 use blitz_dom::net::{SharedStylesheets, parse_shared_stylesheet};
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::node_id::NodeId;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,8 +48,18 @@ struct Inner {
     resources: HashMap<String, Resource>,
     generation: u64,
     /// Stylesheets among `resources`, parsed, by resource name. An entry
-    /// lives as long as the sending it was parsed from.
+    /// lives while a document holds it, and no longer than the sending it
+    /// was parsed from.
     sheets: HashMap<String, Sheet>,
+    /// The sheet each `<link>` of each document was given, by the contents'
+    /// address: a second link to one the document holds gets a parse of its
+    /// own, since Stylo tells sheets' media results apart by their contents
+    /// (blitz_dom's `SharedStylesheets`).
+    given: HashMap<usize, HashMap<Option<NodeId>, usize>>,
+    /// Sheets that import a resource not sent yet, by name: the sending
+    /// that was parsed, and the imports that were missing. Not parsed to be
+    /// shared again until one of those arrives.
+    incomplete: HashMap<String, (u64, Vec<String>)>,
     /// How many times a stylesheet was parsed to be shared.
     sheets_parsed: usize,
     /// Requests for resources that have not arrived yet.
@@ -155,6 +166,7 @@ impl Store {
                 })
                 .collect();
             inner.animations.remove(&format!("cid:{name}"));
+            inner.drop_unused_sheets();
             (waiting, users)
         };
         // Deliver outside the lock: a stylesheet handler may fetch @imports.
@@ -191,6 +203,7 @@ impl Store {
         inner.policies.remove(&doc_id);
         inner.parked.retain(|(d, _, _)| *d != doc_id);
         inner.delivered.remove(&doc_id);
+        inner.given.remove(&doc_id);
     }
 
     /// Document `doc_id` loads `bytes` from `url`: if they are an animated
@@ -415,6 +428,7 @@ impl Inner {
     /// names of the sheets that import it.
     fn forget_sheets(&mut self, name: &str) -> Vec<String> {
         self.sheets.remove(name);
+        self.incomplete.remove(name);
         let importers: Vec<String> = self
             .sheets
             .iter()
@@ -425,6 +439,32 @@ impl Inner {
             self.sheets.remove(n);
         }
         importers
+    }
+
+    /// Drops the parsed sheets that no document holds any more: one parsed
+    /// for a document that is gone costs memory the resource quota does not
+    /// count. (A document replaced is dropped after its successor is built,
+    /// so a tab switch keeps them.)
+    fn drop_unused_sheets(&mut self) {
+        self.sheets.retain(|_, s| !s.contents.is_unique());
+    }
+
+    /// Node `link` of document `doc_id` is given `contents`: whether it may
+    /// be, no other link of the document holding them. (A link removed is
+    /// still counted: a later one parses its own, which is only slower.)
+    fn give(
+        &mut self,
+        doc_id: usize,
+        link: Option<NodeId>,
+        contents: &ServoArc<StylesheetContents>,
+    ) -> bool {
+        let address = &**contents as *const StylesheetContents as usize;
+        let given = self.given.entry(doc_id).or_default();
+        if given.iter().any(|(l, a)| *l != link && *a == address) {
+            return false;
+        }
+        given.insert(link, address);
+        true
     }
 
     /// The resources sheet `name` imports are used by `doc_id` too: sent
@@ -439,11 +479,14 @@ impl Inner {
 impl SharedStylesheets for Provider {
     /// A `cid:` stylesheet, parsed the first time a document of the
     /// session links it and shared after that, until it is sent again or
-    /// deleted. One that imports a resource not sent yet is not shared:
-    /// each document parses it, and gets the import when it arrives.
+    /// deleted, or no document holds it. One that imports a resource not
+    /// sent yet is not shared: each document parses it, and gets the import
+    /// when it arrives. Nor is one a document holds already, for another
+    /// `<link>`.
     fn contents(
         &self,
         doc_id: usize,
+        link: Option<NodeId>,
         url: &Url,
         bytes: &Bytes,
     ) -> Option<ServoArc<StylesheetContents>> {
@@ -460,29 +503,72 @@ impl SharedStylesheets for Provider {
                 return None;
             }
             let generation = r.generation;
+            inner.drop_unused_sheets();
             if let Some(sheet) = inner.sheets.get(name)
                 && sheet.generation == generation
             {
                 let (contents, imports) = (sheet.contents.clone(), sheet.imports.clone());
+                if !inner.give(doc_id, link, &contents) {
+                    return None;
+                }
                 inner.use_imports(doc_id, &imports);
                 return Some(contents);
+            }
+            // Its imports were missing, and still are: not parsed twice.
+            if let Some((g, missing)) = inner.incomplete.get(name)
+                && *g == generation
+                && missing.iter().all(|m| !inner.resources.contains_key(m))
+            {
+                return None;
             }
             generation
         };
         // Parsed outside the lock, which each import takes.
         let imports = RefCell::new(Vec::new());
+        let missing = RefCell::new(Vec::new());
         let import = |u: &Url| {
-            if u.scheme() != "cid" {
-                return None;
+            let found = (u.scheme() == "cid")
+                .then(|| {
+                    let inner = self.0.inner.lock().unwrap();
+                    let r = inner.resources.get(u.path())?;
+                    Some((r.generation, r.bytes.clone()))
+                })
+                .flatten();
+            match found {
+                Some((generation, bytes)) => {
+                    imports
+                        .borrow_mut()
+                        .push((u.path().to_string(), generation));
+                    Some(bytes)
+                }
+                None => {
+                    // Not a resource name, if it is not `cid:`: never sent.
+                    let m = if u.scheme() == "cid" {
+                        u.path()
+                    } else {
+                        u.as_str()
+                    };
+                    missing.borrow_mut().push(m.to_string());
+                    None
+                }
             }
-            let inner = self.0.inner.lock().unwrap();
-            let r = inner.resources.get(u.path())?;
-            imports
-                .borrow_mut()
-                .push((u.path().to_string(), r.generation));
-            Some(r.bytes.clone())
         };
-        let contents = parse_shared_stylesheet(bytes, url, &import)?;
+        let Some(contents) = parse_shared_stylesheet(bytes, url, &import) else {
+            let missing = missing.into_inner();
+            if !missing.is_empty() {
+                let mut inner = self.0.inner.lock().unwrap();
+                if inner
+                    .resources
+                    .get(name)
+                    .is_some_and(|r| r.generation == generation)
+                {
+                    inner
+                        .incomplete
+                        .insert(name.to_string(), (generation, missing));
+                }
+            }
+            return None;
+        };
         let imports = imports.into_inner();
         let mut inner = self.0.inner.lock().unwrap();
         inner.sheets_parsed += 1;
@@ -500,6 +586,7 @@ impl SharedStylesheets for Provider {
                 },
             );
         }
+        inner.give(doc_id, link, &contents);
         Some(contents)
     }
 }

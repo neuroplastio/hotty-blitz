@@ -1544,9 +1544,12 @@ impl Host {
                 if self.gesture.as_ref().is_some_and(|g| g.surface == name) {
                     self.gesture = None;
                 }
+                // The old document is dropped once the new one is built, so
+                // that the sheets they share stay parsed (net.rs).
+                let mut previous = self.surfaces.remove(&name);
                 let (cols, rows, auto, placed, backdrop, presses, fit, hover, created, window) =
-                    match self.surfaces.remove(&name) {
-                        Some(mut old) => {
+                    match previous.as_mut() {
+                        Some(old) => {
                             self.store.forget_document(old.doc_id());
                             // A new document ends a drag under way (SPEC §9.1),
                             // unless it detaches the surface (§5.5).
@@ -1563,7 +1566,7 @@ impl Host {
                                 old.backdrop,
                                 old.presses,
                                 old.fit,
-                                old.hover,
+                                old.hover.take(),
                                 old.created,
                                 old.window,
                             )
@@ -1616,6 +1619,7 @@ impl Host {
                     s.detach();
                 }
                 self.surfaces.insert(name, s);
+                drop(previous);
                 Ok((Vec::new(), None))
             }
             "place" => {
