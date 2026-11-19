@@ -1,0 +1,182 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 19 Nov 2026 16:31:53 +0100
+Subject: [PATCH] Share author cascade data between documents with the same
+ sheets
+
+Each Stylist built its author cascade data (selector maps, invalidation
+maps, @property, @keyframes) for itself, while the user agent origin's
+is shared through UA_CASCADE_DATA_CACHE. A document whose author sheets
+are the same contents as another's, with the same media query results,
+now takes that document's data from a global cache keyed as the user
+agent cache is, and by quirks mode.
+
+A document's own data is rebuilt in place when no other holds it, so
+incremental rebuilds stay incremental; one shared with others is
+rebuilt from a copy. The cache's key holds the sheets' contents, so a
+freed sheet's address is never matched by a new one, and an entry no
+document uses is dropped at the next lookup.
+---
+ style/stylist.rs | 118 +++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 115 insertions(+), 3 deletions(-)
+
+diff --git a/style/stylist.rs b/style/stylist.rs
+index 94952df77..120def73f 100644
+--- a/style/stylist.rs
++++ b/style/stylist.rs
+@@ -438,6 +438,40 @@ impl CascadeDataCacheEntry for UserAgentCascadeData {
+ 
+ type UserAgentCascadeDataCache = CascadeDataCache<UserAgentCascadeData>;
+ 
++/// A cache of author cascade data, shared by every document whose author
++/// sheets that apply are the same sheets, with the same media query
++/// results, in the same quirks mode.
++///
++/// Sheets are the same when their contents are the same `Arc`, which
++/// happens when an embedder shares the parsed contents of a sheet between
++/// documents. A document's own `<style>` has contents of its own, so its
++/// entry is its own. An entry holds its sheets' contents, so their
++/// addresses are not reused while it lives, and lives while a document
++/// uses it.
++static AUTHOR_CASCADE_DATA_CACHE: LazyLock<Mutex<AuthorCascadeDataCache>> =
++    LazyLock::new(|| Mutex::new(AuthorCascadeDataCache::default()));
++
++#[derive(Default)]
++struct AuthorCascadeDataCache {
++    entries: FxHashMap<(QuirksMode, CascadeDataCacheKey), Arc<CascadeData>>,
++}
++
++impl AuthorCascadeDataCache {
++    /// Returns the entries only the cache holds, to be dropped outside the
++    /// lock, as `CascadeDataCache::take_unused` does.
++    fn take_unused(&mut self) -> SmallVec<[Arc<CascadeData>; 3]> {
++        let mut unused = SmallVec::new();
++        self.entries.retain(|_, value| {
++            if !value.is_unique() {
++                return true;
++            }
++            unused.push(value.clone());
++            false
++        });
++        unused
++    }
++}
++
+ /// The declarations for the precomputed pseudo-elements.
+ ///
+ /// We don't need the rest of the fields of `ApplicableDeclarationBlock`: These are never sorted
+@@ -472,7 +506,8 @@ pub struct DocumentCascadeData {
+     #[ignore_malloc_size_of = "Arc, owned by UserAgentCascadeDataCache or empty"]
+     user_agent: Arc<UserAgentCascadeData>,
+     user: CascadeData,
+-    author: CascadeData,
++    #[ignore_malloc_size_of = "Arc, shared through AUTHOR_CASCADE_DATA_CACHE"]
++    author: Arc<CascadeData>,
+     per_origin: PerOrigin<()>,
+ }
+ 
+@@ -481,7 +516,7 @@ impl Default for DocumentCascadeData {
+         Self {
+             user_agent: EMPTY_UA_CASCADE_DATA.clone(),
+             user: Default::default(),
+-            author: Default::default(),
++            author: Arc::new(CascadeData::new()),
+             per_origin: Default::default(),
+         }
+     }
+@@ -584,7 +619,7 @@ impl DocumentCascadeData {
+         )?;
+ 
+         // And now the author sheets.
+-        self.author.rebuild(
++        self.rebuild_author(
+             device,
+             quirks_mode,
+             flusher.flush_origin(Origin::Author),
+@@ -595,6 +630,83 @@ impl DocumentCascadeData {
+         Ok(())
+     }
+ 
++    /// Rebuilds the author cascade data, or takes it from another document
++    /// with the same author sheets (`AUTHOR_CASCADE_DATA_CACHE`).
++    fn rebuild_author<S>(
++        &mut self,
++        device: &Device,
++        quirks_mode: QuirksMode,
++        collection: SheetCollectionFlusher<S>,
++        guard: &SharedRwLockReadGuard,
++        difference: &mut CascadeDataDifference,
++    ) -> Result<(), AllocErr>
++    where
++        S: StylesheetInDocument + PartialEq + 'static,
++    {
++        if !collection.dirty() {
++            return Ok(());
++        }
++        let mut key = CascadeDataCacheKey::default();
++        let mut custom_media_map = CustomMediaMap::default();
++        for sheet in collection.sheets() {
++            CascadeData::collect_applicable_media_query_results_into(
++                device,
++                sheet,
++                guard,
++                &mut key.media_query_results,
++                &mut key.contents,
++                &mut custom_media_map,
++            )
++        }
++        let key = (quirks_mode, key);
++
++        let mut cache = AUTHOR_CASCADE_DATA_CACHE.lock().unwrap();
++        let unused = cache.take_unused();
++        // Another document's: taken as it is. Our own (a CSSOM change in
++        // place, or media made dirty without a change) is built again.
++        if let Some(hit) = cache.entries.get(&key) {
++            if !Arc::ptr_eq(hit, &self.author) {
++                let hit = hit.clone();
++                drop(cache);
++                drop(unused);
++                // Marks the sheets committed, as the user agent cache does.
++                collection.each(|_, _, _| true);
++                difference.update(&self.author, &hit);
++                self.author = hit;
++                return Ok(());
++            }
++        }
++        // Ours stops being an entry. Held by no other document then, it is
++        // rebuilt in place, incrementally where it can be; otherwise from a
++        // copy, leaving theirs as it is.
++        cache
++            .entries
++            .retain(|_, value| !Arc::ptr_eq(value, &self.author));
++        drop(cache);
++        drop(unused);
++        match Arc::get_mut(&mut self.author) {
++            Some(author) => {
++                author.rebuild(device, quirks_mode, collection, guard, difference)?;
++            },
++            None => {
++                self.author = <CascadeData as CascadeDataCacheEntry>::rebuild(
++                    device,
++                    quirks_mode,
++                    collection,
++                    guard,
++                    &self.author,
++                    difference,
++                )?;
++            },
++        }
++        AUTHOR_CASCADE_DATA_CACHE
++            .lock()
++            .unwrap()
++            .entries
++            .insert(key, self.author.clone());
++        Ok(())
++    }
++
+     /// Measures heap usage.
+     #[cfg(feature = "gecko")]
+     pub fn add_size_of(&self, ops: &mut MallocSizeOfOps, sizes: &mut ServoStyleSetSizes) {
+-- 
+2.56.0
+
