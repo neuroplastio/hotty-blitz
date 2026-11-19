@@ -2,7 +2,8 @@
 //! `<use href="cid:sprite#id">` draws element `id` of SVG resource
 //! `sprite`, as `<use href="#id">` draws one of the document's: in the
 //! context of the `<use>`, `currentColor` included. Sent after the
-//! document or sent again, it is drawn again (mods/blitz 0104).
+//! document or sent again, it is drawn again (mods/blitz 0104). Only a
+//! `cid:` one is: `tests/network.rs` has an `http:` one fetch nothing.
 
 use hotty::Message;
 use hotty_blitz::{Config, Host, Metrics};
@@ -142,6 +143,72 @@ fn a_use_whose_href_changes_draws_the_new_element() {
         [("a", "delta"), ("s", "x")].into_iter().collect(),
         body,
     ));
+    draw(&mut h);
+    assert_eq!(pixel(&h, 10, 10), BLUE);
+}
+
+#[test]
+fn a_use_draws_the_sprites_element_whatever_ids_the_svg_has() {
+    // The copies' ids are under a prefix no id of the <svg> starts with,
+    // even one that looks like the copies'.
+    let mut h = host();
+    res(&mut h, "sprite", &sprite("currentColor"));
+    let decoy = |id: &str| {
+        format!(
+            "<symbol id='{id}' viewBox='0 0 20 20'><rect width='20' height='20' fill='#ff0'/></symbol>"
+        )
+    };
+    show(
+        &mut h,
+        &format!(
+            "<body style='margin:0;background:#000'>\
+             <svg width=20 height=20 style='display:block;color:red'>{}{}{}\
+             <use href='cid:sprite#square' width=20 height=20/></svg></body>",
+            decoy("blitz-use-0-square"),
+            decoy("blitz-use1-0-square"),
+            decoy("blitz-use0-square"),
+        ),
+    );
+    assert_eq!(pixel(&h, 10, 10), RED);
+}
+
+#[test]
+fn a_use_of_an_element_that_refers_to_itself_draws_the_others() {
+    let mut h = host();
+    res(
+        &mut h,
+        "sprite",
+        "<svg xmlns='http://www.w3.org/2000/svg'>\
+         <symbol id='a' viewBox='0 0 20 20'><use href='#b'/></symbol>\
+         <symbol id='b' viewBox='0 0 20 20'><use href='#a'/></symbol>\
+         <g id='c'><rect width='20' height='20' fill='currentColor'/><use href='#c'/></g>\
+         <symbol id='ok' viewBox='0 0 20 20'><rect width='20' height='20' fill='currentColor'/></symbol>\
+         </svg>",
+    );
+    show(
+        &mut h,
+        &uses(&[
+            ("cid:sprite#a", "red"),
+            ("cid:sprite#c", "red"),
+            ("cid:sprite#ok", "lime"),
+        ]),
+    );
+    assert_eq!(pixel(&h, 10, 10), BLACK, "a cycle draws nothing");
+    assert_eq!(pixel(&h, 10, 50), LIME);
+}
+
+#[test]
+fn a_deleted_sprite_is_not_drawn_in_a_new_document() {
+    let mut h = host();
+    res(&mut h, "sprite", &sprite("currentColor"));
+    let html = uses(&[("cid:sprite#square", "red")]);
+    show(&mut h, &html);
+    assert_eq!(pixel(&h, 10, 10), RED);
+    cmd(&mut h, &[("a", "del"), ("id", "sprite")], "");
+    show(&mut h, &html);
+    assert_eq!(pixel(&h, 10, 10), BLACK);
+    // Sent again, it is drawn again.
+    res(&mut h, "sprite", &sprite("#00f"));
     draw(&mut h);
     assert_eq!(pixel(&h, 10, 10), BLUE);
 }

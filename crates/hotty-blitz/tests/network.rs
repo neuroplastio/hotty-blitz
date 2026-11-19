@@ -796,3 +796,34 @@ fn an_inline_svgs_images_are_images() {
     assert_eq!(pixel(&h, "a", 10, 10), RED);
     assert_eq!(srv.paths(), vec!["/red.png"]);
 }
+
+#[test]
+fn a_use_of_another_svg_is_not_an_image() {
+    // SPEC §7.2 has no directive for `<use>`: img-src does not let one
+    // fetch a sprite (mods/blitz 0104), though it lets an `<image>`.
+    let srv = Server::start();
+    srv.route("/red.png", Reply::Ok("image/png", png(20, 20, RED)));
+    srv.route(
+        "/sprite.svg",
+        Reply::Ok(
+            "image/svg+xml",
+            b"<svg xmlns='http://www.w3.org/2000/svg'><symbol id='s' viewBox='0 0 20 20'>\
+              <rect width='20' height='20' fill='#0f0'/></symbol></svg>"
+                .to_vec(),
+        ),
+    );
+    let o = &srv.origin;
+    let p = format!("img-src {o}");
+    let body = format!(
+        "<svg width=20 height=20 style='display:block'><use href='{o}/sprite.svg#s' width=20 height=20/></svg>\
+         <svg width=20 height=20 style='display:block'><image href='{o}/red.png' width=20 height=20/></svg>"
+    );
+    let (mut h, rx) = waking_host(&p);
+    show(&mut h, "a", &meta(&p), &body);
+    render(&mut h);
+    arrive(&mut h, &rx, 1);
+    assert_eq!(pixel(&h, "a", 10, 30), RED, "the image is fetched");
+    assert_eq!(pixel(&h, "a", 10, 10), BLACK);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(srv.paths(), vec!["/red.png"]);
+}
