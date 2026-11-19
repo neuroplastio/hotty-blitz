@@ -1,0 +1,114 @@
+From 40192b8334abf2ba46ecf861dd87e12a270e7959 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 19 Nov 2026 21:40:04 +0100
+Subject: [PATCH] blitz-dom: an image fetched again is shown again
+
+`reload_resource_by_href` fetched again only the stylesheets linked from
+the href, and inline SVG images. An `<img>`, a `background-image` or a
+`mask-image` layer kept the image it had: the image cache answered for
+the URL, so an embedder whose resource changed (a resource sent again,
+a dev server's rebuild) had the old pixels, and an `<img>` the old size.
+
+The image at the href is now dropped from the cache and fetched again,
+with every `<img>` that shows it and every background and mask layer
+that names it waiting for it, as they do for a first load. An `<img>`
+is laid out again when it arrives. An image still on its way is left to
+arrive.
+---
+ packages/blitz-dom/src/document.rs | 65 +++++++++++++++++++++++++++++-
+ 1 file changed, 63 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 7a14e5893..f2bd4b620 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -4,9 +4,12 @@ use crate::layout::construct::ConstructionTask;
+ use crate::layout::damage::{ALL_DAMAGE, ONLY_RELAYOUT};
+ use crate::mutator::ViewportMut;
+ use crate::net::{
+-    Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler, StylesheetLoader,
++    ImageHandler, Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler,
++    StylesheetLoader,
++};
++use crate::node::{
++    ImageData, ImageResourceData, NodeFlags, RasterImageData, SpecialElementData, Status, TextBrush,
+ };
+-use crate::node::{ImageData, NodeFlags, RasterImageData, SpecialElementData, Status, TextBrush};
+ use crate::scrolling::ScrollAnimationState;
+ use crate::selection::TextSelection;
+ use crate::stylo::{BlitzNode, UserAgentStylesheet, init_stylo_prefs};
+@@ -1396,6 +1399,7 @@ impl BaseDocument {
+     pub fn reload_resource_by_href(&mut self, href_to_reload: &str) {
+         #[cfg(feature = "svg")]
+         self.reload_svg_image(href_to_reload);
++        self.reload_image(href_to_reload);
+         for &node_id in self.nodes_to_stylesheet.keys() {
+             let node = &self.nodes[node_id];
+             let Some(element) = node.element_data() else {
+@@ -1434,6 +1438,63 @@ impl BaseDocument {
+         }
+     }
+ 
++    /// The image at `href` changed where it is fetched from: every `<img>`,
++    /// `background-image` layer and `mask-image` layer that shows it gets it
++    /// again, and an `<img>` is laid out again at its new size. An image
++    /// still on its way is left to arrive.
++    fn reload_image(&mut self, href: &str) {
++        let Some(url) = self.resolve_url(href) else {
++            return;
++        };
++        let key = url.as_str();
++        if self.image_cache.remove(key).is_none() || self.pending_images.contains_key(key) {
++            return;
++        }
++        let mut waiting = Vec::new();
++        for (id, node) in self.nodes.iter() {
++            let Some(el) = node.element_data() else {
++                continue;
++            };
++            if el.name.local == local_name!("img")
++                && self
++                    .image_source(id)
++                    .and_then(|src| self.resolve_url(&src))
++                    .is_some_and(|src| src.as_str() == key)
++            {
++                waiting.push((id, ImageType::Image));
++            }
++            let layers = |images: &[Option<ImageResourceData>]| {
++                images
++                    .iter()
++                    .enumerate()
++                    .filter(|(_, l)| l.as_ref().is_some_and(|l| l.url.as_str() == key))
++                    .map(|(i, _)| i)
++                    .collect::<Vec<_>>()
++            };
++            for i in layers(&el.background_images) {
++                waiting.push((id, ImageType::Background(i)));
++            }
++            for i in layers(&el.mask_images) {
++                waiting.push((id, ImageType::Mask(i)));
++            }
++        }
++        if waiting.is_empty() {
++            return;
++        }
++        self.pending_images.insert(key.to_string(), waiting);
++        self.net_provider.fetch(
++            self.id(),
++            self.build_request(url, blitz_traits::net::Destination::Image),
++            ResourceHandler::boxed(
++                self.tx.clone(),
++                self.id(),
++                None,
++                self.shell_provider.clone(),
++                ImageHandler::new(ImageType::Image),
++            ),
++        );
++    }
++
+     /// Parse the latest text of registered style elements once per resolve.
+     pub(crate) fn process_pending_style_elements(&mut self) {
+         for id in std::mem::take(&mut self.pending_style_nodes) {
+-- 
+2.56.0
+
