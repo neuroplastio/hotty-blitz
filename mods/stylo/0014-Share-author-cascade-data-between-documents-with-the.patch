@@ -17,14 +17,22 @@ rebuilt from a copy. The cache's key holds the sheets' contents, so a
 freed sheet's address is never matched by a new one, and an entry no
 document uses is dropped at the next lookup.
 ---
- style/stylist.rs | 118 +++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 115 insertions(+), 3 deletions(-)
+ style/stylist.rs | 136 +++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 133 insertions(+), 3 deletions(-)
 
 diff --git a/style/stylist.rs b/style/stylist.rs
-index 94952df77..120def73f 100644
+index 94952df77..4e50607c5 100644
 --- a/style/stylist.rs
 +++ b/style/stylist.rs
-@@ -438,6 +438,40 @@ impl CascadeDataCacheEntry for UserAgentCascadeData {
+@@ -97,6 +97,7 @@ use smallvec::SmallVec;
+ use std::cmp::Ordering;
+ use std::hash::{Hash, Hasher};
+ use std::mem;
++use std::sync::atomic::{self, AtomicUsize};
+ use std::sync::{LazyLock, Mutex};
+ use style_traits::ParsingMode;
+ 
+@@ -438,6 +439,54 @@ impl CascadeDataCacheEntry for UserAgentCascadeData {
  
  type UserAgentCascadeDataCache = CascadeDataCache<UserAgentCascadeData>;
  
@@ -36,10 +44,24 @@ index 94952df77..120def73f 100644
 +/// happens when an embedder shares the parsed contents of a sheet between
 +/// documents. A document's own `<style>` has contents of its own, so its
 +/// entry is its own. An entry holds its sheets' contents, so their
-+/// addresses are not reused while it lives, and lives while a document
-+/// uses it.
++/// addresses are not reused while it lives. One that no document uses any
++/// more still matches its key: it is taken by the next document with those
++/// sheets (the one that replaces it, say, whose styles are flushed after
++/// the old document is gone), and dropped at the first lookup that does
++/// not take it.
 +static AUTHOR_CASCADE_DATA_CACHE: LazyLock<Mutex<AuthorCascadeDataCache>> =
 +    LazyLock::new(|| Mutex::new(AuthorCascadeDataCache::default()));
++
++/// How many times a document took another's author cascade data from
++/// `AUTHOR_CASCADE_DATA_CACHE`, rather than building its own: for tests.
++static AUTHOR_CASCADE_DATA_HITS: AtomicUsize = AtomicUsize::new(0);
++
++/// How many times a document took the author cascade data of another with
++/// the same sheets, rather than building it.
++#[doc(hidden)]
++pub fn author_cascade_data_hits() -> usize {
++    AUTHOR_CASCADE_DATA_HITS.load(atomic::Ordering::Relaxed)
++}
 +
 +#[derive(Default)]
 +struct AuthorCascadeDataCache {
@@ -65,7 +87,7 @@ index 94952df77..120def73f 100644
  /// The declarations for the precomputed pseudo-elements.
  ///
  /// We don't need the rest of the fields of `ApplicableDeclarationBlock`: These are never sorted
-@@ -472,7 +506,8 @@ pub struct DocumentCascadeData {
+@@ -472,7 +521,8 @@ pub struct DocumentCascadeData {
      #[ignore_malloc_size_of = "Arc, owned by UserAgentCascadeDataCache or empty"]
      user_agent: Arc<UserAgentCascadeData>,
      user: CascadeData,
@@ -75,7 +97,7 @@ index 94952df77..120def73f 100644
      per_origin: PerOrigin<()>,
  }
  
-@@ -481,7 +516,7 @@ impl Default for DocumentCascadeData {
+@@ -481,7 +531,7 @@ impl Default for DocumentCascadeData {
          Self {
              user_agent: EMPTY_UA_CASCADE_DATA.clone(),
              user: Default::default(),
@@ -84,7 +106,7 @@ index 94952df77..120def73f 100644
              per_origin: Default::default(),
          }
      }
-@@ -584,7 +619,7 @@ impl DocumentCascadeData {
+@@ -584,7 +634,7 @@ impl DocumentCascadeData {
          )?;
  
          // And now the author sheets.
@@ -93,7 +115,7 @@ index 94952df77..120def73f 100644
              device,
              quirks_mode,
              flusher.flush_origin(Origin::Author),
-@@ -595,6 +630,83 @@ impl DocumentCascadeData {
+@@ -595,6 +645,86 @@ impl DocumentCascadeData {
          Ok(())
      }
  
@@ -128,14 +150,16 @@ index 94952df77..120def73f 100644
 +        let key = (quirks_mode, key);
 +
 +        let mut cache = AUTHOR_CASCADE_DATA_CACHE.lock().unwrap();
-+        let unused = cache.take_unused();
-+        // Another document's: taken as it is. Our own (a CSSOM change in
-+        // place, or media made dirty without a change) is built again.
++        // Another document's, or one no document holds now: taken as it
++        // is, before the unused ones are dropped. Our own (a CSSOM change
++        // in place, or media made dirty without a change) is built again.
 +        if let Some(hit) = cache.entries.get(&key) {
 +            if !Arc::ptr_eq(hit, &self.author) {
 +                let hit = hit.clone();
++                let unused = cache.take_unused();
 +                drop(cache);
 +                drop(unused);
++                AUTHOR_CASCADE_DATA_HITS.fetch_add(1, atomic::Ordering::Relaxed);
 +                // Marks the sheets committed, as the user agent cache does.
 +                collection.each(|_, _, _| true);
 +                difference.update(&self.author, &hit);
@@ -143,6 +167,7 @@ index 94952df77..120def73f 100644
 +                return Ok(());
 +            }
 +        }
++        let unused = cache.take_unused();
 +        // Ours stops being an entry. Held by no other document then, it is
 +        // rebuilt in place, incrementally where it can be; otherwise from a
 +        // copy, leaving theirs as it is.

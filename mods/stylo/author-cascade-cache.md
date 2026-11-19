@@ -12,8 +12,11 @@ contents of the sheets that apply, by identity, and their media query
 results, plus the quirks mode. A document whose own data no other holds
 rebuilds it in place, so an incremental rebuild stays incremental; one
 it shares is rebuilt from a copy. The key holds the sheets' contents, so
-a new sheet can never match a freed one's address, and an entry no
-document uses is dropped at the next lookup.
+a new sheet can never match a freed one's address. An entry no document
+uses still matches: a document that replaces another, whose styles are
+flushed after the old one is gone, takes it. It is dropped at the first
+lookup that does not take it. A hidden count of the entries taken lets
+tests see the cache work.
 
 **Why we carry it:** hotty-blitz builds a new document for every `a=doc`
 (a tab switch in plx), and with mods/blitz 0103 each one links the same

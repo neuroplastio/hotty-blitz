@@ -1055,8 +1055,6 @@ impl Host {
         self.store.set_waker(None);
     }
 
-    /// The fetch limits ([`fetch::MAX_BYTES`], [`fetch::TIMEOUT`]), for
-    /// tests that cannot wait for the real ones.
     /// How many times this session parsed a `cid:` stylesheet to share it
     /// between its documents: a test's view of that cache.
     #[doc(hidden)]
@@ -1064,6 +1062,17 @@ impl Host {
         self.store.sheets_parsed()
     }
 
+    /// How many times a document, in any session of the process, took the
+    /// author style data of another with the same sheets rather than
+    /// building its own (Stylo's author cascade data cache): a test's view
+    /// of that cache.
+    #[doc(hidden)]
+    pub fn author_data_reused() -> usize {
+        ::style::stylist::author_cascade_data_hits()
+    }
+
+    /// The fetch limits ([`fetch::MAX_BYTES`], [`fetch::TIMEOUT`]), for
+    /// tests that cannot wait for the real ones.
     #[doc(hidden)]
     pub fn set_fetch_limits(&mut self, max_bytes: usize, timeout: std::time::Duration) {
         self.store.set_limits(fetch::Limits { max_bytes, timeout });
