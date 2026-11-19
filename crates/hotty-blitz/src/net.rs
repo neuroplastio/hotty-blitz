@@ -129,12 +129,26 @@ impl Store {
     /// by the `cid:` URL they use it through, so the caller can have them
     /// process the delivered bytes and restyle: the resource's own, and
     /// those of the stylesheets that import it.
+    ///
+    /// The same type and bytes as the resource already holds change
+    /// nothing, and no document hears of them: drawn again, every surface
+    /// would draw what it draws (SPEC §7.1). A program that sends its
+    /// stylesheet with every document costs no restyle.
     pub fn put(
         &self,
         name: &str,
         mime: &str,
         bytes: Vec<u8>,
     ) -> Result<Vec<(String, BTreeSet<usize>)>, String> {
+        {
+            let inner = self.inner.lock().unwrap();
+            if inner.resources.get(name).is_some_and(|r| {
+                r.mime == mime && r.bytes.len() == bytes.len() && r.bytes[..] == bytes[..]
+            }) && inner.waiting.get(name).is_none_or(Vec::is_empty)
+            {
+                return Ok(Vec::new());
+            }
+        }
         let bytes = Bytes::from(bytes);
         let (waiting, users) = {
             let mut inner = self.inner.lock().unwrap();
