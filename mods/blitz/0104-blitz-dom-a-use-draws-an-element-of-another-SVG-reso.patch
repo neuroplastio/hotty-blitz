@@ -1,0 +1,395 @@
+From bfb464638ced5e57a9ed166b086e16c7fd008782 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 19 Nov 2026 16:35:25 +0100
+Subject: [PATCH] blitz-dom: a <use> draws an element of another SVG resource
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`<use href="sprite.svg#icon">` drew nothing: Blitz collects only
+same-document fragment references, and usvg loads no external `use`.
+A `<use>` whose href names another resource now has it fetched through
+the document's NetProvider, as an inline SVG's `<image>` is, and kept
+by the resource's URL. When its `<svg>` is constructed, the element it
+names, and what that element refers to in its resource (`href="#…"`,
+`url(#…)`), is copied into the `<svg>`'s `<defs>` with prefixed ids, and
+the `<use>` refers to the copy. It is drawn in the context of the
+`<use>`, as a same-document `<use>` is, so `currentColor` is the use
+site's. The resource arriving late, sent again, or the href changing
+constructs the `<svg>` again.
+---
+ packages/blitz-dom/src/layout/construct.rs |   1 +
+ packages/blitz-dom/src/mutator.rs          |   4 +-
+ packages/blitz-dom/src/svg_image.rs        | 277 ++++++++++++++++++++-
+ 3 files changed, 272 insertions(+), 10 deletions(-)
+
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index c56525aed..fda1ccc96 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -690,6 +690,7 @@ fn collect_layout_children_with_wrap(
+         if matches!(tag_name, "svg") {
+             let mut outer_html = doc.get_node(container_node_id).unwrap().svg_source();
+             let targets = inline_external_fragment_refs(doc, &mut outer_html);
++            doc.inline_external_uses(&mut outer_html);
+             if targets.is_empty() {
+                 doc.external_svg_targets.remove(&container_node_id);
+             } else {
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index 8e48aabb9..5d6ac0c3b 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -500,7 +500,7 @@ impl DocumentMutator<'_> {
+                 self.load_image(img);
+             }
+         } else if cfg!(feature = "svg")
+-            && **tag == *"image"
++            && (**tag == *"image" || **tag == *"use")
+             && **attr == *"href"
+             && element.name.ns == markup5ever::ns!(svg)
+         {
+@@ -1405,7 +1405,7 @@ impl<'doc> DocumentMutator<'doc> {
+                 "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
+                 "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
+                 #[cfg(feature = "svg")]
+-                "image" if element.name.ns == markup5ever::ns!(svg) => {
++                "image" | "use" if element.name.ns == markup5ever::ns!(svg) => {
+                     self.eager_op_queue.push(SpecialOp::LoadSvgImage(node_id))
+                 }
+                 "iframe" => self.eager_op_queue.push(SpecialOp::LoadIframe(node_id)),
+diff --git a/packages/blitz-dom/src/svg_image.rs b/packages/blitz-dom/src/svg_image.rs
+index aa4454dfe..bb6cb1ad1 100644
+--- a/packages/blitz-dom/src/svg_image.rs
++++ b/packages/blitz-dom/src/svg_image.rs
+@@ -7,6 +7,14 @@
+ //! fetched when it joins the document or its href changes, like an `<img>`;
+ //! its bytes are kept by URL; and when they arrive, the `<svg>` it is in is
+ //! constructed, and so parsed, again. `data:` URLs are left to usvg.
++//!
++//! A `<use>` that refers to an element of another SVG resource
++//! (`href="sprite.svg#icon"`) is fetched the same way, by the resource's
++//! URL. usvg resolves only references within the document it parses, so
++//! the element, and whatever in its resource it refers to in turn, is
++//! copied into the `<svg>`'s `<defs>` under ids of its own, and the
++//! `<use>` refers to the copy: drawn, as for `<use href="#icon">`, in the
++//! context of the `<use>`, `currentColor` included.
+ 
+ use std::collections::HashMap;
+ use std::sync::Arc;
+@@ -28,21 +36,35 @@ pub(crate) struct SvgImage {
+ 
+ /// Whether `node` is an SVG `<image>`.
+ fn is_svg_image(node: &Node) -> bool {
++    is_svg(node, "image")
++}
++
++fn is_svg(node: &Node, local: &str) -> bool {
+     node.element_data()
+-        .is_some_and(|e| e.name.ns == ns!(svg) && *e.name.local == *"image")
++        .is_some_and(|e| e.name.ns == ns!(svg) && *e.name.local == *local)
++}
++
++/// Whether `node` is an SVG element whose href is fetched: an `<image>`,
++/// or a `<use>`.
++fn refers_out(node: &Node) -> bool {
++    is_svg_image(node) || is_svg(node, "use")
+ }
+ 
+-/// The hrefs of an SVG `<image>` that are fetched: `href` and `xlink:href`,
+-/// except `data:` URLs, which usvg decodes itself.
++/// The hrefs of an SVG `<image>` or `<use>` that are fetched: `href` and
++/// `xlink:href`, except `data:` URLs, which usvg decodes itself, and a
++/// `<use>`'s references within its own document.
+ fn hrefs(node: &Node) -> impl Iterator<Item = &str> {
++    let image = is_svg_image(node);
+     node.attrs()
+         .into_iter()
+         .flatten()
+         .filter(|a| *a.name.local == *"href")
+         .map(|a| a.value.as_str())
+-        .filter(|v| {
++        .filter(move |v| {
+             let v = v.trim_start();
+-            !v.is_empty() && !v.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("data:"))
++            !v.is_empty()
++                && !v.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("data:"))
++                && (image || !v.starts_with('#'))
+         })
+ }
+ 
+@@ -83,11 +105,12 @@ impl BaseDocument {
+         let Some(node) = self.get_node(image) else {
+             return;
+         };
+-        if !is_svg_image(node) {
++        if !refers_out(node) {
+             return;
+         }
++        let image_only = is_svg_image(node);
+         let urls: Vec<url::Url> = hrefs(node)
+-            .filter_map(|href| self.url.resolve_relative(href))
++            .filter_map(|href| self.resource_url(href, image_only))
+             .collect();
+         let mut known = false;
+         for url in urls {
+@@ -133,7 +156,7 @@ impl BaseDocument {
+             .into_iter()
+             .filter(|&id| {
+                 self.get_node(id)
+-                    .is_some_and(|n| n.flags.is_in_document() && is_svg_image(n))
++                    .is_some_and(|n| n.flags.is_in_document() && refers_out(n))
+             })
+             .collect();
+         for &image in &users {
+@@ -155,6 +178,103 @@ impl BaseDocument {
+         }
+     }
+ 
++    /// The URL `href` fetches: a `<use>`'s, which names an element of the
++    /// resource, without its fragment.
++    fn resource_url(&self, href: &str, image: bool) -> Option<url::Url> {
++        let mut url = self.url.resolve_relative(href)?;
++        if !image {
++            url.set_fragment(None);
++        }
++        Some(url)
++    }
++
++    /// The `<use>` elements of `outer_html`, an `<svg>` as usvg is given it,
++    /// that refer to an element of another SVG resource that has arrived:
++    /// the element, and what it refers to in that resource, are copied into
++    /// a `<defs>` at the start of the `<svg>`, with ids prefixed so that
++    /// they meet none of the document's, and each such `<use>` refers to
++    /// its copy. One whose resource has not arrived, or has no such
++    /// element, is left as written, and draws nothing.
++    pub(crate) fn inline_external_uses(&self, outer_html: &mut String) {
++        // (where the href's value is in `outer_html`, its resource's URL,
++        // the element it names)
++        let mut uses = Vec::new();
++        let mut rest = 0;
++        while let Some(pos) = outer_html[rest..].find("<use") {
++            let start = rest + pos + 4;
++            let Some(end) = outer_html[start..].find('>').map(|e| start + e) else {
++                break;
++            };
++            rest = end;
++            if !outer_html[start..]
++                .chars()
++                .next()
++                .is_some_and(|c| c.is_whitespace() || c == '/' || c == '>')
++            {
++                continue;
++            }
++            let tag = &outer_html[start..end];
++            let Some(h) = tag.find("href=\"") else {
++                continue;
++            };
++            let from = start + h + 6;
++            let Some(len) = outer_html[from..end].find('"') else {
++                continue;
++            };
++            let href = &outer_html[from..from + len];
++            if href.starts_with('#') {
++                continue;
++            }
++            // The serializer escapes `&` in attribute values.
++            let href = href.replace("&amp;", "&");
++            let Some(mut url) = self.url.resolve_relative(&href) else {
++                continue;
++            };
++            let Some(id) = url.fragment().filter(|f| !f.is_empty()).map(str::to_string) else {
++                continue;
++            };
++            url.set_fragment(None);
++            uses.push((from..from + len, url.to_string(), id));
++        }
++        if uses.is_empty() {
++            return;
++        }
++
++        let mut resources: Vec<String> = Vec::new();
++        let mut defs = String::new();
++        let mut edits = Vec::new();
++        for (range, url, id) in &uses {
++            let Some(bytes) = self
++                .svg_images
++                .get(url)
++                .and_then(|i| i.bytes.clone())
++                .filter(|b| !b.is_empty())
++            else {
++                continue;
++            };
++            let k = match resources.iter().position(|r| r == url) {
++                Some(k) => k,
++                None => {
++                    resources.push(url.clone());
++                    resources.len() - 1
++                }
++            };
++            let prefix = format!("blitz-use{k}-");
++            if copy_element(&bytes, id, &prefix, &mut defs) {
++                edits.push((range.clone(), format!("#{prefix}{id}")));
++            }
++        }
++        if edits.is_empty() {
++            return;
++        }
++        for (range, value) in edits.into_iter().rev() {
++            outer_html.replace_range(range, &value);
++        }
++        if let Some(open_end) = outer_html.find('>') {
++            outer_html.insert_str(open_end + 1, &format!("<defs>{defs}</defs>"));
++        }
++    }
++
+     /// The images the `<image>` elements under `<svg>` node `svg` refer to
+     /// and have, by href as written: what usvg asks for as it parses.
+     pub(crate) fn svg_images_under(&self, svg: NodeId) -> HashMap<String, Arc<Vec<u8>>> {
+@@ -182,3 +302,144 @@ impl BaseDocument {
+         out
+     }
+ }
++
++/// Copies element `id` of SVG resource `bytes` into `out`, with what it
++/// refers to in the resource (`href="#…"`, `url(#…)`), each id given
++/// `prefix`. Whether the resource has such an element. Elements already
++/// copied for another `<use>` of the same resource are not copied again.
++fn copy_element(bytes: &[u8], id: &str, prefix: &str, out: &mut String) -> bool {
++    use usvg::roxmltree::{Document, Node as XmlNode, ParsingOptions};
++    let Ok(text) = std::str::from_utf8(bytes) else {
++        return false;
++    };
++    let options = ParsingOptions {
++        allow_dtd: true,
++        ..Default::default()
++    };
++    let Ok(xml) = Document::parse_with_options(text, options) else {
++        return false;
++    };
++    let ids: HashMap<&str, XmlNode> = xml
++        .descendants()
++        .filter_map(|n| Some((n.attribute("id")?, n)))
++        .collect();
++    if !ids.contains_key(id) {
++        return false;
++    }
++    let mut queue = vec![id.to_string()];
++    while let Some(id) = queue.pop() {
++        let marker = format!(" id=\"{prefix}{id}\"");
++        if out.contains(&marker) {
++            continue;
++        }
++        if let Some(node) = ids.get(id.as_str()) {
++            write_xml(*node, prefix, &ids, out, &mut queue);
++        }
++    }
++    true
++}
++
++/// Writes `node` as XML, its ids and its references to them prefixed,
++/// queueing the ids it refers to.
++fn write_xml(
++    node: usvg::roxmltree::Node,
++    prefix: &str,
++    ids: &HashMap<&str, usvg::roxmltree::Node>,
++    out: &mut String,
++    refs: &mut Vec<String>,
++) {
++    if node.is_text() {
++        escape_into(node.text().unwrap_or_default(), out);
++        return;
++    }
++    if !node.is_element() {
++        return;
++    }
++    let name = node.tag_name().name();
++    out.push('<');
++    out.push_str(name);
++    for a in node.attributes() {
++        let local = a.name();
++        // `xml:space` keeps its prefix; `xlink:href` is written as SVG 2's
++        // `href`, which needs no namespace declaration.
++        let written = match a.namespace() {
++            Some("http://www.w3.org/XML/1998/namespace") => format!("xml:{local}"),
++            _ => local.to_string(),
++        };
++        let mut value = a.value().to_string();
++        if local == "id" {
++            value = format!("{prefix}{value}");
++        } else if local == "href" {
++            if let Some(target) = value.strip_prefix('#').filter(|t| ids.contains_key(t)) {
++                refs.push(target.to_string());
++                value = format!("#{prefix}{target}");
++            }
++        } else if value.contains("url(") {
++            value = prefix_urls(&value, prefix, ids, refs);
++        }
++        out.push(' ');
++        out.push_str(&written);
++        out.push_str("=\"");
++        escape_into(&value, out);
++        out.push('"');
++    }
++    out.push('>');
++    for child in node.children() {
++        write_xml(child, prefix, ids, out, refs);
++    }
++    out.push_str("</");
++    out.push_str(name);
++    out.push('>');
++}
++
++/// `value` with each `url(#id)` of an id in `ids` prefixed.
++fn prefix_urls(
++    value: &str,
++    prefix: &str,
++    ids: &HashMap<&str, usvg::roxmltree::Node>,
++    refs: &mut Vec<String>,
++) -> String {
++    let mut out = String::with_capacity(value.len());
++    let mut rest = value;
++    while let Some(pos) = rest.find("url(") {
++        let (head, tail) = rest.split_at(pos + 4);
++        out.push_str(head);
++        let quote = tail
++            .trim_start()
++            .chars()
++            .next()
++            .filter(|c| *c == '"' || *c == '\'');
++        let skip = tail.len() - tail.trim_start().len() + quote.map_or(0, |_| 1);
++        out.push_str(&tail[..skip]);
++        let tail = &tail[skip..];
++        rest = tail;
++        let Some(target) = tail.strip_prefix('#') else {
++            continue;
++        };
++        let end = target
++            .find(|c: char| c == ')' || c == '"' || c == '\'' || c.is_whitespace())
++            .unwrap_or(target.len());
++        let target = &target[..end];
++        if ids.contains_key(target) {
++            refs.push(target.to_string());
++            out.push('#');
++            out.push_str(prefix);
++            out.push_str(target);
++            rest = &tail[1 + end..];
++        }
++    }
++    out.push_str(rest);
++    out
++}
++
++fn escape_into(text: &str, out: &mut String) {
++    for c in text.chars() {
++        match c {
++            '&' => out.push_str("&amp;"),
++            '<' => out.push_str("&lt;"),
++            '>' => out.push_str("&gt;"),
++            '"' => out.push_str("&quot;"),
++            c => out.push(c),
++        }
++    }
++}
+-- 
+2.56.0
+
