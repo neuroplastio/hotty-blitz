@@ -131,23 +131,20 @@ impl Store {
     /// those of the stylesheets that import it.
     ///
     /// The same type and bytes as the resource already holds change
-    /// nothing, and no document hears of them: drawn again, every surface
-    /// would draw what it draws (SPEC §7.1). A program that sends its
-    /// stylesheet with every document costs no restyle.
+    /// nothing, and no document hears of them, in every case: a program
+    /// that sends its stylesheet with every document costs no restyle, and
+    /// an animated image plays on where it was, rather than starting over.
+    /// Only a sending that replaces the resource, with other bytes or
+    /// another type, reaches the documents that use it (the maintainer's
+    /// reading of SPEC §7.1, 2026-11-19).
     pub fn put(
         &self,
         name: &str,
         mime: &str,
         bytes: Vec<u8>,
     ) -> Result<Vec<(String, BTreeSet<usize>)>, String> {
-        {
-            let inner = self.inner.lock().unwrap();
-            if inner.resources.get(name).is_some_and(|r| {
-                r.mime == mime && r.bytes.len() == bytes.len() && r.bytes[..] == bytes[..]
-            }) && inner.waiting.get(name).is_none_or(Vec::is_empty)
-            {
-                return Ok(Vec::new());
-            }
+        if self.inner.lock().unwrap().unchanged(name, mime, &bytes) {
+            return Ok(Vec::new());
         }
         let bytes = Bytes::from(bytes);
         let (waiting, users) = {
@@ -437,6 +434,14 @@ impl Store {
 }
 
 impl Inner {
+    /// Whether resource `name` holds `mime` and `bytes` already: sent
+    /// again so, it changes nothing ([`Store::put`]).
+    fn unchanged(&self, name: &str, mime: &str, bytes: &[u8]) -> bool {
+        self.resources
+            .get(name)
+            .is_some_and(|r| r.mime == mime && r.bytes[..] == *bytes)
+    }
+
     /// Drops the parsed sheet of resource `name` and of every sheet that
     /// imports it, which are parsed again when next linked. Returns the
     /// names of the sheets that import it, or were parsed without it.
@@ -689,4 +694,68 @@ fn percent_decode(s: &str) -> Vec<u8> {
         i += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A handler that keeps nothing.
+    struct Drop;
+    impl NetHandler for Drop {
+        fn bytes(self: Box<Self>, _: String, _: Bytes) {}
+    }
+
+    fn fetch(store: &Arc<Store>, doc_id: usize, name: &str) {
+        let request = Request::get(Url::parse(&format!("cid:{name}")).unwrap());
+        Provider(store.clone()).fetch(doc_id, request, Box::new(Drop));
+    }
+
+    fn gif(first: [u8; 4]) -> Vec<u8> {
+        use image::codecs::gif::{GifEncoder, Repeat};
+        let mut out = Vec::new();
+        {
+            let mut enc = GifEncoder::new(&mut out);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            let frames = [first, [0, 255, 0, 255]].map(|c| {
+                let img = image::RgbaImage::from_pixel(2, 2, image::Rgba(c));
+                image::Frame::from_parts(img, 0, 0, image::Delay::from_numer_denom_ms(100, 1))
+            });
+            enc.encode_frames(frames).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn an_animation_sent_again_as_it_is_reaches_no_document() {
+        let store = Store::new(1 << 20);
+        store
+            .put("anim", "image/gif", gif([255, 0, 0, 255]))
+            .unwrap();
+        fetch(&store, 1, "anim");
+        let playing = store.take_animations(1);
+        assert_eq!(playing.len(), 1, "decoded for the document");
+        // Playing: the same bytes again change nothing, it plays on.
+        assert!(
+            store
+                .put("anim", "image/gif", gif([255, 0, 0, 255]))
+                .unwrap()
+                .is_empty()
+        );
+        // Too big for what was left of the budget: not remembered, and
+        // still nothing.
+        store.inner.lock().unwrap().animations.remove("cid:anim");
+        assert!(
+            store
+                .put("anim", "image/gif", gif([255, 0, 0, 255]))
+                .unwrap()
+                .is_empty()
+        );
+        // Other bytes replace it: its document loads it again.
+        let users = store
+            .put("anim", "image/gif", gif([0, 0, 255, 255]))
+            .unwrap();
+        assert_eq!(users, vec![("cid:anim".to_string(), BTreeSet::from([1]))]);
+        drop(playing);
+    }
 }

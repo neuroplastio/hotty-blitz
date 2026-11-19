@@ -1,7 +1,7 @@
-//! A resource sent again with the type and bytes it has changes nothing
-//! (SPEC §7.1: every surface that refers to it would draw what it draws):
-//! no parse, no restyle, no frame, no event. One byte or the type changed,
-//! and it is a resource sent again.
+//! A resource sent again with the type and bytes it has changes nothing,
+//! in every case: no parse, no restyle, no frame, no event, and an
+//! animation plays on where it was. One byte or the type changed, and it
+//! replaces the resource.
 
 use hotty::Message;
 use hotty::host::{Output, Splitter};
@@ -143,4 +143,86 @@ fn the_same_bytes_as_another_type_are_a_resource_sent_again() {
     res(&mut h, "theme", "text/plain", SHEET);
     assert_eq!(draw(&mut h), 2);
     assert_eq!(h.sheets_parsed(), parsed + 1);
+}
+
+#[test]
+fn a_resource_deleted_and_sent_again_reaches_its_surfaces() {
+    let mut h = host();
+    two_surfaces(&mut h);
+    let parsed = h.sheets_parsed();
+    handle(&mut h, &[("a", "del"), ("id", "theme")], b"");
+    // The same bytes as before it was deleted: a sending like any first.
+    res(&mut h, "theme", "text/css", SHEET);
+    assert_eq!(draw(&mut h), 2);
+    assert_eq!(h.sheets_parsed(), parsed + 1);
+    assert_eq!(pixel(&h, "y", 99, 79), RED);
+}
+
+#[test]
+fn a_document_waiting_for_a_resource_gets_it() {
+    let mut h = host();
+    res(&mut h, "theme", "text/css", SHEET);
+    handle(&mut h, &[("a", "del"), ("id", "theme")], b"");
+    // Linked while it is missing: the document waits for it.
+    handle(
+        &mut h,
+        &[("a", "doc"), ("s", "x")],
+        b"<body style='margin:0'><p>x</p><link rel=stylesheet href='cid:theme'></body>",
+    );
+    handle(
+        &mut h,
+        &[("a", "place"), ("s", "x"), ("c", "10"), ("r", "2")],
+        b"",
+    );
+    draw(&mut h);
+    assert_ne!(pixel(&h, "x", 99, 39), RED);
+    res(&mut h, "theme", "text/css", SHEET);
+    assert_eq!(draw(&mut h), 1);
+    assert_eq!(pixel(&h, "x", 99, 39), RED);
+    // And sent once more as it is: nothing to do.
+    res(&mut h, "theme", "text/css", SHEET);
+    assert_eq!(draw(&mut h), 0);
+}
+
+/// A GIF that shows `first`, then green, each for a long while.
+fn gif(first: [u8; 3]) -> Vec<u8> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).unwrap();
+        let frames = [first, [0, 255, 0]].map(|[r, g, b]| {
+            let img = image::RgbaImage::from_pixel(20, 20, image::Rgba([r, g, b, 255]));
+            image::Frame::from_parts(img, 0, 0, image::Delay::from_numer_denom_ms(5000, 1))
+        });
+        enc.encode_frames(frames).unwrap();
+    }
+    out
+}
+
+#[test]
+fn an_animation_sent_again_as_it_is_plays_on_where_it_was() {
+    let mut h = host();
+    res(&mut h, "anim", "image/gif", &gif(RED));
+    handle(
+        &mut h,
+        &[("a", "doc"), ("s", "x")],
+        b"<body style='margin:0'><img src='cid:anim' style='display:block'></body>",
+    );
+    handle(
+        &mut h,
+        &[("a", "place"), ("s", "x"), ("c", "4"), ("r", "2")],
+        b"",
+    );
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), RED);
+    let due = h.next_frame().expect("it plays");
+    h.animate(due);
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0]);
+    let next = h.next_frame();
+    res(&mut h, "anim", "image/gif", &gif(RED));
+    assert_eq!(draw(&mut h), 0, "nothing loaded again");
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0], "on its second frame");
+    assert_eq!(h.next_frame(), next, "on the same clock");
 }
