@@ -14,14 +14,18 @@
 //! file: a disk that stalls stalls that thread, not the stages it times,
 //! nor a terminal's lock held around a call. What waits to be written is
 //! held to [`QUEUE_CAP`] bytes; past that, lines are dropped, and a
-//! `trace.dropped` line says how many. The thread writes what is left when
-//! the process exits, and on SIGTERM, the latency rig's stop, unless the
-//! program has a handler of its own.
+//! `trace.dropped` counter says how many. The thread opens the file, and
+//! writes what is left when the process exits and on SIGTERM, the latency
+//! rig's stop. Its SIGTERM handler goes in front of whatever handled it
+//! before (hottyterm's own trace writer, say), and hands the signal on to
+//! that once it has written, so the process ends as it would have; a
+//! program that installs a handler after it, and chains to it, ends there
+//! too, without its own graceful shutdown, while tracing is on.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -29,9 +33,15 @@ use std::time::Duration;
 pub const QUEUE_CAP: usize = 8 << 20;
 
 struct Trace {
-    /// The lines since the last [`flush`].
-    buf: Mutex<String>,
+    buf: Mutex<Buf>,
     writer: Writer,
+}
+
+struct Buf {
+    /// The lines since the last [`flush`].
+    lines: String,
+    /// Buffers the writer is done with, to collect the next lines in.
+    spare: Receiver<String>,
 }
 
 static TRACE: OnceLock<Option<Trace>> = OnceLock::new();
@@ -44,32 +54,40 @@ fn open() -> Option<Trace> {
     let dir = std::env::var_os("HOTTY_TRACE").filter(|d| !d.is_empty())?;
     let pid = std::process::id();
     let path = std::path::Path::new(&dir).join(format!("blitz-{pid}.jsonl"));
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
+    // Opened on the writer's thread, without blocking (a FIFO with no
+    // reader fails): the thread that stamps first may hold a lock.
+    let file = move || {
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+        let mut file = options.open(path).ok()?;
+        let clock = if cfg!(target_os = "macos") {
+            "uptime-raw"
+        } else {
+            "monotonic"
+        };
+        writeln!(
+            file,
+            r#"{{"trace":"hotty/1","proc":"blitz","pid":{pid},"clock":"{clock}"}}"#
+        )
         .ok()?;
-    let clock = if cfg!(target_os = "macos") {
-        "uptime-raw"
-    } else {
-        "monotonic"
+        Some(file)
     };
-    writeln!(
-        file,
-        r#"{{"trace":"hotty/1","proc":"blitz","pid":{pid},"clock":"{clock}"}}"#
-    )
-    .ok()?;
-    let writer = Writer::spawn(file, QUEUE_CAP, || {
+    let (writer, spare) = Writer::spawn(file, QUEUE_CAP, || {
         // What the thread that was stopped had not handed over yet, unless
         // it stopped holding it.
         let t = TRACE.get()?.as_ref()?;
         let mut buf = t.buf.try_lock().ok()?;
-        Some(std::mem::take(&mut *buf))
+        Some(std::mem::take(&mut buf.lines))
     })?;
     #[cfg(unix)]
     on_exit_and_term();
     Some(Trace {
-        buf: Mutex::new(String::with_capacity(16 * 1024)),
+        buf: Mutex::new(Buf {
+            lines: String::with_capacity(16 * 1024),
+            spare,
+        }),
         writer,
     })
 }
@@ -141,7 +159,7 @@ pub fn span_to(name: &str, t0: u64, t1: u64, args: &[(&str, Arg)]) {
 
 fn line(t: &Trace, name: &str, at: u64, dur: Option<u64>, args: &[(&str, Arg)]) {
     let Ok(mut b) = t.buf.lock() else { return };
-    let b = &mut *b;
+    let b = &mut b.lines;
     let _ = write!(b, r#"{{"t":{at},"n":"{name}""#);
     if let Some(d) = dur {
         let _ = write!(b, r#","dur":{d}"#);
@@ -188,11 +206,14 @@ pub fn flush() {
     let Some(t) = trace() else { return };
     let chunk = {
         let Ok(mut buf) = t.buf.lock() else { return };
-        if buf.is_empty() {
+        if buf.lines.is_empty() {
             return;
         }
-        let capacity = buf.capacity();
-        std::mem::replace(&mut *buf, String::with_capacity(capacity))
+        let next = buf
+            .spare
+            .try_recv()
+            .unwrap_or_else(|_| String::with_capacity(buf.lines.capacity()));
+        std::mem::replace(&mut buf.lines, next)
     };
     t.writer.push(chunk);
 }
@@ -216,15 +237,21 @@ struct State {
     done: AtomicBool,
 }
 
+/// How many emptied buffers the writer hands back at most.
+const SPARES: usize = 4;
+
 impl Writer {
-    /// A writer to `out`, holding at most `cap` bytes that wait. When it is
-    /// stopped it writes what `pending` gives it too.
-    fn spawn(
-        out: impl std::io::Write + Send + 'static,
+    /// A writer to what `open` opens on the writer's thread (nothing: what
+    /// it is handed is dropped), holding at most `cap` bytes that wait.
+    /// When it is stopped it writes what `pending` gives it too. With it,
+    /// the buffers it is done with.
+    fn spawn<W: std::io::Write>(
+        open: impl FnOnce() -> Option<W> + Send + 'static,
         cap: usize,
         pending: impl Fn() -> Option<String> + Send + 'static,
-    ) -> Option<Writer> {
+    ) -> Option<(Writer, Receiver<String>)> {
         let (tx, rx) = channel();
+        let (back, spare) = sync_channel(SPARES);
         let state = Arc::new(State {
             cap,
             queued: AtomicUsize::new(0),
@@ -235,9 +262,9 @@ impl Writer {
         let st = state.clone();
         std::thread::Builder::new()
             .name("hotty-trace".into())
-            .spawn(move || write_loop(out, rx, &st, pending))
+            .spawn(move || write_loop(open(), rx, back, &st, pending))
             .ok()?;
-        Some(Writer { tx, state })
+        Some((Writer { tx, state }, spare))
     }
 
     /// Queues `chunk`, whole lines, or drops it if the queue is full.
@@ -278,11 +305,16 @@ fn finish(state: &State, limit: Duration) {
 }
 
 fn write_loop(
-    mut out: impl std::io::Write,
+    out: Option<impl std::io::Write>,
     rx: Receiver<String>,
+    back: SyncSender<String>,
     state: &State,
     pending: impl Fn() -> Option<String>,
 ) {
+    let mut out: Box<dyn std::io::Write> = match out {
+        Some(out) => Box::new(out),
+        None => Box::new(std::io::sink()),
+    };
     #[cfg(unix)]
     // SAFETY: a valid, empty-then-filled signal set; this thread only.
     unsafe {
@@ -292,16 +324,18 @@ fn write_loop(
         libc::sigaddset(&mut set, libc::SIGTERM);
         libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
     }
-    let write = |out: &mut dyn std::io::Write, chunk: &str| {
+    let write = |out: &mut dyn std::io::Write, mut chunk: String| {
         let _ = out.write_all(chunk.as_bytes());
         state.queued.fetch_sub(chunk.len(), Ordering::AcqRel);
+        chunk.clear();
+        let _ = back.try_send(chunk);
     };
     let say_dropped = |out: &mut dyn std::io::Write| {
         let n = state.dropped.swap(0, Ordering::AcqRel);
         if n > 0 {
             let _ = writeln!(
                 out,
-                r#"{{"t":{},"n":"trace.dropped","tr":{},"a":{{"lines":{n}}}}}"#,
+                r#"{{"t":{},"n":"trace.dropped","tr":{},"c":{{"lines":{n}}}}}"#,
                 clock(),
                 tid()
             );
@@ -309,28 +343,43 @@ fn write_loop(
     };
     loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(chunk) => write(&mut out, &chunk),
+            Ok(chunk) => write(&mut *out, chunk),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        say_dropped(&mut out);
+        say_dropped(&mut *out);
         if state.stop.load(Ordering::Acquire) {
             break;
         }
     }
     while let Ok(chunk) = rx.try_recv() {
-        write(&mut out, &chunk);
+        write(&mut *out, chunk);
     }
     if let Some(chunk) = pending() {
         let _ = out.write_all(chunk.as_bytes());
     }
-    say_dropped(&mut out);
+    say_dropped(&mut *out);
     let _ = out.flush();
     state.done.store(true, Ordering::Release);
 }
 
-/// At exit, and on SIGTERM if nothing else handles it, the writer writes
-/// what is left before the process goes.
+/// The SIGTERM action there was before ours, to hand the signal on to.
+#[cfg(unix)]
+struct OldTerm(std::cell::UnsafeCell<std::mem::MaybeUninit<libc::sigaction>>);
+
+// SAFETY: written once, before the handler that reads it is installed.
+#[cfg(unix)]
+unsafe impl Sync for OldTerm {}
+
+#[cfg(unix)]
+static OLD_TERM: OldTerm = OldTerm(std::cell::UnsafeCell::new(std::mem::MaybeUninit::uninit()));
+
+/// At exit, and on SIGTERM unless it is ignored, the writer writes what is
+/// left before the process goes. SIGTERM then goes on to the action there
+/// was before, so the process ends as it would have: by the default action,
+/// or after the handler that was there runs (hottyterm's, which drains its
+/// own trace). The rig sends SIGKILL two seconds after SIGTERM, and both
+/// writers get to drain in that time.
 #[cfg(unix)]
 fn on_exit_and_term() {
     extern "C" fn at_exit() {
@@ -339,21 +388,30 @@ fn on_exit_and_term() {
         }
     }
     extern "C" fn on_term(_: libc::c_int) {
-        at_exit();
-        // SAFETY: back to the default action, then the signal again: the
-        // process ends as it would have.
+        if let Some(Some(t)) = TRACE.get() {
+            t.writer.finish(Duration::from_millis(500));
+        }
+        // SAFETY: sigaction and kill are async-signal-safe; OLD_TERM was
+        // written before this handler was installed. kill, not raise: the
+        // process gets it, and a thread that does not block it takes it, or
+        // this one once the handler returns.
         unsafe {
-            libc::signal(libc::SIGTERM, libc::SIG_DFL);
-            libc::raise(libc::SIGTERM);
+            libc::sigaction(
+                libc::SIGTERM,
+                (*OLD_TERM.0.get()).as_ptr(),
+                std::ptr::null_mut(),
+            );
+            libc::kill(libc::getpid(), libc::SIGTERM);
         }
     }
-    // SAFETY: sigaction with a valid struct, read first; atexit with an
+    // SAFETY: sigaction with valid structs, the old one read first into
+    // OLD_TERM, which nothing reads until the handler runs; atexit with an
     // extern "C" fn that lives as long as the program.
     unsafe {
         libc::atexit(at_exit);
-        let mut old: libc::sigaction = std::mem::zeroed();
-        if libc::sigaction(libc::SIGTERM, std::ptr::null(), &mut old) != 0
-            || old.sa_sigaction != libc::SIG_DFL
+        let old = (*OLD_TERM.0.get()).as_mut_ptr();
+        if libc::sigaction(libc::SIGTERM, std::ptr::null(), old) != 0
+            || (*old).sa_sigaction == libc::SIG_IGN
         {
             return;
         }
@@ -367,8 +425,6 @@ fn on_exit_and_term() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc::{SyncSender, sync_channel};
-
     /// Blocks every write until it is let go, then keeps what it got.
     struct Stalled {
         go: Receiver<()>,
@@ -390,7 +446,12 @@ mod tests {
         }
     }
 
-    fn stalled() -> (Writer, SyncSender<()>, Arc<Mutex<Vec<u8>>>) {
+    fn stalled() -> (
+        Writer,
+        Receiver<String>,
+        SyncSender<()>,
+        Arc<Mutex<Vec<u8>>>,
+    ) {
         let (go_tx, go) = sync_channel(1);
         let got = Arc::new(Mutex::new(Vec::new()));
         let out = Stalled {
@@ -398,16 +459,17 @@ mod tests {
             got: got.clone(),
             waited: false,
         };
-        let writer = Writer::spawn(out, 1000, || Some("pending\n".to_string())).unwrap();
-        (writer, go_tx, got)
+        let (writer, spare) =
+            Writer::spawn(move || Some(out), 1000, || Some("pending\n".to_string())).unwrap();
+        (writer, spare, go_tx, got)
     }
 
     #[test]
     fn a_stalled_disk_does_not_stall_the_caller_and_drops_are_counted() {
-        let (writer, go, got) = stalled();
+        let (writer, _spare, go, got) = stalled();
         let t0 = std::time::Instant::now();
-        // 3 lines of 100 bytes, then up to the cap and past it: 15 lines
-        // fit in 1000 bytes with the first held by the stalled write.
+        // Lines of 100 bytes, three times what fits in 1000: the first is
+        // held by the stalled write, and counts until it is written.
         for _ in 0..30 {
             writer.push(format!("{:099}\n", 0));
         }
@@ -423,7 +485,7 @@ mod tests {
             .lines()
             .filter(|l| l.contains(r#""n":"trace.dropped""#))
             .map(|l| {
-                let n = l.rsplit_once(r#""lines":"#).unwrap().1;
+                let n = l.rsplit_once(r#""c":{"lines":"#).unwrap().1;
                 n.trim_end_matches('}').parse::<u64>().unwrap()
             })
             .sum();
@@ -433,23 +495,49 @@ mod tests {
     }
 
     #[test]
-    fn what_is_handed_over_is_written_in_order() {
-        let (writer, go, got) = stalled();
+    fn what_is_handed_over_is_written_in_order_and_its_buffers_come_back() {
+        let (writer, spare, go, got) = stalled();
         go.send(()).unwrap();
         for i in 0..5 {
             writer.push(format!("{i}\n"));
         }
         writer.finish(Duration::from_secs(5));
         assert_eq!(&*got.lock().unwrap(), b"0\n1\n2\n3\n4\npending\n");
+        let back: Vec<String> = spare.try_iter().collect();
+        assert_eq!(back.len(), SPARES, "as many as it keeps");
+        assert!(back.iter().all(|b| b.is_empty() && b.capacity() > 0));
+    }
+
+    /// Stands in for hottyterm's SIGTERM handler, installed before blitz's:
+    /// says it ran, puts the default action back and signals again.
+    #[cfg(unix)]
+    extern "C" fn first(_: libc::c_int) {
+        // SAFETY: async-signal-safe calls only.
+        unsafe {
+            libc::write(1, b"first ran\n".as_ptr().cast(), 10);
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::kill(libc::getpid(), libc::SIGTERM);
+        }
     }
 
     /// The child of [`sigterm_writes_what_is_left`]: stamps, hands the
-    /// lines over, and waits to be stopped.
+    /// lines over, and waits to be stopped. With `FIRST` set, a handler of
+    /// its own is installed before its first stamp.
     #[test]
     #[ignore = "run by sigterm_writes_what_is_left"]
     fn sigterm_child() {
         if std::env::var_os("HOTTY_TRACE").is_none() {
             return;
+        }
+        #[cfg(unix)]
+        if std::env::var_os("FIRST").is_some() {
+            // SAFETY: a valid handler for SIGTERM.
+            unsafe {
+                libc::signal(
+                    libc::SIGTERM,
+                    first as extern "C" fn(libc::c_int) as libc::sighandler_t,
+                )
+            };
         }
         span("blitz.flushed", now(), &[]);
         flush();
@@ -461,13 +549,17 @@ mod tests {
         }
     }
 
+    /// Runs [`sigterm_child`], stops it with SIGTERM, and returns what it
+    /// printed after it was ready and its trace file.
     #[cfg(unix)]
-    #[test]
-    fn sigterm_writes_what_is_left() {
-        use std::io::BufRead as _;
-        let dir = std::env::temp_dir().join(format!("hotty-trace-term-{}", std::process::id()));
+    fn stopped_child(first: bool) -> (String, String) {
+        use std::io::{BufRead as _, Read as _};
+        use std::os::unix::process::ExitStatusExt as _;
+        let dir =
+            std::env::temp_dir().join(format!("hotty-trace-term-{}-{first}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "trace::tests::sigterm_child",
                 "--exact",
@@ -475,9 +567,11 @@ mod tests {
                 "--nocapture",
             ])
             .env("HOTTY_TRACE", &dir)
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stdout(std::process::Stdio::piped());
+        if first {
+            command.env("FIRST", "1");
+        }
+        let mut child = command.spawn().unwrap();
         let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
         let mut line = String::new();
         while out.read_line(&mut line).unwrap() > 0 && !line.contains("ready") {
@@ -485,8 +579,9 @@ mod tests {
         }
         // SAFETY: a signal to the child we started.
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        let mut rest = String::new();
+        out.read_to_string(&mut rest).unwrap();
         let status = child.wait().unwrap();
-        use std::os::unix::process::ExitStatusExt as _;
         assert_eq!(
             status.signal(),
             Some(libc::SIGTERM),
@@ -495,7 +590,23 @@ mod tests {
         let file = dir.join(format!("blitz-{}.jsonl", child.id()));
         let text = std::fs::read_to_string(&file).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
+        (rest, text)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_writes_what_is_left() {
+        let (_, text) = stopped_child(false);
         assert!(text.contains(r#""n":"blitz.flushed""#), "{text}");
         assert!(text.contains(r#""n":"blitz.pending""#), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_writes_what_is_left_and_goes_on_to_the_handler_before() {
+        let (printed, text) = stopped_child(true);
+        assert!(text.contains(r#""n":"blitz.flushed""#), "{text}");
+        assert!(text.contains(r#""n":"blitz.pending""#), "{text}");
+        assert!(printed.contains("first ran"), "{printed:?}");
     }
 }
