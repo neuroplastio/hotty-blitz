@@ -827,3 +827,37 @@ fn a_use_of_another_svg_is_not_an_image() {
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(srv.paths(), vec!["/red.png"]);
 }
+
+/// A sprite whose `#s` is a green square.
+const SPRITE: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg'><symbol id='s' viewBox='0 0 20 20'>\
+<rect width='20' height='20' fill='#0f0'/></symbol></svg>";
+
+#[test]
+fn a_use_draws_nothing_an_image_fetched() {
+    // An `<image>` may fetch the sprite under img-src; a `<use>` of the same
+    // URL does not draw it (SPEC §7.2: no directive lets a `<use>` fetch).
+    let srv = Server::start();
+    srv.route("/sprite.svg", Reply::Ok("image/svg+xml", SPRITE.to_vec()));
+    let o = &srv.origin;
+    let p = format!("img-src {o}");
+    let body = format!(
+        "<svg width=20 height=20 style='display:block'><use href='{o}/sprite.svg#s' width=20 height=20/></svg>\
+         <svg width=20 height=20 style='display:block'><image href='{o}/sprite.svg' width=1 height=1/></svg>"
+    );
+    let (mut h, rx) = waking_host(&p);
+    show(&mut h, "a", &meta(&p), &body);
+    render(&mut h);
+    arrive(&mut h, &rx, 1);
+    std::thread::sleep(Duration::from_millis(200));
+    render(&mut h);
+    assert_eq!(
+        srv.paths(),
+        vec!["/sprite.svg"],
+        "the <image>'s fetch alone"
+    );
+    assert_eq!(
+        pixel(&h, "a", 10, 10),
+        BLACK,
+        "a <use> draws no network sprite"
+    );
+}

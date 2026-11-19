@@ -1,8 +1,7 @@
-From 985245411e528a3cdbf833828ba92fce75323e2c Mon Sep 17 00:00:00 2001
+From 1fdc431af37359288503abf7bd8eeee5de7d7585 Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 19 Nov 2026 16:35:25 +0100
-Subject: [PATCH 104/104] blitz-dom: a <use> draws an element of another SVG
- resource
+Subject: [PATCH] blitz-dom: a <use> draws an element of another SVG resource
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -26,11 +25,43 @@ and each element's copy is written once and kept with it. The resource
 arriving late, sent again, or the href changing constructs the `<svg>`
 again.
 ---
+ packages/blitz-dom/src/document.rs         |  10 +-
  packages/blitz-dom/src/layout/construct.rs |   1 +
  packages/blitz-dom/src/mutator.rs          |   4 +-
- packages/blitz-dom/src/svg_image.rs        | 476 ++++++++++++++++++++-
- 3 files changed, 461 insertions(+), 20 deletions(-)
+ packages/blitz-dom/src/net.rs              |  18 +-
+ packages/blitz-dom/src/svg_image.rs        | 496 +++++++++++++++++++--
+ 5 files changed, 490 insertions(+), 39 deletions(-)
 
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index dd169e409..7a14e5893 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -388,10 +388,10 @@ pub struct BaseDocument {
+     /// (image_source.rs): chosen again when the device changes.
+     pub(crate) chosen_image_sources: HashMap<NodeId, String>,
+ 
+-    /// What inline SVG `<image>` elements refer to, by resolved URL
+-    /// (svg_image.rs).
++    /// What inline SVG `<image>` and `<use>` elements refer to, by
++    /// resolved URL and whether it was fetched as an image (svg_image.rs).
+     #[cfg(feature = "svg")]
+-    pub(crate) svg_images: HashMap<String, crate::svg_image::SvgImage>,
++    pub(crate) svg_images: HashMap<(String, bool), crate::svg_image::SvgImage>,
+ 
+     /// Nodes whose `background-image`/`mask-image` layers need flushing to
+     /// dedicated storage on the node because their style changed (populated by
+@@ -1714,9 +1714,9 @@ impl BaseDocument {
+                 self.apply_loaded_image(url, image);
+             }
+             #[cfg(feature = "svg")]
+-            Resource::SvgImage(bytes) => {
++            Resource::SvgImage(bytes, image) => {
+                 if let Some(url) = res.resolved_url.as_ref() {
+-                    self.svg_image_loaded(url, bytes);
++                    self.svg_image_loaded(url, image, bytes);
+                 }
+             }
+             Resource::DocumentSrc(html) => {
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
 index c56525aed..fda1ccc96 100644
 --- a/packages/blitz-dom/src/layout/construct.rs
@@ -65,11 +96,55 @@ index 8e48aabb9..5d6ac0c3b 100644
                      self.eager_op_queue.push(SpecialOp::LoadSvgImage(node_id))
                  }
                  "iframe" => self.eager_op_queue.push(SpecialOp::LoadIframe(node_id)),
+diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
+index b570edf94..d8a00cc42 100644
+--- a/packages/blitz-dom/src/net.rs
++++ b/packages/blitz-dom/src/net.rs
+@@ -71,10 +71,10 @@ pub enum Resource {
+     Font(Bytes, FontFaceOverrides),
+     /// HTML fetched for an `<iframe>` element's `src`
+     DocumentSrc(String),
+-    /// What an inline SVG's `<image>` refers to, as fetched: usvg decodes it
+-    /// when it parses the `<svg>`.
++    /// What an inline SVG's `<image>` or `<use>` refers to, as fetched, and
++    /// whether as an image: usvg decodes it when it parses the `<svg>`.
+     #[cfg(feature = "svg")]
+-    SvgImage(Arc<Vec<u8>>),
++    SvgImage(Arc<Vec<u8>>, bool),
+     None,
+ }
+ 
+@@ -775,16 +775,22 @@ impl NetHandler for ResourceHandler<DocumentSrcHandler> {
+     }
+ }
+ 
+-/// Fetches what an inline SVG's `<image>` refers to (svg_image.rs).
++/// Fetches what an inline SVG's `<image>` (`image`) or `<use>` refers to
++/// (svg_image.rs).
+ #[cfg(feature = "svg")]
+-pub(crate) struct SvgImageHandler;
++pub(crate) struct SvgImageHandler {
++    pub(crate) image: bool,
++}
+ 
+ #[cfg(feature = "svg")]
+ impl NetHandler for ResourceHandler<SvgImageHandler> {
+     fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
+         self.respond(
+             resolved_url,
+-            Ok(Resource::SvgImage(Arc::new(bytes.to_vec()))),
++            Ok(Resource::SvgImage(
++                Arc::new(bytes.to_vec()),
++                self.data.image,
++            )),
+         )
+     }
+ }
 diff --git a/packages/blitz-dom/src/svg_image.rs b/packages/blitz-dom/src/svg_image.rs
-index aa4454dfe..146a6e0d4 100644
+index aa4454dfe..d3fd21fde 100644
 --- a/packages/blitz-dom/src/svg_image.rs
 +++ b/packages/blitz-dom/src/svg_image.rs
-@@ -7,9 +7,21 @@
+@@ -7,9 +7,25 @@
  //! fetched when it joins the document or its href changes, like an `<img>`;
  //! its bytes are kept by URL; and when they arrive, the `<svg>` it is in is
  //! constructed, and so parsed, again. `data:` URLs are left to usvg.
@@ -78,7 +153,11 @@ index aa4454dfe..146a6e0d4 100644
 +//! (`href="sprite.svg#icon"`) is fetched the same way, by the resource's
 +//! URL, but with the empty destination: what it fetches is a document, not
 +//! an image, and an embedder whose policy goes by destination (CSP's
-+//! `img-src`, say) is not to take it for one. usvg resolves only
++//! `img-src`, say) is not to take it for one. So what a `<use>` fetched
++//! and what an `<image>` fetched from one URL are kept apart, and a
++//! `<use>` draws only the first: an embedder that answers the empty
++//! destination with nothing has it draw nothing, whatever an `<image>`
++//! was let fetch. usvg resolves only
 +//! references within the document it parses, so the element, and whatever
 +//! in its resource it refers to in turn, is copied into the `<svg>`'s
 +//! `<defs>` under ids of its own, and the `<use>` refers to the copy:
@@ -93,7 +172,14 @@ index aa4454dfe..146a6e0d4 100644
  
  use markup5ever::ns;
  
-@@ -22,27 +34,48 @@ use crate::{BaseDocument, Node, NodeId};
+@@ -17,32 +33,52 @@ use crate::layout::damage::ALL_DAMAGE;
+ use crate::net::{ResourceHandler, SvgImageHandler};
+ use crate::{BaseDocument, Node, NodeId};
+ 
+-/// An image `<image>` elements refer to, by its resolved URL.
++/// What `<image>` or `<use>` elements refer to, by its resolved URL and
++/// whether it is fetched as an image (for `<image>`) or not (`<use>`).
+ #[derive(Default)]
  pub(crate) struct SvgImage {
      /// Its bytes, once they arrived (empty: it failed).
      bytes: Option<Arc<Vec<u8>>>,
@@ -101,8 +187,6 @@ index aa4454dfe..146a6e0d4 100644
 +    /// The `<image>` and `<use>` elements that showed it, to construct
 +    /// again.
      users: Vec<NodeId>,
-+    /// An `<image>` refers to it: it is fetched as an image.
-+    image: bool,
 +    /// Its elements, for `<use>`: parsed the first time a `<use>` draws
 +    /// one, until other bytes arrive. `None`: not SVG.
 +    sprite: OnceLock<Option<Sprite>>,
@@ -148,7 +232,7 @@ index aa4454dfe..146a6e0d4 100644
          })
  }
  
-@@ -83,11 +116,12 @@ impl BaseDocument {
+@@ -83,63 +119,75 @@ impl BaseDocument {
          let Some(node) = self.get_node(image) else {
              return;
          };
@@ -163,17 +247,16 @@ index aa4454dfe..146a6e0d4 100644
              .collect();
          let mut known = false;
          for url in urls {
-@@ -95,22 +129,32 @@ impl BaseDocument {
+-            let entry = self.svg_images.entry(url.to_string()).or_default();
++            let entry = self
++                .svg_images
++                .entry((url.to_string(), image_only))
++                .or_default();
              if !entry.users.contains(&image) {
                  entry.users.push(image);
              }
--            if entry.users.len() > 1 || entry.bytes.is_some() {
+             if entry.users.len() > 1 || entry.bytes.is_some() {
 -                // Fetched, or being fetched, for another <image>.
-+            // Fetched as a document for a `<use>` before: an `<image>`
-+            // fetches it as an image.
-+            let refetch = image_only && !entry.image;
-+            entry.image |= image_only;
-+            if (entry.users.len() > 1 || entry.bytes.is_some()) && !refetch {
 +                // Fetched, or being fetched, for another element.
                  known |= entry.bytes.is_some();
                  continue;
@@ -201,7 +284,23 @@ index aa4454dfe..146a6e0d4 100644
              ResourceHandler::boxed(
                  self.tx.clone(),
                  self.id(),
-@@ -128,12 +172,13 @@ impl BaseDocument {
+                 None,
+                 self.shell_provider.clone(),
+-                SvgImageHandler,
++                SvgImageHandler { image },
+             ),
+         );
+     }
+ 
+-    /// What an `<image>` refers to arrived from `url`: every `<svg>` that
+-    /// shows it is constructed again.
+-    pub(crate) fn svg_image_loaded(&mut self, url: &str, bytes: Arc<Vec<u8>>) {
+-        let Some(entry) = self.svg_images.get_mut(url) else {
++    /// What an `<image>` (`image`) or a `<use>` refers to arrived from
++    /// `url`: every `<svg>` that shows it is constructed again.
++    pub(crate) fn svg_image_loaded(&mut self, url: &str, image: bool, bytes: Arc<Vec<u8>>) {
++        let key = (url.to_string(), image);
++        let Some(entry) = self.svg_images.get_mut(&key) else {
              return;
          };
          entry.bytes = Some(bytes);
@@ -216,15 +315,23 @@ index aa4454dfe..146a6e0d4 100644
              })
              .collect();
          for &image in &users {
-@@ -150,8 +195,117 @@ impl BaseDocument {
+             self.reconstruct_svg_of(image);
+         }
+-        if let Some(entry) = self.svg_images.get_mut(url) {
++        if let Some(entry) = self.svg_images.get_mut(&key) {
+             entry.users = users;
+         }
+     }
+@@ -150,8 +198,118 @@ impl BaseDocument {
          let Some(url) = self.url.resolve_relative(href) else {
              return;
          };
 -        if self.svg_images.contains_key(url.as_str()) {
 -            self.fetch_svg_image(url);
-+        if let Some(entry) = self.svg_images.get(url.as_str()) {
-+            let image = entry.image;
-+            self.fetch_svg_image(url, image);
++        for image in [true, false] {
++            if self.svg_images.contains_key(&(url.to_string(), image)) {
++                self.fetch_svg_image(url.clone(), image);
++            }
 +        }
 +    }
 +
@@ -271,7 +378,7 @@ index aa4454dfe..146a6e0d4 100644
 +        for (range, url, id) in &uses {
 +            let Some(sprite) = self
 +                .svg_images
-+                .get(url)
++                .get(&(url.clone(), false))
 +                .filter(|i| i.bytes.as_ref().is_some_and(|b| !b.is_empty()))
 +                .and_then(|i| {
 +                    i.sprite
@@ -336,7 +443,16 @@ index aa4454dfe..146a6e0d4 100644
          }
      }
  
-@@ -182,3 +336,289 @@ impl BaseDocument {
+@@ -172,7 +330,7 @@ impl BaseDocument {
+                 let bytes = self
+                     .url
+                     .resolve_relative(href)
+-                    .and_then(|url| self.svg_images.get(url.as_str())?.bytes.clone())
++                    .and_then(|url| self.svg_images.get(&(url.to_string(), true))?.bytes.clone())
+                     .filter(|b| !b.is_empty());
+                 if let Some(bytes) = bytes {
+                     out.insert(href.to_string(), bytes);
+@@ -182,3 +340,289 @@ impl BaseDocument {
          out
      }
  }

@@ -7,7 +7,8 @@ upstream-fit: maybe
 **What it changes:** `<use href="sprite.svg#icon">` in an inline SVG.
 Its resource is fetched through the document's `NetProvider`, as an
 inline SVG's `<image>` is (0030, 0032), but with the empty destination,
-not as an image, and kept by URL. When the `<svg>` is constructed, the
+not as an image, and kept apart from what an `<image>` fetched from the
+same URL: a `<use>` draws only what was fetched for it. When the `<svg>` is constructed, the
 element `icon` names is copied into its `<defs>`, with everything that
 element refers to in its resource (`href="#…"`, `url(#…)`), under an id
 prefix that is nowhere in the `<svg>`. The `<use>` then refers to the

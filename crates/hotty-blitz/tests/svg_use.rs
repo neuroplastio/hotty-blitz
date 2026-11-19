@@ -212,3 +212,22 @@ fn a_deleted_sprite_is_not_drawn_in_a_new_document() {
     draw(&mut h);
     assert_eq!(pixel(&h, 10, 10), BLUE);
 }
+
+#[test]
+fn a_sprite_an_image_shows_too_is_drawn_by_a_use() {
+    // Kept apart from what the <image> fetched, the <use>'s own fetch of a
+    // cid: sprite draws, before and after the <image> in the document, and
+    // when it is sent again.
+    let mut h = host();
+    res(&mut h, "sprite", &sprite("currentColor"));
+    let html = "<body style='margin:0;background:#000'>\
+         <svg width=20 height=20 style='display:block'><image href='cid:sprite' width=1 height=1/></svg>\
+         <svg width=20 height=20 style='display:block;color:red'><use href='cid:sprite#square' width=20 height=20/></svg>\
+         <svg width=20 height=20 style='display:block'><image href='cid:sprite' width=1 height=1/></svg>\
+         </body>";
+    show(&mut h, html);
+    assert_eq!(pixel(&h, 10, 30), RED);
+    res(&mut h, "sprite", &sprite("#00f"));
+    draw(&mut h);
+    assert_eq!(pixel(&h, 10, 30), BLUE, "sent again");
+}
