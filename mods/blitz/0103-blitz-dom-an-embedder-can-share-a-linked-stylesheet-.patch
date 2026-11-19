@@ -1,0 +1,301 @@
+From 8959dbf638797d75d5250844991efea8199416ab Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 19 Nov 2026 16:16:37 +0100
+Subject: [PATCH] blitz-dom: an embedder can share a linked stylesheet's parsed
+ contents
+
+A document parses every stylesheet it links, even when the embedder
+delivers the same bytes to many documents. `DocumentConfig` now takes
+`SharedStylesheets`: when a linked sheet's bytes arrive, the document
+asks it for the sheet's parsed contents, and wraps them in a stylesheet
+of its own (its own lock, its own `media`) instead of parsing.
+
+`parse_shared_stylesheet` parses contents any document can read: on a
+read-only lock, as Stylo's user agent sheets are, with `@import`s
+resolved while it parses. An import it cannot resolve then makes the
+sheet unshareable, since a pending import is written in later through
+the sheet's lock. A shared sheet's imports have their `@font-face`
+fonts fetched by the document, as its own imports do.
+---
+ packages/blitz-dom/src/config.rs   |   4 +
+ packages/blitz-dom/src/document.rs |   4 +
+ packages/blitz-dom/src/iframe.rs   |   1 +
+ packages/blitz-dom/src/mutator.rs  |   1 +
+ packages/blitz-dom/src/net.rs      | 172 ++++++++++++++++++++++++++++-
+ 5 files changed, 180 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/config.rs b/packages/blitz-dom/src/config.rs
+index f08bf6074..f13a217b7 100644
+--- a/packages/blitz-dom/src/config.rs
++++ b/packages/blitz-dom/src/config.rs
+@@ -44,6 +44,9 @@ pub struct DocumentConfig {
+     pub user_stylesheets: Vec<String>,
+     /// Net provider to handle network requests for resources
+     pub net_provider: Option<Arc<dyn NetProvider>>,
++    /// Linked stylesheets parsed once and shared between documents, which
++    /// then parse only what this does not have
++    pub shared_stylesheets: Option<Arc<dyn crate::net::SharedStylesheets>>,
+     /// Navigation provider to handle link clicks and form submissions
+     pub navigation_provider: Option<Arc<dyn NavigationProvider>>,
+     /// Shell provider to redraw requests, clipboard, etc
+@@ -84,6 +87,7 @@ impl Default for DocumentConfig {
+             ua_stylesheets: vec![UserAgentStylesheet::default_sheet()],
+             user_stylesheets: Vec::new(),
+             net_provider: None,
++            shared_stylesheets: None,
+             navigation_provider: None,
+             shell_provider: None,
+             html_parser_provider: None,
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index d14cdbfbe..dd169e409 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -412,6 +412,8 @@ pub struct BaseDocument {
+     // Service providers
+     /// Network provider. Can be used to fetch assets.
+     pub net_provider: Arc<dyn NetProvider>,
++    /// Linked stylesheets the embedder shares between documents, parsed.
++    pub shared_stylesheets: Option<Arc<dyn crate::net::SharedStylesheets>>,
+     /// Navigation provider. Can be used to navigate to a new page (bubbles up the event
+     /// on e.g. clicking a Link)
+     pub navigation_provider: Arc<dyn NavigationProvider>,
+@@ -596,6 +598,7 @@ impl BaseDocument {
+             pending_critical_resources: HashSet::new(),
+             controls_to_form: HashMap::new(),
+             net_provider,
++            shared_stylesheets: config.shared_stylesheets,
+             navigation_provider,
+             shell_provider,
+             html_parser_provider,
+@@ -1421,6 +1424,7 @@ impl BaseDocument {
+                                     guard: self.guard.clone(),
+                                     net_provider: self.net_provider.clone(),
+                                     abort_signal: self.abort_signal.clone(),
++                                    shared_stylesheets: self.shared_stylesheets.clone(),
+                                 },
+                             ),
+                         );
+diff --git a/packages/blitz-dom/src/iframe.rs b/packages/blitz-dom/src/iframe.rs
+index d694e24b7..7c3b72dc6 100644
+--- a/packages/blitz-dom/src/iframe.rs
++++ b/packages/blitz-dom/src/iframe.rs
+@@ -60,6 +60,7 @@ impl BaseDocument {
+             ua_stylesheets: vec![UserAgentStylesheet::default_sheet()],
+             user_stylesheets: Vec::new(),
+             net_provider: Some(self.net_provider.clone()),
++            shared_stylesheets: self.shared_stylesheets.clone(),
+             navigation_provider: Some(Arc::new(IframeNavigationProvider {
+                 node_id,
+                 tx: self.tx.clone(),
+diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
+index cb68955c4..8e48aabb9 100644
+--- a/packages/blitz-dom/src/mutator.rs
++++ b/packages/blitz-dom/src/mutator.rs
+@@ -1571,6 +1571,7 @@ impl<'doc> DocumentMutator<'doc> {
+                 guard: self.doc.guard.clone(),
+                 net_provider: self.doc.net_provider.clone(),
+                 abort_signal: self.doc.abort_signal.clone(),
++                shared_stylesheets: self.doc.shared_stylesheets.clone(),
+             },
+         );
+ 
+diff --git a/packages/blitz-dom/src/net.rs b/packages/blitz-dom/src/net.rs
+index 6bf2c68df..cd25cd8c0 100644
+--- a/packages/blitz-dom/src/net.rs
++++ b/packages/blitz-dom/src/net.rs
+@@ -14,8 +14,8 @@ use style::{
+     shared_lock::SharedRwLock,
+     shared_lock::{Locked, SharedRwLockReadGuard},
+     stylesheets::{
+-        CssRule, DocumentStyleSheet, ImportRule, Origin, Stylesheet, StylesheetInDocument,
+-        StylesheetLoader as ServoStylesheetLoader, UrlExtraData,
++        CssRule, DocumentStyleSheet, ImportRule, Origin, Stylesheet, StylesheetContents,
++        StylesheetInDocument, StylesheetLoader as ServoStylesheetLoader, UrlExtraData,
+         import_rule::{ImportLayer, ImportSheet, ImportSupportsCondition},
+     },
+     values::{CssUrl, SourceLocation},
+@@ -148,6 +148,139 @@ pub struct StylesheetHandler {
+     pub guard: SharedRwLock,
+     pub net_provider: Arc<dyn NetProvider>,
+     pub abort_signal: Option<AbortSignal>,
++    pub shared_stylesheets: Option<Arc<dyn SharedStylesheets>>,
++}
++
++/// Stylesheets an embedder parses once and shares between its documents.
++///
++/// A document asks for a linked stylesheet's contents when its bytes
++/// arrive. Contents it gets here are the ones [`parse_shared_stylesheet`]
++/// made: on a read-only lock, so that any document can read them, and with
++/// their `@import`s already in. The document wraps them in a stylesheet of
++/// its own, with its own `media`, and parses nothing.
++pub trait SharedStylesheets: Send + Sync + 'static {
++    /// The parsed contents of the stylesheet at `url`, delivered as `bytes`
++    /// to document `doc_id`; `None` and the document parses `bytes` itself.
++    fn contents(
++        &self,
++        doc_id: usize,
++        url: &Url,
++        bytes: &Bytes,
++    ) -> Option<ServoArc<StylesheetContents>>;
++}
++
++/// Parses an author stylesheet so that any number of documents can share
++/// it ([`SharedStylesheets`]): on a read-only lock, so nothing can write
++/// to it, as Stylo does the user agent's sheets. Its `@import`s are
++/// resolved as it is parsed, with `import`, which returns an imported
++/// sheet's bytes: `None` from it, for any `@import`, and so for this sheet,
++/// whose import could arrive later and could not be written in.
++pub fn parse_shared_stylesheet(
++    bytes: &[u8],
++    url: &Url,
++    import: &dyn Fn(&Url) -> Option<Bytes>,
++) -> Option<ServoArc<StylesheetContents>> {
++    let lock = SharedRwLock::read_only();
++    let loader = SharedImportLoader {
++        import,
++        depth: 0,
++        missing: std::cell::Cell::new(false),
++    };
++    let sheet = loader.parse(bytes, url, ServoArc::new(lock.wrap(MediaList::empty())))?;
++    let contents = sheet.contents.read_with(&lock.read()).clone();
++    Some(contents)
++}
++
++/// Resolves a shared stylesheet's `@import`s as it is parsed.
++struct SharedImportLoader<'a> {
++    import: &'a dyn Fn(&Url) -> Option<Bytes>,
++    depth: usize,
++    missing: std::cell::Cell<bool>,
++}
++
++impl SharedImportLoader<'_> {
++    fn parse(
++        &self,
++        bytes: &[u8],
++        url: &Url,
++        media: ServoArc<Locked<MediaList>>,
++    ) -> Option<Stylesheet> {
++        let rewritten = std::str::from_utf8(bytes)
++            .ok()
++            .and_then(crate::css_compat::rewrite_legacy_widget_pseudo_rules);
++        let sheet = Stylesheet::from_bytes(
++            rewritten.as_deref().map(str::as_bytes).unwrap_or(bytes),
++            url.clone().into(),
++            None,
++            None,
++            Origin::Author,
++            media,
++            SharedRwLock::read_only(),
++            Some(self),
++            None,
++            QuirksMode::NoQuirks,
++        );
++        (!self.missing.get()).then_some(sheet)
++    }
++}
++
++impl ServoStylesheetLoader for SharedImportLoader<'_> {
++    fn request_stylesheet(
++        &self,
++        url: CssUrl,
++        location: SourceLocation,
++        lock: &SharedRwLock,
++        media: ServoArc<Locked<MediaList>>,
++        supports: Option<ImportSupportsCondition>,
++        layer: ImportLayer,
++    ) -> ServoArc<Locked<ImportRule>> {
++        // As a document's loader does: too deep, or not supported, refused.
++        let stylesheet =
++            if self.depth >= MAX_IMPORT_DEPTH || !supports.as_ref().is_none_or(|s| s.enabled) {
++                ImportSheet::new_refused()
++            } else {
++                let nested = SharedImportLoader {
++                    import: self.import,
++                    depth: self.depth + 1,
++                    missing: std::cell::Cell::new(false),
++                };
++                let sheet = url.url().and_then(|u| {
++                    let bytes = (self.import)(&**u)?;
++                    nested.parse(&bytes, &**u, media)
++                });
++                match sheet {
++                    Some(sheet) => ImportSheet::Sheet(ServoArc::new(sheet)),
++                    None => {
++                        self.missing.set(true);
++                        ImportSheet::new_refused()
++                    }
++                }
++            };
++        ServoArc::new(lock.wrap(ImportRule {
++            url,
++            stylesheet,
++            supports,
++            layer,
++            source_location: location,
++        }))
++    }
++}
++
++/// The stylesheets a shared sheet imports, all the way down, for their
++/// `@font-face` rules.
++fn imported_sheets(
++    rules: &[CssRule],
++    guard: &SharedRwLockReadGuard,
++    out: &mut Vec<ServoArc<Stylesheet>>,
++) {
++    for rule in rules {
++        if let CssRule::Import(import) = rule
++            && let ImportSheet::Sheet(sheet) = &import.read_with(guard).stylesheet
++        {
++            out.push(sheet.clone());
++            imported_sheets(sheet.contents(guard).rules(guard), guard, out);
++        }
++    }
+ }
+ 
+ impl NetHandler for ResourceHandler<StylesheetHandler> {
+@@ -156,6 +289,41 @@ impl NetHandler for ResourceHandler<StylesheetHandler> {
+     }
+ 
+     fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
++        if let Some(shared) = &self.data.shared_stylesheets
++            && let Some(contents) = shared.contents(self.doc_id, &self.data.source_url, &bytes)
++        {
++            let guard = &self.data.guard;
++            let sheet = Stylesheet {
++                contents: guard.wrap(contents),
++                shared_lock: guard.clone(),
++                media: ServoArc::new(guard.wrap(MediaList::empty())),
++                disabled: Default::default(),
++            };
++            // The document fetches the fonts of the sheet it is given; those
++            // of the sheets it imports are fetched here, as a document's own
++            // imports fetch theirs when they arrive.
++            let mut imports = Vec::new();
++            {
++                let read = guard.read();
++                imported_sheets(sheet.contents(&read).rules(&read), &read, &mut imports);
++                for import in &imports {
++                    fetch_font_face(
++                        self.tx.clone(),
++                        self.doc_id,
++                        self.node_id,
++                        import,
++                        &self.data.net_provider,
++                        &self.shell_provider,
++                        &read,
++                        self.data.abort_signal.as_ref(),
++                    );
++                }
++            }
++            return self.respond(
++                resolved_url,
++                Ok(Resource::Css(DocumentStyleSheet(ServoArc::new(sheet)))),
++            );
++        }
+         // NOTE(Nico): I don't *think* external stylesheets should have HTML entities escaped
+         // let escaped_css = html_escape::decode_html_entities(css);
+ 
+-- 
+2.56.0
+
