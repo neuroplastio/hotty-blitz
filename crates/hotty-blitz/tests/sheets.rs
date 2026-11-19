@@ -231,3 +231,48 @@ fn each_link_keeps_its_own_media_on_a_shared_sheet() {
     assert_ne!(pixel(&h, "z", 99, 39), RED);
     assert_eq!(h.sheets_parsed(), 1);
 }
+
+/// Places surface `s` `cols` cells wide, and draws.
+fn place(h: &mut Host, s: &str, cols: &str) {
+    cmd(h, &[("a", "place"), ("s", s), ("c", cols), ("r", "2")], "");
+    draw(h);
+}
+
+#[test]
+fn documents_with_the_same_sheets_keep_their_own_media_query_results() {
+    // Their author cascade data is shared (mods/stylo), but only where the
+    // sheet's media queries come out the same.
+    let mut h = host();
+    res(
+        &mut h,
+        "theme",
+        "html{background:#f00} @media (min-width: 200px){html{background:#00f}}",
+    );
+    doc(&mut h, "x", &linking("cid:theme", ""));
+    cmd(
+        &mut h,
+        &[("a", "doc"), ("s", "y")],
+        &linking("cid:theme", ""),
+    );
+    place(&mut h, "y", "30");
+    assert_eq!(pixel(&h, "x", 99, 39), RED, "100 px wide");
+    assert_eq!(pixel(&h, "y", 299, 39), BLUE, "300 px wide");
+    // Resized, each takes the other's.
+    place(&mut h, "x", "30");
+    place(&mut h, "y", "10");
+    assert_eq!(pixel(&h, "x", 299, 39), BLUE);
+    assert_eq!(pixel(&h, "y", 99, 39), RED);
+    // A document with a sheet of its own as well has its rules.
+    doc(
+        &mut h,
+        "z",
+        &format!(
+            "{}<style>html{{background:#008000}}</style>",
+            linking("cid:theme", "")
+        ),
+    );
+    assert_eq!(pixel(&h, "z", 99, 39), GREEN);
+    doc(&mut h, "z", &linking("cid:theme", ""));
+    assert_eq!(pixel(&h, "z", 99, 39), RED);
+    assert_eq!(pixel(&h, "x", 299, 39), BLUE);
+}
