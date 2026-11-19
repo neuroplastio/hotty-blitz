@@ -8,17 +8,17 @@ upstream-fit: maybe
 Its resource is fetched through the document's `NetProvider`, as an
 inline SVG's `<image>` is (0030, 0032), but with the empty destination,
 not as an image, and kept apart from what an `<image>` fetched from the
-same URL: a `<use>` draws only what was fetched for it. When the `<svg>` is constructed, the
-element `icon` names is copied into its `<defs>`, with everything that
-element refers to in its resource (`href="#…"`, `url(#…)`), under an id
-prefix that is nowhere in the `<svg>`. The `<use>` then refers to the
-copy, so it is drawn in the context of the `<use>`, `currentColor`
-included, as a same-document `<use>` is (0070). The resource is parsed
-once, the first time a `<use>` draws from it, and each element's copy is
-written once. A resource that arrives late, is sent again, or a changed
-href constructs the `<svg>` again. An href with no fragment fetches
-nothing. A sprite's own `<image>`, or a `<use>` of a third resource, is
-copied but not drawn.
+same URL: a `<use>` draws only what was fetched for it. When the `<svg>`
+is constructed, the element `icon` names is copied into its `<defs>`,
+with everything that element refers to in its resource (`href="#…"`,
+`url(#…)`), under an id prefix that is nowhere in the `<svg>`. The
+`<use>` then refers to the copy, so it is drawn in the context of the
+`<use>`, `currentColor` included, as a same-document `<use>` is (0070).
+The resource is parsed once, the first time a `<use>` draws from it, and
+each element's copy is written once. A resource that arrives late, is
+sent again, or a changed href constructs the `<svg>` again. An href with
+no fragment fetches nothing. A sprite's own `<image>`, or a `<use>` of a
+third resource, is copied but not drawn.
 
 **Why we carry it:** SPEC §7.1 has a host resolve `cid:` in an SVG
 `href`, and a sprite sent once as a resource is the way a hotty program

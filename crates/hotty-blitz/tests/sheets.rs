@@ -420,11 +420,16 @@ fn a_sheet_no_document_holds_is_not_kept() {
     doc(&mut h, "x", &linking("cid:theme", " data-n=2"));
     assert_eq!(h.sheets_parsed(), 1);
     // Gone: the parse goes with it, and the next document parses again.
+    // (Stylo's author cache, process-wide, holds the gone document's data,
+    // and so the parse, until the next author rebuild in the process: the
+    // second surface's, with a sheet of its own.)
     cmd(&mut h, &[("a", "doc"), ("s", "x")], "<p>nothing</p>");
     draw(&mut h);
+    res(&mut h, "other", "html{background:#00f}");
+    doc(&mut h, "y", &linking("cid:other", ""));
     doc(&mut h, "x", &linking("cid:theme", ""));
     assert_eq!(pixel(&h, "x", 99, 39), RED);
-    assert_eq!(h.sheets_parsed(), 2);
+    assert_eq!(h.sheets_parsed(), 3, "theme twice, and other");
 }
 
 #[test]

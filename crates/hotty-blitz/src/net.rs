@@ -453,7 +453,9 @@ impl Inner {
     /// Drops the parsed sheets that no document holds any more: one parsed
     /// for a document that is gone costs memory the resource quota does not
     /// count. (A document replaced is dropped after its successor is built,
-    /// so a tab switch keeps them.)
+    /// so a tab switch keeps them.) A parse is also kept while Stylo's
+    /// author cache holds a gone document's data built from it, until the
+    /// next author rebuild in the process.
     fn drop_unused_sheets(&mut self) {
         self.sheets.retain(|_, s| !s.contents.is_unique());
     }
