@@ -21,7 +21,7 @@ ends. Other queries, one with no `v` too, get `EVERSION`, its detail
 `0.7,0.8`.
 
 0.8.x speaks hotty 0.8 and 0.7; the patch number is this repository's own.
-The capabilities name it: `"host": "hotty-blitz"`, `"version": "0.8.11"`.
+The capabilities name it: `"host": "hotty-blitz"`, `"version": "0.8.12"`.
 
 A program can scroll with a `scroll` delta op, by the steps a bound key
 would take from its target, or from the root without one. `a=hit` asks
