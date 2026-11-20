@@ -1,0 +1,132 @@
+From 3e20a2a9306e75750fdac76c346decda435f39ef Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 20 Nov 2026 18:27:11 +0100
+Subject: [PATCH] blitz-dom: a scroll offset comes back into range after layout
+
+A box or the viewport that grew, or whose content shrank, kept the
+offset it had, past its new end: the scrollbar went, and the content's
+top stayed cut off with nothing to scroll it back. A browser clamps
+every scroll container's offset after layout. `resolve` now does too,
+for the boxes whose layout changed and for the viewport, without
+showing a scrollbar, and `take_clamped_scrollers` lists what it moved
+for embedders that track their own damage.
+---
+ packages/blitz-dom/src/document.rs  | 13 ++++++++
+ packages/blitz-dom/src/resolve.rs   |  1 +
+ packages/blitz-dom/src/scrolling.rs | 50 +++++++++++++++++++++++++++++
+ 3 files changed, 64 insertions(+)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index 36f22505d..bb0563240 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -407,6 +407,9 @@ pub struct BaseDocument {
+     /// Elements whose animated style moved at the last resolve
+     /// (`RecalcStyle::animated_restyled`), for [`Self::take_animated_nodes`].
+     pub(crate) pending_animated_nodes: Vec<NodeId>,
++    /// Scrollers whose offset the last resolve brought back into range
++    /// (`clamp_scroll_offsets`), for [`Self::take_clamped_scrollers`].
++    pub(crate) clamped_scrollers: Vec<NodeId>,
+ 
+     // Tracks in-flight "critical" resources (e.g. stylesheets linked from the `<head>`),
+     // keyed by request id
+@@ -598,6 +601,7 @@ impl BaseDocument {
+             pending_style_image_nodes: Vec::new(),
+             pending_placeholder_nodes: Vec::new(),
+             pending_animated_nodes: Vec::new(),
++            clamped_scrollers: Vec::new(),
+             pending_critical_resources: HashSet::new(),
+             controls_to_form: HashMap::new(),
+             net_provider,
+@@ -2714,6 +2718,15 @@ impl BaseDocument {
+         self.next_animation_change
+     }
+ 
++    /// The scrollers whose offset the last resolve brought back into range,
++    /// because layout left them less to scroll (a box or the viewport grew,
++    /// or its content shrank): the elements, and the root element for the
++    /// viewport. An embedder that tracks its own damage paints these again;
++    /// the list is empty again after.
++    pub fn take_clamped_scrollers(&mut self) -> Vec<NodeId> {
++        std::mem::take(&mut self.clamped_scrollers)
++    }
++
+     /// The elements whose animated style the last resolve moved, with the
+     /// `::before`/`::after` boxes their style carries: a CSS animation or
+     /// transition changed their computed style, so what they paint or where
+diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
+index d3d89013e..14d4b546f 100644
+--- a/packages/blitz-dom/src/resolve.rs
++++ b/packages/blitz-dom/src/resolve.rs
+@@ -183,6 +183,7 @@ impl BaseDocument {
+             self.flush_pending_placeholders();
+             self.resolve_layout();
+         }
++        self.clamp_scroll_offsets();
+         self.nodes.bump_geometry_generation();
+ 
+         // Resolve transforms
+diff --git a/packages/blitz-dom/src/scrolling.rs b/packages/blitz-dom/src/scrolling.rs
+index d5189087b..63c7ab299 100644
+--- a/packages/blitz-dom/src/scrolling.rs
++++ b/packages/blitz-dom/src/scrolling.rs
+@@ -534,6 +534,56 @@ impl BaseDocument {
+         }
+     }
+ 
++    /// Brings every scroll offset that layout left out of range back into it, as a browser does
++    /// after each layout: a box (or the viewport) that grew, or whose content shrank, has less
++    /// to scroll than it had. Only the boxes whose layout changed are looked at, and the
++    /// viewport, whose range also changes with the window. The offset moves as layout moves
++    /// it, so no scrollbar shows for it, and the scrollers it moved are kept for
++    /// [`BaseDocument::take_clamped_scrollers`].
++    pub(crate) fn clamp_scroll_offsets(&mut self) {
++        let root = self.try_root_element().map(|n| n.id);
++        let mut targets: Vec<ScrollTarget> = self
++            .geometry_changed
++            .iter()
++            .copied()
++            .filter(|&id| {
++                Some(id) != root
++                    && self
++                        .nodes
++                        .get(id)
++                        .is_some_and(|n| *n.scroll_offset() != Point::ZERO)
++            })
++            .map(ScrollTarget::Node)
++            .collect();
++        if self.viewport_scroll() != Point::ZERO {
++            targets.push(ScrollTarget::Viewport);
++        }
++        for target in targets {
++            // Programmatic: an `overflow: hidden` box keeps what a script scrolled it to.
++            let (current, min, max) = self.scroll_state(target, true);
++            let end = Point {
++                x: current.x.clamp(min.x, max.x),
++                y: current.y.clamp(min.y, max.y),
++            };
++            if end == current {
++                continue;
++            }
++            let clamped = match target {
++                ScrollTarget::Viewport => {
++                    self.set_viewport_scroll(end);
++                    root
++                }
++                ScrollTarget::Node(id) => {
++                    if let Some(node) = self.nodes.get_mut(id) {
++                        *node.scroll_offset_mut() = end;
++                    }
++                    Some(id)
++                }
++            };
++            self.clamped_scrollers.extend(clamped);
++        }
++    }
++
+     /// Start a smooth (animated) scroll towards the given absolute scroll offset. The
+     /// animation is advanced each frame in [`BaseDocument::resolve_scroll_animation`].
+     fn start_scroll_animation(&mut self, target: ScrollTarget, end: Point<f64>) {
+-- 
+2.56.0
+

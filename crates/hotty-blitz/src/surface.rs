@@ -1171,6 +1171,12 @@ impl Surface {
                 .saturating_duration_since(self.started)
                 .as_secs_f64(),
         );
+        // What layout left with less to scroll (the viewport or a box grew,
+        // its content shrank), Blitz brought back into range, as a browser
+        // does after layout (mods/blitz/scroll-clamp.md).
+        for id in self.doc.take_clamped_scrollers() {
+            self.clamped(id);
+        }
         // Styling loads CSS images (a background), and a `cid:` or `data:`
         // one arrives at once: in place now, it paints in this frame
         // rather than the next one. It needs no layout.
@@ -1288,7 +1294,6 @@ impl Surface {
             self.view_due = false;
             return None;
         }
-        self.clamp_root();
         // `fit` (SPEC §5.2): the rows of the layout this frame draws, when
         // they are not the ones the program last heard. A detached surface
         // reports nothing (§5.5).
@@ -1673,24 +1678,43 @@ impl Surface {
         self.on_scrollbar()
     }
 
-    /// The root's scroll stays within what there is to scroll as the layout
-    /// changes (a resize, a delta that removes content), as a page's does.
-    fn clamp_root(&mut self) {
-        if self.scroll_axes == 0 {
-            return;
+    /// Scroller `id` (the root element for the viewport), which layout
+    /// left with less to scroll, was brought back into range by Blitz. What
+    /// it shows is painted again: for the root, the whole frame, since the
+    /// pixels a scroll would move are not where they were. It comes to rest
+    /// where it snaps, nearest where it is, unless a wheel gesture or a
+    /// thumb still holds it: that snaps it when it comes to rest. Its
+    /// scrollbars stay as they were.
+    fn clamped(&mut self, id: NodeId) {
+        let root = self.doc.try_root_element().map(|r| r.id);
+        let s = if Some(id) == root {
+            Scroller::Viewport
+        } else {
+            Scroller::Node(id)
+        };
+        let held = self.wheel_from.is_some_and(|(w, _)| w == s)
+            || match s {
+                Scroller::Viewport => self.root_bar.drag.is_some(),
+                Scroller::Node(id) => self
+                    .doc
+                    .scrollbar_drag_target()
+                    .is_some_and(|b| b.node_id == id),
+            };
+        let at = scroll::state(&self.doc, s, 3).0;
+        let snapped =
+            !held && scroll::snap_at_rest(&mut self.doc, s, at, ScrollSnapIntent::EndPosition);
+        match s {
+            Scroller::Viewport => self.damage.full = true,
+            Scroller::Node(id) => {
+                let scale = self.viewport.2 as f64;
+                self.damage.touch(&self.doc, id, scale);
+                if snapped {
+                    // Blitz shows the scrollbars of what a scroll moves.
+                    self.fade(id, Instant::now());
+                }
+            }
         }
-        let ((x, y), (mx, my)) = scroll::state(&self.doc, Scroller::Viewport, self.scroll_axes);
-        if x > mx || y > my {
-            let snap = Some(ScrollSnapIntent::EndPosition);
-            scroll::scroll_to(
-                &mut self.doc,
-                Scroller::Viewport,
-                x.min(mx),
-                y.min(my),
-                snap,
-            );
-            self.damage.full = true;
-        }
+        self.dirty = true;
     }
 
     /// Paints rectangle `r` of the surface into the frame.

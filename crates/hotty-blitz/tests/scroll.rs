@@ -558,3 +558,159 @@ fn scroll_ops_take_the_same_steps_as_keys_without_moving_focus() {
         assert_eq!(program.focused_surface(), None);
     }
 }
+
+/// Places surface `x` again at `c`×`r`, as a terminal does when its window
+/// changes size, and draws it.
+fn resize(h: &mut Host, c: &str, r: &str) {
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", c),
+            ("r", r),
+            ("p", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(h);
+}
+
+/// Where an element's centre is, in device pixels from the surface's left.
+fn x(h: &Host, id: &str) -> f32 {
+    h.element_centre("x", id).expect("the element").0
+}
+
+#[test]
+fn the_root_scrolled_down_goes_back_up_when_the_viewport_grows_to_fit() {
+    // 160 px of rows in 80 px: scrolled to the end, row e is at the top.
+    let mut h = host();
+    place(&mut h, Some("1"), ROWS, "20", "4");
+    assert!(wheel(&mut h, 15.0, 10.0, 0.0, 200.0));
+    render(&mut h);
+    assert_eq!(top(&h), "e");
+    // Grown by two rows, it can scroll 40 px: the end is row c.
+    resize(&mut h, "20", "6");
+    assert_eq!(top(&h), "c", "clamped to the end");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+    // Grown until it fits: the scrollbar goes, and the page is at its top.
+    resize(&mut h, "20", "8");
+    assert_eq!(top(&h), "a", "scrolled fully up");
+    assert!(!wheel(&mut h, 15.0, 10.0, 0.0, -20.0), "nothing to scroll");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
+
+const WIDE: &str = "<style>body{margin:0}div{height:20px}\
+    #row{display:flex;width:300px}#row div{flex:0 0 50px}</style>\
+    <div id=row><div id=c0>0</div><div id=c1>1</div><div id=c2>2</div>\
+    <div id=c3>3</div><div id=c4>4</div><div id=c5>5</div></div>";
+
+#[test]
+fn the_root_scrolled_across_goes_back_when_the_viewport_grows_to_fit() {
+    // 300 px wide in 100: scrolled to the end, column c4 is at the left.
+    let mut h = host();
+    place(&mut h, Some("2"), WIDE, "10", "2");
+    assert!(wheel(&mut h, 15.0, 10.0, 400.0, 0.0));
+    render(&mut h);
+    assert_eq!(x(&h, "c4"), 25.0);
+    resize(&mut h, "30", "2");
+    assert_eq!(x(&h, "c0"), 25.0, "scrolled fully back");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
+
+/// A box as tall as the viewport, holding eight rows of 20 px.
+const TALL_BOX: &str = "<style>html,body{margin:0;height:100%}div{height:20px}\
+    #box{height:100%;overflow:auto;background:#123}#box div{background:#4a6}</style>\
+    <div id=box><div id=b0>b0</div><div id=b1>b1</div><div id=b2>b2</div>\
+    <div id=b3>b3</div><div id=b4>b4</div><div id=b5>b5</div><div id=b6>b6</div>\
+    <div id=b7>b7</div></div>";
+
+#[test]
+fn a_box_scrolled_down_goes_back_up_when_the_viewport_grows_to_fit() {
+    let mut h = host();
+    place(&mut h, Some("1"), TALL_BOX, "20", "4");
+    assert!(wheel(&mut h, 15.0, 10.0, 0.0, 200.0));
+    render(&mut h);
+    assert_eq!(y(&h, "b4"), 10.0, "the box scrolled to its end");
+    // Its scrollbar fades, frame by frame, as a terminal draws them.
+    let start = std::time::Instant::now();
+    while let Some(due) = h.next_frame() {
+        assert!(start.elapsed().as_millis() < 2000, "the fade ends");
+        std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
+        render(&mut h);
+    }
+    // Grown by two rows, it can scroll 40 px. The box moves as layout
+    // moves it, not as a scroll: its scrollbar does not show again.
+    resize(&mut h, "20", "6");
+    assert_eq!(y(&h, "b2"), 10.0, "clamped to the end");
+    assert!(h.next_frame().is_none(), "no scrollbar shows for a clamp");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+    resize(&mut h, "20", "8");
+    assert_eq!(y(&h, "b0"), 10.0, "scrolled fully up");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+    // Shrunk again, it scrolls from its top, as a box at rest does.
+    resize(&mut h, "20", "4");
+    assert_eq!(y(&h, "b0"), 10.0);
+    assert!(wheel(&mut h, 15.0, 10.0, 0.0, 20.0));
+    render(&mut h);
+    assert_eq!(y(&h, "b1"), 10.0);
+}
+
+#[test]
+fn a_box_whose_content_shrinks_through_a_delta_scrolls_back_into_range() {
+    // #box is 60 px tall and holds 160: scrolled to its end, b5 is at its
+    // top (row 1).
+    let mut h = host();
+    place(&mut h, Some("1"), BOX, "20", "4");
+    assert!(wheel(&mut h, 15.0, 30.0, 0.0, 200.0));
+    render(&mut h);
+    assert_eq!(y(&h, "b5"), 30.0);
+    // Four rows left, 80 px: it can scroll 20 px.
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "inner",
+        Some("box"),
+        None,
+        "<div id=b0>b0</div><div id=b1>b1</div><div id=b2>b2</div><div id=b3>b3</div>",
+    ));
+    let damage = render(&mut h);
+    assert_eq!(y(&h, "b1"), 30.0, "clamped to the new end");
+    assert!(
+        matches!(damage.as_slice(), [hotty_blitz::Damage::Rects(_)]),
+        "the box repaints, not the frame: {damage:?}"
+    );
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+    // Two rows left: it fits, and shows from its top.
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "inner",
+        Some("box"),
+        None,
+        "<div id=b0>b0</div><div id=b1>b1</div>",
+    ));
+    render(&mut h);
+    assert_eq!(y(&h, "b0"), 30.0, "scrolled fully up");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
+
+#[test]
+fn the_root_whose_content_shrinks_through_a_delta_scrolls_back_into_range() {
+    let mut h = host();
+    place(&mut h, Some("1"), ROWS, "20", "4");
+    assert!(wheel(&mut h, 15.0, 10.0, 0.0, 200.0));
+    render(&mut h);
+    assert_eq!(top(&h), "e");
+    for id in ["f", "g", "h"] {
+        h.handle(&delta_cmd(
+            &[("s", "x"), ("q", "2")],
+            "remove",
+            Some(id),
+            None,
+            "",
+        ));
+    }
+    render(&mut h);
+    // Five rows in four: the end is row b.
+    assert_eq!(top(&h), "b", "clamped to the new end");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
