@@ -1227,7 +1227,13 @@ impl Surface {
         let h = self.viewport.1.max(m.cell_h);
         let dark = self.viewport.3;
         self.ensure_viewport(m, w, 1, dark);
+        // Content the viewport sizes (`vh`, a `%` of a `100%` root) is
+        // shorter at one pixel, so a box would seem to have less to scroll.
+        // It keeps its offset; the next resolve, at the size drawn, brings
+        // back into range what this one laid out (mods/blitz/scroll-clamp.md).
+        self.doc.hold_scroll_clamp(true);
         self.resolve();
+        self.doc.hold_scroll_clamp(false);
         let rows = self.laid_out_rows(m);
         // Nothing else lays out one pixel tall: what draws next sets its own.
         self.ensure_viewport(m, w, h, dark);

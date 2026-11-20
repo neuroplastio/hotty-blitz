@@ -714,3 +714,46 @@ fn the_root_whose_content_shrinks_through_a_delta_scrolls_back_into_range() {
     assert_eq!(top(&h), "b", "clamped to the new end");
     assert_eq!(differs_from_a_full_paint(&mut h), 0);
 }
+
+#[test]
+fn a_box_keeps_its_scroll_while_r_auto_measures_the_content() {
+    // #box is 60 px tall and its rows half the viewport: at 80 px they are
+    // 40, so it holds 160 and scrolls 100.
+    let mut h = host();
+    let html = "<style>body{margin:0}#box{height:60px;overflow:auto}\
+        #box div{height:50vh}</style><div id=box><div id=z0>0</div>\
+        <div id=z1>1</div><div id=z2>2</div><div id=z3>3</div></div>";
+    place(&mut h, Some("1"), html, "20", "4");
+    assert!(wheel(&mut h, 15.0, 10.0, 0.0, 60.0));
+    render(&mut h);
+    assert_eq!(y(&h, "z0"), 20.0 - 60.0);
+    // Placed again as tall as its content (`r=auto`), which is measured one
+    // pixel tall, where the rows are nothing. Drawn at three rows they are
+    // 30 px: it scrolls 60, so its 60 is still in range.
+    resize(&mut h, "20", "auto");
+    assert_eq!(y(&h, "z0"), 15.0 - 60.0, "it kept its 60 px");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
+
+#[test]
+fn a_box_that_r_auto_lays_out_wider_comes_back_into_range() {
+    // #box is 40 px tall and wraps cells 50 px wide: 10 columns hold two to
+    // a line, four lines, and it scrolls 40.
+    let mut h = host();
+    let cells: String = (0..8).map(|i| format!("<div id=k{i}>{i}</div>")).collect();
+    let html = format!(
+        "<style>body{{margin:0}}\
+         #box{{height:40px;overflow:auto;display:flex;flex-wrap:wrap}}\
+         #box div{{flex:0 0 50px;height:20px}}</style><div id=box>{cells}</div>"
+    );
+    place(&mut h, Some("1"), &html, "10", "2");
+    assert!(wheel(&mut h, 15.0, 10.0, 0.0, 40.0));
+    render(&mut h);
+    assert_eq!(y(&h, "k4"), 10.0, "scrolled to its end");
+    // At 20 columns it holds four to a line and fits. The measure for
+    // `r=auto` lays it out at that width first; the frame drawn after does
+    // not lay it out again, and still brings it back.
+    resize(&mut h, "20", "auto");
+    assert_eq!(y(&h, "k0"), 10.0, "scrolled fully up");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
