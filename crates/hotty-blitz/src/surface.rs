@@ -1990,6 +1990,9 @@ impl Surface {
     }
 
     pub fn resource_changed(&mut self, href: &str) {
+        // What played from it stops: replaced, it plays only if it is
+        // animated still (`adopt_animations`, when it is loaded again).
+        self.playing.retain(|p| p.url != href);
         self.doc.handle_messages();
         self.doc.reload_resource_by_href(href);
         self.doc.handle_messages();

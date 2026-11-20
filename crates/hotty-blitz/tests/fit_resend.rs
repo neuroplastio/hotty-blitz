@@ -255,3 +255,64 @@ fn an_image_replaced_with_bytes_that_do_not_decode_shows_nothing() {
     assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0]);
     assert_eq!(pixel(&h, "y", 10, 10), [0, 255, 0]);
 }
+
+/// A GIF as an `<img>` (at y 0–20) and as a background (y 20–40), drawn on
+/// its first frame, red: when it was drawn.
+fn gif_shown(h: &mut Host) -> std::time::Instant {
+    send_gif(h, &gif([255, 0, 0]));
+    handle(
+        h,
+        &[("a", "doc"), ("s", "x")],
+        b"<body style='margin:0;background:#000'><img src='cid:anim' style='display:block'>\
+          <div style='width:20px;height:20px;background:url(cid:anim)'></div></body>",
+    );
+    handle(
+        h,
+        &[("a", "place"), ("s", "x"), ("c", "10"), ("r", "5")],
+        b"",
+    );
+    h.render_dirty(&mut |_, _, _| {});
+    assert_eq!(pixel(h, "x", 10, 10), [255, 0, 0]);
+    assert_eq!(pixel(h, "x", 10, 30), [255, 0, 0]);
+    std::time::Instant::now()
+}
+
+/// Sends `bytes` as `anim`, of type `mime`, and draws.
+fn send_anim(h: &mut Host, mime: &str, bytes: &[u8]) {
+    handle(h, &[("a", "res"), ("id", "anim"), ("type", mime)], bytes);
+    h.render_dirty(&mut |_, _, _| {});
+}
+
+#[test]
+fn a_playing_gif_replaced_by_a_still_image_stops() {
+    let mut h = host();
+    let t0 = gif_shown(&mut h);
+    send_anim(&mut h, "image/png", &png(20, 20, [0, 0, 255]));
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 255], "img: the still");
+    assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 255], "bg: the still");
+    // When its next frame was due, the GIF does not come back.
+    h.animate(t0 + std::time::Duration::from_millis(5100));
+    h.render_dirty(&mut |_, _, _| {});
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        [0, 0, 255],
+        "img: the GIF stays gone"
+    );
+    assert_eq!(
+        pixel(&h, "x", 10, 30),
+        [0, 0, 255],
+        "bg: the GIF stays gone"
+    );
+}
+
+#[test]
+fn a_playing_gif_replaced_by_bad_bytes_then_a_still_stays_stopped() {
+    let mut h = host();
+    let t0 = gif_shown(&mut h);
+    send_anim(&mut h, "image/gif", b"not a gif");
+    send_anim(&mut h, "image/png", &png(20, 20, [0, 0, 255]));
+    h.animate(t0 + std::time::Duration::from_millis(5100));
+    h.render_dirty(&mut |_, _, _| {});
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 255], "img: the still");
+    assert_eq!(pixel(&h, "x", 10, 30), [0, 0, 255], "bg: the still");
+}
