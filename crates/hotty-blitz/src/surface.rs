@@ -1685,12 +1685,15 @@ impl Surface {
     }
 
     /// Scroller `id` (the root element for the viewport), which layout
-    /// left with less to scroll, was brought back into range by Blitz. What
-    /// it shows is painted again: for the root, the whole frame, since the
-    /// pixels a scroll would move are not where they were. It comes to rest
-    /// where it snaps, nearest where it is, unless a wheel gesture or a
-    /// thumb still holds it: that snaps it when it comes to rest. Its
-    /// scrollbars stay as they were.
+    /// left with less to scroll, was brought back into range by Blitz. It
+    /// comes to rest where it snaps, nearest where it is, unless a wheel
+    /// gesture or a thumb still holds it: that snaps it when it comes to
+    /// rest. Its scrollbars stay as they were, unless the snap moved it.
+    ///
+    /// What it shows is painted again: for the root, the whole frame, since
+    /// the pixels a scroll would move are not where they were. That is a
+    /// backstop: every clamp found so far is a change of layout that the
+    /// box's own damage, or `track_root_scroll`, already repaints.
     fn clamped(&mut self, id: NodeId) {
         let root = self.doc.try_root_element().map(|r| r.id);
         let s = if Some(id) == root {

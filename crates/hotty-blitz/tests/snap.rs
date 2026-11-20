@@ -531,3 +531,108 @@ fn the_snap_properties_serialize_as_declared() {
     assert_eq!(text("scroll-padding: -1px"), "");
     assert_eq!(text("scroll-snap-align: left"), "");
 }
+
+/// Eight rows of 20 px aligned at their starts under `y mandatory`, then
+/// 100 px that do not snap, in a box `#list` 10 px shorter than the
+/// viewport, which scrolls: its end is no snap position. The rows are
+/// narrower than the box, so its thumb shows over its background.
+fn rows_then_a_spacer() -> String {
+    let rows: String = (0..8).map(|i| format!("<div id=r{i}>{i}</div>")).collect();
+    format!(
+        "<style>html,body{{margin:0;height:100%}}\
+         #list{{height:calc(100% - 10px);width:150px;overflow:auto;\
+         background:#123;{MANDATORY}}}\
+         #list div{{height:20px;width:100px;background:#4a6;\
+         border-bottom:1px solid #fff;box-sizing:border-box;{START}}}\
+         #list #end{{height:100px;background:#246;scroll-snap-align:none}}</style>\
+         <div id=list>{rows}<div id=end></div></div>"
+    )
+}
+
+/// The box's thumb track, over the top 70 px: its right edge, where only
+/// the box's background is when no thumb shows.
+fn list_thumb(h: &Host) -> Vec<u8> {
+    let f = h.frame("x").unwrap();
+    (0..70)
+        .flat_map(|y| {
+            let i = ((y * f.width + 143) * 4) as usize;
+            f.rgba[i..i + 3].to_vec()
+        })
+        .collect()
+}
+
+/// Frames drawn as a terminal draws them until none is due: the fade of
+/// what shows.
+fn draw_until_still(h: &mut Host) {
+    let start = std::time::Instant::now();
+    while let Some(due) = h.next_frame() {
+        assert!(start.elapsed().as_millis() < 3000, "the frames end");
+        std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
+        render(h);
+    }
+}
+
+#[test]
+fn a_box_that_layout_brings_back_into_range_comes_to_rest_on_a_row() {
+    // 70 px tall, it holds 260: at rest on the last row, 140.
+    let mut h = host();
+    place(&mut h, &rows_then_a_spacer(), "20", "4");
+    assert!(wheel(&mut h, 15.0, 30.0, 140.0));
+    assert_eq!(offset(&h, 20.0), 140.0);
+    draw_until_still(&mut h);
+    let faded = list_thumb(&h);
+    // Without its last row, and 60 px after the rows, it holds 200 and
+    // scrolls 130. Layout brings it back there, which is no snap position
+    // (a row past the end would be, at the end), so it comes to rest on
+    // the row nearest, as a browser does.
+    let rows: String = (0..7).map(|i| format!("<div id=r{i}>{i}</div>")).collect();
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "inner",
+        Some("list"),
+        None,
+        &format!("{rows}<div id=end style=height:60px></div>"),
+    ));
+    render(&mut h);
+    assert_eq!(offset(&h, 20.0), 120.0, "at rest on a row");
+    // That snap is a scroll: the thumb shows, then fades.
+    assert_ne!(list_thumb(&h), faded, "the thumb shows as it snaps");
+    draw_until_still(&mut h);
+    assert_eq!(list_thumb(&h), faded, "the thumb faded");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
+
+#[test]
+fn a_box_that_layout_brings_back_under_a_wheel_gesture_snaps_when_it_ends() {
+    // 70 px tall, it scrolls 190: under way, the wheel takes it to its end.
+    let mut h = host();
+    place(&mut h, &rows_then_a_spacer(), "20", "4");
+    assert!(h.wheel("x", 15.0, 30.0, 0.0, 300.0, Mods::default()).taken);
+    render(&mut h);
+    assert_eq!(offset(&h, 20.0), 190.0);
+    // Grown to 110 px, it scrolls 150, and layout brings it back there. The
+    // gesture still holds it: no snap yet.
+    resize(&mut h, "20", "6");
+    assert_eq!(offset(&h, 20.0), 150.0, "where the gesture holds it");
+    h.end_gesture();
+    render(&mut h);
+    assert_eq!(offset(&h, 20.0), 140.0, "at rest on the last row");
+    assert_eq!(differs_from_a_full_paint(&mut h), 0);
+}
+
+/// Places surface `x` again at `c`×`r`, as a terminal does when its window
+/// changes size, and draws it.
+fn resize(h: &mut Host, c: &str, r: &str) {
+    h.handle(&cmd(
+        &[
+            ("a", "place"),
+            ("s", "x"),
+            ("c", c),
+            ("r", r),
+            ("p", "1"),
+            ("q", "2"),
+        ],
+        "",
+    ));
+    render(h);
+}
