@@ -260,10 +260,20 @@ impl Writer {
             done: AtomicBool::new(false),
         });
         let st = state.clone();
-        std::thread::Builder::new()
+        // SIGTERM is never handled on the writer's thread, which the handler
+        // waits for: blocked here, the thread starts with it blocked, before
+        // it opens the file (which can take a while).
+        #[cfg(unix)]
+        let old = term_blocked();
+        let spawned = std::thread::Builder::new()
             .name("hotty-trace".into())
-            .spawn(move || write_loop(open(), rx, back, &st, pending))
-            .ok()?;
+            .spawn(move || write_loop(open(), rx, back, &st, pending));
+        #[cfg(unix)]
+        // SAFETY: the mask this thread had, as pthread_sigmask gave it.
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        }
+        spawned.ok()?;
         Some((Writer { tx, state }, spare))
     }
 
@@ -304,6 +314,20 @@ fn finish(state: &State, limit: Duration) {
     }
 }
 
+/// Blocks SIGTERM on this thread: the mask it had before.
+#[cfg(unix)]
+fn term_blocked() -> libc::sigset_t {
+    // SAFETY: valid signal sets, empty then filled; this thread only.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+        old
+    }
+}
+
 fn write_loop(
     out: Option<impl std::io::Write>,
     rx: Receiver<String>,
@@ -315,15 +339,6 @@ fn write_loop(
         Some(out) => Box::new(out),
         None => Box::new(std::io::sink()),
     };
-    #[cfg(unix)]
-    // SAFETY: a valid, empty-then-filled signal set; this thread only.
-    unsafe {
-        // SIGTERM is never handled here: the handler waits for this thread.
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGTERM);
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-    }
     let write = |out: &mut dyn std::io::Write, mut chunk: String| {
         let _ = out.write_all(chunk.as_bytes());
         state.queued.fetch_sub(chunk.len(), Ordering::AcqRel);
@@ -506,6 +521,36 @@ mod tests {
         let back: Vec<String> = spare.try_iter().collect();
         assert_eq!(back.len(), SPARES, "as many as it keeps");
         assert!(back.iter().all(|b| b.is_empty() && b.capacity() > 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_writer_blocks_sigterm_before_it_opens_the_file() {
+        let (tx, rx) = sync_channel(1);
+        let (writer, _spare) = Writer::spawn(
+            move || {
+                // SAFETY: reads this thread's mask into a valid set.
+                let blocked = unsafe {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut set);
+                    libc::sigismember(&set, libc::SIGTERM) == 1
+                };
+                tx.send(blocked).unwrap();
+                Some(std::io::sink())
+            },
+            1000,
+            || None,
+        )
+        .unwrap();
+        assert!(rx.recv().unwrap(), "SIGTERM is blocked while it opens");
+        // SAFETY: reads this thread's mask into a valid set.
+        let here = unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut set);
+            libc::sigismember(&set, libc::SIGTERM) == 1
+        };
+        assert!(!here, "and not on the thread that spawned it");
+        writer.finish(Duration::from_secs(5));
     }
 
     /// Stands in for hottyterm's SIGTERM handler, installed before blitz's:
