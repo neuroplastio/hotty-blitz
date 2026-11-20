@@ -1,4 +1,4 @@
-From 0a7f4de4b49219e59a87fc34cb35fb401ae586ce Mon Sep 17 00:00:00 2001
+From 562b04361d5826fb9db97fda1d4aca6c3e82a1bb Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 19 Nov 2026 21:40:04 +0100
 Subject: [PATCH] blitz-dom: an image fetched again is shown again
@@ -9,17 +9,23 @@ the href, and inline SVG images. An `<img>`, a `background-image` or a
 the URL, so an embedder whose resource changed (a resource sent again,
 a dev server's rebuild) had the old pixels, and an `<img>` the old size.
 
-The image at the href is now dropped from the cache and fetched again,
-with every `<img>` that shows it and every background and mask layer
-that names it waiting for it, as they do for a first load. An `<img>`
-is laid out again when it arrives. An image still on its way is left to
-arrive.
+The image at the href is now dropped from the cache, whether or not its
+last load succeeded, and fetched again, with every `<img>` that shows it
+and every background and mask layer that names it waiting for it, as
+they do for a first load. An `<img>` is laid out again when it arrives.
+An image still on its way is left to arrive.
+
+A load that fails now clears the image of every node that waited for
+it: an `<img>` shows no image, and a layer is marked failed with none.
+So an image fetched again with bytes that don't decode is shown by no
+node, as on a first load that fails, rather than by those that showed
+it before and not by a new one.
 ---
  packages/blitz-dom/src/document.rs | 118 ++++++++++++++++++++++++++++-
  1 file changed, 116 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 7a14e5893..6a0523d38 100644
+index 7a14e5893..36f22505d 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
 @@ -4,9 +4,12 @@ use crate::layout::construct::ConstructionTask;
@@ -124,10 +130,10 @@ index 7a14e5893..6a0523d38 100644
                      #[cfg(feature = "tracing")]
                      tracing::warn!(
                          url = url.as_str(),
-@@ -1772,6 +1841,51 @@ impl BaseDocument {
+@@ -1770,6 +1839,51 @@ impl BaseDocument {
+         }
+     }
  
-     /// Cache a loaded image and apply it to all nodes waiting on it
-     /// (`<img>` elements, `background-image` layers and `mask-image` layers).
 +    /// The image at `url` failed to load for `node_id`'s `image_type`: the
 +    /// node shows no image there.
 +    fn clear_failed_image(&mut self, node_id: NodeId, image_type: ImageType, url: &str) {
@@ -173,9 +179,9 @@ index 7a14e5893..6a0523d38 100644
 +        }
 +    }
 +
+     /// Cache a loaded image and apply it to all nodes waiting on it
+     /// (`<img>` elements, `background-image` layers and `mask-image` layers).
      fn apply_loaded_image(&mut self, url: &str, image: ImageData) {
-         // Get all nodes waiting for this image
-         let waiting_nodes = self.pending_images.remove(url).unwrap_or_default();
 -- 
 2.56.0
 
