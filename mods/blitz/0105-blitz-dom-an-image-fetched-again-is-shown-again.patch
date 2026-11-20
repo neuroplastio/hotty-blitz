@@ -1,4 +1,4 @@
-From 40192b8334abf2ba46ecf861dd87e12a270e7959 Mon Sep 17 00:00:00 2001
+From 0a7f4de4b49219e59a87fc34cb35fb401ae586ce Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
 Date: Thu, 19 Nov 2026 21:40:04 +0100
 Subject: [PATCH] blitz-dom: an image fetched again is shown again
@@ -15,11 +15,11 @@ that names it waiting for it, as they do for a first load. An `<img>`
 is laid out again when it arrives. An image still on its way is left to
 arrive.
 ---
- packages/blitz-dom/src/document.rs | 65 +++++++++++++++++++++++++++++-
- 1 file changed, 63 insertions(+), 2 deletions(-)
+ packages/blitz-dom/src/document.rs | 118 ++++++++++++++++++++++++++++-
+ 1 file changed, 116 insertions(+), 2 deletions(-)
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 7a14e5893..f2bd4b620 100644
+index 7a14e5893..6a0523d38 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
 @@ -4,9 +4,12 @@ use crate::layout::construct::ConstructionTask;
@@ -45,7 +45,7 @@ index 7a14e5893..f2bd4b620 100644
          for &node_id in self.nodes_to_stylesheet.keys() {
              let node = &self.nodes[node_id];
              let Some(element) = node.element_data() else {
-@@ -1434,6 +1438,63 @@ impl BaseDocument {
+@@ -1434,6 +1438,66 @@ impl BaseDocument {
          }
      }
  
@@ -58,7 +58,10 @@ index 7a14e5893..f2bd4b620 100644
 +            return;
 +        };
 +        let key = url.as_str();
-+        if self.image_cache.remove(key).is_none() || self.pending_images.contains_key(key) {
++        // Whether or not it loaded last time: one that failed is shown by
++        // no node, which waits for it again all the same.
++        self.image_cache.remove(key);
++        if self.pending_images.contains_key(key) {
 +            return;
 +        }
 +        let mut waiting = Vec::new();
@@ -109,6 +112,70 @@ index 7a14e5893..f2bd4b620 100644
      /// Parse the latest text of registered style elements once per resolve.
      pub(crate) fn process_pending_style_elements(&mut self) {
          for id in std::mem::take(&mut self.pending_style_nodes) {
+@@ -1657,6 +1721,11 @@ impl BaseDocument {
+             Err(err) => {
+                 if let Some(url) = res.resolved_url.as_ref() {
+                     let waiting_nodes = self.pending_images.remove(url).unwrap_or_default();
++                    // What failed is shown by none of them, as on a first
++                    // load: one fetched again drops the image it showed.
++                    for &(node_id, image_type) in &waiting_nodes {
++                        self.clear_failed_image(node_id, image_type, url);
++                    }
+                     #[cfg(feature = "tracing")]
+                     tracing::warn!(
+                         url = url.as_str(),
+@@ -1772,6 +1841,51 @@ impl BaseDocument {
+ 
+     /// Cache a loaded image and apply it to all nodes waiting on it
+     /// (`<img>` elements, `background-image` layers and `mask-image` layers).
++    /// The image at `url` failed to load for `node_id`'s `image_type`: the
++    /// node shows no image there.
++    fn clear_failed_image(&mut self, node_id: NodeId, image_type: ImageType, url: &str) {
++        match image_type {
++            ImageType::Image => {
++                if !self.image_source_is_current(node_id, url) {
++                    return;
++                }
++                let Some(node) = self.get_node_mut(node_id) else {
++                    return;
++                };
++                let Some(element) = node.element_data_mut() else {
++                    return;
++                };
++                if !matches!(element.special_data, SpecialElementData::Image(_)) {
++                    return;
++                }
++                element.special_data = SpecialElementData::None;
++                node.clear_layout_cache();
++                node.insert_damage(ALL_DAMAGE);
++            }
++            ImageType::Background(idx) | ImageType::Mask(idx) => {
++                let Some(el) = self
++                    .get_node_mut(node_id)
++                    .and_then(|n| n.element_data_mut())
++                else {
++                    return;
++                };
++                let images = match image_type {
++                    ImageType::Background(_) => &mut el.background_images,
++                    _ => &mut el.mask_images,
++                };
++                if let Some(Some(layer)) = images.get_mut(idx) {
++                    if layer.url.as_str() == url {
++                        layer.status = Status::Error;
++                        layer.image = ImageData::None;
++                    }
++                }
++                if let Some(node) = self.get_node_mut(node_id) {
++                    node.insert_damage(ALL_DAMAGE);
++                }
++            }
++        }
++    }
++
+     fn apply_loaded_image(&mut self, url: &str, image: ImageData) {
+         // Get all nodes waiting for this image
+         let waiting_nodes = self.pending_images.remove(url).unwrap_or_default();
 -- 
 2.56.0
 

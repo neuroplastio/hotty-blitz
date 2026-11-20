@@ -1062,6 +1062,14 @@ impl Host {
         self.store.sheets_parsed()
     }
 
+    /// How many times this session handed a `cid:` or `data:` resource to
+    /// a document that fetched it: a test's view of how often one is
+    /// decoded.
+    #[doc(hidden)]
+    pub fn resources_handed_over(&self) -> usize {
+        self.store.handed_over()
+    }
+
     /// How many times a document, in any session of the process, took the
     /// author style data of another with the same sheets rather than
     /// building its own (Stylo's author cascade data cache): a test's view

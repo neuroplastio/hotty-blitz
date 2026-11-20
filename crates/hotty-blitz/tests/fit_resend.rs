@@ -166,7 +166,8 @@ fn send_gif(h: &mut Host, bytes: &[u8]) -> usize {
 }
 
 #[test]
-fn a_playing_image_is_reloaded_only_when_it_is_replaced() {
+fn a_playing_image_replaced_starts_from_its_first_frame() {
+    // (Sent again as it is, it plays on: resend.rs.)
     let mut h = host();
     send_gif(&mut h, &gif([255, 0, 0]));
     handle(
@@ -184,10 +185,73 @@ fn a_playing_image_is_reloaded_only_when_it_is_replaced() {
     h.animate(due);
     h.render_dirty(&mut |_, _, _| {});
     assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0]);
-    // The same bytes: not fetched again, it plays on.
-    assert_eq!(send_gif(&mut h, &gif([255, 0, 0])), 0);
-    assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0], "not started over");
-    // Other bytes replace it: fetched again, from its first frame.
     assert_eq!(send_gif(&mut h, &gif([0, 0, 255])), 1);
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        [0, 0, 255],
+        "the new one, from its start"
+    );
+}
+
+const IMG: &[u8] =
+    b"<body style='margin:0;background:#000'><img src='cid:pic' style='display:block'></body>";
+
+/// Shows `IMG` on `s`, fitted (`f=1`), drawn, its events taken.
+fn show_fitted(h: &mut Host, s: &str) {
+    handle(h, &[("a", "doc"), ("s", s)], IMG);
+    handle(h, &[("a", "place"), ("s", s), ("c", "10"), ("f", "1")], b"");
+    h.render_dirty(&mut |_, _, _| {});
+    h.take_events();
+}
+
+#[test]
+fn an_image_that_failed_to_load_is_shown_when_replaced() {
+    let mut h = host();
+    send(&mut h, b"not a png");
+    show_fitted(&mut h, "x");
+    assert_ne!(pixel(&h, "x", 10, 10), [0, 0, 255], "nothing to show");
+    let fits = send(&mut h, &png(20, 60, [0, 0, 255]));
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        [0, 0, 255],
+        "the replace reaches it"
+    );
+    assert_eq!(fits_of(&fits), vec![serde_json::json!({ "r": 3 })]);
+}
+
+#[test]
+fn an_image_that_arrives_late_is_handed_over_once() {
+    let mut h = host();
+    show_fitted(&mut h, "x");
+    let before = h.resources_handed_over();
+    let fits = send(&mut h, &png(20, 60, [0, 0, 255]));
     assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 255]);
+    assert_eq!(fits_of(&fits), vec![serde_json::json!({ "r": 3 })]);
+    assert_eq!(
+        h.resources_handed_over(),
+        before + 1,
+        "to the document that waited, and not fetched again"
+    );
+}
+
+#[test]
+fn an_image_replaced_with_bytes_that_do_not_decode_shows_nothing() {
+    // As on a first load that fails, for the <img>s that showed it and a
+    // new one alike: the old image is gone.
+    let mut h = host();
+    send(&mut h, &png(20, 60, [0, 0, 255]));
+    show_fitted(&mut h, "x");
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 0, 255]);
+    send(&mut h, b"not a png");
+    assert_ne!(pixel(&h, "x", 10, 10), [0, 0, 255], "the old image is gone");
+    show_fitted(&mut h, "y");
+    assert_eq!(
+        pixel(&h, "x", 10, 10),
+        pixel(&h, "y", 10, 10),
+        "as a new <img> of it shows"
+    );
+    // Replaced again with an image: shown again.
+    send(&mut h, &png(20, 60, [0, 255, 0]));
+    assert_eq!(pixel(&h, "x", 10, 10), [0, 255, 0]);
+    assert_eq!(pixel(&h, "y", 10, 10), [0, 255, 0]);
 }

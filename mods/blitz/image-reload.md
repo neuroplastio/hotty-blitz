@@ -8,8 +8,12 @@ upstream-fit: yes
 reloads images too. The image at the href is dropped from the
 document's image cache and fetched again. Every `<img>` showing it, and
 every `background-image` or `mask-image` layer naming it, waits for it
-as on a first load. An `<img>` is laid out again at the new image's
-size when it arrives. An image still on its way is left to arrive.
+as on a first load, whether or not its last load succeeded. An `<img>`
+is laid out again at the new image's size when it arrives. An image
+still on its way is left to arrive. An image that fails to load is
+shown by none of the nodes waiting for it, so one replaced with bytes
+that don't decode shows nothing, like a first load that fails, rather
+than its old pixels.
 
 **Why we carry it:** under SPEC §7.1, a resource sent again with other
 bytes or another type replaces the old one, and every surface that

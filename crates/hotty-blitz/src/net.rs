@@ -62,6 +62,8 @@ struct Inner {
     incomplete: HashMap<String, (u64, Vec<String>)>,
     /// How many times a stylesheet was parsed to be shared.
     sheets_parsed: usize,
+    /// How many times a resource was handed to a document.
+    handed_over: usize,
     /// Requests for resources that have not arrived yet.
     waiting: HashMap<String, Waiting>,
     /// Which documents asked for which resource, so a re-send can reach them.
@@ -147,7 +149,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let bytes = Bytes::from(bytes);
-        let (waiting, users) = {
+        let (waiting, served, users) = {
             let mut inner = self.inner.lock().unwrap();
             let old = inner.resources.get(name).map_or(0, |r| r.bytes.len());
             let total = inner.total - old + bytes.len();
@@ -169,22 +171,33 @@ impl Store {
                 },
             );
             let waiting = inner.waiting.remove(name).unwrap_or_default();
-            let users = std::iter::once(name.to_string())
+            // A document that waits for it gets it from its handler below:
+            // told it changed as well, it would fetch, and decode, it again.
+            // (Sheets that import it are still reloaded for it.)
+            let served: BTreeSet<usize> = waiting.iter().map(|(d, _)| *d).collect();
+            let mut users: Vec<(String, BTreeSet<usize>)> = std::iter::once(name.to_string())
                 .chain(inner.forget_sheets(name))
                 .map(|n| {
                     let docs = inner.users.get(&n).cloned().unwrap_or_default();
                     (format!("cid:{n}"), docs)
                 })
                 .collect();
+            users[0].1.retain(|d| !served.contains(d));
             inner.animations.remove(&format!("cid:{name}"));
             inner.drop_unused_sheets();
-            (waiting, users)
+            (waiting, served, users)
         };
         // Deliver outside the lock: a stylesheet handler may fetch @imports.
         let url = format!("cid:{name}");
         for (doc_id, handler) in waiting {
             self.load(doc_id, &url, &bytes);
             handler.bytes(url.clone(), bytes.clone());
+        }
+        // Their surfaces take in what arrived, as for a fetch that
+        // completes (`take_delivered`).
+        if !served.is_empty() {
+            self.inner.lock().unwrap().delivered.extend(served);
+            self.has_delivered.store(true, Ordering::Release);
         }
         Ok(users)
     }
@@ -223,6 +236,7 @@ impl Store {
     fn load(&self, doc_id: usize, url: &str, bytes: &[u8]) {
         let (known, used) = {
             let mut inner = self.inner.lock().unwrap();
+            inner.handed_over += 1;
             inner
                 .animations
                 .retain(|_, a| a.as_ref().is_none_or(|w| w.strong_count() > 0));
@@ -296,6 +310,12 @@ impl Store {
     /// session: once for each sending a document linked.
     pub fn sheets_parsed(&self) -> usize {
         self.inner.lock().unwrap().sheets_parsed
+    }
+
+    /// How many times a `cid:` or `data:` resource was handed to a document
+    /// that fetched it, in this session.
+    pub fn handed_over(&self) -> usize {
+        self.inner.lock().unwrap().handed_over
     }
 
     pub fn total_bytes(&self) -> usize {
