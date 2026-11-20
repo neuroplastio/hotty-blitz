@@ -47,7 +47,11 @@ struct Buf {
 static TRACE: OnceLock<Option<Trace>> = OnceLock::new();
 
 fn trace() -> Option<&'static Trace> {
-    TRACE.get_or_init(open).as_ref()
+    // Off too once the writer found the file would not open.
+    TRACE
+        .get_or_init(open)
+        .as_ref()
+        .filter(|t| !t.writer.state.failed.load(Ordering::Acquire))
 }
 
 fn open() -> Option<Trace> {
@@ -235,6 +239,8 @@ struct State {
     stop: AtomicBool,
     /// Stopped, with everything written.
     done: AtomicBool,
+    /// The file did not open: nothing is written, and stamps are off.
+    failed: AtomicBool,
 }
 
 /// How many emptied buffers the writer hands back at most.
@@ -258,6 +264,7 @@ impl Writer {
             dropped: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             done: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
         });
         let st = state.clone();
         // SIGTERM is never handled on the writer's thread, which the handler
@@ -335,10 +342,12 @@ fn write_loop(
     state: &State,
     pending: impl Fn() -> Option<String>,
 ) {
-    let mut out: Box<dyn std::io::Write> = match out {
-        Some(out) => Box::new(out),
-        None => Box::new(std::io::sink()),
+    let Some(mut out) = out else {
+        state.failed.store(true, Ordering::Release);
+        state.done.store(true, Ordering::Release);
+        return;
     };
+    let out: &mut dyn std::io::Write = &mut out;
     let write = |out: &mut dyn std::io::Write, mut chunk: String| {
         let _ = out.write_all(chunk.as_bytes());
         state.queued.fetch_sub(chunk.len(), Ordering::AcqRel);
@@ -432,6 +441,9 @@ fn on_exit_and_term() {
         }
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = on_term as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        // As hottyterm's: a call the signal interrupts while the writer drains
+        // goes on, rather than failing with EINTR.
+        sa.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa.sa_mask);
         libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
     }
@@ -551,6 +563,17 @@ mod tests {
         };
         assert!(!here, "and not on the thread that spawned it");
         writer.finish(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_file_that_does_not_open_turns_the_writer_off() {
+        let (writer, _spare) = Writer::spawn(|| None::<std::io::Sink>, 1000, || None).unwrap();
+        writer.finish(Duration::from_secs(5));
+        assert!(writer.state.done.load(Ordering::Acquire));
+        assert!(
+            writer.state.failed.load(Ordering::Acquire),
+            "and stamps with it"
+        );
     }
 
     /// Stands in for hottyterm's SIGTERM handler, installed before blitz's:
