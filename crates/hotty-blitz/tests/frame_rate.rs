@@ -223,3 +223,80 @@ fn a_rate_changed_mid_fade_paces_the_rest_of_it() {
         "{gaps:?}"
     );
 }
+
+/// A terminal's timer, as hottyterm's runs: asked at `asked` for a frame due
+/// at `due`, it is armed for whole milliseconds, rounded up as
+/// `hotty_host_next_frame` gives them, and fires up to a millisecond after
+/// that, as a loop is slow to wake (`jitter`, from 0 to 1).
+fn fired(asked: Instant, due: Instant, jitter: f64) -> Instant {
+    let ms = due
+        .saturating_duration_since(asked)
+        .as_nanos()
+        .div_ceil(1_000_000) as u64;
+    asked + Duration::from_millis(ms) + Duration::from_secs_f64(jitter / 1000.0)
+}
+
+/// The same jitter every run: a small linear congruential generator.
+fn jitter(seed: &mut u64) -> f64 {
+    *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+    (*seed >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// The mean interval between the frames a linear animation draws over two
+/// seconds, each drawn when the terminal's timer fires (`fired`), ahead of
+/// the clock as `css_frames_in_a_second` is.
+fn css_late_interval(h: &mut Host) -> Duration {
+    let future = h.next_frame().expect("the animation wants frames") + Duration::from_secs(30);
+    h.animate(future);
+    render(h);
+    let mut seed = 7;
+    let mut asked = future;
+    let mut drawn = Vec::new();
+    while drawn.len() < 2 || *drawn.last().unwrap() < drawn[0] + Duration::from_secs(2) {
+        let due = h.next_frame().expect("the animation wants frames");
+        let at = fired(asked, due, jitter(&mut seed));
+        h.animate(at);
+        assert_eq!(render(h), 1, "each frame asked for draws");
+        drawn.push(at);
+        asked = at;
+    }
+    (*drawn.last().unwrap() - drawn[0]) / (drawn.len() as u32 - 1)
+}
+
+fn within_a_percent(got: Duration, want: Duration, what: &str) {
+    let off = (got.as_secs_f64() / want.as_secs_f64() - 1.0).abs();
+    assert!(
+        off <= 0.01,
+        "{what}: frames {got:?} apart, not {want:?} ({:.1}% off)",
+        off * 100.0
+    );
+}
+
+#[test]
+fn a_css_animation_drawn_late_keeps_the_display_rate() {
+    for hz in [60u64, 120, 144] {
+        let mut h = host();
+        h.set_refresh_rate(hz as u32 * 1000);
+        doc(&mut h, &[], ANIMATED);
+        let want = Duration::from_nanos(1_000_000_000 / hz);
+        within_a_percent(css_late_interval(&mut h), want, &format!("{hz} Hz"));
+    }
+}
+
+#[test]
+fn a_scrollbar_fading_late_keeps_the_display_rate() {
+    for hz in [60u64, 120, 144] {
+        let mut h = host();
+        h.set_refresh_rate(hz as u32 * 1000);
+        let mut seed = 11;
+        let mut asked: Option<Instant> = None;
+        let frames = the_fade(fade_fired(&mut h, |_, due| {
+            let at = fired(asked.unwrap_or(due), due, jitter(&mut seed));
+            asked = Some(at);
+            at
+        }));
+        let want = Duration::from_nanos(1_000_000_000 / hz);
+        let mean = (*frames.last().unwrap() - frames[0]) / (frames.len() as u32 - 1);
+        within_a_percent(mean, want, &format!("the fade at {hz} Hz"));
+    }
+}

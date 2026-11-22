@@ -328,11 +328,12 @@ pub(crate) struct Surface {
     /// only a later `advance` moves it, so a test can render a document at
     /// any moment it names.
     tick: Instant,
-    /// The document's time in the last frame drawn (`render`), which the
-    /// next frame of a CSS animation or transition counts from. Not
-    /// `tick`: a resolve between frames (a pointer's hit test, a scroll)
-    /// moves that, and a pointer moving faster than frames come would
-    /// otherwise push the next one out for as long as it moves.
+    /// Where the last frame drawn (`render`) is on the display's grid
+    /// ([`on_grid`]), which the next frame of a CSS animation or
+    /// transition counts from. Not `tick`: a resolve between frames (a
+    /// pointer's hit test, a scroll) moves that, and a pointer moving
+    /// faster than frames come would otherwise push the next one out for
+    /// as long as it moves.
     framed: Instant,
     /// The nodes a CSS animation or transition moved at the last resolve:
     /// the next one records where they paint before it moves them again.
@@ -361,8 +362,8 @@ pub(crate) struct Surface {
     /// Elements whose scrollbars Blitz shows, with when they last showed:
     /// they are painted again as they fade.
     fading: Vec<(NodeId, Instant)>,
-    /// When a fading scrollbar was last painted: the next frame of the
-    /// fade is due a frame later.
+    /// Where a fading scrollbar was last painted on the display's grid
+    /// ([`on_grid`]): the next frame of the fade is due a frame later.
     faded_at: Option<Instant>,
     /// When the caret last moved or woke (`wake_caret`): it blinks from
     /// then.
@@ -482,6 +483,25 @@ pub(crate) const DEFAULT_FRAME: std::time::Duration =
 /// them is one a display reported wrongly, and the nearest is kept.
 const MIN_RATE_MHZ: u32 = 24_000;
 const MAX_RATE_MHZ: u32 = 360_000;
+
+/// Where a frame drawn at `now` stands on the display's grid of frames,
+/// the last of which stood at `last`: the next grid point when `now` is
+/// at most an interval past it, so that a frame drawn late (a timer armed
+/// in whole milliseconds, a loop slow to wake) does not make the next one
+/// late too, and the frames keep the display's rate; `last` still when it
+/// is drawn before the next point (a frame for input between two); and
+/// `now`, the grid anchored anew, when it is a whole interval behind or
+/// more (the first frame, after a stall, or when the interval changed).
+fn on_grid(last: Instant, now: Instant, interval: std::time::Duration) -> Instant {
+    let next = last + interval;
+    if now < next {
+        last
+    } else if now < next + interval {
+        next
+    } else {
+        now
+    }
+}
 
 /// The frame interval for a display refreshing at `millihertz`, clamped to
 /// 24–360 Hz; 0, a rate not known, is 60 Hz ([`DEFAULT_FRAME`]).
@@ -965,9 +985,9 @@ impl Surface {
     /// when its output next changes, as the document's last resolve says
     /// (the start of one in its delay, the next jump of a `steps()` easing),
     /// [`CSS_STEP`] after so that the resolve lands past the jump, and never
-    /// sooner than one frame after the last drawn (`framed`), at
-    /// the display's cadence (`frame_interval`),
-    /// which an easing that moves continuously keeps. The render that
+    /// sooner than the display's next frame after the last drawn: one
+    /// `frame_interval` on from where that stood on its grid (`framed`),
+    /// the cadence an easing that moves continuously keeps. The render that
     /// answers resolves again; when none is left it stops asking, and one
     /// paused stops too.
     fn css_due(&self) -> Option<Instant> {
@@ -1317,7 +1337,7 @@ impl Surface {
             panic!("a fault while styling");
         }
         self.resolve();
-        self.framed = self.tick;
+        self.framed = on_grid(self.framed, self.tick, self.frame_interval);
         if self.damage.full {
             // A whole frame: the nodes whose animation started in it are
             // not among those its resolve moved (their style is new, not
@@ -3942,7 +3962,8 @@ impl Surface {
             }
         }
         if changed {
-            self.faded_at = Some(now);
+            let interval = self.frame_interval;
+            self.faded_at = Some(self.faded_at.map_or(now, |p| on_grid(p, now, interval)));
         }
         self.dirty |= changed;
         changed
