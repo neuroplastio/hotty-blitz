@@ -89,7 +89,8 @@ void hotty_host_osc(hotty_host *h, const uint8_t *body, size_t len, const hotty_
 bool hotty_host_has_dirty(const hotty_host *h);
 /* Milliseconds until an animated image (GIF, APNG, WebP) on a placed surface
  * shows its next frame, scrollbars that fade are drawn again, a CSS animation
- * or transition on one is mid-flight, or a scroll that held a view back comes
+ * or transition on one is mid-flight (at the display's rate,
+ * hotty_host_set_refresh_rate), or a scroll that held a view back comes
  * to rest (SPEC 9.5): render then (hotty_host_has_dirty
  * is true by that time). 0 when one is due now, -1 when nothing plays or
  * nothing that plays is in a placement's window, no scrollbar fades and no
@@ -332,6 +333,15 @@ void hotty_host_set_backdrops(hotty_host *h, bool on);
  * cannot tell. A change draws every surface again at the next
  * hotty_host_render, as a new theme does. */
 void hotty_host_set_reduced_motion(hotty_host *h, bool reduce);
+/* The refresh rate of the display the terminal's window is on, in
+ * millihertz (GTK's gdk_monitor_get_refresh_rate; AppKit's
+ * maximumFramesPerSecond * 1000): CSS animations and transitions
+ * mid-flight, and scrollbars fading, ask for frames at that rate through
+ * hotty_host_next_frame, in every surface, those made later too. 0, for a
+ * rate the terminal cannot tell, is 60 Hz, as a new host starts; a rate is
+ * taken within 24-360 Hz. Call it again when the window moves to another
+ * display or that display's mode changes. */
+void hotty_host_set_refresh_rate(hotty_host *h, uint32_t millihertz);
 /* The host's half of the network policy (SPEC 7.2) in CSP's syntax, as its
  * user grants it: "img-src https://example.com; font-src https:". NULL or
  * empty: none, as a new host starts. The capabilities report it ("net"). A

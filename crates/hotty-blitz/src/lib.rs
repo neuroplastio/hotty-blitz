@@ -276,6 +276,9 @@ pub struct Host {
     paste: bool,
     /// The user's `prefers-reduced-motion` (Host::set_reduced_motion).
     reduced_motion: bool,
+    /// How long a frame of the terminal's display shows
+    /// ([`Host::set_refresh_rate`]), which every surface paces its motion to.
+    frame: std::time::Duration,
     /// The run of clicks the last click by the pointer was in: its surface,
     /// the element that reported it (its id, and a link's href), and the
     /// platform's count the run began at.
@@ -556,6 +559,7 @@ impl Host {
             backdrops: false,
             paste: false,
             reduced_motion: false,
+            frame: surface::DEFAULT_FRAME,
             click_run: None,
             fits: Vec::new(),
             views: Vec::new(),
@@ -791,6 +795,7 @@ impl Host {
             (500, 100),
             0,
             self.reduced_motion,
+            self.frame,
         )
     }
 
@@ -872,6 +877,32 @@ impl Host {
         for s in self.surfaces.values_mut().chain(own) {
             s.set_reduced_motion(reduce);
         }
+    }
+
+    /// The refresh rate of the display the terminal's window is on, in
+    /// millihertz (GTK's `gdk_monitor_get_refresh_rate`; AppKit's
+    /// `maximumFramesPerSecond` × 1000): CSS animations and transitions
+    /// mid-flight, and scrollbars fading, ask for a frame at that rate
+    /// ([`Host::next_frame`]), in every surface, those made later too. 0,
+    /// for a rate the terminal cannot tell, is 60 Hz, as a new host starts;
+    /// a rate is taken within 24–360 Hz. Call it again when the window
+    /// moves to another display, or that display's mode changes.
+    pub fn set_refresh_rate(&mut self, millihertz: u32) {
+        let frame = surface::interval_at(millihertz);
+        if frame == self.frame {
+            return;
+        }
+        self.frame = frame;
+        let own = self.menu.shown.as_mut().map(|(_, s)| s);
+        for s in self.surfaces.values_mut().chain(own) {
+            s.set_frame_interval(frame);
+        }
+    }
+
+    /// How long a frame of the display shows, as
+    /// [`Host::set_refresh_rate`] last set it.
+    pub fn frame_interval(&self) -> std::time::Duration {
+        self.frame
     }
 
     /// Paint every surface in full on the next render, for a terminal that
@@ -1615,6 +1646,7 @@ impl Host {
                     // scroll (SPEC §5.1).
                     scroll::axes(cmd.get("scroll")),
                     self.reduced_motion,
+                    self.frame,
                 );
                 // A replaced document keeps its placement: `r=auto` is
                 // measured when placed, not on every change. A backdrop stays
@@ -3171,5 +3203,52 @@ fn count_clicks(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_rate_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn menu(h: &mut Host, show: Option<&str>, body: serde_json::Value) {
+        let mut pairs = vec![("a", "menu")];
+        pairs.extend(show.map(|s| ("show", s)));
+        let payload = rmp_serde::to_vec_named(&body).unwrap();
+        h.handle(&Message::new(pairs.into_iter().collect(), payload));
+        // The level shown follows at the next render.
+        h.render_dirty(&mut |_, _, _| {});
+    }
+
+    fn shown(h: &Host) -> Duration {
+        h.menu
+            .shown
+            .as_ref()
+            .expect("a level shows")
+            .1
+            .frame_interval()
+    }
+
+    #[test]
+    fn the_menu_shown_and_the_next_take_the_rate() {
+        let mut h = Host::new(Config::default());
+        h.set_keys(KeySettings {
+            menus: true,
+            ..KeySettings::default()
+        });
+        menu(
+            &mut h,
+            None,
+            serde_json::json!({"items": [{"key": "a", "label": "G", "enabled": true,
+                "items": [{"key": "b", "label": "B", "name": "b", "enabled": true}]}]}),
+        );
+        menu(&mut h, Some("1"), serde_json::json!({"seq": []}));
+        assert_eq!(shown(&h), surface::DEFAULT_FRAME);
+        // The level shown takes a new rate,
+        h.set_refresh_rate(120_000);
+        assert_eq!(shown(&h), Duration::from_nanos(8_333_333));
+        // and so does the next one shown.
+        menu(&mut h, Some("1"), serde_json::json!({"seq": ["a"]}));
+        assert_eq!(shown(&h), Duration::from_nanos(8_333_333));
     }
 }

@@ -1271,6 +1271,19 @@ pub unsafe extern "C" fn hotty_host_set_reduced_motion(h: *mut HottyHost, reduce
     guard(h, (), |h| h.host.set_reduced_motion(reduce))
 }
 
+/// The refresh rate of the display the terminal's window is on, in
+/// millihertz (Host::set_refresh_rate): CSS animations, transitions and
+/// fading scrollbars ask for frames at that rate through
+/// `hotty_host_next_frame`. 0 when unknown is 60 Hz, as a new host starts;
+/// it is clamped to 24–360 Hz.
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_refresh_rate(h: *mut HottyHost, millihertz: u32) {
+    guard(h, (), |h| h.host.set_refresh_rate(millihertz))
+}
+
 /// Whether the surface takes the pointer at device pixel (`x`, `y`) of the
 /// surface (Host::takes_pointer). Where it does not, the host hands the
 /// pointer to what is below it (SPEC §9.3).
@@ -1826,6 +1839,18 @@ mod tests {
         assert!(render(h).is_empty());
         unsafe { hotty_host_set_reduced_motion(h, false) };
         assert_eq!(render(h).len(), 2);
+        unsafe { hotty_host_free(h) };
+    }
+
+    #[test]
+    fn a_refresh_rate_through_the_c_abi_sets_the_frame_interval() {
+        let h = surfaces(&["a"]);
+        let frame = || unsafe { &(*h).host }.frame_interval();
+        assert_eq!(frame(), std::time::Duration::from_nanos(16_666_666));
+        unsafe { hotty_host_set_refresh_rate(h, 120_000) };
+        assert_eq!(frame(), std::time::Duration::from_nanos(8_333_333));
+        unsafe { hotty_host_set_refresh_rate(h, 0) };
+        assert_eq!(frame(), std::time::Duration::from_nanos(16_666_666));
         unsafe { hotty_host_free(h) };
     }
 

@@ -293,6 +293,9 @@ pub(crate) struct Surface {
     /// The user's `prefers-reduced-motion` (Host::set_reduced_motion): the
     /// viewport takes it at the next render.
     reduced_motion: bool,
+    /// How long a frame of the display shows (Host::set_refresh_rate):
+    /// the cadence of a CSS animation and of a scrollbar's fade.
+    frame_interval: std::time::Duration,
     nav: Arc<NavQueue>,
     /// The surface holds the keyboard (SPEC §10): granted by `a=focus`, or
     /// a click that focuses an element.
@@ -467,13 +470,28 @@ const HISTORY: usize = 100;
 const CARET_BLINK: std::time::Duration = std::time::Duration::from_millis(600);
 const CARET_BLINKS: u32 = 16;
 
-/// The cadence a CSS animation or transition mid-flight is rendered at,
-/// while it runs: a browser renders at the display's rate, which the host
-/// does not know, so it asks for one every 60th of a second (a terminal
-/// that paces its paints to its compositor, as hottyterm does, keeps that
-/// pace whatever this asks for). When the document has nothing animating
-/// any more, it stops asking.
-const CSS_FRAME: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000 / 60);
+/// The cadence a CSS animation or transition mid-flight, and scrollbars
+/// fading, are rendered at while they run, as a browser renders at the
+/// display's rate: the rate the terminal gives ([`interval_at`]), and
+/// until it gives one, or when it cannot tell, every 60th of a second.
+/// When nothing moves any more, the surface stops asking.
+pub(crate) const DEFAULT_FRAME: std::time::Duration =
+    std::time::Duration::from_nanos(1_000_000_000 / 60);
+
+/// The rates a display's is taken within, in millihertz: a rate outside
+/// them is one a display reported wrongly, and the nearest is kept.
+const MIN_RATE_MHZ: u32 = 24_000;
+const MAX_RATE_MHZ: u32 = 360_000;
+
+/// The frame interval for a display refreshing at `millihertz`, clamped to
+/// 24–360 Hz; 0, a rate not known, is 60 Hz ([`DEFAULT_FRAME`]).
+pub(crate) fn interval_at(millihertz: u32) -> std::time::Duration {
+    if millihertz == 0 {
+        return DEFAULT_FRAME;
+    }
+    let mhz = millihertz.clamp(MIN_RATE_MHZ, MAX_RATE_MHZ);
+    std::time::Duration::from_nanos(1_000_000_000_000 / u64::from(mhz))
+}
 
 /// How long after a CSS animation's output changes (a `steps()` easing's
 /// jump, the end of a delay) the frame that shows it resolves: the time is
@@ -752,6 +770,7 @@ impl Surface {
         (cols, rows): (u16, u16),
         scroll_axes: u8,
         reduced_motion: bool,
+        frame_interval: std::time::Duration,
     ) -> Surface {
         let m = config.metrics;
         let (w, h) = (cols as u32 * m.cell_w, rows as u32 * m.cell_h);
@@ -846,6 +865,7 @@ impl Surface {
             painted: 0,
             viewport: (w, h, m.scale, dark, reduced_motion),
             reduced_motion,
+            frame_interval,
             nav,
             keyboard: false,
             detached: false,
@@ -946,7 +966,7 @@ impl Surface {
     /// (the start of one in its delay, the next jump of a `steps()` easing),
     /// [`CSS_STEP`] after so that the resolve lands past the jump, and never
     /// sooner than one frame after the last drawn (`framed`), at
-    /// [`CSS_FRAME`]'s cadence,
+    /// the display's cadence (`frame_interval`),
     /// which an easing that moves continuously keeps. The render that
     /// answers resolves again; when none is left it stops asking, and one
     /// paused stops too.
@@ -956,7 +976,7 @@ impl Surface {
         }
         let at = self.doc.next_animation_change()?;
         let at = self.started + std::time::Duration::from_secs_f64(at.max(0.0)) + CSS_STEP;
-        Some(at.max(self.framed + CSS_FRAME))
+        Some(at.max(self.framed + self.frame_interval))
     }
 
     /// The text field whose caret shows: the focused element, if it edits
@@ -1117,6 +1137,16 @@ impl Surface {
             self.dirty = true;
             self.damage.full = true;
         }
+    }
+
+    /// The display's frame interval: the frames due from now on keep it.
+    pub fn set_frame_interval(&mut self, frame: std::time::Duration) {
+        self.frame_interval = frame;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn frame_interval(&self) -> std::time::Duration {
+        self.frame_interval
     }
 
     pub fn set_size(&mut self, cols: u16, rows: u16) {
@@ -3871,7 +3901,7 @@ impl Surface {
     /// begins, then a frame after each frame of it. A fixed instant, so
     /// that it comes due.
     fn fade_due(&self) -> Option<Instant> {
-        let frame = std::time::Duration::from_millis(16);
+        let frame = self.frame_interval;
         let root = self
             .root_bar
             .shown
