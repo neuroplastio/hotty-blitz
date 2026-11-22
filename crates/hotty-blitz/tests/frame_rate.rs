@@ -105,9 +105,16 @@ fn fade_fired(
     assert!(h.wheel("x", 15.0, 10.0, 0.0, 30.0, Mods::default()).taken);
     h.end_gesture();
     render(h);
-    let mut due = Vec::new();
+    let mut due: Vec<Instant> = Vec::new();
     while let Some(t) = h.next_frame() {
         assert!(t < turned + Duration::from_secs(2), "the fade ends");
+        // A fade whose next frame stays where it was would ask for it for
+        // ever: fail, rather than spin.
+        assert!(
+            due.last().is_none_or(|l| t > *l),
+            "a frame asked for twice at {t:?}"
+        );
+        assert!(due.len() < 1000, "the fade asks for frames without end");
         let at = fire(h, t);
         h.animate(at);
         due.push(t);
@@ -298,5 +305,44 @@ fn a_scrollbar_fading_late_keeps_the_display_rate() {
         let want = Duration::from_nanos(1_000_000_000 / hz);
         let mean = (*frames.last().unwrap() - frames[0]) / (frames.len() as u32 - 1);
         within_a_percent(mean, want, &format!("the fade at {hz} Hz"));
+    }
+}
+
+/// CSS frames drawn late, as `fired` draws them, each with a frame for
+/// input 3 ms after it: the CSS frames keep the display's rate, and no two
+/// come less than half an interval apart, since a frame between two points
+/// leaves the grid where it was.
+#[test]
+fn input_frames_between_points_leave_the_grid() {
+    for hz in [60u64, 120, 144] {
+        let mut h = host();
+        h.set_refresh_rate(hz as u32 * 1000);
+        doc(&mut h, &[], ANIMATED);
+        let interval = Duration::from_nanos(1_000_000_000 / hz);
+        let future = h.next_frame().expect("the animation wants frames") + Duration::from_secs(30);
+        h.animate(future);
+        render(&mut h);
+        let mut asked = future;
+        let mut seed = 3;
+        let mut css = Vec::new();
+        while css.len() < 2 || *css.last().unwrap() < css[0] + Duration::from_secs(2) {
+            let due = h.next_frame().expect("the animation wants frames");
+            let at = fired(asked, due, jitter(&mut seed));
+            h.animate(at);
+            assert_eq!(render(&mut h), 1, "each frame asked for draws");
+            css.push(at);
+            // Input 3 ms on, before the next point.
+            let input = at + Duration::from_millis(3);
+            if input < h.next_frame().expect("the animation wants frames") {
+                h.animate(input);
+                h.repaint();
+                assert_eq!(render(&mut h), 1, "input draws");
+            }
+            asked = input.max(at);
+        }
+        let mean = (*css.last().unwrap() - css[0]) / (css.len() as u32 - 1);
+        within_a_percent(mean, interval, &format!("{hz} Hz with input"));
+        let min = css.windows(2).map(|w| w[1] - w[0]).min().unwrap();
+        assert!(min > interval / 2, "{hz} Hz: two CSS frames {min:?} apart");
     }
 }

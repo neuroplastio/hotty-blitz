@@ -335,7 +335,7 @@ void hotty_host_set_backdrops(hotty_host *h, bool on);
 void hotty_host_set_reduced_motion(hotty_host *h, bool reduce);
 /* The refresh rate of the display the terminal's window is on, in
  * millihertz (GTK's gdk_monitor_get_refresh_rate; AppKit's
- * maximumFramesPerSecond * 1000): CSS animations and transitions
+ * 1000 / minimumRefreshInterval): CSS animations and transitions
  * mid-flight, and scrollbars fading, ask for frames at that rate through
  * hotty_host_next_frame, in every surface, those made later too. 0, for a
  * rate the terminal cannot tell, is 60 Hz, as a new host starts; a rate is

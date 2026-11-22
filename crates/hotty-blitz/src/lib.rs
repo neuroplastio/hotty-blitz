@@ -881,7 +881,7 @@ impl Host {
 
     /// The refresh rate of the display the terminal's window is on, in
     /// millihertz (GTK's `gdk_monitor_get_refresh_rate`; AppKit's
-    /// `maximumFramesPerSecond` × 1000): CSS animations and transitions
+    /// 1000 / `minimumRefreshInterval`): CSS animations and transitions
     /// mid-flight, and scrollbars fading, ask for a frame at that rate
     /// ([`Host::next_frame`]), in every surface, those made later too. 0,
     /// for a rate the terminal cannot tell, is 60 Hz, as a new host starts;

@@ -29,7 +29,9 @@ what a drag would name at the centre of a surface cell, with a drop
 target's steps, without changing hover or focus. A text field can give Tab
 to the program with `tab=program`; `key=default` gives a key back to the
 host. Reset ends the session and drops its resources. The terminal passes
-the system's reduced-motion setting to `hotty_host_set_reduced_motion`.
+the system's reduced-motion setting to `hotty_host_set_reduced_motion`,
+and the refresh rate of the display its window is on to
+`hotty_host_set_refresh_rate`.
 
 ## Try it
 

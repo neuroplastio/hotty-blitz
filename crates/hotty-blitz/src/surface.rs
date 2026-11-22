@@ -491,7 +491,10 @@ const MAX_RATE_MHZ: u32 = 360_000;
 /// late too, and the frames keep the display's rate; `last` still when it
 /// is drawn before the next point (a frame for input between two); and
 /// `now`, the grid anchored anew, when it is a whole interval behind or
-/// more (the first frame, after a stall, or when the interval changed).
+/// more (the first frame, or after a stall). A new interval needs no
+/// anchor of its own: the next frame is due one new interval on from the
+/// last point, and a frame that comes two new intervals behind it (a rate
+/// raised while a frame was due at the old one) anchors anew.
 fn on_grid(last: Instant, now: Instant, interval: std::time::Duration) -> Instant {
     let next = last + interval;
     if now < next {
