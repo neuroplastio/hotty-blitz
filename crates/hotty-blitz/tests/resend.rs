@@ -136,13 +136,18 @@ fn a_resend_with_one_byte_changed_updates_every_surface() {
 }
 
 #[test]
-fn the_same_bytes_as_another_type_are_a_resource_sent_again() {
+fn a_resend_applies_as_a_stylesheet_only_with_a_css_media_type() {
     let mut h = host();
     two_surfaces(&mut h);
     let parsed = h.sheets_parsed();
     res(&mut h, "theme", "text/plain", SHEET);
     assert_eq!(draw(&mut h), 2);
+    assert_eq!(h.sheets_parsed(), parsed);
+    assert_ne!(pixel(&h, "y", 99, 79), RED);
+    res(&mut h, "theme", "TeXt/CsS; charset=utf-8", SHEET);
+    assert_eq!(draw(&mut h), 2);
     assert_eq!(h.sheets_parsed(), parsed + 1);
+    assert_eq!(pixel(&h, "y", 99, 79), RED);
 }
 
 #[test]
@@ -174,6 +179,9 @@ fn a_document_waiting_for_a_resource_gets_it() {
         &[("a", "place"), ("s", "x"), ("c", "10"), ("r", "2")],
         b"",
     );
+    draw(&mut h);
+    assert_ne!(pixel(&h, "x", 99, 39), RED);
+    res(&mut h, "theme", "text/plain", SHEET);
     draw(&mut h);
     assert_ne!(pixel(&h, "x", 99, 39), RED);
     res(&mut h, "theme", "text/css", SHEET);

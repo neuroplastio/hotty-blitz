@@ -12,7 +12,7 @@ use crate::fetch;
 use crate::policy::{Directive, Policy};
 use base64::Engine as _;
 use blitz_dom::net::{SharedStylesheets, parse_shared_stylesheet};
-use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::net::{Bytes, Destination, NetHandler, NetProvider, Request};
 use blitz_traits::node_id::NodeId;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -41,7 +41,24 @@ struct Sheet {
 }
 
 /// A document's request, parked until its resource arrives.
-type Waiting = Vec<(usize, Box<dyn NetHandler>)>;
+impl Resource {
+    fn bytes_for(&self, destination: Destination) -> Bytes {
+        if destination == Destination::Style && !is_css(&self.mime) {
+            return Bytes::new();
+        }
+        self.bytes.clone()
+    }
+}
+
+fn is_css(mime: &str) -> bool {
+    mime.split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("text/css")
+}
+
+type Waiting = Vec<(usize, Destination, Box<dyn NetHandler>)>;
 
 #[derive(Default)]
 struct Inner {
@@ -145,12 +162,11 @@ impl Store {
         mime: &str,
         bytes: Vec<u8>,
     ) -> Result<Vec<(String, BTreeSet<usize>)>, String> {
-        if self.inner.lock().unwrap().unchanged(name, mime, &bytes) {
-            return Ok(Vec::new());
-        }
-        let bytes = Bytes::from(bytes);
-        let (waiting, served, users) = {
+        let (waiting, served, users, resource) = {
             let mut inner = self.inner.lock().unwrap();
+            if inner.unchanged(name, mime, &bytes) {
+                return Ok(Vec::new());
+            }
             let old = inner.resources.get(name).map_or(0, |r| r.bytes.len());
             let total = inner.total - old + bytes.len();
             if total > self.quota {
@@ -162,19 +178,17 @@ impl Store {
             inner.total = total;
             inner.generation += 1;
             let generation = inner.generation;
-            inner.resources.insert(
-                name.to_string(),
-                Resource {
-                    mime: mime.to_string(),
-                    bytes: bytes.clone(),
-                    generation,
-                },
-            );
+            let resource = Resource {
+                mime: mime.to_string(),
+                bytes: Bytes::from(bytes),
+                generation,
+            };
+            inner.resources.insert(name.to_string(), resource.clone());
             let waiting = inner.waiting.remove(name).unwrap_or_default();
             // A document that waits for it gets it from its handler below:
             // told it changed as well, it would fetch, and decode, it again.
             // (Sheets that import it are still reloaded for it.)
-            let served: BTreeSet<usize> = waiting.iter().map(|(d, _)| *d).collect();
+            let served: BTreeSet<usize> = waiting.iter().map(|(d, _, _)| *d).collect();
             let mut users: Vec<(String, BTreeSet<usize>)> = std::iter::once(name.to_string())
                 .chain(inner.forget_sheets(name))
                 .map(|n| {
@@ -185,13 +199,14 @@ impl Store {
             users[0].1.retain(|d| !served.contains(d));
             inner.animations.remove(&format!("cid:{name}"));
             inner.drop_unused_sheets();
-            (waiting, served, users)
+            (waiting, served, users, resource)
         };
         // Deliver outside the lock: a stylesheet handler may fetch @imports.
         let url = format!("cid:{name}");
-        for (doc_id, handler) in waiting {
+        for (doc_id, destination, handler) in waiting {
+            let bytes = resource.bytes_for(destination);
             self.load(doc_id, &url, &bytes);
-            handler.bytes(url.clone(), bytes.clone());
+            handler.bytes(url.clone(), bytes);
         }
         // Their surfaces take in what arrived, as for a fetch that
         // completes (`take_delivered`).
@@ -221,7 +236,7 @@ impl Store {
             users.remove(&doc_id);
         }
         for waiting in inner.waiting.values_mut() {
-            waiting.retain(|(d, _)| *d != doc_id);
+            waiting.retain(|(d, _, _)| *d != doc_id);
         }
         inner.started.retain(|(d, _, _)| *d != doc_id);
         inner.policies.remove(&doc_id);
@@ -549,7 +564,10 @@ impl SharedStylesheets for Provider {
             let r = inner.resources.get(name)?;
             // Not the resource as it is now (a delivery that crossed a
             // sending): parsed as delivered.
-            if r.bytes.as_ptr() != bytes.as_ptr() || r.bytes.len() != bytes.len() {
+            if !is_css(&r.mime)
+                || r.bytes.as_ptr() != bytes.as_ptr()
+                || r.bytes.len() != bytes.len()
+            {
                 return None;
             }
             let generation = r.generation;
@@ -581,7 +599,7 @@ impl SharedStylesheets for Provider {
                 .then(|| {
                     let inner = self.0.inner.lock().unwrap();
                     let r = inner.resources.get(u.path())?;
-                    Some((r.generation, r.bytes.clone()))
+                    Some((r.generation, r.bytes_for(Destination::Style)))
                 })
                 .flatten();
             match found {
@@ -649,6 +667,7 @@ impl NetProvider for Provider {
         if matches!(request.url.scheme(), "http" | "https") {
             return self.0.request(doc_id, request, handler);
         }
+        let destination = request.destination;
         let url = request.url;
         match url.scheme() {
             "cid" => {
@@ -657,13 +676,13 @@ impl NetProvider for Provider {
                     let mut inner = self.0.inner.lock().unwrap();
                     inner.users.entry(name.clone()).or_default().insert(doc_id);
                     match inner.resources.get(&name) {
-                        Some(r) => Some(r.bytes.clone()),
+                        Some(r) => Some(r.bytes_for(destination)),
                         None => {
-                            inner
-                                .waiting
-                                .entry(name)
-                                .or_default()
-                                .push((doc_id, handler));
+                            inner.waiting.entry(name).or_default().push((
+                                doc_id,
+                                destination,
+                                handler,
+                            ));
                             return;
                         }
                     }
