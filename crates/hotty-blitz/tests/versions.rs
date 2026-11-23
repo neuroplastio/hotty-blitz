@@ -1,5 +1,5 @@
-//! The host speaks 0.7 and 0.8 (SPEC §4, §15; HOST.md §5), answers
-//! in the highest shared version, and presses alike in both sessions.
+//! The host speaks 0.8 and 0.9 (SPEC §4, §15; HOST.md §5), answers
+//! in the highest shared version, and reports each session's button events.
 
 mod common;
 
@@ -56,13 +56,13 @@ fn ask(h: &mut Host, v: &str) -> (String, Value) {
 #[test]
 fn a_query_is_answered_in_the_highest_version_it_shares() {
     for (v, want) in [
-        ("0.7,0.8", "0.8"),
-        ("0.8,0.7", "0.8"),
+        ("0.8,0.9", "0.9"),
+        ("0.9,0.8", "0.9"),
+        ("0.9", "0.9"),
         ("0.8", "0.8"),
-        ("0.7", "0.7"),
-        ("0.5,0.7", "0.7"),
-        ("0.7,99.0", "0.7"),
-        ("0.5,0.8,1.0", "0.8"),
+        ("0.5,0.8", "0.8"),
+        ("0.8,99.0", "0.8"),
+        ("0.5,0.9,1.0", "0.9"),
     ] {
         let mut h = host();
         assert_eq!(ask(&mut h, v), ("ok".into(), json!(want)), "{v}");
@@ -71,11 +71,11 @@ fn a_query_is_answered_in_the_highest_version_it_shares() {
 
 #[test]
 fn a_query_that_shares_no_version_is_eversion_with_the_versions_spoken_lowest_first() {
-    for v in ["0.5", "0.6", "0.9", "1.0", "", "0.70,0.80"] {
+    for v in ["0.5", "0.6", "0.7", "1.0", "", "0.70,0.80,0.90"] {
         let mut h = host();
         assert_eq!(
             ask(&mut h, v),
-            ("err".into(), json!(["EVERSION", "0.7,0.8"])),
+            ("err".into(), json!(["EVERSION", "0.8,0.9"])),
             "{v:?}"
         );
     }
@@ -84,14 +84,14 @@ fn a_query_that_shares_no_version_is_eversion_with_the_versions_spoken_lowest_fi
     let fx = h.handle(&cmd(&[("a", "q"), ("n", "1")], ""));
     let r = replies(&fx);
     assert_eq!(r[0].0, "err");
-    assert_eq!(r[0].1["detail"], "0.7,0.8");
+    assert_eq!(r[0].1["detail"], "0.8,0.9");
 }
 
 #[test]
 fn the_host_names_the_highest_version_it_speaks() {
-    assert_eq!(hotty_blitz::VERSION, "0.8");
+    assert_eq!(hotty_blitz::VERSION, "0.9");
     assert_eq!(hotty_blitz::VERSION, hotty::VERSION);
-    assert_eq!(hotty::VERSIONS, ["0.7", "0.8"]);
+    assert_eq!(hotty::VERSIONS, ["0.8", "0.9"]);
 }
 
 // Supported sessions.
@@ -104,7 +104,7 @@ const DOC: &str = "<style>body{margin:0}\
     #i{left:30px;top:20px;width:30px}\
     #n{left:100px;top:0;width:30px}\
     #f{left:100px;top:40px;width:60px}</style>\
-    <b id=o data-on=secondary><u id=i data-on=\"secondary\">i</u></b>\
+    <b id=o data-on=\"secondary contextmenu\"><u id=i data-on=\"secondary contextmenu\">i</u></b>\
     <i id=n>n</i><input id=f type=text>";
 
 fn session(v: &str) -> Host {
@@ -141,13 +141,15 @@ fn alt() -> Mods {
 
 /// The secondary press at the centre of cell (`c`, `r`).
 fn press(h: &mut Host, c: u32, r: u32, mods: Mods) -> (bool, Vec<Effect>) {
-    let out = h.secondary("x", c as f32 * 10.0 + 5.0, r as f32 * 20.0 + 10.0, mods);
+    let (x, y) = (c as f32 * 10.0 + 5.0, r as f32 * 20.0 + 10.0);
+    let out = h.button("x", 2, PointerKind::Down, x, y, mods, false);
+    h.button("x", 2, PointerKind::Up, x, y, mods, false);
     (out.taken, out.effects)
 }
 
 #[test]
-fn both_supported_sessions_take_secondary_presses() {
-    for v in ["0.7", "0.8", "0.7,0.8"] {
+fn both_supported_sessions_take_context_gestures() {
+    for v in ["0.8", "0.9", "0.8,0.9"] {
         let mut h = session(v);
         h.pointer("x", PointerKind::Move, 45.0, 30.0, none());
         let (taken, fx) = press(&mut h, 4, 1, none());
@@ -177,11 +179,11 @@ fn both_supported_sessions_take_secondary_presses() {
 
 #[test]
 fn the_next_query_changes_the_session_and_a_reset_ends_it() {
-    let mut h = session("0.7");
+    let mut h = session("0.8");
     assert!(press(&mut h, 4, 1, none()).0);
-    assert_eq!(ask(&mut h, "0.7,0.8"), ("ok".into(), json!("0.8")));
+    assert_eq!(ask(&mut h, "0.8,0.9"), ("ok".into(), json!("0.9")));
     assert!(press(&mut h, 4, 1, none()).0);
-    assert_eq!(ask(&mut h, "0.7"), ("ok".into(), json!("0.7")));
+    assert_eq!(ask(&mut h, "0.8"), ("ok".into(), json!("0.8")));
     assert!(press(&mut h, 4, 1, none()).0);
     // A query no version of which is shared leaves the session as it was.
     assert_eq!(ask(&mut h, "0.5").0, "err");
@@ -212,8 +214,8 @@ fn long_press(h: &mut Host, c: u32, r: u32, mods: Mods) -> (Touch, usize, Touch,
 }
 
 #[test]
-fn a_long_press_is_a_secondary_press_in_both_supported_sessions() {
-    for v in ["0.7", "0.8"] {
+fn a_long_press_is_a_context_gesture_in_both_supported_sessions() {
+    for v in ["0.8", "0.9"] {
         let mut h = session(v);
         assert_eq!(
             long_press(&mut h, 4, 1, none()),

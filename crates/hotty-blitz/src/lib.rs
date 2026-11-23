@@ -40,9 +40,9 @@ pub use surface::{Damage, Frame, Timings};
 /// and the one a session is in until a query says otherwise. It is a string
 /// literal on one line, which hottyterm's scripts/versions.sh reads; a test
 /// holds it to the hotty crate's, which also lists the lower one it speaks
-/// ([`hotty::VERSIONS`]: 0.7 and 0.8, HOST.md §5). A query that lists
+/// ([`hotty::VERSIONS`]: 0.8 and 0.9, HOST.md §5). A query that lists
 /// neither is answered with `EVERSION`.
-pub const VERSION: &str = "0.8";
+pub const VERSION: &str = "0.9";
 
 /// The most bytes one command's payload decodes to, after base64 and zlib
 /// (SPEC §3.4): what the capabilities report as `limits.message` (§13). A

@@ -73,20 +73,9 @@ fn vectors() -> Value {
         .expect(
             "no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository",
         );
-    // Pin the host contract to the released spec, even if that checkout
-    // later moves on. The vectors themselves stay in the hotty repository.
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&dir)
-        .args(["show", "v0.8.0:conformance/vectors.json"])
-        .output()
-        .expect("read hotty v0.8.0 vectors");
-    assert!(
-        output.status.success(),
-        "hotty checkout needs tag v0.8.0: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("v0.8.0 conformance/vectors.json")
+    let path = dir.join("conformance/vectors.json");
+    let bytes = std::fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    serde_json::from_slice(&bytes).unwrap_or_else(|err| panic!("parse {}: {err}", path.display()))
 }
 
 fn decode(bytes: &[u8]) -> (Vec<Message>, usize) {
@@ -1046,8 +1035,8 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
 
 /// The version is the spec's (gov P-5 rule 6): the package's MAJOR.MINOR,
 /// which the capabilities send in `version`, is the highest hotty version the
-/// host speaks and the one the vectors are for. hotty 0.8 is hotty-blitz
-/// 0.8.x, which speaks 0.7 as well (HOST.md §5).
+/// host speaks and the one the vectors are for. hotty 0.9 is hotty-blitz
+/// 0.9.x, which speaks 0.8 as well (HOST.md §5).
 #[test]
 fn the_version_is_the_specs() {
     let pkg = env!("CARGO_PKG_VERSION");
@@ -1076,7 +1065,7 @@ fn protocol_vectors() {
         // commands, shows menus, draws backdrops and reports the mouse as
         // hottyterm does, and hotty-blitz sends hover, scrolls, takes touch,
         // drags in steps, takes drop targets, tells `view`, keeps a history
-        // for its text fields and speaks 0.7 as well.
+        // for its text fields and speaks 0.8 as well.
         let has = |r: &Value| {
             matches!(
                 r.as_str(),
@@ -1095,7 +1084,12 @@ fn protocol_vectors() {
                         | "drop"
                         | "view"
                         | "pressed"
-                        | "speaks-0.7"
+                        | "speaks-0.8"
+                        | "middle-paste"
+                        | "paste-field"
+                        | "menu-key"
+                        | "control-click"
+                        | "layout"
                 )
             )
         };
@@ -1109,15 +1103,11 @@ fn protocol_vectors() {
             continue;
         }
         ran += 1;
-        // The vectors of a secondary button or a long press, by name.
-        if vector["steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|st| st.get("button").is_some() || st["touch"] == "hold")
-        {
-            eprintln!("vector (secondary): {}", vector["name"].as_str().unwrap());
-        }
+        let requires = |name: &str| match vector.get("requires") {
+            Some(Value::Array(all)) => all.iter().any(|r| r == name),
+            Some(r) => r == name,
+            None => false,
+        };
         let mut host = Host::new(Config::default());
         host.set_passthrough(true);
         host.set_counts(true);
@@ -1129,13 +1119,13 @@ fn protocol_vectors() {
             ..KeySettings::default()
         });
         let mut mouse = Mouse {
-            pressed: match vector.get("requires") {
-                Some(Value::Array(all)) => all.iter().any(|r| r == "pressed"),
-                Some(r) => r == "pressed",
-                None => false,
-            },
+            pressed: requires("pressed") || requires("commands"),
+            middle_paste: requires("middle-paste"),
+            control_click: requires("control-click"),
             ..Mouse::default()
         };
+        host.set_middle_paste(mouse.middle_paste);
+        host.set_context_menu_on_release(false);
         for (i, step) in vector["steps"].as_array().unwrap().iter().enumerate() {
             if let Err(e) = run_step(&mut host, &mut mouse, step) {
                 failures.push(format!(

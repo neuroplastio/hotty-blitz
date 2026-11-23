@@ -10,18 +10,18 @@ host and program shares:
 
 | crate | what |
 | --- | --- |
-| `crates/hotty-blitz` | the host of hotty 0.8 (and 0.7): surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play, and CSS animations and transitions run), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
+| `crates/hotty-blitz` | the host of hotty 0.9 (and 0.8): surfaces, deltas and morph, `cid:` resources and the network policy (animated GIF, APNG and WebP play, and CSS animations and transitions run), damage-proportional rendering into a caller's buffer, input and events (their bodies msgpack), and a **C ABI** (`include/hotty_blitz.h`) for terminals to link |
 | `crates/hotty` | the `hotty` CLI (package `hotty-cli`): `render` and `show` a page, `run` (the kitty graphics polyfill), `send`, `dump`, `replay`, `bench`, `css` |
 | [`mods/`](mods/) | our patches on Blitz, parley (its text layout), vello_cpu (its renderer), glifo (vello_cpu's glyph renderer) and Stylo (its style engine), one set each, every patch with a page on what it changes, why we carry it and whether upstream might want it (gov P-7; neuroplast.io/modding lists them) |
 
-The host speaks hotty 0.8, and 0.7 as well (SPEC §15, HOST.md §5). It
-answers a query listing either (`a=q:n=1:v=0.7,0.8`, SPEC §4) in the
+The host speaks hotty 0.9, and 0.8 as well (SPEC §15, HOST.md §5). It
+answers a query listing either (`a=q:n=1:v=0.8,0.9`, SPEC §4) in the
 highest version the two share, and speaks that version until the session
 ends. Other queries, one with no `v` too, get `EVERSION`, its detail
-`0.7,0.8`.
+`0.8,0.9`.
 
-0.8.x speaks hotty 0.8 and 0.7; the patch number is this repository's own.
-The capabilities name it: `"host": "hotty-blitz"`, `"version": "0.8.14"`.
+0.9.x speaks hotty 0.9 and 0.8; the patch number is this repository's own.
+The capabilities name it: `"host": "hotty-blitz"`, `"version": "0.9.0"`.
 
 A program can scroll with a `scroll` delta op, by the steps a bound key
 would take from its target, or from the root without one. `a=hit` asks
@@ -37,8 +37,7 @@ tracking modes to `hotty_host_set_scroll_modes` for scroll chaining.
 ## Try it
 
 Needs [mise](https://mise.jdx.dev) and a checkout of `neuroplastio/hotty`
-next to this repository (or `HOTTY_DIR`), with tag `v0.8.0` for the
-conformance vectors.
+next to this repository (or `HOTTY_DIR`) with the 0.9 conformance vectors.
 
 ```
 mise install && make release       # also patches Blitz at ../blitz, parley at ../parley, vello_cpu at ../vello_cpu, glifo at ../glifo and Stylo at ../stylo
