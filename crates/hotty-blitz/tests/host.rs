@@ -3578,7 +3578,7 @@ fn key_bytes_name_keys_from_what_the_program_would_read() {
     h.handle(&cmd(
         &[("a", "doc"), ("s", "f")],
         &format!(
-            "<body data-keys='{}'><input id=f value='one two three'>",
+            "<body data-keys-inner='{}'><input id=f value='one two three'>",
             hotty::keys::TERMINAL_KEYS
         ),
     ));
@@ -4211,8 +4211,8 @@ fn a_field_cuts_and_pastes_on_the_terminals_clipboard() {
 
 /// Copying follows the keymap (SPEC §10.2, §11): a field copies its
 /// selection with a key bound to copy, and a selection in the document is
-/// copied by the keymap of the element it starts in, which may give the
-/// key to the program; with nothing selected the key goes on.
+/// copied by the document selection's keymap. With nothing selected the
+/// key goes on.
 #[test]
 fn copying_follows_the_keymap() {
     use hotty_blitz::CopyKey;
@@ -4239,13 +4239,13 @@ fn copying_follows_the_keymap() {
     // `super+c` copies where `mod` is `super` (SPEC §10.2), and not here.
     assert_eq!(h.copy_key("super+c", ""), CopyKey::Other);
     assert_eq!(h.copy_key("ctrl+x", ""), CopyKey::Other);
-    // In #b, `ctrl+c` is the program's, and `ctrl+k` copies.
+    // The selected paragraph's own bindings do not apply to selections.
     for n in 1..=2 {
         h.pointer_counted("x", PointerKind::Down, 10.0, 60.0, m, n);
         h.pointer_counted("x", PointerKind::Up, 10.0, 60.0, m, n);
     }
-    assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::Other);
-    assert_eq!(h.copy_key("ctrl+k", ""), CopyKey::Copy("not".into()));
+    assert_eq!(h.copy_key("ctrl+c", ""), CopyKey::Copy("not".into()));
+    assert_eq!(h.copy_key("ctrl+k", ""), CopyKey::Other);
 
     // A focused field copies its selection by its own keymap.
     h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
@@ -4279,7 +4279,7 @@ fn copying_goes_by_either_name() {
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x")],
         "<style>body{margin:0;font:16px monospace}</style>\
-         <p id=a data-keys='ctrl+key_c=program ctrl+c=copy ctrl+key_k=copy ctrl+j=copy'>copy me</p>",
+         <body data-keys='ctrl+key_c=program ctrl+c=copy ctrl+key_k=copy ctrl+j=copy'><p id=a>copy me</p>",
     ));
     h.handle(&cmd(
         &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "6")],

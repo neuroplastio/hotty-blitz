@@ -1282,115 +1282,72 @@ fn keymap_vectors() {
                         .collect()
                 }),
         };
-        if k.get("lookup").is_none()
-            && (k.get("program").is_some()
-                || k.get("prefix").is_some()
-                || k.get("scroll").is_some())
-        {
-            // An element's keymap outside a text field: no default (§10.2).
-            let values: Vec<&str> = k["keys"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap())
-                .collect();
-            let m = keys::parse_keymap(&platform, &values.join(" "));
-            for (key, want) in k
-                .get("program")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-            {
-                let got = m.program(key);
-                if Some(got) != want.as_bool() {
-                    failures.push(format!("{name}: {key}: program {got}, want {want}"));
-                }
-            }
-            for (key, want) in k
-                .get("prefix")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-            {
-                let got = m.prefix(key);
-                if Some(got) != want.as_bool() {
-                    failures.push(format!("{name}: {key}: prefix {got}, want {want}"));
-                }
-            }
-            for (key, want) in k
-                .get("scroll")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-            {
-                let got = m.scroll(key);
-                if got != want.as_str() {
-                    failures.push(format!("{name}: {key}: scroll {got:?}, want {want:?}"));
-                }
+        if let Some(want) = k["format"].as_str() {
+            let value = k["parse"].as_str().unwrap_or(keys::TERMINAL_KEYS);
+            let got = keys::parse_keymap(&platform, value).format();
+            if got != want {
+                failures.push(format!("{name}: got {got:?}, want {want:?}"));
             }
             continue;
         }
-        let Some(lookup) = k.get("lookup") else {
-            let value = k
-                .get("parse")
-                .and_then(Value::as_str)
-                .unwrap_or(keys::TERMINAL_KEYS);
-            let got = keys::parse_keymap(&platform, value).format();
-            if got != k["format"].as_str().unwrap() {
-                failures.push(format!("{name}: {got:?}"));
-            }
-            continue;
-        };
         let mut values: Vec<&str> = if terminal {
             vec![keys::TERMINAL_KEYS]
         } else {
             vec![]
         };
         values.extend(
-            k["keys"]
+            k["inner"]
                 .as_array()
-                .unwrap()
-                .iter()
+                .into_iter()
+                .flatten()
                 .map(|v| v.as_str().unwrap()),
         );
-        let m = keys::resolve(&platform, k["multiline"].as_bool().unwrap(), values);
-        for (key, want) in lookup.as_object().unwrap() {
-            let got = m.lookup(key);
-            if got != want.as_str() {
-                failures.push(format!("{name}: {key}: {got:?}, want {want:?}"));
+        let reader = match k["reader"].as_str() {
+            Some("input") => keys::Reader::Input,
+            Some("multiline") => keys::Reader::Multiline,
+            Some("button") => keys::Reader::Button,
+            Some("select") => keys::Reader::Select,
+            Some("date") => keys::Reader::Date,
+            Some("selection") => keys::Reader::Selection,
+            Some("element") => keys::Reader::Element,
+            other => panic!("unknown reader {other:?} in {name}"),
+        };
+        let m = keys::resolve(&platform, reader, k["own"].as_str().unwrap_or(""), values);
+        let expects = |field| {
+            k.get(field)
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+        };
+        for (field, check) in [
+            (
+                "lookup",
+                keys::Keymap::lookup
+                    as for<'a, 'b> fn(&'a keys::Keymap, &'b str) -> Option<&'a str>,
+            ),
+            ("scroll", keys::Keymap::scroll),
+        ] {
+            for (key, want) in expects(field) {
+                let got = check(&m, key);
+                if got != want.as_str() {
+                    failures.push(format!("{name}: {key}: {field} got {got:?}, want {want:?}"));
+                }
             }
         }
-        for (key, want) in k
-            .get("program")
-            .and_then(Value::as_object)
-            .into_iter()
-            .flatten()
-        {
-            let got = m.program(key);
-            if Some(got) != want.as_bool() {
-                failures.push(format!("{name}: {key}: program {got}, want {want}"));
-            }
-        }
-        for (key, want) in k
-            .get("binds")
-            .and_then(Value::as_object)
-            .into_iter()
-            .flatten()
-        {
-            let got = m.binds(key);
-            if Some(got) != want.as_bool() {
-                failures.push(format!("{name}: {key}: binds {got}, want {want}"));
-            }
-        }
-        for (key, want) in k
-            .get("selects")
-            .and_then(Value::as_object)
-            .into_iter()
-            .flatten()
-        {
-            let got = m.selects(key);
-            if Some(got) != want.as_bool() {
-                failures.push(format!("{name}: {key}: selects {got}, want {want}"));
+        for (field, check) in [
+            (
+                "program",
+                keys::Keymap::program as fn(&keys::Keymap, &str) -> bool,
+            ),
+            ("prefix", keys::Keymap::prefix),
+            ("binds", keys::Keymap::binds),
+            ("selects", keys::Keymap::selects),
+        ] {
+            for (key, want) in expects(field) {
+                let got = check(&m, key);
+                if Some(got) != want.as_bool() {
+                    failures.push(format!("{name}: {key}: {field} got {got}, want {want}"));
+                }
             }
         }
     }

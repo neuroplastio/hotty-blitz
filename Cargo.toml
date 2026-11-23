@@ -12,8 +12,8 @@ repository = "https://github.com/neuroplastio/hotty-blitz"
 # The hotty protocol: the Rust SDK's wire layer and its host side, pinned
 # by commit until it is published (gov P-5). Without its terminal, which
 # only programs need. To build against a checkout of hotty-rs beside this
-# one: `cargo build --config 'patch."https://github.com/neuroplastio/hotty-rs".hotty.path="../hotty-rs/crates/hotty"'`.
-hotty = { git = "https://github.com/neuroplastio/hotty-rs", rev = "fd05cfcb35bc5748b9c76a2db4a973f20cfc880c", default-features = false, features = ["zlib"] }
+# one: `mise exec -- cargo build --config 'patch."https://github.com/neuroplastio/hotty-rs".hotty.path="../hotty-rs/crates/hotty"'`.
+hotty = { git = "https://github.com/neuroplastio/hotty-rs", rev = "c50b81c8628fe0fbaa8cf843a6af1e460d9ea3d8", version = "0.9", default-features = false, features = ["zlib"] }
 hotty-blitz = { path = "crates/hotty-blitz" }
 
 # Blitz is pinned by commit. Upgrade in a leg of its own.

@@ -2256,27 +2256,16 @@ impl Surface {
     /// A key, named as SPEC §10.4 writes it, for the selection in the
     /// document outside a text field (SPEC §11): `None` when there is none,
     /// or a focused text field holds the selection; else its text when the
-    /// keymap of the element whose text it starts in, read as a text
-    /// field's, binds the key to `copy`, and `Some(None)` when it does not.
-    pub fn copy_key(&self, names: &[String]) -> Option<Option<String>> {
+    /// document selection's keymap binds the key to `copy`, and `Some(None)` when it does not.
+    pub fn copy_key(&self, names: &[String], legacy: bool) -> Option<Option<String>> {
         if self
             .focused()
             .is_some_and(|id| self.doc.text_input_selection(id).is_some())
         {
             return None;
         }
-        let (first, _, _) = self
-            .doc
-            .get_text_selection_ranges()
-            .into_iter()
-            .find(|&(n, _, _)| !self.unselectable(Some(n)))?;
         let text = self.selected_text()?;
-        let values = self.keymap_values(first);
-        let keymap = keys::resolve(
-            &self.settings.platform,
-            false,
-            values.iter().map(String::as_str),
-        );
+        let keymap = self.keymap(None, keys::Reader::Selection, legacy);
         let copies = keymap.press(names).and_then(|n| keymap.lookup(n)) == Some("copy");
         Some(copies.then_some(text))
     }
@@ -3317,7 +3306,7 @@ impl Surface {
     /// reaches the program (§10.5); else the element, the scroll actions
     /// and the program take it in the order §10.2 gives. Whether the
     /// surface used it, and the events it sent.
-    pub fn key(&mut self, key: &Key, offer: Offer) -> (bool, Vec<Event>) {
+    pub fn key(&mut self, key: &Key, offer: Offer, legacy: bool) -> (bool, Vec<Event>) {
         if !self.keyboard {
             return (false, Vec::new());
         }
@@ -3329,7 +3318,7 @@ impl Surface {
             return (false, events);
         }
         let watched = self.watch(None);
-        let (used, next) = self.plain_key(key, offer);
+        let (used, next) = self.plain_key(key, offer, legacy);
         events.extend(next);
         self.carets(watched, &mut events);
         (used, events)
@@ -3339,7 +3328,7 @@ impl Surface {
     /// comes after the keys it gives to the program, which start a prefix
     /// when it is `prefix` and `offer` is the key as the program reads it
     /// (§10.5).
-    fn plain_key(&mut self, key: &Key, offer: Offer) -> (bool, Vec<Event>) {
+    fn plain_key(&mut self, key: &Key, offer: Offer, legacy: bool) -> (bool, Vec<Event>) {
         // A press given to the program as pressed stays the program's when
         // it comes again as bytes, whatever its one name is bound to now,
         // and a `prefix` binding starts its prefix then (SPEC §10.4).
@@ -3358,7 +3347,13 @@ impl Surface {
             .map(|id| self.control_kind(id))
             .unwrap_or(Control::None);
         let plain = !key.mods.ctrl && !key.mods.alt && !key.mods.super_;
-        let gives = focused.map_or(Gives::No, |id| self.gives(id, key, kind));
+        let keymap = self.keymap(focused, kind.reader(), legacy);
+        let names = key.names();
+        let gives = match keymap.press(&names) {
+            Some(name) if keymap.prefix(name) => Gives::Prefix,
+            Some(name) if keymap.program(name) => Gives::Program,
+            _ => Gives::No,
+        };
         match (&key.name, kind) {
             (KeyName::Tab, _) if plain && gives == Gives::No => {
                 self.resolve();
@@ -3404,7 +3399,7 @@ impl Surface {
             }
             (_, Control::Text | Control::TextArea) => {
                 let id = focused.expect("a text control is focused");
-                match self.field_key(id, key, kind == Control::TextArea) {
+                match self.field_key(id, key, kind == Control::TextArea, &keymap) {
                     Some(events) => {
                         self.dirty = true;
                         (true, events)
@@ -3416,7 +3411,7 @@ impl Surface {
                 let id = focused.expect("a date field is focused");
                 match self.date_key(id, key) {
                     Some(events) => (true, events),
-                    None => self.unused_key(key, focused),
+                    None => self.unused_key(key, focused, &keymap),
                 }
             }
             (KeyName::Space | KeyName::Enter, Control::Activatable) if plain => {
@@ -3428,10 +3423,10 @@ impl Surface {
                 let id = focused.expect("a select is focused");
                 match self.select_key(id, key) {
                     Some(events) => (true, events),
-                    None => self.unused_key(key, focused),
+                    None => self.unused_key(key, focused, &keymap),
                 }
             }
-            _ => self.unused_key(key, focused),
+            _ => self.unused_key(key, focused, &keymap),
         }
     }
 
@@ -3439,87 +3434,62 @@ impl Surface {
     /// its keymap binds to a scroll action scrolls (SPEC §10.2, scrolling
     /// keys), and any other goes on as the surface takes keys it does not
     /// use (§5.3).
-    fn unused_key(&mut self, key: &Key, focused: Option<NodeId>) -> (bool, Vec<Event>) {
-        if let Some(used) = focused.and_then(|id| self.scroll_action_key(id, key)) {
-            return used;
+    fn unused_key(
+        &mut self,
+        key: &Key,
+        focused: Option<NodeId>,
+        keymap: &keys::Keymap,
+    ) -> (bool, Vec<Event>) {
+        if let Some(action) = keymap
+            .press(&key.names())
+            .and_then(|name| keymap.scroll(name))
+            && let Some(step) = scroll::action_scroll(action)
+            && self.scroll_axes & step.axis.bit() != 0
+        {
+            self.resolve();
+            self.scroll_step(focused, step);
+            return (true, Vec::new());
         }
         self.scroll_key(key, focused)
     }
 
-    /// A key the keymap of the focused element `id` binds to a scroll action
-    /// (SPEC §10.2, scrolling keys): it scrolls the nearest box from `id`
-    /// outward that can still move that way, as far as the key a browser
-    /// scrolls with that way would, then outward as a gesture goes, as far
-    /// as `overscroll-behavior` lets it and never past the root. Where
-    /// nothing can move, it is used and does nothing. `None` where it binds
-    /// none, and along an axis the document does not scroll, where the key
-    /// goes on as if the keymap did not bind it.
-    fn scroll_action_key(&mut self, id: NodeId, key: &Key) -> Option<(bool, Vec<Event>)> {
-        let names = key.names();
-        let values = self.keymap_values(id);
-        let keymap = keys::parse_keymap(&self.settings.platform, &values.join(" "));
-        let action = keymap.scroll(keymap.press(&names)?)?.to_string();
-        let k = scroll::action_scroll(&action)?;
-        if self.scroll_axes & k.axis.bit() == 0 {
-            return None;
-        }
-        self.resolve();
-        self.scroll_step(Some(id), k);
-        Some((true, Vec::new()))
-    }
-
-    /// The `data-keys` values of `id` and the elements above it, the root's
-    /// first (SPEC §10.2).
-    fn keymap_values(&self, id: NodeId) -> Vec<String> {
-        let mut values = Vec::new();
-        let mut n = Some(id);
-        while let Some(node) = n.and_then(|n| self.doc.get_node(n)) {
-            if let Some(v) = node
-                .attrs()
-                .and_then(|a| a.iter().find(|a| &*a.name.local == "data-keys"))
-            {
-                values.push(v.value.to_string());
-            }
-            n = node.parent;
-        }
-        values.reverse();
-        values
-    }
-
-    /// Whether the focused element `id`, of kind `kind`, gives `key` to the
-    /// program: its keymap binds it to `program` or to `prefix` (SPEC
-    /// §10.2, keys for the program). The key then reaches the program
-    /// before the element or a scroll uses it. A text field's keymap leaves
-    /// scroll actions out, so a nearer scroll binding there does not hide a
-    /// farther `program`.
-    fn gives(&self, id: NodeId, key: &Key, kind: Control) -> Gives {
-        let names = key.names();
-        let values = self.keymap_values(id);
-        let m = match kind {
-            Control::Text => keys::resolve(
-                &self.settings.platform,
-                false,
-                values.iter().map(String::as_str),
-            ),
-            Control::TextArea => keys::resolve(
-                &self.settings.platform,
-                true,
-                values.iter().map(String::as_str),
-            ),
-            // An element's keymap: its values joined, with no default
-            // keymap (SDK.md §3.10).
-            _ => keys::parse_keymap(&self.settings.platform, &values.join(" ")),
+    fn keymap(&self, focused: Option<NodeId>, reader: keys::Reader, legacy: bool) -> keys::Keymap {
+        let body = || {
+            let html = self.doc.root_element();
+            html.children.iter().copied().find(|&id| {
+                self.doc
+                    .get_node(id)
+                    .and_then(|n| n.element_data())
+                    .is_some_and(|el| &*el.name.local == "body")
+            })
         };
-        let Some(name) = m.press(&names) else {
-            return Gives::No;
-        };
-        if m.prefix(name) {
-            Gives::Prefix
-        } else if m.program(name) {
-            Gives::Program
+        let node = focused.or_else(body).and_then(|id| self.doc.get_node(id));
+        let inner_attr = blitz_dom::LocalName::from(if legacy {
+            "data-keys"
         } else {
-            Gives::No
+            "data-keys-inner"
+        });
+        let own = node
+            .and_then(|n| n.attr(blitz_dom::LocalName::from("data-keys")))
+            .unwrap_or("");
+        let mut inner = Vec::new();
+        let mut current = if focused.is_some() {
+            node.and_then(|n| n.parent)
+        } else {
+            node.map(|n| n.id)
+        };
+        while let Some(n) = current.and_then(|id| self.doc.get_node(id)) {
+            if let Some(value) = n.attr(inner_attr.clone()) {
+                inner.push(value);
+            }
+            current = n.parent;
         }
+        keys::resolve(
+            &self.settings.platform,
+            reader,
+            own,
+            inner.into_iter().rev(),
+        )
     }
 
     /// A key for the focused select `id` (SPEC §10.2, selects): Up, Down,
@@ -3611,18 +3581,15 @@ impl Surface {
         }
     }
 
-    /// A key for the focused text field `id`, which does what its keymap
-    /// says (SPEC §10.2): the default keymap, then the `data-keys` of each
-    /// element from the root to the field. `None` when the key is not the
-    /// field's: it reaches the program.
-    fn field_key(&mut self, id: NodeId, key: &Key, multiline: bool) -> Option<Vec<Event>> {
+    /// Applies a key in the focused field's resolved keymap.
+    fn field_key(
+        &mut self,
+        id: NodeId,
+        key: &Key,
+        multiline: bool,
+        keymap: &keys::Keymap,
+    ) -> Option<Vec<Event>> {
         let names = key.names();
-        let values = self.keymap_values(id);
-        let keymap = keys::resolve(
-            &self.settings.platform,
-            multiline,
-            values.iter().map(String::as_str),
-        );
         // A press is the field's by either name, by the physical one first.
         let name = keymap.press(&names)?;
         let action = keymap.lookup(name)?.to_string();
@@ -4539,6 +4506,19 @@ enum Control {
     Select,
     /// A date or time input (surface/date.rs).
     Date,
+}
+
+impl Control {
+    fn reader(self) -> keys::Reader {
+        match self {
+            Self::Text => keys::Reader::Input,
+            Self::TextArea => keys::Reader::Multiline,
+            Self::Activatable => keys::Reader::Button,
+            Self::Select => keys::Reader::Select,
+            Self::Date => keys::Reader::Date,
+            Self::None => keys::Reader::Element,
+        }
+    }
 }
 
 /// What a surface hands Blitz's event driver: input from the host, or a

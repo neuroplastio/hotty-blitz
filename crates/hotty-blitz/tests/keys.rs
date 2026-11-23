@@ -594,7 +594,7 @@ fn a_fields_tab_program_survives_both_offers_and_default_restores_focus_order() 
     let mut h = host(KeySettings::default());
     surface(
         &mut h,
-        "<div data-keys='tab=program'><input id=k><input id=d data-keys='tab=default'><button id=b>b</button></div>",
+        "<div data-keys-inner='tab=program'><input id=k><input id=d data-keys='tab=default'><button id=b>b</button></div>",
     );
     let pressed = h.key_pressed("x", "tab", "");
     assert!(!pressed.consumed && pressed.effects.is_empty());

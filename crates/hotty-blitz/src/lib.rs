@@ -2791,7 +2791,7 @@ impl Host {
         };
         s.can_paste = self.paste;
         s.input_viewport(&self.config);
-        let (consumed, events) = s.key(key, offer);
+        let (consumed, events) = s.key(key, offer, self.version == "0.8");
         let mut effects: Vec<Effect> = events
             .into_iter()
             .map(|e| Effect::Reply(e.encode(surface)))
@@ -3097,8 +3097,12 @@ impl Host {
         }
         let focused = self.focused_surface().and_then(|n| self.surfaces.get(n));
         let found = focused
-            .and_then(|s| s.copy_key(&names))
-            .or_else(|| self.surfaces.values().find_map(|s| s.copy_key(&names)));
+            .and_then(|s| s.copy_key(&names, self.version == "0.8"))
+            .or_else(|| {
+                self.surfaces
+                    .values()
+                    .find_map(|s| s.copy_key(&names, self.version == "0.8"))
+            });
         match found {
             None => CopyKey::None,
             Some(Some(text)) => CopyKey::Copy(text),

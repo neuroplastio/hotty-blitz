@@ -466,7 +466,7 @@ fn a_scroll_binding_leaves_the_elements_own_keys_and_its_fields_alone() {
     let mut h = host();
     let page = format!(
         "<div id=box style=\"height:40px;overflow:auto\" \
-         data-keys=\"space=scroll-page-down j=scroll-down k=program arrow_down=program\">\
+         data-keys-inner=\"space=scroll-page-down j=scroll-down k=program arrow_down=program\">\
          <button id=b>b</button><input id=i data-on=input data-keys=\"k=scroll-up \
          arrow_down=scroll-down\">{ROWS}</div>"
     );
@@ -489,13 +489,16 @@ fn a_scroll_binding_leaves_the_elements_own_keys_and_its_fields_alone() {
     ));
     render(&mut h);
     let at = y(&h, "a");
-    // In the field, j is typed, and a nearer scroll binding of k or of the
-    // arrow does not hide the farther program.
+    // The field types printable keys and gives the unhandled arrow to
+    // the program. Its own scroll bindings are ignored.
     assert_eq!(
         key_events(&mut h, ch("j")),
         (true, vec![("input".to_string(), "i".to_string())])
     );
-    assert_eq!(key_events(&mut h, ch("k")), (false, vec![]));
+    assert_eq!(
+        key_events(&mut h, ch("k")),
+        (true, vec![("input".to_string(), "i".to_string())])
+    );
     assert_eq!(key_events(&mut h, KeyName::Down), (false, vec![]));
     render(&mut h);
     assert_eq!(y(&h, "a"), at, "nothing scrolled");

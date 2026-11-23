@@ -181,7 +181,7 @@ pub fn event(
             r,
             mods: m,
         } => {
-            e.button = 2;
+            e.button = Some(2);
             e.area = a.as_ref().map(area);
             e.c = Some(i64::from(*c));
             e.r = Some(i64::from(*r));

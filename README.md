@@ -227,9 +227,13 @@ the terminal's (0).
 ## Text fields
 
 A focused text field types and edits only as its program's keymap says
-(SPEC §10.2): the default keymap, then each `data-keys` from the root to
-the field. A bound key does its action, a printable key without `ctrl`,
-`alt` or `super` types, and every other key goes to the program. Words, lines
+(SPEC §10.2). The host resolves the default keymap, each ancestor's
+`data-keys-inner` from the root down, and the field's own `data-keys`.
+Each reader takes the bindings it can use. A printable key a field types
+can be given to the program through its own `data-keys`. With nothing
+focused, use the root's and body's inner maps and the body's own map.
+Document selection copy reads those same maps over the defaults. In a 0.8
+session, `data-keys` supplies both scopes (HOST.md §5.1). Words, lines
 and a password field are the spec's (`crates/hotty-blitz/src/edit.rs`);
 moves by rows and pages follow the field's layout. A terminal offers a key
 twice at most (SPEC §10.4), its keys named as myelin key names 0.1 names
