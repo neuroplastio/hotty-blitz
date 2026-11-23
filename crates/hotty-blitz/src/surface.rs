@@ -3631,6 +3631,15 @@ impl Surface {
         events
     }
 
+    /// A key offered as pressed reached the program as an edit command.
+    pub fn command_key_sent(&mut self, name: &str) {
+        if let Some((offered, prefix)) = self.given.take()
+            && offered == name
+        {
+            self.prefix |= prefix;
+        }
+    }
+
     /// A key for the focused element (SPEC §10.2). After a prefix every key
     /// reaches the program (§10.5); else the element, the scroll actions
     /// and the program take it in the order §10.2 gives. Whether the

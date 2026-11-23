@@ -257,7 +257,10 @@ sends for it, and the physical name is looked up first; then, if the surface did
 use it, as the bytes its key encoding or a binding would write
 (`hotty_host_key_bytes`), named by what the program would read
 (`hotty::keys`), so a remapped key is the key it sends. The keys a
-field does not use go on to the program as they came. Any other focused
+field does not use go on to the terminal's edit-command lookup (SPEC §10.6)
+and then to the program as input where it took no matching command.
+When sending an edit command instead of the pressed key's bytes, call
+`hotty_host_command_key_sent` so a prefix bound to the key starts. Any other focused
 element's `data-keys` gives keys to the program, or, in a document that
 scrolls, scrolls with them (`scroll-down`, `scroll-end`, …), after the keys
 the element uses itself; a field leaves those scroll actions out.

@@ -364,6 +364,8 @@ void hotty_host_set_keys(hotty_host *h, bool mod_super, const char *edit, bool c
  * NUL-terminated; NULL for none. */
 const char *hotty_host_edit_command(hotty_host *h, const uint8_t *physical, size_t physical_len,
                                     const uint8_t *other, size_t other_len);
+/* Confirm that the terminal delivered this key as an edit command. */
+void hotty_host_command_key_sent(hotty_host *h, const uint8_t *key, size_t len);
 /* Sends the program in the cells the edit command `name` (SPEC 10.6)
  * through fx's reply: from the key `key` (NULL from a menu), and, for a
  * paste, the clipboard's UTF-8 `text` (NULL when it holds no text). */

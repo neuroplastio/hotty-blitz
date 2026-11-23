@@ -705,6 +705,17 @@ impl Host {
         self.keys.platform.edit_press(&press_names(physical, other))
     }
 
+    /// Confirms that the terminal delivered a pressed key as a taken edit
+    /// command (SPEC §10.6). A prefix starts here when the command replaces
+    /// the key's terminal bytes. Call after the terminal's selection check.
+    pub fn command_key_sent(&mut self, key: &str) {
+        if let Some(surface) = self.focused_surface().map(str::to_string)
+            && let Some(s) = self.surfaces.get_mut(&surface)
+        {
+            s.command_key_sent(key);
+        }
+    }
+
     /// The event `command` (SPEC §10.6) for the program in the cells: the
     /// command, its key (none from a menu), and a paste's text (none when
     /// the clipboard holds no text).

@@ -1434,6 +1434,22 @@ pub unsafe extern "C" fn hotty_host_edit_command(
     })
 }
 
+/// Confirms that the terminal delivered a pressed key as an edit command.
+///
+/// # Safety
+/// `h` must be valid; `key` must hold `len` bytes of UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_command_key_sent(
+    h: *mut HottyHost,
+    key: *const u8,
+    len: usize,
+) {
+    let Some((key, _)) = (unsafe { press(key, len, std::ptr::null(), 0) }) else {
+        return;
+    };
+    guard(h, (), |h| h.host.command_key_sent(key))
+}
+
 /// Sends the program in the cells the edit command `name` (SPEC §10.6),
 /// through `fx`'s reply: from the key `key` (null from a menu), and, for a
 /// paste, the clipboard's UTF-8 `text` (null when it holds no text or the

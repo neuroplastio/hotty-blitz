@@ -749,40 +749,26 @@ fn legacy_bytes(key: &Key) -> Option<Vec<u8>> {
     })
 }
 
-/// A key offered as a terminal that sees the key pressed offers it (SPEC
-/// §10.4): as pressed, by both its names, for a key that types no text,
-/// then, if the surface did not use it, as the bytes a terminal sends.
-fn offered(host: &mut Host, surface: &str, key: &Key) -> hotty_blitz::KeyOutcome {
+/// Offer the physical and character names where the terminal sees a press.
+fn offered_press(host: &mut Host, surface: &str, key: &Key) -> hotty_blitz::KeyOutcome {
     let m = key.mods;
     let types_text = matches!(key.name, KeyName::Char(_)) && !m.ctrl && !m.super_;
-    if !types_text {
-        let bits = hotty::keys::KeyParts::new(m.super_, m.ctrl, m.alt, m.shift, "").mods;
-        let (physical, other) = match &key.name {
-            KeyName::Char(c) => (
-                us_physical(c).map(|p| {
-                    hotty::keys::KeyParts {
-                        mods: bits,
-                        value: p,
-                    }
-                    .name()
-                }),
-                key.spec_name(),
-            ),
-            _ => (key.spec_name(), None),
-        };
-        let out = host.key_pressed(
-            surface,
-            physical.as_deref().unwrap_or(""),
-            other.as_deref().unwrap_or(""),
-        );
-        if out.consumed {
-            return out;
-        }
+    if types_text {
+        return hotty_blitz::KeyOutcome::default();
     }
-    match legacy_bytes(key) {
-        Some(bytes) => host.key_bytes(surface, &bytes),
-        None => hotty_blitz::KeyOutcome::default(),
-    }
+    let bits = hotty::keys::KeyParts::new(m.super_, m.ctrl, m.alt, m.shift, "").mods;
+    let (physical, other) = match &key.name {
+        KeyName::Char(c) => (
+            us_physical(c).map(|value| hotty::keys::KeyParts { mods: bits, value }.name()),
+            key.spec_name(),
+        ),
+        _ => (key.spec_name(), None),
+    };
+    host.key_pressed(
+        surface,
+        physical.as_deref().unwrap_or(""),
+        other.as_deref().unwrap_or(""),
+    )
 }
 
 /// A key pressed where the keyboard is: the surface that has it, or else
@@ -795,30 +781,65 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
         names: Vec::new(),
         mods: mods(step),
     };
+    let raw = step["key"].as_str().unwrap();
+    let context = raw == "ContextMenu" && key.mods == Mods::default();
+    let shift_f10 = raw == "F10"
+        && key.mods
+            == (Mods {
+                shift: true,
+                ..Mods::default()
+            });
+    let key = if context || shift_f10 {
+        Key::from_spec_name(if context { "context_menu" } else { "shift+f10" }).unwrap_or(key)
+    } else {
+        key
+    };
     let name = key.spec_name().unwrap_or_default();
     let mut sent = Vec::new();
-    let mut terminal = match host.focused_surface().map(str::to_string) {
-        Some(s) => {
-            let out = if mouse.pressed {
-                offered(host, &s, &key)
-            } else {
-                host.key(&s, &key)
-            };
-            for e in out.effects {
-                if let Effect::Reply(b) = e {
-                    sent.extend(b);
-                }
+    let append = |effects: Vec<Effect>, sent: &mut Vec<u8>| {
+        for e in effects {
+            if let Effect::Reply(b) = e {
+                sent.extend(b);
             }
-            !out.consumed
         }
-        None => true,
+    };
+    let surface = host.focused_surface().map(str::to_string);
+    let mut terminal = true;
+    if let Some(s) = &surface {
+        let out = if mouse.pressed {
+            offered_press(host, s, &key)
+        } else {
+            host.key(s, &key)
+        };
+        terminal = !out.consumed;
+        append(out.effects, &mut sent);
+        if terminal && (context || shift_f10) {
+            let effects = host.menu_key(s, shift_f10);
+            terminal = effects.is_empty();
+            append(effects, &mut sent);
+        }
+    }
+    let taken = if mouse.alt_screen {
+        &mouse.alt_taken
+    } else {
+        &mouse.taken
     };
     if terminal
         && let Some(c) = host.edit_command(&name, "")
-        && mouse.taken.contains(&c)
+        && taken.contains(&c)
     {
+        host.command_key_sent(&name);
         sent.extend(Host::command_event(&c, Some(&name), None));
         terminal = false;
+    }
+    if terminal
+        && mouse.pressed
+        && let Some(s) = &surface
+        && let Some(bytes) = legacy_bytes(&key)
+    {
+        let out = host.key_bytes(s, &bytes);
+        terminal = !out.consumed;
+        append(out.effects, &mut sent);
     }
     // A key that reaches the cells may hide the level shown (SPEC §10.7).
     if terminal {
