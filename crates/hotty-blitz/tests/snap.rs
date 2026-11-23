@@ -636,3 +636,30 @@ fn resize(h: &mut Host, c: &str, r: &str) {
     ));
     render(h);
 }
+
+#[test]
+fn a_wheel_gesture_defers_snapping_each_scroller_it_moved() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x"), ("scroll", "3")],
+        "<style>body{margin:0}#box{display:flex;width:98px;height:50px;overflow:auto;\
+         scroll-snap-type:x mandatory}#box div{flex:none;width:60px;\
+         scroll-snap-align:start}</style>\
+         <div id=box><div id=first>a</div><div>b</div><div>c</div><div>d</div></div>\
+         <div style='height:200px'></div>",
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "12"), ("r", "5")],
+        "",
+    ));
+    render(&mut h);
+    let x = |h: &Host| h.element_centre("x", "first").unwrap().0;
+    let start = x(&h);
+    let m = Mods::default();
+    assert!(h.wheel("x", 15.0, 10.0, 25.0, 0.0, m).taken);
+    assert!(h.wheel("x", 105.0, 70.0, 0.0, 3.0, m).taken);
+    assert_eq!(x(&h), start - 25.0);
+    h.end_gesture();
+    render(&mut h);
+    assert_eq!(x(&h), start - 60.0);
+}

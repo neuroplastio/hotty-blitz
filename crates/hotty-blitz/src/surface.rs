@@ -360,7 +360,7 @@ pub(crate) struct Surface {
     root_bar: scroll::RootBar,
     /// What the wheel gesture under way scrolls, and its offset when the
     /// gesture began: it snaps when the gesture comes to rest (scroll.rs).
-    wheel_from: Option<(Scroller, (f64, f64))>,
+    wheel_from: Vec<(Scroller, (f64, f64))>,
     /// Elements whose scrollbars Blitz shows, with when they last showed:
     /// they are painted again as they fade.
     fading: Vec<(NodeId, Instant)>,
@@ -720,20 +720,6 @@ fn hyperlink_url(node: &blitz_dom::Node, base: &Option<url::Url>) -> Option<Stri
     link_url(base, el.attr(local_name!("href"))?)
 }
 
-fn editable(node: &blitz_dom::Node) -> Option<bool> {
-    let value = node.attr(blitz_dom::LocalName::from("contenteditable"))?;
-    if value.is_empty()
-        || value.eq_ignore_ascii_case("true")
-        || value.eq_ignore_ascii_case("plaintext-only")
-    {
-        Some(true)
-    } else if value.eq_ignore_ascii_case("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
 /// The controls a label can stand for here: those that take focus.
 fn labelable(el: &blitz_dom::ElementData) -> bool {
     match el.name.local.as_ref() {
@@ -954,7 +940,7 @@ impl Surface {
             scroll_axes,
             cell: cell_css(&m),
             root_bar: scroll::RootBar::default(),
-            wheel_from: None,
+            wheel_from: Vec::new(),
             fading: Vec::new(),
             faded_at: None,
             caret_at: Instant::now(),
@@ -1813,7 +1799,7 @@ impl Surface {
         } else {
             Scroller::Node(id)
         };
-        let held = self.wheel_from.is_some_and(|(w, _)| w == s)
+        let held = self.wheel_from.iter().any(|(w, _)| *w == s)
             || match s {
                 Scroller::Viewport => self.root_bar.drag.is_some(),
                 Scroller::Node(id) => self
@@ -2491,8 +2477,6 @@ impl Surface {
         if from.is_some_and(|id| !scroll::laid_out(&self.doc, id)) {
             return Ok(());
         }
-        // The op takes over from the wheel and snaps by its own step.
-        self.wheel_from = None;
         self.scroll_step(from, k);
         Ok(())
     }
@@ -2500,9 +2484,12 @@ impl Surface {
     fn scroll_step(&mut self, from: Option<NodeId>, k: scroll::KeyScroll) {
         if let Route::Doc(s) =
             scroll::route(&self.doc, from, self.scroll_axes, k.axis, k.sign, false)
-            && scroll::scroll_key(&mut self.doc, s, self.scroll_axes, k)
         {
-            self.scrolled(s);
+            // The step takes over this scroller and snaps on its own.
+            self.wheel_from.retain(|(w, _)| *w != s);
+            if scroll::scroll_key(&mut self.doc, s, self.scroll_axes, k) {
+                self.scrolled(s);
+            }
         }
     }
 
@@ -2590,21 +2577,12 @@ impl Surface {
         if labelable(el) {
             return true;
         }
-        match el.name.local.as_ref() {
-            "summary" => first_summary(&self.doc, id),
-            "a" | "area" => el.attr(local_name!("href")).is_some(),
-            _ if editable(node) == Some(true) => {
-                let mut parent = node.parent;
-                while let Some(ancestor) = parent.and_then(|n| self.doc.get_node(n)) {
-                    if let Some(editable) = editable(ancestor) {
-                        return !editable;
-                    }
-                    parent = ancestor.parent;
-                }
-                true
+        node.is_editing_host()
+            || match el.name.local.as_ref() {
+                "summary" => first_summary(&self.doc, id),
+                "a" | "area" => el.attr(local_name!("href")).is_some(),
+                _ => false,
             }
-            _ => false,
-        }
     }
 
     fn can_focus(&self, id: NodeId, layout: bool, sequential: bool) -> bool {
@@ -2954,6 +2932,7 @@ impl Surface {
                     .pointer_node(at)
                     .and_then(|id| self.aux_target(id, press.button))
                     == Some(press.node)
+                    && (press.button != 2 || self.listens(press.node, "rightbutton"))
                 {
                     events.push(self.button_event(
                         press.node,
@@ -4296,12 +4275,9 @@ impl Surface {
     /// nothing, and what a pointer last hovered stays as it was.
     pub fn wheel_scroll(&mut self, s: Scroller, x: f32, y: f32, dx: f64, dy: f64, hover: bool) {
         let pointer = std::mem::replace(&mut self.pointer_at, hover.then_some((x, y)));
-        if self.wheel_from.is_some_and(|(w, _)| w != s) {
-            self.wheel_rest();
-        }
         self.resolve();
-        if self.wheel_from.is_none() {
-            self.wheel_from = Some((s, scroll::state(&self.doc, s, 3).0));
+        if !self.wheel_from.iter().any(|(w, _)| *w == s) {
+            self.wheel_from.push((s, scroll::state(&self.doc, s, 3).0));
         }
         if scroll::scroll_by(&mut self.doc, s, self.scroll_axes, dx, dy) {
             self.scrolled(s);
@@ -4314,19 +4290,21 @@ impl Surface {
     /// Whether a wheel gesture scrolled the document and has not come to
     /// rest here yet.
     pub fn wheel_owed(&self) -> bool {
-        self.wheel_from.is_some()
+        !self.wheel_from.is_empty()
     }
 
     /// The wheel gesture that scrolled the document came to rest: what it
     /// scrolled snaps, past where the gesture began, nearest where it ended
     /// (CSS Scroll Snap's intended direction and end position).
     pub fn wheel_rest(&mut self) {
-        let Some((s, from)) = self.wheel_from.take() else {
+        if self.wheel_from.is_empty() {
             return;
-        };
+        }
         self.resolve();
-        if scroll::snap_at_rest(&mut self.doc, s, from, ScrollSnapIntent::Direction) {
-            self.scrolled(s);
+        for (s, from) in std::mem::take(&mut self.wheel_from) {
+            if scroll::snap_at_rest(&mut self.doc, s, from, ScrollSnapIntent::Direction) {
+                self.scrolled(s);
+            }
         }
     }
 
@@ -4646,6 +4624,9 @@ impl Surface {
                 .handle_dom_event(DomEvent::new(control, DomEventData::Click(click)));
             rec.label = None;
         }
+        for (id, value) in rec.editing_hosts {
+            self.doc.commit_editing_host_text(id, &value);
+        }
         self.revs = std::mem::take(&mut rec.revs);
         let mut events = std::mem::take(&mut rec.events);
         // What Blitz scrolled itself (an element's thumb dragged) is
@@ -4814,20 +4795,21 @@ impl Surface {
     }
 
     fn control_kind(&self, id: NodeId) -> Control {
-        let Some(el) = self.doc.get_node(id).and_then(|n| n.element_data()) else {
+        let Some(node) = self.doc.get_node(id) else {
             return Control::None;
         };
+        let Some(el) = node.element_data() else {
+            return Control::None;
+        };
+        if node.is_editing_host() {
+            return Control::TextArea;
+        }
         if self.date_type(id).is_some() {
             return Control::Date;
         }
-        if el.text_input_data().is_some() {
-            return if &*el.name.local == "textarea" {
-                Control::TextArea
-            } else {
-                Control::Text
-            };
-        }
         match el.name.local.as_ref() {
+            "textarea" => Control::TextArea,
+            "input" if el.text_input_data().is_some() => Control::Text,
             "button" | "a" | "summary" | "input" => Control::Activatable,
             "select" => Control::Select,
             _ => Control::None,
@@ -4884,6 +4866,8 @@ struct Recorder {
     label: Option<(NodeId, BlitzPointerEvent)>,
     /// The controls' revs (Surface::revs), lent while Blitz runs.
     revs: BTreeMap<NodeId, i64>,
+    /// Edits to reflect in the editing host's DOM after event dispatch.
+    editing_hosts: Vec<(NodeId, String)>,
     /// Radio buttons clicked while checked already: Blitz checks them
     /// again, which changes nothing the program hears of.
     was_checked: Vec<NodeId>,
@@ -5008,6 +4992,12 @@ impl EventHandler for &mut Recorder {
                 // Each change the user makes is one more of the control's
                 // rev, a radio button's group's (SPEC §6.4).
                 let rev = field::bump(&mut self.revs, &doc, id);
+                if doc
+                    .get_node(id)
+                    .is_some_and(blitz_dom::Node::is_editing_host)
+                {
+                    self.editing_hosts.push((id, input.value.clone()));
+                }
                 let Some(target) = attr(id, "id") else { return };
                 let ty = attr(id, "type").map(|t| t.to_ascii_lowercase());
                 match ty.as_deref() {

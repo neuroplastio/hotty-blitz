@@ -50,13 +50,29 @@ KITTY_EMAIL = b"".join(
 )
 
 
+# Give the form a menu and aux target, and let its program request the
+# terminal's normal SGR pixel reports for gestures it did not subscribe to.
+FORM_WITH_MOUSE = r"""
+from examples import form
+
+class TrackedHotty(form.Hotty):
+    def place(self, *args, **kwargs):
+        self.write("\x1b[?1000;1006;1016h")
+        return super().place(*args, **kwargs)
+
+form.Hotty = TrackedHotty
+form.HTML = form.HTML.replace("<h1>", "<h1 id=heading data-on='contextmenu aux'>")
+form.main()
+"""
+
+
 def main():
     log = tempfile.NamedTemporaryFile(prefix="hotty-m3-", suffix=".jsonl", delete=False).name
     master, slave = os.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 1000, 600))
     env = dict(os.environ, HOTTY_LOG=log + ".shim")
     proc = subprocess.Popen(
-        [HOTTY, "run", "--scale", "1", "--transport", "direct", "--", "python3", "examples/form.py", "--log", log],
+        [HOTTY, "run", "--scale", "1", "--transport", "direct", "--", "python3", "-c", FORM_WITH_MOUSE, "--log", log],
         cwd=hotty_dir(),
         stdin=slave,
         stdout=slave,
@@ -113,9 +129,17 @@ def main():
         send(f"\x1b[<{button};{x + 1};{y + 1}M".encode(), 0.05)
         send(f"\x1b[<{button};{x + 1};{y + 1}m".encode())
 
-    wait_for(lambda ev: any(e["kind"] == "ready" for e in ev), "the form")
-    time.sleep(0.3)
+    # The child logs ready after writing the commands. Wait until the
+    # polyfill has processed them and emitted the placement and footer.
+    wait_for(
+        lambda ev: any(e["kind"] == "ready" for e in ev)
+        and "\U0010EEEE".encode() in out and b"form has the keyboard" in out,
+        "the placed and focused form",
+    )
     send(b"hello")
+    # Secondary, middle and extended SGR buttons reach their subscriptions.
+    for button in (2, 1, 128, 131):
+        click(25, 15, button)
     # Only the primary button clicks (SPEC §10.1): a middle or right click,
     # on the checkbox or outside the form, neither toggles it nor moves the
     # keyboard, so what follows still reaches the form.
@@ -131,7 +155,8 @@ def main():
     click(166, 146)  # the checkbox (row 3): email reports `change`, notify `change`
     click(186, 226)  # Save: `click` and `submit`
     wait_for(lambda ev: any(e.get("e") == "submit" for e in ev), "submit")
-    send(b"\x1b", 0.3)  # Esc is the program's: it gives the keyboard back
+    send(b"\x1b")  # Esc is the program's: it gives the keyboard back
+    wait_for(lambda ev: any(e.get("e") == "blur" for e in ev), "keyboard returned to the program")
     # A press with Alt held is the program's (SPEC §9.2): an Alt click on
     # the checkbox toggles nothing, and the surface reports nothing of it.
     n = len(events())
@@ -158,6 +183,18 @@ def main():
             if e.get("e") == kind and e.get("t") == target:
                 return e.get("detail") or {}
         return None
+
+    other = [e for e in ev if e.get("e") in ("contextmenu", "auxclick")]
+    expect(
+        [(e["e"], e["t"], e["detail"].get("button")) for e in other]
+        == [("contextmenu", "heading", None), ("auxclick", "heading", 1),
+            ("auxclick", "heading", 3), ("auxclick", "heading", 7)],
+        f"the heading's subscribed gestures: {other}",
+    )
+    expect("\x1b[<1;167;147M" in keys and "\x1b[<1;167;147m" in keys,
+           f"an untaken button over a placement must reach the program: {keys!r}")
+    expect(";26;16M" not in keys and ";26;16m" not in keys,
+           f"a taken gesture leaked to the program: {keys!r}")
 
     # Each typed character is one edit, so five make rev 5 (SPEC §6.4).
     expect(detail("change", "name") == {"value": "hello", "rev": 5}, f"change name=hello, got {detail('change', 'name')}")
@@ -187,7 +224,7 @@ def main():
     if failures:
         print("FAIL:\n  " + "\n  ".join(failures))
         sys.exit(1)
-    print("OK: typing stayed in the surface; the program heard change, click and submit.")
+    print("OK: the form kept its text and claimed gestures; untaken buttons reached the program.")
 
 
 if __name__ == "__main__":

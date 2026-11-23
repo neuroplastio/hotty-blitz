@@ -151,7 +151,9 @@ bool hotty_host_button(hotty_host *h, const char *surface, uint32_t button, uint
                        float x, float y, uint32_t mods, const hotty_effects *fx);
 void hotty_host_set_middle_paste(hotty_host *h, bool enabled);
 void hotty_host_set_context_menu_on_release(hotty_host *h, bool on_release);
-/* Call after normal key routing for ContextMenu or Shift+F10. */
+/* For ContextMenu or Shift+F10 that remains ordinary input after surface
+ * key routing, terminal selection shortcuts and the current screen's
+ * taken edit commands (SPEC 9 and 10.6). */
 bool hotty_host_menu_key(hotty_host *h, const char *surface, bool shift_f10,
                          const hotty_effects *fx);
 /* A wheel's turn, a touchpad's scroll or a touch drag at device pixel (x, y)

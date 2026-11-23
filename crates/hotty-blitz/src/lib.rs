@@ -25,7 +25,7 @@ pub mod trace;
 use body::Detail;
 use hotty::Message;
 use hotty::keys::{self, Platform};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub use input::{
@@ -399,12 +399,25 @@ fn enter(working: &mut String, surface: &str) {
     working.push_str(surface);
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PhysicalButton {
+    number: u32,
+    context_gesture: bool,
+}
+
+impl PhysicalButton {
+    const PRIMARY: Self = Self {
+        number: 0,
+        context_gesture: false,
+    };
+}
+
 /// The first press decides who owns the chord until every button is up.
 struct ButtonHold {
-    button: Option<u32>,
+    button: Option<PhysicalButton>,
     surface: String,
     taken: bool,
-    other: std::collections::BTreeSet<u32>,
+    other: BTreeSet<PhysicalButton>,
 }
 
 /// A touch under way (SPEC §9.1): the surface it began on, where, with
@@ -458,6 +471,7 @@ fn pans_along(dx: f32, dy: f32, pans: (bool, bool)) -> bool {
 struct Gesture {
     route_x: Option<(String, scroll::Route)>,
     route_y: Option<(String, scroll::Route)>,
+    scrolled: BTreeSet<String>,
     at: std::time::Instant,
 }
 
@@ -474,12 +488,11 @@ impl Gesture {
     }
 
     fn on(&self, surface: &str) -> bool {
-        self.routes().any(|(name, _)| name == surface)
+        self.scrolls(surface) || self.routes().any(|(name, _)| name == surface)
     }
 
     fn scrolls(&self, surface: &str) -> bool {
-        self.routes()
-            .any(|(name, route)| name == surface && matches!(route, scroll::Route::Doc(_)))
+        self.scrolled.contains(surface)
     }
 }
 
@@ -2106,7 +2119,9 @@ impl Host {
             }
             if hold.taken {
                 let effects = match hold.button {
-                    Some(0) => self.pointer_with(&surface, kind, x, y, mods, true, count),
+                    Some(PhysicalButton::PRIMARY) => {
+                        self.pointer_with(&surface, kind, x, y, mods, true, count)
+                    }
                     Some(_) => {
                         let at = self.button_point(x, y, mods);
                         self.surfaces
@@ -2769,6 +2784,9 @@ impl Host {
         dy: f32,
         mods: Mods,
     ) -> WheelOutcome {
+        if dx == 0.0 && dy == 0.0 {
+            return WheelOutcome::default();
+        }
         enter(&mut self.working, surface);
         let (dx, dy) = if mods.shift && dx == 0.0 {
             (dy, 0.0)
@@ -2794,6 +2812,7 @@ impl Host {
                 Gesture {
                     route_x: None,
                     route_y: None,
+                    scrolled: BTreeSet::new(),
                     at: now,
                 }
             }
@@ -2816,6 +2835,9 @@ impl Host {
             },
         };
         *slot = Some((surface.to_string(), route));
+        if matches!(route, scroll::Route::Doc(_)) {
+            gesture.scrolled.insert(surface.to_string());
+        }
         gesture.at = now;
         self.gesture = Some(gesture);
         let mut out = WheelOutcome::default();
@@ -2828,15 +2850,16 @@ impl Host {
                 let passthrough = self.passthrough;
                 // A finger's pan scrolls through here, and hovers nothing
                 // (SPEC §9.4: a touch's moves scroll, and hover nothing).
-                let finger = self.finger.is_some();
+                let hover = self.finger.is_none()
+                    && !self.button_hold.as_ref().is_some_and(|hold| hold.taken);
                 if let Some(s) = self.surfaces.get_mut(surface) {
-                    s.wheel_scroll(scroller, cx, cy, dx, dy, !finger);
+                    s.wheel_scroll(scroller, cx, cy, dx, dy, hover);
                     // What the pointer is over changed under it (SPEC §9.4).
                     let cell = (
                         (x / m.cell_w.max(1) as f32).floor() as i32,
                         (y / m.cell_h.max(1) as f32).floor() as i32,
                     );
-                    if !s.held() && !finger {
+                    if hover && !s.held() {
                         out.effects.extend(
                             s.hovered(cell, passthrough)
                                 .map(|e| Effect::Reply(e.encode(surface))),
@@ -3069,7 +3092,9 @@ impl Host {
         self.context_on_release = on_release;
     }
 
-    /// A menu key the terminal has already offered as a key.
+    /// Converts a menu key that remains ordinary input after surface key
+    /// routing, terminal selection shortcuts, and the program's taken edit
+    /// commands.
     pub fn menu_key(&mut self, surface: &str, shift_f10: bool) -> Vec<Effect> {
         if self.version == "0.8" {
             return Vec::new();
@@ -3122,10 +3147,14 @@ impl Host {
         context_gesture: bool,
         count: u32,
     ) -> ButtonOutcome {
+        let physical = PhysicalButton {
+            number: button,
+            context_gesture,
+        };
         if let Some(hold) = &mut self.button_hold {
             match kind {
-                PointerKind::Down if hold.button != Some(button) => {
-                    hold.other.insert(button);
+                PointerKind::Down if hold.button != Some(physical) => {
+                    hold.other.insert(physical);
                     return ButtonOutcome {
                         taken: hold.taken,
                         effects: Vec::new(),
@@ -3137,8 +3166,8 @@ impl Host {
                         effects: Vec::new(),
                     };
                 }
-                PointerKind::Up if hold.button != Some(button) => {
-                    let taken = hold.other.remove(&button) && hold.taken;
+                PointerKind::Up if hold.button != Some(physical) => {
+                    let taken = hold.other.remove(&physical) && hold.taken;
                     let mut effects = Vec::new();
                     if hold.button.is_none() && hold.other.is_empty() {
                         let name = hold.surface.clone();
@@ -3255,7 +3284,7 @@ impl Host {
             );
         }
         self.button_hold = Some(ButtonHold {
-            button: Some(button),
+            button: Some(physical),
             surface: surface.to_string(),
             taken: out.taken,
             other: Default::default(),

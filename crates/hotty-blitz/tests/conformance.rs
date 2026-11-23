@@ -9,8 +9,8 @@ use common::read_body;
 use hotty::host::{Output, Splitter};
 use hotty::{Control, Message};
 use hotty_blitz::{
-    CellsTouch, Config, Effect, Host, Key, KeyName, KeySettings, Mods, MouseReport, PointerKind,
-    Touch, TouchPhase,
+    CellsTouch, Config, CopyKey, Effect, Host, Key, KeyName, KeySettings, Mods, MouseReport,
+    PointerKind, Touch, TouchPhase,
 };
 use serde_json::Value;
 
@@ -729,7 +729,13 @@ fn legacy_bytes(key: &Key) -> Option<Vec<u8>> {
             }]
         }
         KeyName::Char(c) => c.as_bytes().to_vec(),
-        KeyName::Other => return None,
+        KeyName::Other => {
+            return match key.names().as_slice() {
+                [name] if name == "context_menu" => Some(csi("", Some(29))),
+                [name] if name == "shift+f10" => Some(csi("", Some(21))),
+                _ => None,
+            };
+        }
     };
     Some(if m.alt {
         [&[0x1b][..], &plain].concat()
@@ -751,7 +757,7 @@ fn offered_press(host: &mut Host, surface: &str, key: &Key) -> hotty_blitz::KeyO
             us_physical(c).map(|value| hotty::keys::KeyParts { mods: bits, value }.name()),
             key.spec_name(),
         ),
-        _ => (key.spec_name(), None),
+        _ => (key.names().into_iter().next(), None),
     };
     host.key_pressed(
         surface,
@@ -783,7 +789,7 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
     } else {
         key
     };
-    let name = key.spec_name().unwrap_or_default();
+    let name = key.names().into_iter().next().unwrap_or_default();
     let mut sent = Vec::new();
     let append = |effects: Vec<Effect>, sent: &mut Vec<u8>| {
         for e in effects {
@@ -793,8 +799,8 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
         }
     };
     let surface = host.focused_surface().map(str::to_string);
-    let mut terminal = true;
-    if let Some(s) = &surface {
+    let mut terminal = !matches!(host.copy_key(&name, ""), CopyKey::Copy(_));
+    if terminal && let Some(s) = &surface {
         let out = if mouse.pressed {
             offered_press(host, s, &key)
         } else {
@@ -802,11 +808,6 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
         };
         terminal = !out.consumed;
         append(out.effects, &mut sent);
-        if terminal && (context || shift_f10) {
-            let effects = host.menu_key(s, shift_f10);
-            terminal = effects.is_empty();
-            append(effects, &mut sent);
-        }
     }
     let taken = if mouse.alt_screen {
         &mouse.alt_taken
@@ -817,8 +818,8 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
         && let Some(c) = host.edit_command(&name, "")
         && taken.contains(&c)
     {
-        host.command_key_sent(&name);
         sent.extend(Host::command_event(&c, Some(&name), None));
+        host.command_key_sent(&name);
         terminal = false;
     }
     if terminal
@@ -829,6 +830,14 @@ fn key_step(host: &mut Host, mouse: &Mouse, step: &Value) -> Result<(), String> 
         let out = host.key_bytes(s, &bytes);
         terminal = !out.consumed;
         append(out.effects, &mut sent);
+    }
+    if terminal
+        && (context || shift_f10)
+        && let Some(s) = &surface
+    {
+        let effects = host.menu_key(s, shift_f10);
+        terminal = effects.is_empty();
+        append(effects, &mut sent);
     }
     // A key that reaches the cells may hide the level shown (SPEC §10.7).
     if terminal {
@@ -1565,4 +1574,58 @@ fn edit_vectors() {
 fn unicode_chars(s: &str) -> Vec<String> {
     use unicode_segmentation::UnicodeSegmentation;
     s.graphemes(true).map(str::to_string).collect()
+}
+
+#[test]
+fn a_taken_edit_shortcut_wins_over_the_optional_menu_key() {
+    use serde_json::json;
+
+    let mut host = Host::new(Config::default());
+    host.set_keys(KeySettings {
+        commands: true,
+        platform: hotty::keys::Platform {
+            edit: Some(vec![("copy".into(), vec!["context_menu".into()])]),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    for (pairs, data) in [
+        (
+            vec![("a", "doc"), ("s", "x")],
+            "<button id=b data-on=contextmenu>menu</button>",
+        ),
+        (
+            vec![("a", "place"), ("s", "x"), ("c", "12"), ("r", "3")],
+            "",
+        ),
+        (vec![("a", "focus"), ("s", "x"), ("t", "b")], ""),
+    ] {
+        host.handle(&Message::new(
+            pairs.into_iter().collect(),
+            data.as_bytes().to_vec(),
+        ));
+    }
+    let mut mouse = Mouse {
+        pressed: true,
+        alt_screen: true,
+        alt_taken: vec!["copy".into()],
+        ..Default::default()
+    };
+    key_step(
+        &mut host,
+        &mouse,
+        &json!({"key":"ContextMenu","terminal":false,"events":[
+            {"e":"command","detail":{"name":"copy","key":"context_menu"}}
+        ]}),
+    )
+    .unwrap();
+    mouse.alt_screen = false;
+    key_step(
+        &mut host,
+        &mouse,
+        &json!({"key":"ContextMenu","terminal":false,"events":[
+            {"e":"contextmenu","s":"x","t":"b"}
+        ]}),
+    )
+    .unwrap();
 }

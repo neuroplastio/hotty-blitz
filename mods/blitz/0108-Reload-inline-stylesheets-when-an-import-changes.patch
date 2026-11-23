@@ -1,0 +1,81 @@
+From e4d196285196b3a8b82551fca1d9408b4c7b8251 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 23 Nov 2026 12:57:44 +0100
+Subject: [PATCH 108/109] Reload inline stylesheets when an import changes
+
+---
+ packages/blitz-dom/src/document.rs | 40 ++++++++++++++++++++++++++++--
+ 1 file changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
+index f1618837c..4b2e9db40 100644
+--- a/packages/blitz-dom/src/document.rs
++++ b/packages/blitz-dom/src/document.rs
+@@ -63,8 +63,11 @@ use style::{
+     device::Device,
+     media_queries::MediaList,
+     selector_parser::SnapshotMap,
+-    shared_lock::{SharedRwLock, StylesheetGuards},
+-    stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet},
++    shared_lock::{SharedRwLock, SharedRwLockReadGuard, StylesheetGuards},
++    stylesheets::{
++        AllowImportRules, CssRule, DocumentStyleSheet, Origin, Stylesheet, StylesheetInDocument,
++        import_rule::ImportSheet,
++    },
+     stylist::Stylist,
+ };
+ use style_dom::ElementState;
+@@ -1412,6 +1415,7 @@ impl BaseDocument {
+         #[cfg(feature = "svg")]
+         self.reload_svg_image(href_to_reload);
+         self.reload_image(href_to_reload);
++        let inline_importers = self.inline_stylesheet_importers(href_to_reload);
+         for &node_id in self.nodes_to_stylesheet.keys() {
+             let node = &self.nodes[node_id];
+             let Some(element) = node.element_data() else {
+@@ -1448,6 +1452,26 @@ impl BaseDocument {
+                 }
+             }
+         }
++        for node_id in inline_importers {
++            self.process_style_element(node_id);
++        }
++    }
++
++    fn inline_stylesheet_importers(&self, href: &str) -> Vec<NodeId> {
++        let Some(url) = self.resolve_url(href) else {
++            return Vec::new();
++        };
++        let guard = self.guard.read();
++        self.nodes_to_stylesheet
++            .iter()
++            .filter(|(id, sheet)| {
++                self.nodes[**id]
++                    .element_data()
++                    .is_some_and(|el| el.name.local == local_name!("style"))
++                    && stylesheet_imports(&sheet.0, &url, &guard)
++            })
++            .map(|(&id, _)| id)
++            .collect()
+     }
+ 
+     /// The image at `href` changed where it is fetched from: every `<img>`,
+@@ -5001,3 +5025,15 @@ mod inline_relative_float_tests {
+         assert_eq!(after.y - before.y, 5.0);
+     }
+ }
++
++/// Pending imports also carry their request URL, even before a sheet arrives.
++fn stylesheet_imports(sheet: &Stylesheet, url: &Url, guard: &SharedRwLockReadGuard) -> bool {
++    sheet.contents(guard).rules(guard).iter().any(|rule| {
++        let CssRule::Import(import) = rule else {
++            return false;
++        };
++        let import = import.read_with(guard);
++        import.url.url().is_some_and(|u| u.as_ref() == url)
++            || matches!(&import.stylesheet, ImportSheet::Sheet(child) if stylesheet_imports(child, url, guard))
++    })
++}
+-- 
+2.56.0
+

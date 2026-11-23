@@ -142,6 +142,8 @@ impl Shim {
                         forward.push(mode);
                     }
                 }
+                self.host
+                    .set_scroll_modes(self.alt, self.input.mouse_tracking());
                 if forward.len() == modes.len() {
                     out.extend_from_slice(raw);
                 } else if !forward.is_empty() {
@@ -161,6 +163,8 @@ impl Shim {
                     }
                 }
                 self.input.reset();
+                self.alt = false;
+                self.host.set_scroll_modes(false, false);
                 out.extend_from_slice(raw);
                 self.input.enable_on_terminal(out);
             }

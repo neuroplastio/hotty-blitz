@@ -29,15 +29,9 @@ pub struct InputRouter {
     vt: vt100::Parser,
     /// The surface under the pointer, for hover and leave.
     hovered: Option<String>,
-    /// The surface that got the button press, which gets its release too.
-    pressed: Option<String>,
-    /// Where that surface's top left is on the screen, in pixels, as of the
-    /// last report over it: a drag's moves off it are counted from there
-    /// (SPEC §9.1).
-    pressed_at: (f32, f32),
-    /// A press with Alt held began the gesture under way: until its
-    /// release, it is the program's (SPEC §9.2).
-    program_press: bool,
+    /// The captured surface and its screen origin in pixels.
+    captured: Option<(String, f32, f32)>,
+    buttons: BTreeSet<u32>,
     /// Keys whose press a surface took, unshifted: their releases are the
     /// surface's too, and the program never hears them.
     held: Vec<KeyName>,
@@ -57,9 +51,8 @@ impl InputRouter {
             ids: HashMap::new(),
             vt: vt100::Parser::new(rows.max(1), cols.max(1), 0),
             hovered: None,
-            pressed: None,
-            pressed_at: (0.0, 0.0),
-            program_press: false,
+            captured: None,
+            buttons: BTreeSet::new(),
             held: Vec::new(),
             enabled: false,
             partial: Vec::new(),
@@ -96,11 +89,18 @@ impl InputRouter {
         true
     }
 
+    pub fn mouse_tracking(&self) -> bool {
+        [9, 1000, 1001, 1002, 1003]
+            .iter()
+            .any(|mode| self.program.contains(mode))
+    }
+
     pub fn reset(&mut self) {
         self.program.clear();
         self.ids.clear();
         self.hovered = None;
-        self.pressed = None;
+        self.captured = None;
+        self.buttons.clear();
         self.held.clear();
         self.enabled = false;
     }
@@ -235,142 +235,132 @@ impl InputRouter {
             super_: false,
         };
         let motion = b & 32 != 0;
-        let wheel = b & 64 != 0;
-        let button = b & 3;
-        // A click is the primary button (SPEC §10.1): the others neither
-        // press, release nor take the keyboard. SGR reports which button a
-        // release is.
-        let primary = button == 0 && !wheel;
-        let target = self.hit(px, py).filter(|_| !wheel);
-        if !motion {
-            crate::log(&format!(
-                "mouse b={b} px=({px},{py}) press={press} hit={target:?}"
-            ));
-        }
-        let over = target.as_ref().map(|t| t.0.clone());
+        let code = b & !(4 | 8 | 16 | 32);
+        let target = self.hit(px, py);
 
-        // A press with Alt held is the program's, wherever it lands, and so
-        // is its gesture until the release (SPEC §9.2): as on the cells.
-        if press && !motion && primary {
-            self.program_press = mods.alt;
-        }
-        if self.program_press {
-            if let Some(old) = self.hovered.take() {
-                push_effects(
-                    host.pointer(&old, PointerKind::Leave, 0.0, 0.0, mods),
-                    to_program,
-                );
-            }
-            if press && !motion && primary {
-                self.pressed = None;
-                for other in host.surface_names().map(str::to_string).collect::<Vec<_>>() {
-                    if host.is_focused(&other) {
-                        push_effects(host.blur(&other), to_program);
-                    }
-                }
-            } else if !press && !motion && primary {
-                self.program_press = false;
-            }
-            self.forward_mouse(b, px, py, press, to_program);
-            return;
-        }
-
-        // A wheel over a surface whose document scrolls is its own while
-        // it can move that way (SPEC §5.3); otherwise, and over the cells,
-        // it is the program's. One report is a row (or a column) of it.
-        if wheel {
-            let taken = match self.hit(px, py) {
-                Some((surface, sx, sy)) => {
-                    let (w, h) = (self.cell_w as f32, self.cell_h as f32);
-                    let (dx, dy) = match button {
-                        0 => (0.0, -h),
-                        1 => (0.0, h),
-                        2 => (-w, 0.0),
-                        _ => (w, 0.0),
-                    };
-                    let out = host.wheel(&surface, sx, sy, dx, dy, mods);
-                    push_effects(out.effects, to_program);
-                    out.taken
-                }
-                // Over the cells: the gesture is the terminal's, even where
-                // it goes on over a surface.
-                None => host.wheel("", 0.0, 0.0, 0.0, 0.0, mods).taken,
+        if (64..=67).contains(&code) {
+            let (w, h) = (self.cell_w as f32, self.cell_h as f32);
+            let (dx, dy) = match code {
+                64 => (0.0, -h),
+                65 => (0.0, h),
+                66 => (-w, 0.0),
+                _ => (w, 0.0),
             };
-            if !taken {
+            let (surface, sx, sy) = hit_point(&target);
+            let out = host.wheel(surface, sx, sy, dx, dy, mods);
+            push_effects(out.effects, to_program);
+            if !out.taken {
                 self.forward_mouse(b, px, py, press, to_program);
             }
             return;
         }
 
-        // Hover: leave the old surface when the pointer moves off it.
-        if self.hovered != over {
+        let start = self.buttons.is_empty();
+        let (over, sx, sy) = hit_point(&target);
+        if start {
+            self.update_hover(over, mods, host, to_program);
+        }
+
+        let (surface, x, y) = match &mut self.captured {
+            Some((surface, left, top)) => {
+                if surface == over {
+                    *left = px as f32 - sx;
+                    *top = py as f32 - sy;
+                }
+                (surface.as_str(), px as f32 - *left, py as f32 - *top)
+            }
+            None => (over, sx, sy),
+        };
+        if motion {
+            let out = host.pointer_routed(surface, PointerKind::Move, x, y, mods, 0);
+            push_effects(out.effects, to_program);
+            if !out.taken && (!start || over.is_empty()) {
+                self.forward_mouse(b, px, py, press, to_program);
+            }
+            return;
+        }
+
+        crate::log(&format!(
+            "mouse b={b} px=({px},{py}) press={press} hit={target:?}"
+        ));
+        // Extended SGR codes are separate buttons. Skip DOM button 5,
+        // which Pointer Events reserves for a pen eraser.
+        let button = match code {
+            0..=2 => code,
+            128..=129 => code - 125,
+            130..=131 => code - 124,
+            _ => return,
+        };
+        let kind = if press {
+            PointerKind::Down
+        } else {
+            PointerKind::Up
+        };
+        let out = if button == 0 {
+            host.pointer_routed(surface, kind, x, y, mods, 0)
+        } else {
+            host.button(surface, button, kind, x, y, mods, false)
+        };
+        push_effects(out.effects, to_program);
+
+        if press {
+            self.buttons.insert(button);
+            if start && out.taken {
+                self.captured = Some((over.to_string(), px as f32 - sx, py as f32 - sy));
+            }
+            if start
+                && !out.taken
+                && (button == 0 || mods.alt)
+                && let Some(name) = host.focused_surface().map(str::to_string)
+            {
+                push_effects(host.blur(&name), to_program);
+            }
+        } else {
+            self.buttons.remove(&button);
+            if self.buttons.is_empty()
+                && self.captured.take().is_some()
+                && self.hovered.as_deref() != Some(over)
+            {
+                // The old window reports the release first. The new
+                // window starts hovering on its next real move.
+                self.update_hover(over, mods, host, to_program);
+            }
+        }
+        if !out.taken {
+            self.forward_mouse(b, px, py, press, to_program);
+        }
+    }
+
+    fn update_hover(
+        &mut self,
+        surface: &str,
+        mods: Mods,
+        host: &mut Host,
+        to_program: &mut Vec<u8>,
+    ) {
+        let hovered = (!surface.is_empty()).then_some(surface);
+        if self.hovered.as_deref() != hovered {
             if let Some(old) = self.hovered.take() {
                 push_effects(
                     host.pointer(&old, PointerKind::Leave, 0.0, 0.0, mods),
                     to_program,
                 );
             }
-            self.hovered = over.clone();
+            self.hovered = hovered.map(str::to_string);
         }
-
-        // A drag that began on a surface stays with it until release.
-        let owner = if self.pressed.is_some() && (motion || !press) {
-            self.pressed.clone()
-        } else {
-            over.clone()
-        };
-        if let Some(surface) = owner {
-            // Off the surface it holds, a drag goes on counting from its top
-            // left: negative, or past its size (SPEC §9.1).
-            let (sx, sy) = match &target {
-                Some((n, sx, sy)) if *n == surface => {
-                    self.pressed_at = (px as f32 - sx, py as f32 - sy);
-                    (*sx, *sy)
-                }
-                _ if self.pressed.is_some() => {
-                    (px as f32 - self.pressed_at.0, py as f32 - self.pressed_at.1)
-                }
-                _ => (-1.0, -1.0),
-            };
-            let kind = if motion {
-                PointerKind::Move
-            } else if press && button != 3 {
-                // A press on a surface takes the keyboard from any other
-                // one: Host::pointer does that.
-                self.pressed = Some(surface.clone());
-                PointerKind::Down
-            } else {
-                self.pressed = None;
-                PointerKind::Up
-            };
-            if motion || primary {
-                push_effects(host.pointer(&surface, kind, sx, sy, mods), to_program);
-            }
-            return;
-        }
-
-        // Not ours. A click outside every surface takes the keyboard back.
-        if press && !motion && primary {
-            for other in host.surface_names().map(str::to_string).collect::<Vec<_>>() {
-                if host.is_focused(&other) {
-                    push_effects(host.blur(&other), to_program);
-                }
-            }
-        }
-        self.forward_mouse(b, px, py, press, to_program);
     }
 
     /// Re-encodes a mouse event for the program, if it asked for this kind.
     fn forward_mouse(&self, b: u32, px: u32, py: u32, press: bool, out: &mut Vec<u8>) {
         let motion = b & 32 != 0;
-        let buttons_down = b & 3 != 3;
+        let buttons_down = b & !(4 | 8 | 16 | 32) != 3;
         let wants = if motion {
             self.program.contains(&1003) || (self.program.contains(&1002) && buttons_down)
         } else {
             self.program.contains(&1000)
                 || self.program.contains(&1002)
                 || self.program.contains(&1003)
-                || self.program.contains(&9)
+                || (press && self.program.contains(&9))
         };
         if !wants {
             return;
@@ -389,7 +379,7 @@ impl InputRouter {
                 std::io::Write::write_fmt(out, format_args!("\x1b[<{b};{col};{row}{final_byte}"));
         } else if col < 224 && row < 224 {
             // Legacy X10 encoding: release is button 3.
-            let cb = if press { b } else { (b & !3) | 3 };
+            let cb = if press { b } else { (b & (4 | 8 | 16)) | 3 };
             out.extend_from_slice(&[
                 0x1b,
                 b'[',
@@ -400,6 +390,11 @@ impl InputRouter {
             ]);
         }
     }
+}
+
+fn hit_point(hit: &Option<(String, f32, f32)>) -> (&str, f32, f32) {
+    hit.as_ref()
+        .map_or(("", 0.0, 0.0), |(surface, x, y)| (surface, *x, *y))
 }
 
 fn push_effects(effects: Vec<Effect>, out: &mut Vec<u8>) {

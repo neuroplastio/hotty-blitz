@@ -760,3 +760,13 @@ fn a_box_that_r_auto_lays_out_wider_comes_back_into_range() {
     assert_eq!(y(&h, "k0"), 10.0, "scrolled fully up");
     assert_eq!(differs_from_a_full_paint(&mut h), 0);
 }
+
+#[test]
+fn a_zero_wheel_does_not_claim_the_vertical_route_over_cells() {
+    let mut h = host();
+    place(&mut h, Some("1"), ROWS, "10", "2");
+    h.set_scroll_modes(true, false);
+    let m = Mods::default();
+    assert!(!h.wheel("", 0.0, 0.0, 0.0, 0.0, m).taken);
+    assert!(h.wheel("x", 10.0, 10.0, 0.0, 15.0, m).taken);
+}

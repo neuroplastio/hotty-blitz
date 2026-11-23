@@ -446,3 +446,29 @@ fn an_import_sent_after_a_documents_own_parse_is_drawn_when_sent_again() {
     draw(&mut h);
     assert_eq!(pixel(&h, "x", 99, 39), BLUE, "the import sent again");
 }
+
+#[test]
+fn a_late_inline_import_reloads_with_bytes_and_mime_changes() {
+    let mut h = host();
+    res(&mut h, "outer", "@import url(cid:inner);");
+    doc(
+        &mut h,
+        "x",
+        "<style>@import url(cid:outer);</style><p>text</p>",
+    );
+    let base = pixel(&h, "x", 99, 39);
+    res(&mut h, "inner", "html{background:#f00}");
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 99, 39), RED);
+
+    res(&mut h, "inner", "html{background:#00f}");
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 99, 39), BLUE);
+    cmd(
+        &mut h,
+        &[("a", "res"), ("id", "inner"), ("type", "text/plain")],
+        "html{background:#00f}",
+    );
+    draw(&mut h);
+    assert_eq!(pixel(&h, "x", 99, 39), base);
+}

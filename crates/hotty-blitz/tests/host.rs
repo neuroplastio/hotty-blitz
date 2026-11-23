@@ -4719,3 +4719,149 @@ fn doc_placed(html: &str) -> Host {
     render(&mut h);
     h
 }
+
+#[test]
+fn an_editing_host_uses_multiline_bindings_and_commits_when_it_loses_editability() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<section data-keys-inner='ctrl+j=newline'><div id=f data-on=input contenteditable>\
+         <b id=seed>seed</b></div><input id=next></section>",
+        "4",
+    );
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
+
+    let typed = h.key_bytes("x", b"x");
+    assert!(typed.consumed);
+    let typed = replies(&typed.effects);
+    assert_eq!(kinds(&typed), vec![ev("input", "f")]);
+    assert_eq!(body(&typed[0].payload)["value"], "seedx");
+    assert!(h.key_pressed("x", "ctrl+j", "").consumed);
+    assert!(key(&mut h, "x", "y").consumed);
+    assert_eq!(h.text_field("x", "f"), Some(("seedx\ny".into(), 7)));
+
+    let fx = h.handle(&delta_cmd(
+        &[("s", "x")],
+        "unattr",
+        Some("f"),
+        Some("contenteditable"),
+        "",
+    ));
+    render(&mut h);
+    let mut events = replies(&fx);
+    events.extend(replies(&h.take_events()));
+    assert_eq!(kinds(&events), vec![ev("change", "f")]);
+    let change = events
+        .iter()
+        .find(|m| m.get("e") == Some("change"))
+        .unwrap();
+    assert_eq!(body(&change.payload)["value"], "seedx\ny");
+    assert!(h.is_focused("x"));
+    assert!(!key(&mut h, "x", "z").consumed);
+    assert!(h.inspect("x", "seed").is_some());
+    assert_eq!(
+        kinds(&replies(&h.key_bytes("x", b"\t").effects)),
+        vec![ev("focus", "next")]
+    );
+}
+
+#[test]
+fn captured_context_and_secondary_presses_stay_distinct() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<button id=b data-on=contextmenu>menu</button>",
+        "3",
+    );
+    h.set_context_menu_on_release(true);
+    let (x, y) = h.element_centre("x", "b").unwrap();
+    let mut button = |kind, mapped| h.button("x", 2, kind, x, y, Mods::default(), mapped);
+    for (kind, mapped) in [
+        (PointerKind::Down, false),
+        (PointerKind::Down, true),
+        (PointerKind::Up, true),
+    ] {
+        let out = button(kind, mapped);
+        assert!(out.taken);
+        assert!(out.effects.is_empty(), "{:?}", out.effects);
+    }
+    let out = button(PointerKind::Up, false);
+    assert!(out.taken);
+    assert_eq!(kinds(&replies(&out.effects)), vec![ev("contextmenu", "b")]);
+}
+
+#[test]
+fn a_secondary_release_requires_a_current_rightbutton_subscription() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<button id=b data-on=rightbutton>menu</button>",
+        "3",
+    );
+    let (x, y) = h.element_centre("x", "b").unwrap();
+    assert!(
+        h.button("x", 2, PointerKind::Down, x, y, Mods::default(), false)
+            .taken
+    );
+    h.handle(&delta_cmd(
+        &[("s", "x")],
+        "attr",
+        Some("b"),
+        Some("data-on"),
+        "contextmenu",
+    ));
+    let out = h.button("x", 2, PointerKind::Up, x, y, Mods::default(), false);
+    assert!(out.taken);
+    assert!(out.effects.is_empty(), "{:?}", out.effects);
+}
+
+#[test]
+fn a_wheel_on_another_surface_cannot_hover_during_capture() {
+    let mut h = host();
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        "<style>body{margin:0}div{height:20px}</style>\
+         <div id=a data-on=contextmenu>menu</div><div id=b>after</div>",
+        "3",
+    );
+    doc_at(
+        &mut h,
+        "y",
+        &[("scroll", "1")],
+        "<style>body{margin:0}div{height:20px}</style>\
+         <div id=c>one</div><div id=d>two</div><div style='height:200px'></div>",
+        "3",
+    );
+    for s in ["x", "y"] {
+        h.handle(&cmd(
+            &[
+                ("a", "place"),
+                ("s", s),
+                ("c", "30"),
+                ("r", "3"),
+                ("v", "1"),
+            ],
+            "",
+        ));
+    }
+    render(&mut h);
+    let m = Mods::default();
+    assert!(
+        h.button("x", 2, PointerKind::Down, 10.0, 10.0, m, false)
+            .taken
+    );
+    let wheel = h.wheel("y", 10.0, 10.0, 0.0, 20.0, m);
+    assert!(wheel.taken);
+    assert!(wheel.effects.is_empty(), "{:?}", wheel.effects);
+    let up = h.button("x", 2, PointerKind::Up, 10.0, 30.0, m, false);
+    assert!(up.taken);
+    assert_eq!(kinds(&replies(&up.effects)), vec![ev("hover", "b")]);
+}
