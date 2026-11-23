@@ -4865,3 +4865,63 @@ fn a_wheel_on_another_surface_cannot_hover_during_capture() {
     assert!(up.taken);
     assert_eq!(kinds(&replies(&up.effects)), vec![ev("hover", "b")]);
 }
+
+#[test]
+fn an_editing_host_renders_its_descendants_and_replaces_only_editable_text() {
+    let mut h = host();
+    let style = "<style>body{margin:0;background:#000;color:#fff;font:16px monospace}\
+                 #lock{color:#f0f}</style>";
+    let contents = "<span id=hidden style='display:none'>HIDDEN</span>\
+                    <span id=lock contenteditable=false>LOCKED</span>one<br>two";
+    doc_at(
+        &mut h,
+        "x",
+        &[],
+        &format!("{style}<div id=f data-on=input contenteditable>{contents}</div>"),
+        "4",
+    );
+    doc_at(
+        &mut h,
+        "ref",
+        &[],
+        &format!("{style}<div><span id=lock>LOCKED</span>one<br>two</div>"),
+        "4",
+    );
+    assert_eq!(h.frame("x").unwrap().rgba, h.frame("ref").unwrap().rgba);
+
+    h.handle(&cmd(&[("a", "focus"), ("s", "x"), ("t", "f")], ""));
+    let typed = h.key_bytes("x", b"x");
+    assert!(typed.consumed);
+    let events = replies(&typed.effects);
+    assert_eq!(kinds(&events), vec![ev("input", "f")]);
+    assert_eq!(body(&events[0].payload)["value"], "one\ntwox");
+
+    render(&mut h);
+    click(&mut h, "x", 2.0, 26.0);
+    assert_eq!(h.text_field("x", "f"), Some(("one\ntwox".into(), 4)));
+
+    assert!(h.key_pressed("x", "ctrl+a", "").consumed);
+    let typed = h.key_bytes("x", b"z");
+    assert!(typed.consumed);
+    let events = replies(&typed.effects);
+    assert_eq!(body(&events[0].payload)["value"], "z");
+
+    h.handle(&delta_cmd(
+        &[("s", "x")],
+        "unattr",
+        Some("f"),
+        Some("contenteditable"),
+        "",
+    ));
+    render(&mut h);
+    assert_eq!(h.inspect("x", "hidden").unwrap()["text"], "HIDDEN");
+    assert_eq!(h.inspect("x", "lock").unwrap()["text"], "LOCKED");
+    doc_at(
+        &mut h,
+        "ref",
+        &[],
+        &format!("{style}<div><span id=lock>LOCKED</span>z</div>"),
+        "4",
+    );
+    assert_eq!(h.frame("x").unwrap().rgba, h.frame("ref").unwrap().rgba);
+}

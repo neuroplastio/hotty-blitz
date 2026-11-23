@@ -1,31 +1,360 @@
-From d55afc65e310d1161ec87e4c307b3e8666f2ca32 Mon Sep 17 00:00:00 2001
+From 8e33b908abc3f7ddb7f0accdee00ce922430ad0d Mon Sep 17 00:00:00 2001
 From: hotty Agent <hotty@neuroplast.io>
-Date: Mon, 23 Nov 2026 13:00:00 +0100
-Subject: [PATCH 109/109] Give HTML editing hosts a multiline editor
+Date: Mon, 23 Nov 2026 13:45:07 +0100
+Subject: [PATCH] Give HTML editing hosts a multiline editor
 
 ---
- packages/blitz-dom/src/document.rs            | 58 +++++++++++++++++++
- packages/blitz-dom/src/layout/construct.rs    | 48 ++++++++++++---
- packages/blitz-dom/src/layout/inline/build.rs |  2 +-
- packages/blitz-dom/src/layout/mod.rs          | 56 ++++++++++++++++++
- packages/blitz-dom/src/mutator.rs             | 20 ++++++-
- packages/blitz-dom/src/node/node.rs           | 27 ++++++++-
- packages/blitz-dom/src/node/text.rs           |  4 ++
- 7 files changed, 204 insertions(+), 11 deletions(-)
+ packages/blitz-dom/src/document.rs            |  17 +-
+ packages/blitz-dom/src/editing.rs             | 338 ++++++++++++++++++
+ packages/blitz-dom/src/events/ime.rs          |   2 +-
+ packages/blitz-dom/src/events/keyboard.rs     |   6 +-
+ packages/blitz-dom/src/layout/construct.rs    |   2 +-
+ packages/blitz-dom/src/layout/inline/build.rs |  64 ++--
+ packages/blitz-dom/src/lib.rs                 |   1 +
+ packages/blitz-dom/src/mutator.rs             |  10 +
+ packages/blitz-dom/src/node/element.rs        |  22 ++
+ packages/blitz-dom/src/node/node.rs           |  33 +-
+ packages/blitz-dom/src/node/text.rs           |   2 +
+ packages/blitz-dom/src/resolve.rs             |   3 +
+ packages/blitz-paint/src/render.rs            |  56 ++-
+ 13 files changed, 510 insertions(+), 46 deletions(-)
+ create mode 100644 packages/blitz-dom/src/editing.rs
 
 diff --git a/packages/blitz-dom/src/document.rs b/packages/blitz-dom/src/document.rs
-index 4b2e9db40..84bef0bfd 100644
+index 4b2e9db40..6ebcc2c8a 100644
 --- a/packages/blitz-dom/src/document.rs
 +++ b/packages/blitz-dom/src/document.rs
-@@ -3291,6 +3291,64 @@ impl BaseDocument {
-         self.shell_provider.request_redraw();
+@@ -2305,6 +2305,8 @@ impl BaseDocument {
+             });
+         }
+ 
++        self.sync_editing_host(focus_node_id);
++
+         // Focus the new node
+         self.snapshot_node_and(
+             focus_node_id,
+@@ -2349,7 +2351,7 @@ impl BaseDocument {
+         let changed = self.set_focus_to(focus_node_id);
+         if let Some(id) = self.focus_node_id {
+             let ring = self.nodes[id].element_data().is_some_and(|e| {
+-                e.element_state.contains(ElementState::FOCUSRING) && e.text_input_data().is_none()
++                e.element_state.contains(ElementState::FOCUSRING) && e.editor_data().is_none()
+             });
+             if ring {
+                 self.snapshot_node_and(id, ElementState::FOCUSRING, |node| {
+@@ -3245,10 +3247,7 @@ impl BaseDocument {
+             return;
+         };
+ 
+-        if let Some(text_input) = node
+-            .element_data_mut()
+-            .and_then(|el| el.text_input_data_mut())
+-        {
++        if let Some(text_input) = node.element_data_mut().and_then(|el| el.editor_data_mut()) {
+             let before = text_input.line_metrics();
+             let mut font_ctx = self.font_ctx.lock().unwrap();
+             let layout_ctx = &mut self.layout_ctx;
+@@ -3263,7 +3262,7 @@ impl BaseDocument {
+     /// A text input's value and its selection, `(value, anchor, focus)`,
+     /// byte offsets into the value; `None` when `node_id` is not one.
+     pub fn text_input_selection(&self, node_id: NodeId) -> Option<(String, usize, usize)> {
+-        let input = self.get_node(node_id)?.element_data()?.text_input_data()?;
++        let input = self.get_node(node_id)?.element_data()?.editor_data()?;
+         let (anchor, focus) = input.value_selection();
+         Some((input.value(), anchor, focus))
+     }
+@@ -3276,7 +3275,7 @@ impl BaseDocument {
+             .nodes
+             .get_mut(node_id)
+             .and_then(|n| n.element_data_mut())
+-            .and_then(|el| el.text_input_data_mut())
++            .and_then(|el| el.editor_data_mut())
+         else {
+             return;
+         };
+@@ -3299,7 +3298,7 @@ impl BaseDocument {
+             .nodes
+             .get_mut(node_id)
+             .and_then(|n| n.element_data_mut())
+-            .and_then(|el| el.text_input_data_mut())
++            .and_then(|el| el.editor_data_mut())
+         else {
+             return;
+         };
+@@ -3317,7 +3316,7 @@ impl BaseDocument {
+         };
+         let height = node.final_layout().content_box_height();
+         node.element_data()
+-            .and_then(|el| el.text_input_data())
++            .and_then(|el| el.editor_data())
+             .map_or(1, |input| input.rows_shown(height))
      }
  
-+    /// Reflect a plain-text edit back into the host's DOM so it survives a
-+    /// loss of editability. Replace the changed range across existing text
-+    /// nodes without removing elements or changing their identities.
+diff --git a/packages/blitz-dom/src/editing.rs b/packages/blitz-dom/src/editing.rs
+new file mode 100644
+index 000000000..e899e2bfc
+--- /dev/null
++++ b/packages/blitz-dom/src/editing.rs
+@@ -0,0 +1,338 @@
++//! The plain-text keyboard editor of an HTML editing host. Descendants
++//! keep their own layout. Only visible, editable text and hard breaks
++//! are represented in the editor and eligible for write-back.
++
++use std::ops::Range;
++
++use markup5ever::local_name;
++use style::computed_values::visibility::T as Visibility;
++use stylo_taffy::CopyStyleGetters;
++
++use crate::layout::construct::set_text_style;
++use crate::layout::replaced::is_replaced_element;
++use crate::node::{NodeData, TextInputData};
++use crate::{BaseDocument, DocumentMutator, Node, NodeId, qual_name, stylo_to_parley};
++
++struct Run {
++    node: NodeId,
++    bytes: Range<usize>,
++    line_break: bool,
++}
++
++#[derive(Default)]
++struct EditableText {
++    value: String,
++    runs: Vec<Run>,
++}
++
++fn visible(node: &Node) -> bool {
++    node.primary_styles()
++        .is_some_and(|s| s.get_inherited_box().visibility == Visibility::Visible)
++}
++
++impl EditableText {
++    fn from_host(host: &Node) -> Self {
++        let mut text = Self::default();
++        text.collect(host, host.id);
++        text
++    }
++
++    fn collect(&mut self, node: &Node, host: NodeId) {
++        match &node.data {
++            NodeData::Text(text) => {
++                if !text.content.is_empty() && node.parent_node().is_some_and(visible) {
++                    self.push(node.id, &text.content, false);
++                }
++            }
++            NodeData::Element(el) => {
++                if node
++                    .primary_styles()
++                    .is_none_or(|s| s.get_box().display.is_none())
++                    || node.skips_contents()
++                    || (node.id != host && node.content_editability() == Some(false))
++                    || is_replaced_element(&el.name.local)
++                    || matches!(el.name.local.as_ref(), "textarea" | "select" | "input")
++                {
++                    return;
++                }
++                if el.name.local == local_name!("br") {
++                    if visible(node) {
++                        self.push(node.id, "\n", true);
++                    }
++                } else if el.name.local == local_name!("details")
++                    && el.attr(local_name!("open")).is_none()
++                {
++                    if let Some(summary) =
++                        node.children.iter().map(|&id| node.with(id)).find(|child| {
++                            child.data.is_element_with_tag_name(&local_name!("summary"))
++                        })
++                    {
++                        self.collect(summary, host);
++                    }
++                } else {
++                    for &id in &node.children {
++                        self.collect(node.with(id), host);
++                    }
++                }
++            }
++            _ => {}
++        }
++    }
++
++    fn push(&mut self, node: NodeId, text: &str, line_break: bool) {
++        let start = self.value.len();
++        self.value.push_str(text);
++        self.runs.push(Run {
++            node,
++            bytes: start..self.value.len(),
++            line_break,
++        });
++    }
++}
++
++/// The focused editing host's selection in the rendered inline layouts.
++#[derive(Default)]
++pub struct EditingSelection {
++    pub ranges: Vec<(NodeId, Range<usize>)>,
++    pub caret: Option<(NodeId, usize)>,
++}
++
++impl Run {
++    fn inline_range<'a>(
++        &self,
++        doc: &'a BaseDocument,
++    ) -> Option<(NodeId, &'a crate::node::TextLayout, Range<usize>)> {
++        let node = doc.get_node(self.node)?;
++        let root = node.inline_root_ancestor()?;
++        let layout = root.element_data()?.inline_layout_data.as_deref()?;
++        let (_, range) = layout
++            .editing_ranges
++            .iter()
++            .find(|(id, _)| *id == self.node)?;
++        Some((root.id, layout, range.clone()))
++    }
++}
++
++// Layout may collapse whitespace or transform case. Keep cursor offsets on
++// character boundaries in both strings, including their ends.
++fn offset_between(source: &str, target: &str, offset: usize) -> usize {
++    if source == target || offset == 0 {
++        return offset;
++    }
++    if offset >= source.len() {
++        return target.len();
++    }
++    let chars = source
++        .char_indices()
++        .take_while(|(i, _)| *i < offset)
++        .count();
++    target
++        .char_indices()
++        .nth(chars)
++        .map_or(target.len(), |(i, _)| i)
++}
++
++impl BaseDocument {
++    pub(crate) fn sync_editing_host(&mut self, id: NodeId) {
++        let Some(node) = self.get_node(id) else {
++            return;
++        };
++        if !node.is_editing_host() {
++            if let Some(el) = self.nodes[id].element_data_mut() {
++                el.editing_input = None;
++            }
++            return;
++        }
++        let Some(style) = node.primary_styles() else {
++            return;
++        };
++        if !visible(node) || node.skips_contents() || style.get_box().display.is_none() {
++            return;
++        }
++        let text = EditableText::from_host(node).value;
++        let css = stylo_to_parley::style(id, &style);
++        let align = stylo_to_parley::text_align(style.clone_text_align());
++        let direction =
++            stylo_to_parley::base_direction(style.clone_direction(), style.clone_unicode_bidi());
++        let scale = self.viewport.scale();
++        let width = node.final_layout().content_box_width() * scale;
++        drop(style);
++
++        let el = self.nodes[id].element_data_mut().unwrap();
++        let input = el
++            .editing_input
++            .get_or_insert_with(|| Box::new(TextInputData::new(true)));
++        if input.editor.is_composing() {
++            return;
++        }
++        let mut fonts = self.font_ctx.lock().unwrap();
++        input.editor.set_scale(scale);
++        input.editor.set_width((width > 0.0).then_some(width));
++        set_text_style(&mut input.editor, css, align, direction);
++        input.set_text(&mut fonts, &mut self.layout_ctx, &text);
++        input
++            .editor
++            .refresh_layout(&mut fonts, &mut self.layout_ctx);
++    }
++
++    /// Map the keyboard selection into the descendant layouts for paint.
++    pub fn editing_selection(&self) -> EditingSelection {
++        let Some(host) = self
++            .focus_node_id
++            .and_then(|id| self.get_node(id))
++            .filter(|node| node.is_editing_host())
++        else {
++            return EditingSelection::default();
++        };
++        let Some(input) = host
++            .element_data()
++            .and_then(|el| el.editing_input.as_deref())
++        else {
++            return EditingSelection::default();
++        };
++        let (anchor, focus) = input.value_selection();
++        let (lo, hi) = (anchor.min(focus), anchor.max(focus));
++        let source = EditableText::from_host(host);
++        let mut result = EditingSelection::default();
++        for run in &source.runs {
++            let Some((root, layout, rendered)) = run.inline_range(self) else {
++                continue;
++            };
++            let from = &source.value[run.bytes.clone()];
++            let to = &layout.text[rendered.clone()];
++            let map = |i| rendered.start + offset_between(from, to, i - run.bytes.start);
++            if lo == hi && run.bytes.start <= focus && focus <= run.bytes.end {
++                result.caret = Some((root, map(focus)));
++            } else if lo != hi && lo < run.bytes.end && hi > run.bytes.start {
++                let start = map(lo.max(run.bytes.start));
++                let end = map(hi.min(run.bytes.end));
++                if start < end {
++                    result.ranges.push((root, start..end));
++                }
++            }
++        }
++        result
++    }
++
++    /// Move or extend the plain-text selection at a rendered location.
++    pub fn select_editing_host_at(&mut self, id: NodeId, x: f32, y: f32, extend: bool) -> bool {
++        let Some(host) = self.get_node(id).filter(|node| node.is_editing_host()) else {
++            return false;
++        };
++        let hovered = self.find_text_position(x, y);
++        let source = EditableText::from_host(host);
++        let caret = hovered.and_then(|(inline_root, offset)| {
++            source
++                .runs
++                .iter()
++                .filter_map(|run| {
++                    let (root, layout, rendered) = run.inline_range(self)?;
++                    if root != inline_root {
++                        return None;
++                    }
++                    let clamped = offset.clamp(rendered.start, rendered.end);
++                    let rendered_start = rendered.start;
++                    let from = &layout.text[rendered];
++                    let to = &source.value[run.bytes.clone()];
++                    let caret =
++                        run.bytes.start + offset_between(from, to, clamped - rendered_start);
++                    Some((offset.abs_diff(clamped), caret))
++                })
++                .min_by_key(|&(distance, _)| distance)
++                .map(|(_, caret)| caret)
++        });
++        self.clear_text_selection();
++        if let Some(caret) = caret
++            && let Some((value, anchor, _)) = self.text_input_selection(id)
++        {
++            self.set_text_input(id, &value, if extend { anchor } else { caret }, caret);
++        }
++        true
++    }
++
++    /// Write the editor's changed range back into its visible, editable
++    /// sources. Hidden nodes and protected subtrees never enter the map.
 +    pub fn commit_editing_host_text(&mut self, id: NodeId, new: &str) {
-+        let old = self.nodes[id].text_content();
++        let Some(node) = self.get_node(id).filter(|n| n.is_editing_host()) else {
++            return;
++        };
++        let EditableText { value: old, runs } = EditableText::from_host(node);
 +        if old == new {
 +            return;
 +        }
@@ -43,243 +372,276 @@ index 4b2e9db40..84bef0bfd 100644
 +            .map(|(c, _)| c.len_utf8())
 +            .sum();
 +        let end = old.len() - suffix;
-+        let insert = &new[start..new.len() - suffix];
-+        let mut stack = vec![id];
-+        let mut offset = 0;
-+        let mut wrote = false;
-+        let mut changes = Vec::new();
-+        while let Some(n) = stack.pop() {
-+            let node = &self.nodes[n];
-+            match &node.data {
-+                NodeData::Text(text) => {
-+                    let limit = offset + text.content.len();
-+                    if limit >= start && offset <= end {
-+                        let lo = start.saturating_sub(offset);
-+                        let hi = end.min(limit) - offset;
-+                        let mut content = text.content.clone();
-+                        content.replace_range(lo..hi, if wrote { "" } else { insert });
-+                        changes.push((n, content));
-+                        wrote = true;
-+                    }
-+                    offset = limit;
-+                }
-+                NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
-+                    stack.extend(node.children.iter().rev().copied());
-+                }
-+                _ => {}
-+            }
-+        }
++        let replacement = &new[start..new.len() - suffix];
++
 +        let mut m = self.mutate();
-+        for (node, text) in changes {
-+            m.set_node_text(node, &text);
++        let mut wrote = false;
++        for run in runs {
++            let Run {
++                node,
++                bytes,
++                line_break,
++            } = run;
++            if bytes.end < start || bytes.start > end {
++                continue;
++            }
++            let insert = if wrote { "" } else { replacement };
++            if line_break {
++                if !insert.is_empty() {
++                    let nodes = new_lines(&mut m, insert);
++                    if start == bytes.end {
++                        m.insert_nodes_after(node, &nodes);
++                    } else {
++                        m.insert_nodes_before(node, &nodes);
++                    }
++                }
++                if start < bytes.end && end > bytes.start {
++                    m.remove_and_drop_node(node);
++                }
++            } else {
++                let lo = start.saturating_sub(bytes.start);
++                let hi = end.min(bytes.end) - bytes.start;
++                let text = &old[bytes];
++                let updated = format!("{}{insert}{}", &text[..lo], &text[hi..]);
++                if let Some((first, rest)) = updated.split_once('\n') {
++                    m.set_node_text(node, first);
++                    let br = m.create_element(qual_name!("br", html), Vec::new());
++                    let mut nodes = vec![br];
++                    nodes.extend(new_lines(&mut m, rest));
++                    m.insert_nodes_after(node, &nodes);
++                } else {
++                    m.set_node_text(node, &updated);
++                }
++            }
++            wrote = true;
 +        }
-+        if !wrote {
-+            let text = m.create_text_node(insert);
-+            m.append_children(id, &[text]);
++        if !wrote && !replacement.is_empty() {
++            let nodes = new_lines(&mut m, replacement);
++            m.append_children(id, &nodes);
 +        }
 +    }
++}
 +
-     /// Moves a text input's caret `delta` rows as it lays them out
-     /// (`TextInputData::move_rows`), and keeps it in view. With `extend`,
-     /// the selection's anchor stays where it is, as Shift keeps it.
++fn new_lines(m: &mut DocumentMutator<'_>, value: &str) -> Vec<NodeId> {
++    let mut nodes = Vec::new();
++    for (i, text) in value.split('\n').enumerate() {
++        if i > 0 {
++            nodes.push(m.create_element(qual_name!("br", html), Vec::new()));
++        }
++        if !text.is_empty() {
++            nodes.push(m.create_text_node(text));
++        }
++    }
++    nodes
++}
+diff --git a/packages/blitz-dom/src/events/ime.rs b/packages/blitz-dom/src/events/ime.rs
+index a7993892f..26cde66de 100644
+--- a/packages/blitz-dom/src/events/ime.rs
++++ b/packages/blitz-dom/src/events/ime.rs
+@@ -13,7 +13,7 @@ pub(crate) fn handle_ime_event<F: FnMut(DomEvent)>(
+         let text_input_data = node
+             .data
+             .downcast_element_mut()
+-            .and_then(|el| el.text_input_data_mut());
++            .and_then(|el| el.editor_data_mut());
+         if let Some(input_data) = text_input_data {
+             let before = input_data.line_metrics();
+             let generated_event = input_data.apply_ime_event(
+diff --git a/packages/blitz-dom/src/events/keyboard.rs b/packages/blitz-dom/src/events/keyboard.rs
+index 3aae0a7f7..3a82c47ac 100644
+--- a/packages/blitz-dom/src/events/keyboard.rs
++++ b/packages/blitz-dom/src/events/keyboard.rs
+@@ -47,7 +47,7 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
+                         let has_focused_text_input = doc.focus_node_id.is_some_and(|id| {
+                             doc.get_node(id)
+                                 .and_then(|n| n.element_data())
+-                                .is_some_and(|e| e.text_input_data().is_some())
++                                .is_some_and(|e| e.editor_data().is_some())
+                         });
+ 
+                         if !has_focused_text_input {
+@@ -72,7 +72,7 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
+             return;
+         };
+ 
+-        if let Some(input_data) = element_data.text_input_data_mut() {
++        if let Some(input_data) = element_data.editor_data_mut() {
+             let before = input_data.line_metrics();
+             let generated_event = match event {
+                 KeyboardOrTextInputEvent::KeyPress(blitz_key_event) => input_data
+@@ -113,7 +113,7 @@ impl BaseDocument {
+             .element_data_mut()
+             .expect("apply_generated_text_input_event called on a node that is not an element");
+         let input_data = element_data
+-            .text_input_data_mut()
++            .editor_data_mut()
+             .expect("apply_generated_text_input_event called on a node that is not a text input");
+ 
+         match event {
 diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
-index 730134d25..2b65653a9 100644
+index 730134d25..26275ef3c 100644
 --- a/packages/blitz-dom/src/layout/construct.rs
 +++ b/packages/blitz-dom/src/layout/construct.rs
-@@ -638,12 +638,26 @@ fn collect_layout_children_with_wrap(
-     }
- 
-     if doc.nodes[container_node_id].skips_contents() {
--        doc.iter_children_mut(container_node_id, |child, doc| pass_over(&mut doc.nodes, child));
-+        doc.iter_children_mut(container_node_id, |child, doc| {
-+            pass_over(&mut doc.nodes, child)
-+        });
-         return;
-     }
- 
-     flush_pseudo_elements(doc, container_node_id);
- 
-+    let editing_host = doc.nodes[container_node_id].is_editing_host();
-+    if editing_host {
-+        create_text_editor(doc, container_node_id, true, true);
-+        return;
-+    }
-+    if let Some(el) = doc.nodes[container_node_id].element_data_mut()
-+        && el
-+            .text_input_data()
-+            .is_some_and(|input| input.editing_source.is_some())
-+    {
-+        el.special_data = SpecialElementData::None;
-+    }
-     if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
-         // Handle text inputs
-         let tag_name = el.name.local.as_ref();
-@@ -653,7 +667,7 @@ fn collect_layout_children_with_wrap(
-                 .downcast_element()
-                 .and_then(|el| el.attr(local_name!("type")));
-             if tag_name == "textarea" {
--                create_text_editor(doc, container_node_id, true);
-+                create_text_editor(doc, container_node_id, true, false);
-                 return;
-             } else if matches!(
-                 type_attr,
-@@ -662,7 +676,7 @@ fn collect_layout_children_with_wrap(
-             {
-                 // A date or time input is a one-line field showing its value
-                 // (crate::date_time).
--                create_text_editor(doc, container_node_id, false);
-+                create_text_editor(doc, container_node_id, false, false);
-                 return;
-             } else if matches!(type_attr, Some("checkbox" | "radio")) {
-                 create_checkbox_input(doc, container_node_id);
-@@ -1363,7 +1377,12 @@ fn collect_complex_layout_children(
-     out.anonymous_table_id = None;
+@@ -1431,7 +1431,7 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
  }
  
--fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
-+fn create_text_editor(
-+    doc: &mut BaseDocument,
-+    input_element_id: NodeId,
-+    is_multiline: bool,
-+    editing_host: bool,
-+) {
-     let node = &mut doc.nodes[input_element_id];
-     let parley_style = node
-         .primary_styles()
-@@ -1391,11 +1410,16 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
-     let is_focussed = node.is_focussed();
-     let is_password = !is_multiline && node.attr(local_name!("type")) == Some("password");
-     let element = &mut node.data.downcast_element_mut().unwrap();
--    let created = !matches!(element.special_data, SpecialElementData::TextInput(_));
-+    let created = element.text_input_data().is_none_or(|input| {
-+        input.is_multiline != is_multiline || input.editing_source.is_some() != editing_host
-+    });
-     if created {
-         let mut text_input_data = TextInputData::new(is_multiline);
-         let editor = &mut text_input_data.editor;
-         editor.set_text(&initial_text);
-+        if editing_host {
-+            text_input_data.editing_source = Some(initial_text.clone());
-+        }
-         element.special_data = SpecialElementData::TextInput(text_input_data);
- 
-         // An input focused before its editor existed (e.g. focused before the first layout)
-@@ -1409,13 +1433,23 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
-         unreachable!();
-     };
- 
-+    let mut reset = created;
-     let editor = &mut text_input_data.editor;
-+    if let Some(source) = &mut text_input_data.editing_source
-+        && *source != initial_text
-+    {
-+        *source = initial_text;
-+        if editor.text() != source.as_str() {
-+            editor.set_text(source);
-+            reset = true;
-+        }
-+    }
-     editor.set_scale(doc.viewport.scale_f64() as f32);
-     editor.set_width(None);
-     set_text_style(editor, parley_style, alignment, base_direction);
- 
-     editor.refresh_layout(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx);
--    if created {
-+    if reset {
-         // A new field's caret starts at the end of its value.
-         editor
-             .driver(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx)
-@@ -1627,7 +1661,7 @@ pub(crate) fn find_inline_layout_embedded_boxes(
-                     (DisplayOutside::Inline, DisplayInside::Flow) => {
-                         let tag_name = &element_data.name.local;
- 
--                        if is_inline_box_element(tag_name) {
-+                        if is_inline_box_element(tag_name) || node.is_editing_host() {
-                             layout_children.push(node_id);
-                         } else if *tag_name == local_name!("br") {
-                             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+ /// Sets the style a text field's editor lays its text out in.
+-fn set_text_style(
++pub(crate) fn set_text_style(
+     editor: &mut PlainEditor<TextBrush>,
+     parley_style: parley::TextStyle<'static, 'static, TextBrush>,
+     alignment: parley::layout::Alignment,
 diff --git a/packages/blitz-dom/src/layout/inline/build.rs b/packages/blitz-dom/src/layout/inline/build.rs
-index 8bcdbf394..9a274d78f 100644
+index 8bcdbf394..f628a6b4c 100644
 --- a/packages/blitz-dom/src/layout/inline/build.rs
 +++ b/packages/blitz-dom/src/layout/inline/build.rs
-@@ -229,7 +229,7 @@ pub(crate) fn build_inline_layout_into(
-                     (DisplayOutside::Inline, DisplayInside::Flow) => {
-                         let tag_name = &element_data.name.local;
+@@ -90,31 +90,24 @@ pub(crate) fn build_inline_layout_into(
+     let mut text_transformer = TextTransformer::default();
+     text_transformer.word_break(&builder);
  
--                        if is_inline_box_element(tag_name) {
-+                        if is_inline_box_element(tag_name) || node.is_editing_host() {
-                             if box_kind == InlineBoxKind::InFlow {
-                                 text_transformer.word_break(builder);
+-    if let Some(before_id) = root_node.before() {
+-        build_inline_layout_recursive(
+-            &mut builder,
+-            &mut text_transformer,
+-            nodes,
+-            before_id,
+-            &text_transform,
+-        );
+-    }
+-    for child_id in root_node.children.iter().copied() {
++    text_layout.editing_ranges.clear();
++    let editing = std::iter::successors(Some(root_node), |node| node.parent_node())
++        .find_map(crate::Node::content_editability)
++        .unwrap_or(false);
++    for child_id in root_node
++        .before()
++        .into_iter()
++        .chain(root_node.children.iter().copied())
++        .chain(root_node.after())
++    {
+         build_inline_layout_recursive(
+             &mut builder,
+             &mut text_transformer,
+             nodes,
+             child_id,
+             &text_transform,
+-        );
+-    }
+-    if let Some(after_id) = root_node.after() {
+-        build_inline_layout_recursive(
+-            &mut builder,
+-            &mut text_transformer,
+-            nodes,
+-            after_id,
+-            &text_transform,
++            editing,
++            &mut text_layout.editing_ranges,
+         );
+     }
+ 
+@@ -160,8 +153,11 @@ pub(crate) fn build_inline_layout_into(
+         nodes: &crate::NodeTree,
+         node_id: NodeId,
+         parent_text_transform: &CaseTransform,
++        editing: bool,
++        editing_ranges: &mut Vec<(NodeId, std::ops::Range<usize>)>,
+     ) {
+         let node = &nodes[node_id];
++        let editing = node.content_editability().unwrap_or(editing);
+ 
+         let style = node.primary_styles();
+         let style = style.as_ref();
+@@ -222,6 +218,8 @@ pub(crate) fn build_inline_layout_into(
+                                 nodes,
+                                 child_id,
+                                 &text_transform,
++                                editing,
++                                editing_ranges,
+                             );
+                         }
+                         builder.pop_style_span();
+@@ -263,7 +261,7 @@ pub(crate) fn build_inline_layout_into(
+                                         .unwrap_or_default(),
+                                 ),
+                             ]);
+-                            builder.push_text("\n");
++                            record_source(builder, node_id, "\n", editing, editing_ranges);
+                             builder.pop_style_span();
+                             text_transformer.word_break(builder);
+                         } else {
+@@ -293,6 +291,8 @@ pub(crate) fn build_inline_layout_into(
+                                     nodes,
+                                     before_id,
+                                     &text_transform,
++                                    editing,
++                                    editing_ranges,
+                                 );
                              }
-diff --git a/packages/blitz-dom/src/layout/mod.rs b/packages/blitz-dom/src/layout/mod.rs
-index 5bf0fb832..04e8ab0bb 100644
---- a/packages/blitz-dom/src/layout/mod.rs
-+++ b/packages/blitz-dom/src/layout/mod.rs
-@@ -314,6 +314,62 @@ impl LayoutPassState<'_> {
-                     Some((metrics, line_height))
-                 };
  
-+                if element_data
-+                    .text_input_data()
-+                    .is_some_and(|input| input.editing_source.is_some())
-+                {
-+                    let pb = node
-+                        .layout_style()
-+                        .padding()
-+                        .resolve_or_zero(inputs.parent_size.width, resolve_calc_value)
-+                        + node
-+                            .layout_style()
-+                            .border()
-+                            .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
-+                    let doc = &mut *self.doc;
-+                    let scale = doc.viewport.scale();
-+                    let node = &mut doc.nodes[dom_node_id(node_id)];
-+                    let input = node
-+                        .element_data_mut()
-+                        .unwrap()
-+                        .text_input_data_mut()
-+                        .unwrap();
-+                    input.sizes_to_text = true;
-+                    input.editor.set_width(None);
-+                    let mut fonts = doc.font_ctx.lock().unwrap();
-+                    input.editor.refresh_layout(&mut fonts, &mut doc.layout_ctx);
-+                    let intrinsic = input.editor.try_layout().unwrap();
-+                    let natural = Size {
-+                        width: intrinsic.width() / scale,
-+                        height: intrinsic.height() / scale,
-+                    };
+@@ -303,6 +303,8 @@ pub(crate) fn build_inline_layout_into(
+                                     nodes,
+                                     child_id,
+                                     &text_transform,
++                                    editing,
++                                    editing_ranges,
+                                 );
+                             }
+                             if let Some(after_id) = node.after() {
+@@ -312,6 +314,8 @@ pub(crate) fn build_inline_layout_into(
+                                     nodes,
+                                     after_id,
+                                     &text_transform,
++                                    editing,
++                                    editing_ranges,
+                                 );
+                             }
+ 
+@@ -349,7 +353,7 @@ pub(crate) fn build_inline_layout_into(
+ 
+                 let text =
+                     text_transformer.transform(&data.content, parent_text_transform, builder);
+-                builder.push_text(text);
++                record_source(builder, node_id, text, editing, editing_ranges);
+             }
+             NodeData::Comment { .. } => {
+                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+@@ -357,4 +361,22 @@ pub(crate) fn build_inline_layout_into(
+             NodeData::Document(_) => unreachable!(),
+         }
+     }
 +
-+                    let first = compute_leaf_layout(
-+                        inputs,
-+                        &doc.nodes[dom_node_id(node_id)].layout_style(),
-+                        resolve_calc_value,
-+                        |_, _| natural,
-+                    );
-+                    let width = (first.size.width - pb.horizontal_axis_sum()).max(0.0);
-+                    let input = doc.nodes[dom_node_id(node_id)]
-+                        .element_data_mut()
-+                        .unwrap()
-+                        .text_input_data_mut()
-+                        .unwrap();
-+                    input.editor.set_width(Some(width * scale));
-+                    input.editor.refresh_layout(&mut fonts, &mut doc.layout_ctx);
-+                    let height = input.editor.try_layout().unwrap().height() / scale;
-+                    return compute_leaf_layout(
-+                        inputs,
-+                        &doc.nodes[dom_node_id(node_id)].layout_style(),
-+                        resolve_calc_value,
-+                        |_, _| Size {
-+                            width: natural.width,
-+                            height,
-+                        },
-+                    );
-+                }
-+
-                 if *element_data.name.local == *"textarea" {
-                     let rows = control_count(element_data.attr(local_name!("rows")), 2);
-                     let cols = control_count(element_data.attr(local_name!("cols")), 20);
++    fn record_source(
++        builder: &mut TreeBuilder<TextBrush>,
++        id: NodeId,
++        text: &str,
++        editing: bool,
++        ranges: &mut Vec<(NodeId, std::ops::Range<usize>)>,
++    ) {
++        if !editing {
++            builder.push_text(text);
++            return;
++        }
++        let start = builder.text().len();
++        builder.push_text(text);
++        if start < builder.text().len() {
++            ranges.push((id, start..builder.text().len()));
++        }
++    }
+ }
+diff --git a/packages/blitz-dom/src/lib.rs b/packages/blitz-dom/src/lib.rs
+index 23a440120..aef32305a 100644
+--- a/packages/blitz-dom/src/lib.rs
++++ b/packages/blitz-dom/src/lib.rs
+@@ -45,6 +45,7 @@ mod css_compat;
+ mod cssom;
+ pub mod date_time;
+ mod debug;
++mod editing;
+ mod events;
+ mod font_metrics;
+ mod form;
 diff --git a/packages/blitz-dom/src/mutator.rs b/packages/blitz-dom/src/mutator.rs
-index 5d6ac0c3b..34a12f8c6 100644
+index 5d6ac0c3b..980a436e3 100644
 --- a/packages/blitz-dom/src/mutator.rs
 +++ b/packages/blitz-dom/src/mutator.rs
 @@ -406,6 +406,11 @@ impl DocumentMutator<'_> {
@@ -294,19 +656,7 @@ index 5d6ac0c3b..34a12f8c6 100644
          if matches!(name.local.as_ref(), "value" | "min" | "max") && element.reset_range_input() {
              node.insert_damage(ONLY_RELAYOUT);
              return;
-@@ -427,7 +432,10 @@ impl DocumentMutator<'_> {
-             let sanitized = crate::date_time::date_time_type(element.attr(local_name!("type")))
-                 .map(|ty| crate::date_time::sanitize(ty, value));
-             let value = sanitized.as_deref().unwrap_or(value);
--            if let Some(input_data) = element.text_input_data_mut() {
-+            if let Some(input_data) = element
-+                .text_input_data_mut()
-+                .filter(|i| i.editing_source.is_none())
-+            {
-                 // Update text input value
-                 let before = input_data.line_metrics();
-                 input_data.set_text(
-@@ -604,6 +612,11 @@ impl DocumentMutator<'_> {
+@@ -604,6 +609,11 @@ impl DocumentMutator<'_> {
              element.flush_presentation_attributes(&self.doc.guard, &self.doc.url.url_extra_data());
          }
  
@@ -318,23 +668,65 @@ index 5d6ac0c3b..34a12f8c6 100644
          if matches!(name.local.as_ref(), "value" | "min" | "max") && element.reset_range_input() {
              node.insert_damage(ONLY_RELAYOUT);
              return;
-@@ -611,7 +624,10 @@ impl DocumentMutator<'_> {
+diff --git a/packages/blitz-dom/src/node/element.rs b/packages/blitz-dom/src/node/element.rs
+index aedf804e5..55cd98b03 100644
+--- a/packages/blitz-dom/src/node/element.rs
++++ b/packages/blitz-dom/src/node/element.rs
+@@ -86,6 +86,9 @@ pub struct ElementData {
+     ///   - The text editor for input/textarea elements
+     pub special_data: SpecialElementData,
  
-         // Update text input value
-         if name.local == local_name!("value") {
--            if let Some(input_data) = element.text_input_data_mut() {
-+            if let Some(input_data) = element
-+                .text_input_data_mut()
-+                .filter(|i| i.editing_source.is_none())
-+            {
-                 let before = input_data.line_metrics();
-                 input_data.set_text(
-                     &mut self.doc.font_ctx.lock().unwrap(),
++    /// The editing host's keyboard state, independent of its layout and paint.
++    pub(crate) editing_input: Option<Box<TextInputData>>,
++
+     pub background_images: ThinVec<Option<ImageResourceData>>,
+ 
+     pub mask_images: ThinVec<Option<ImageResourceData>>,
+@@ -331,6 +334,7 @@ impl Clone for ElementData {
+             style_attribute: self.style_attribute.clone(),
+             presentation_attributes: self.presentation_attributes.clone(),
+             special_data: self.special_data.clone(),
++            editing_input: None,
+             background_images: self.background_images.clone(),
+             mask_images: self.mask_images.clone(),
+             inline_layout_data: self.inline_layout_data.clone(),
+@@ -458,6 +462,7 @@ impl ElementData {
+             inline_layout_data: None,
+             list_item_data: None,
+             special_data: SpecialElementData::None,
++            editing_input: None,
+             template_contents: None,
+             background_images: ThinVec::new(),
+             mask_images: ThinVec::new(),
+@@ -649,6 +654,23 @@ impl ElementData {
+         }
+     }
+ 
++    /// A native text input or the keyboard editor of a contenteditable host.
++    pub fn editor_data(&self) -> Option<&TextInputData> {
++        self.editing_input
++            .as_deref()
++            .or_else(|| self.text_input_data())
++    }
++
++    pub(crate) fn editor_data_mut(&mut self) -> Option<&mut TextInputData> {
++        if let Some(input) = &mut self.editing_input {
++            return Some(input);
++        }
++        match &mut self.special_data {
++            SpecialElementData::TextInput(data) => Some(data),
++            _ => None,
++        }
++    }
++
+     #[cfg(feature = "custom-widget")]
+     pub fn custom_widget_data(&self) -> Option<&CustomWidgetData> {
+         match &self.special_data {
 diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
-index 256cd6ce3..6ed7d4d6a 100644
+index 256cd6ce3..bd79b2c1f 100644
 --- a/packages/blitz-dom/src/node/node.rs
 +++ b/packages/blitz-dom/src/node/node.rs
-@@ -614,15 +614,39 @@ impl Node {
+@@ -614,15 +614,42 @@ impl Node {
      /// Whether this box skips rendering its contents.
      pub fn skips_contents(&self) -> bool {
          self.primary_styles().is_some_and(|style| {
@@ -346,13 +738,16 @@ index 256cd6ce3..6ed7d4d6a 100644
  
 +    /// An explicitly editable element whose parent does not inherit editability.
 +    pub fn is_editing_host(&self) -> bool {
-+        self.content_editability() == Some(true)
++        self.element_data().is_some_and(|e| {
++            !matches!(e.name.local.as_ref(), "input" | "textarea" | "select")
++                && !crate::layout::replaced::is_replaced_element(&e.name.local)
++        }) && self.content_editability() == Some(true)
 +            && std::iter::successors(self.parent_node(), |n| n.parent_node())
 +                .find_map(Node::content_editability)
 +                != Some(true)
 +    }
 +
-+    fn content_editability(&self) -> Option<bool> {
++    pub(crate) fn content_editability(&self) -> Option<bool> {
 +        let value = self.attr(LocalName::from("contenteditable"))?;
 +        if value.is_empty()
 +            || value.eq_ignore_ascii_case("true")
@@ -375,36 +770,169 @@ index 256cd6ce3..6ed7d4d6a 100644
      }
  
      /// Whether Tab can bring focus here: the element is focusable and
-@@ -1948,6 +1972,7 @@ impl Node {
-             return false;
-         };
-         if self.flags.is_inline_root()
-+            || self.is_editing_host()
-             || crate::layout::replaced::is_inline_box_element(&element.name.local)
+@@ -833,7 +860,7 @@ impl Node {
+         // If focussing a text input, enable IME and set IME area
+         if self
+             .element_data()
+-            .and_then(|elem| elem.text_input_data())
++            .and_then(|elem| elem.editor_data())
+             .is_some()
          {
-             return false;
+             shell_provider.set_ime_enabled(true);
+@@ -856,7 +883,7 @@ impl Node {
+         // If blurring a text input, disable IME
+         if self
+             .element_data()
+-            .and_then(|elem| elem.text_input_data())
++            .and_then(|elem| elem.editor_data())
+             .is_some()
+         {
+             shell_provider.set_ime_enabled(false);
 diff --git a/packages/blitz-dom/src/node/text.rs b/packages/blitz-dom/src/node/text.rs
-index 3b26417d4..f315c5b1e 100644
+index 3b26417d4..aa1d61fd9 100644
 --- a/packages/blitz-dom/src/node/text.rs
 +++ b/packages/blitz-dom/src/node/text.rs
-@@ -118,6 +118,9 @@ pub struct TextInputData {
-     /// on a textarea), set by layout. An edit that changes the text's
-     /// height then lays the field out again.
-     pub sizes_to_text: bool,
-+    /// The DOM text from the last construction of an editing host. An
-+    /// authored change resets its editor; a relayout keeps the live value.
-+    pub(crate) editing_source: Option<String>,
- }
+@@ -24,6 +24,8 @@ impl TextBrush {
+ #[derive(Clone, Default)]
+ pub struct TextLayout {
+     pub text: String,
++    /// Byte ranges of editable DOM sources in this inline layout.
++    pub(crate) editing_ranges: Vec<(NodeId, std::ops::Range<usize>)>,
+     pub content_widths: Option<ContentWidths>,
+     pub layout: parley::layout::Layout<TextBrush>,
+     /// Block-axis offset (in CSS px) of the line boxes from the top of the container's content
+diff --git a/packages/blitz-dom/src/resolve.rs b/packages/blitz-dom/src/resolve.rs
+index 14d4b546f..ad5afd6b2 100644
+--- a/packages/blitz-dom/src/resolve.rs
++++ b/packages/blitz-dom/src/resolve.rs
+@@ -183,6 +183,9 @@ impl BaseDocument {
+             self.flush_pending_placeholders();
+             self.resolve_layout();
+         }
++        if let Some(focused) = self.focus_node_id {
++            self.sync_editing_host(focused);
++        }
+         self.clamp_scroll_offsets();
+         self.nodes.bump_geometry_generation();
  
- /// A text field's `placeholder`, laid out in the field's `::placeholder`
-@@ -169,6 +172,7 @@ impl TextInputData {
-             password: None,
-             placeholder: None,
-             sizes_to_text: false,
-+            editing_source: None,
+diff --git a/packages/blitz-paint/src/render.rs b/packages/blitz-paint/src/render.rs
+index 78a8f245e..7f4ef5670 100644
+--- a/packages/blitz-paint/src/render.rs
++++ b/packages/blitz-paint/src/render.rs
+@@ -77,6 +77,8 @@ pub struct BlitzDomPainter<'dom, 'a> {
+     pub(crate) draw_text_context: RefCell<DrawTextContext>,
+     /// Cached selection ranges for O(1) lookup: node_id -> (start_offset, end_offset)
+     pub(crate) selection_ranges: HashMap<NodeId, (usize, usize)>,
++    editing_selection: HashMap<NodeId, Vec<std::ops::Range<usize>>>,
++    editing_caret: Option<(NodeId, usize)>,
+ 
+     // Pre-computed `Scene`s for each CustomWidget
+     pub(crate) custom_widget_scenes: &'a CustomWidgetSceneMap,
+@@ -99,6 +101,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             .map(|(node_id, start, end)| (node_id, (start, end)))
+             .collect();
+ 
++        let editing = dom.editing_selection();
++        let mut editing_selection: HashMap<NodeId, Vec<_>> = HashMap::new();
++        for (id, range) in editing.ranges {
++            editing_selection.entry(id).or_default().push(range);
++        }
++
+         let layer_manager = LayerManager::default();
+         let root_element_id = dom.try_root_element().map(|el| el.id);
+ 
+@@ -117,6 +125,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             layer_manager,
+             draw_text_context: RefCell::new(DrawTextContext::default()),
+             selection_ranges,
++            editing_selection,
++            editing_caret: editing.caret,
+             custom_widget_scenes,
+         }
+     }
+@@ -1020,13 +1030,24 @@ impl ElementCx<'_, '_> {
+             );
+ 
+             // Render text selection highlight (if any) using cached selection ranges
+-            let selection =
++            let mut selection =
+                 self.context
+                     .selection_ranges
+                     .get(&self.node.id)
+                     .map(|&(start, end)| {
+                         crate::text::text_selection_area(&text_layout.layout, start, end)
+                     });
++            if let Some(ranges) = self.context.editing_selection.get(&self.node.id) {
++                let selection = selection.get_or_insert_with(kurbo::BezPath::new);
++                for range in ranges {
++                    let path = crate::text::text_selection_area(
++                        &text_layout.layout,
++                        range.start,
++                        range.end,
++                    );
++                    selection.extend(path.elements().iter().copied());
++                }
++            }
+             let (highlight, recolor) = self.selection_paint();
+             if let Some(area) = &selection {
+                 scene.fill(Fill::NonZero, transform, highlight, None, area);
+@@ -1066,6 +1087,23 @@ impl ElementCx<'_, '_> {
+                 );
+                 scene.pop_layer();
+             }
++            if let Some((root, offset)) = self.context.editing_caret
++                && root == self.node.id
++                && self.context.dom.caret_shown()
++            {
++                let cursor = parley::Cursor::from_byte_index(
++                    &text_layout.layout,
++                    offset,
++                    parley::Affinity::Downstream,
++                );
++                scene.fill(
++                    Fill::NonZero,
++                    transform,
++                    self.caret_color(),
++                    None,
++                    &convert_rect(&cursor.geometry(&text_layout.layout, 1.5)),
++                );
++            }
          }
      }
  
+@@ -1155,6 +1193,14 @@ impl ElementCx<'_, '_> {
+     /// `::selection` style colours the text itself. A `::selection` that
+     /// sets no background keeps the default one, as the user agent's rule
+     /// for it would.
++    fn caret_color(&self) -> Color {
++        let color = self.style.get_inherited_text().color;
++        match &self.style.get_inherited_ui().caret_color.0 {
++            ColorOrAuto::Auto => color.as_srgb_color(),
++            ColorOrAuto::Color(caret) => caret.resolve_to_absolute(&color).as_srgb_color(),
++        }
++    }
++
+     fn selection_paint(&self) -> (Color, bool) {
+         let Some(selection) = self.node.selection_styles() else {
+             return (SELECTION_COLOR, false);
+@@ -1244,16 +1290,10 @@ impl ElementCx<'_, '_> {
+                     .cursor_geometry(1.5)
+                     .filter(|_| self.context.dom.caret_shown())
+                 {
+-                    let color = self.style.get_inherited_text().color;
+-                    let caret_color = match &self.style.get_inherited_ui().caret_color.0 {
+-                        ColorOrAuto::Auto => color,
+-                        ColorOrAuto::Color(caret_color) => caret_color.resolve_to_absolute(&color),
+-                    };
+-
+                     scene.fill(
+                         Fill::NonZero,
+                         transform,
+-                        caret_color.as_srgb_color(),
++                        self.caret_color(),
+                         None,
+                         &convert_rect(&cursor),
+                     );
 -- 
 2.56.0
 

@@ -1045,7 +1045,7 @@ impl Surface {
         self.doc
             .get_node(id)?
             .element_data()?
-            .text_input_data()
+            .editor_data()
             .map(|_| id)
     }
 
@@ -3028,6 +3028,7 @@ impl Surface {
         self.clear_selection();
         let before = self.doc.get_focussed_node_id();
         self.doc.set_focus_by_pointer(field);
+        self.doc.select_editing_host_at(field, x, y, false);
         self.touch_chains(before, Some(field));
         self.keyboard_follows_focus(events);
         self.wake_caret(Instant::now());
@@ -3133,9 +3134,10 @@ impl Surface {
         let mut n = Some(self.doc.hit(x, y)?.node_id);
         while let Some(id) = n {
             let node = self.doc.get_node(id)?;
-            if node
-                .element_data()
-                .is_some_and(|e| e.text_input_data().is_some())
+            if (node.is_editing_host()
+                || node
+                    .element_data()
+                    .is_some_and(|e| e.text_input_data().is_some()))
                 && self.date_type(id).is_none()
             {
                 return Some(id);
@@ -3609,6 +3611,16 @@ impl Surface {
         if let Some(want) = want {
             self.move_focus(want);
             self.keyboard_follows_focus(&mut events);
+        }
+        let selecting = kind == PointerKind::Move
+            && self.buttons == MouseEventButtons::Primary
+            && self.drag.is_none();
+        if (kind == PointerKind::Down || selecting)
+            && let Some(id) = self.focused()
+        {
+            let (x, y) = self.page(x, y);
+            self.doc
+                .select_editing_host_at(id, x, y, selecting || mods.shift);
         }
         events
     }
@@ -4762,7 +4774,7 @@ impl Surface {
             return None;
         }
         let el = self.doc.get_node(id)?.element_data()?;
-        el.text_input_data().map(|t| t.value())
+        el.editor_data().map(|t| t.value())
     }
 
     fn id_of(&self, id: NodeId) -> Option<String> {
