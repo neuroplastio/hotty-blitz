@@ -33,6 +33,7 @@ struct Mouse {
     primary: String,
     middle_paste: bool,
     control_click: bool,
+    context_primary: bool,
     alt_screen: bool,
     alt_taken: Vec<String>,
     /// The finger of touch steps.
@@ -233,6 +234,7 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
             let old = std::mem::take(&mut mouse.surface);
             mouse.down = None;
             mouse.buttons.clear();
+            mouse.context_primary = false;
             append(
                 host.pointer(&old, PointerKind::Leave, 0.0, 0.0, mods(step)),
                 &mut sent,
@@ -251,7 +253,18 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
         return Err(format!("through: want {want}, got {through}"));
     }
     let button = step["button"].as_u64().unwrap_or(0) as u32;
-    let context_click = mouse.control_click && button == 0 && modifiers.ctrl;
+    let context_click = if button == 0 {
+        match kind {
+            PointerKind::Down => {
+                mouse.context_primary = mouse.control_click && modifiers.ctrl;
+                mouse.context_primary
+            }
+            PointerKind::Up => std::mem::take(&mut mouse.context_primary),
+            _ => false,
+        }
+    } else {
+        false
+    };
     let button_mods = Mods {
         ctrl: modifiers.ctrl && !context_click,
         ..modifiers
@@ -1628,4 +1641,28 @@ fn a_taken_edit_shortcut_wins_over_the_optional_menu_key() {
         ]}),
     )
     .unwrap();
+}
+
+#[test]
+fn a_control_click_remains_mapped_after_control_is_released() {
+    use serde_json::json;
+
+    let mut host = Host::new(Config::default());
+    host.set_context_menu_on_release(true);
+    let mut mouse = Mouse {
+        control_click: true,
+        ..Default::default()
+    };
+    for step in [
+        json!({
+            "send":{"a":"doc","s":"x","q":"2"},
+            "payload":"<button id=b data-on=contextmenu>menu</button>"
+        }),
+        json!({"send":{"a":"place","s":"x","c":"12","r":"3","q":"2"}}),
+        json!({"pointer":"move","s":"x","at":"b","events":[]}),
+        json!({"pointer":"down","button":0,"keys":["ctrl"],"events":[]}),
+        json!({"pointer":"up","button":0,"events":[{"e":"contextmenu","s":"x","t":"b"}]}),
+    ] {
+        run_step(&mut host, &mut mouse, &step).unwrap();
+    }
 }

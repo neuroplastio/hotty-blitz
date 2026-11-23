@@ -2726,7 +2726,7 @@ impl Host {
         // The document learns where the finger touched, as a pointer's
         // move would tell it; the program hears nothing of it.
         if let Some(s) = self.surfaces.get_mut(surface) {
-            s.pointer(PointerKind::Move, start.0 / scale, start.1 / scale, keys);
+            s.touch_drag_start(start.0 / scale, start.1 / scale, keys);
         }
         let mut effects =
             self.pointer_with(surface, PointerKind::Down, start.0, start.1, keys, false, 0);

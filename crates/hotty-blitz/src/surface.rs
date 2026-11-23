@@ -3110,13 +3110,15 @@ impl Surface {
         cell: (i32, i32),
         mods: Mods,
     ) -> (Vec<Event>, Vec<Event>) {
+        // Hit tests and caret snapshots both use the current layout.
+        // A delta may have freed old boxes or changed which field is focused.
+        self.resolve();
         // A press moves the caret of the field it is on, and a drag or a
         // release the focused one's (SPEC §9, `caret`).
         let also = match kind {
             PointerKind::Down => self.text_field_at(x, y),
             _ => None,
         };
-        self.resolve();
         let watched = self.watch(also);
         let mut events = std::mem::take(&mut self.focus_events);
         let (lead, next) = self.pointer_inner(kind, x, y, cell, mods);
@@ -3125,9 +3127,8 @@ impl Surface {
         (lead, events)
     }
 
-    /// The text field at CSS pixel (`x`, `y`) of the surface, if any.
-    fn text_field_at(&mut self, x: f32, y: f32) -> Option<NodeId> {
-        self.resolve();
+    /// The text field at CSS pixel (`x`, `y`) in the current layout, if any.
+    fn text_field_at(&self, x: f32, y: f32) -> Option<NodeId> {
         let (x, y) = self.page(x, y);
         let mut n = Some(self.doc.hit(x, y)?.node_id);
         while let Some(id) = n {
@@ -3526,7 +3527,13 @@ impl Surface {
         }
     }
 
-    pub fn pointer(&mut self, kind: PointerKind, x: f32, y: f32, mods: Mods) -> Vec<Event> {
+    /// Hover where a touch drag began before replaying its press.
+    pub fn touch_drag_start(&mut self, x: f32, y: f32, mods: Mods) {
+        self.resolve();
+        self.pointer(PointerKind::Move, x, y, mods);
+    }
+
+    fn pointer(&mut self, kind: PointerKind, x: f32, y: f32, mods: Mods) -> Vec<Event> {
         self.held = mods;
         let button = MouseEventButton::Main;
         match kind {
@@ -3561,10 +3568,6 @@ impl Surface {
             }
         };
         self.pointer_at = Some((x, y));
-        // Blitz hit-tests the boxes as last laid out: a delta since then
-        // may have freed some of them (SPEC §6), so lay out first, as
-        // takes_pointer does.
-        self.resolve();
         let before = self.focused();
         let mut events = self.drive(ui);
         // A click takes the keyboard only by focusing an element that takes
