@@ -355,32 +355,22 @@ fn forwards_fill_survives_restyle_and_is_removed_when_canceled() {
     assert!(h.next_frame().is_none());
 }
 
-/// A host's loop for `secs` of real time: `input` hands the host what the
-/// pointer does every 8ms (120 Hz), and between inputs the host renders
-/// when `next_frame` says a frame is due, asking again after every call,
-/// as `hotty_host_next_frame` says to. The frames that drew something.
-fn under_input(h: &mut Host, secs: f64, mut input: impl FnMut(&mut Host, u32)) -> usize {
-    let start = Instant::now();
-    let end = start + Duration::from_secs_f64(secs);
+/// Replay input and display deadlines while a delayed animation starts.
+/// The delay puts the replay ahead of the wall clock even in debug builds.
+fn under_input(h: &mut Host, mut input: impl FnMut(&mut Host, u32)) -> usize {
+    let start = h.next_frame().expect("the delayed animation's first frame");
+    let interval = Duration::from_secs_f64(1.0 / 120.0);
     let mut drawn = 0;
-    let mut i = 0;
-    let mut next_input = start;
-    while Instant::now() < end {
-        let now = Instant::now();
-        if now >= next_input {
-            input(h, i);
-            i += 1;
-            next_input += Duration::from_millis(8);
-        }
-        // The one timer: armed for the deadline next_frame gives now.
-        if h.next_frame().is_some_and(|t| t <= Instant::now()) {
+    for i in 0..60 {
+        let now = start + interval * i;
+        h.animate(now);
+        input(h, i);
+        if let Some(due) = h.next_frame()
+            && due < now + interval
+        {
+            h.animate(due.max(now));
             drawn += render(h).len();
         }
-        let wake = h
-            .next_frame()
-            .map_or(next_input, |t| t.min(next_input))
-            .max(Instant::now());
-        std::thread::sleep(wake - Instant::now());
     }
     drawn
 }
@@ -392,8 +382,8 @@ fn under_input(h: &mut Host, secs: f64, mut input: impl FnMut(&mut Host, u32)) -
 #[test]
 fn an_animation_plays_on_while_the_pointer_moves() {
     let mut h = host();
-    animated(&mut h, "go 2s linear");
-    let drawn = under_input(&mut h, 0.5, |h, i| {
+    animated(&mut h, "go 2s linear 30s");
+    let drawn = under_input(&mut h, |h, i| {
         let x = 100.0 + (i % 40) as f32;
         if h.takes_pointer("x", x, 100.0) {
             h.pointer("x", PointerKind::Move, x, 100.0, Mods::default());
@@ -416,10 +406,10 @@ fn an_animation_plays_on_while_the_surface_scrolls() {
         &mut h,
         &format!(
             "<style>@keyframes go{{from{{background:rgb(255,0,0)}}to{{background:rgb(0,0,255)}}}}</style>\
-<body style='margin:0;height:4000px'><div id=a style='position:fixed;left:0;top:0;width:50px;height:50px;animation:go 2s linear'></div></body>"
+<body style='margin:0;height:4000px'><div id=a style='position:fixed;left:0;top:0;width:50px;height:50px;animation:go 2s linear 30s'></div></body>"
         ),
     );
-    let drawn = under_input(&mut h, 0.5, |h, i| {
+    let drawn = under_input(&mut h, |h, i| {
         let dy = if (i / 30) % 2 == 0 { 4.0 } else { -4.0 };
         h.takes_pointer("x", 400.0, 100.0);
         h.wheel("x", 400.0, 100.0, 0.0, dy, Mods::default());
