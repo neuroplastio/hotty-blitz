@@ -303,10 +303,11 @@ fn wheel_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
     host.render_dirty(&mut |_, _, _| {});
     let m = Config::default().metrics;
     let by = &step["by"];
-    let (dx, dy) = (
-        by[0].as_f64().unwrap() as f32 * m.cell_w as f32,
-        by[1].as_f64().unwrap() as f32 * m.cell_h as f32,
-    );
+    let moves = if by[0].is_array() {
+        by.as_array().unwrap().iter().collect::<Vec<_>>()
+    } else {
+        vec![by]
+    };
     let over = host.is_placed(&mouse.surface)
         && (mouse.down.is_some() || host.takes_pointer(&mouse.surface, mouse.x, mouse.y));
     let surface = if over {
@@ -314,16 +315,27 @@ fn wheel_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
     } else {
         String::new()
     };
-    let out = host.wheel(&surface, mouse.x, mouse.y, dx, dy, mods(step));
+    let mut terminal = false;
+    let mut sent = Vec::new();
+    for by in moves {
+        let dx = by[0].as_f64().unwrap() as f32 * m.cell_w as f32;
+        let dy = by[1].as_f64().unwrap() as f32 * m.cell_h as f32;
+        let out = host.wheel(&surface, mouse.x, mouse.y, dx, dy, mods(step));
+        terminal |= !out.taken;
+        for e in out.effects {
+            if let Effect::Reply(b) = e {
+                sent.extend(b);
+            }
+        }
+    }
     host.end_gesture();
     host.render_dirty(&mut |_, _, _| {});
-    let mut sent = Vec::new();
-    for e in out.effects.into_iter().chain(host.take_events()) {
+    for e in host.take_events() {
         if let Effect::Reply(b) = e {
             sent.extend(b);
         }
     }
-    check_terminal(step, !out.taken)?;
+    check_terminal(step, terminal)?;
     check_events(step, &events(&from_host(&sent)?))
 }
 
@@ -415,9 +427,19 @@ fn touch_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
             match touch {
                 Touch::Terminal => {
                     let (dx, dy) = (f.at.0 - f.from.0, f.at.1 - f.from.1);
-                    let out = host.wheel(&f.surface, f.at.0, f.at.1, -dx, -dy, Mods::default());
-                    keep(out.effects, &mut sent);
-                    terminal = !out.taken;
+                    let m = Config::default().metrics;
+                    let moves = (dx.abs() / m.cell_w as f32)
+                        .max(dy.abs() / m.cell_h as f32)
+                        .ceil()
+                        .max(1.0) as u32;
+                    let n = moves as f32;
+                    for i in 1..=moves {
+                        let t = i as f32 / n;
+                        let (x, y) = (f.from.0 + dx * t, f.from.1 + dy * t);
+                        let out = host.wheel(&f.surface, x, y, -dx / n, -dy / n, Mods::default());
+                        keep(out.effects, &mut sent);
+                        terminal |= !out.taken;
+                    }
                     f.from = f.at;
                 }
                 Touch::Surface => f.from = f.at,

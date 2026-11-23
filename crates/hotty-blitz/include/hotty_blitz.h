@@ -387,6 +387,8 @@ void hotty_host_cells_key(hotty_host *h, const uint8_t *physical, size_t physica
  * leaving the alternate screen drops its menu and its touch areas (SPEC
  * 9.6), and any change hides the level shown. */
 void hotty_host_set_screen(hotty_host *h, bool alt);
+/* Updates alternate screen and mouse tracking for scroll chaining (SPEC 5.3). */
+void hotty_host_set_scroll_modes(hotty_host *h, bool alt_screen, bool mouse_tracking);
 /* Picks the first item of the program's menu that has the UTF-8 name,
  * depth-first (SPEC 10.7). If it is enabled, sends the program `command`
  * with exactly {"name": name} through fx's reply, as hotty_host_command

@@ -294,6 +294,7 @@ pub struct Host {
     /// The wheel gesture under way (SPEC §5.3): where its first wheel sent
     /// it, which the rest of it follows.
     gesture: Option<Gesture>,
+    mouse_tracking: bool,
     /// The touch under way (Host::touch).
     finger: Option<Finger>,
     /// The touch on the cells under way (Host::cells_touch).
@@ -444,9 +445,31 @@ fn pans_along(dx: f32, dy: f32, pans: (bool, bool)) -> bool {
 /// A wheel gesture: a wheel's notches, or a touchpad's scroll and its
 /// momentum, as long as they come within [`GESTURE`] of each other.
 struct Gesture {
-    surface: String,
-    route: scroll::Route,
+    route_x: Option<(String, scroll::Route)>,
+    route_y: Option<(String, scroll::Route)>,
     at: std::time::Instant,
+}
+
+impl Gesture {
+    fn slot(&mut self, axis: scroll::Axis) -> &mut Option<(String, scroll::Route)> {
+        match axis {
+            scroll::Axis::X => &mut self.route_x,
+            scroll::Axis::Y => &mut self.route_y,
+        }
+    }
+
+    fn routes(&self) -> impl Iterator<Item = &(String, scroll::Route)> {
+        self.route_x.iter().chain(self.route_y.iter())
+    }
+
+    fn on(&self, surface: &str) -> bool {
+        self.routes().any(|(name, _)| name == surface)
+    }
+
+    fn scrolls(&self, surface: &str) -> bool {
+        self.routes()
+            .any(|(name, route)| name == surface && matches!(route, scroll::Route::Doc(_)))
+    }
 }
 
 /// A wheel this soon after the one before belongs to the same gesture, as
@@ -458,9 +481,9 @@ const GESTURE: std::time::Duration = std::time::Duration::from_millis(150);
 /// and its momentum, went to it and has not come to rest. A `view` waits
 /// for its rest (SPEC §9.5).
 fn scrolling(gesture: &Option<Gesture>, surface: &str, now: std::time::Instant) -> bool {
-    gesture.as_ref().is_some_and(|g| {
-        g.surface == surface && matches!(g.route, scroll::Route::Doc(_)) && now < g.at + GESTURE
-    })
+    gesture
+        .as_ref()
+        .is_some_and(|g| g.scrolls(surface) && now < g.at + GESTURE)
 }
 
 /// When the `view` that `s`, named `surface`, owes (SPEC §9.5) can be found:
@@ -477,9 +500,7 @@ fn view_rest(
         return None;
     }
     Some(match gesture {
-        Some(g) if g.surface == surface && matches!(g.route, scroll::Route::Doc(_)) => {
-            (g.at + GESTURE).max(now)
-        }
+        Some(g) if g.scrolls(surface) => (g.at + GESTURE).max(now),
         _ => now,
     })
 }
@@ -497,9 +518,7 @@ fn wheel_rest_at(
         return None;
     }
     Some(match gesture {
-        Some(g) if g.surface == surface && matches!(g.route, scroll::Route::Doc(_)) => {
-            (g.at + GESTURE).max(now)
-        }
+        Some(g) if g.scrolls(surface) => (g.at + GESTURE).max(now),
         _ => now,
     })
 }
@@ -565,6 +584,7 @@ impl Host {
             views: Vec::new(),
             carets: Vec::new(),
             gesture: None,
+            mouse_tracking: false,
             finger: None,
             cells_finger: None,
             areas: Default::default(),
@@ -749,9 +769,19 @@ impl Host {
             self.menu.alt = None;
             self.areas[1].clear();
         }
+        self.end_gesture();
         self.menu.on_alt = alt;
         self.menu.seq = None;
         self.menu.stale = true;
+    }
+
+    /// The terminal's alternate screen and mouse tracking modes (SPEC §5.3).
+    pub fn set_scroll_modes(&mut self, alt_screen: bool, mouse_tracking: bool) {
+        self.set_screen(alt_screen);
+        if self.mouse_tracking != mouse_tracking {
+            self.mouse_tracking = mouse_tracking;
+            self.end_gesture();
+        }
     }
 
     /// The event `command` (SPEC §10.6, §10.7) of a pick of the item named
@@ -1153,6 +1183,7 @@ impl Host {
     pub fn reset(&mut self) -> Vec<Effect> {
         self.areas = Default::default();
         self.version = VERSION;
+        self.mouse_tracking = false;
         let effects = self.delete_all();
         self.store = self.store.next_session();
         self.gesture = None;
@@ -1594,7 +1625,7 @@ impl Host {
                     .map_err(|_| ("EINVAL", "payload is not UTF-8".to_string()))?;
                 let detached = cmd.get("d") == Some("1");
                 // A gesture latched to the old document's boxes ends with it.
-                if self.gesture.as_ref().is_some_and(|g| g.surface == name) {
+                if self.gesture.as_ref().is_some_and(|g| g.on(&name)) {
                     self.gesture = None;
                 }
                 // The old document is dropped once the new one is built, so
@@ -1799,7 +1830,7 @@ impl Host {
                     ("EINVAL", e.detail)
                 })?;
                 if ops.iter().any(|op| op.op == "scroll")
-                    && self.gesture.as_ref().is_some_and(|g| g.surface == name)
+                    && self.gesture.as_ref().is_some_and(|g| g.on(&name))
                 {
                     self.gesture = None;
                 }
@@ -2666,34 +2697,41 @@ impl Host {
             (dx / scale) as f64,
             (dy / scale) as f64,
         );
-        let same = self.gesture.as_ref().filter(|g| {
-            now.duration_since(g.at) < GESTURE
-                && (g.surface == surface || g.route == scroll::Route::Terminal)
-        });
-        let route = match same {
-            Some(g) => g.route,
-            None => {
-                // A gesture before this one has come to rest.
+        let mut gesture = match self.gesture.take() {
+            Some(g) if now.duration_since(g.at) < GESTURE => g,
+            _ => {
                 for (name, s) in self.surfaces.iter_mut().filter(|(_, s)| s.wheel_owed()) {
                     enter(&mut self.working, name);
                     s.wheel_rest();
                 }
                 enter(&mut self.working, surface);
-                match self
-                    .surfaces
-                    .get_mut(surface)
-                    .filter(|s| s.placed && !s.backdrop)
-                {
-                    Some(s) => s.wheel_route(cx, cy, dx, dy),
-                    None => scroll::Route::Terminal,
+                Gesture {
+                    route_x: None,
+                    route_y: None,
+                    at: now,
                 }
             }
         };
-        self.gesture = Some(Gesture {
-            surface: surface.to_string(),
-            route,
-            at: now,
-        });
+        let (axis, _) = scroll::main_axis(dx, dy);
+        let slot = gesture.slot(axis);
+        // A finger goes directly with its contact point. Re-evaluate
+        // each pan move so it can chain after a box reaches its edge.
+        let pan = self.finger.is_some();
+        let route = match slot {
+            Some((_, scroll::Route::Terminal)) if !pan => scroll::Route::Terminal,
+            Some((name, route @ scroll::Route::Doc(_))) if !pan && name == surface => *route,
+            _ => match self
+                .surfaces
+                .get_mut(surface)
+                .filter(|s| s.placed && !s.backdrop)
+            {
+                Some(s) => s.wheel_route(cx, cy, dx, dy, self.menu.on_alt && !self.mouse_tracking),
+                None => scroll::Route::Terminal,
+            },
+        };
+        *slot = Some((surface.to_string(), route));
+        gesture.at = now;
+        self.gesture = Some(gesture);
         let mut out = WheelOutcome::default();
         match route {
             scroll::Route::Terminal => {}

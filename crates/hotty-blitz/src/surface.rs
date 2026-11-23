@@ -2473,7 +2473,8 @@ impl Surface {
     }
 
     fn scroll_step(&mut self, from: Option<NodeId>, k: scroll::KeyScroll) {
-        if let Route::Doc(s) = scroll::route(&self.doc, from, self.scroll_axes, k.axis, k.sign)
+        if let Route::Doc(s) =
+            scroll::route(&self.doc, from, self.scroll_axes, k.axis, k.sign, false)
             && scroll::scroll_key(&mut self.doc, s, self.scroll_axes, k)
         {
             self.scrolled(s);
@@ -3958,7 +3959,7 @@ impl Surface {
             return (false, Vec::new());
         };
         self.resolve();
-        match scroll::route(&self.doc, focused, self.scroll_axes, k.axis, k.sign) {
+        match scroll::route(&self.doc, focused, self.scroll_axes, k.axis, k.sign, false) {
             Route::Terminal => (false, Vec::new()),
             Route::Stop => (true, Vec::new()),
             Route::Doc(s) => {
@@ -3972,7 +3973,7 @@ impl Surface {
 
     /// Where a wheel at CSS pixel (`x`, `y`) of the surface, scrolling by
     /// (`dx`, `dy`), goes as a gesture begins (SPEC §5.3).
-    pub fn wheel_route(&mut self, x: f32, y: f32, dx: f64, dy: f64) -> Route {
+    pub fn wheel_route(&mut self, x: f32, y: f32, dx: f64, dy: f64, stop_at_edge: bool) -> Route {
         if self.scroll_axes == 0 {
             return Route::Terminal;
         }
@@ -3980,7 +3981,7 @@ impl Surface {
         let (px, py) = self.page(x, y);
         let from = self.doc.hit(px, py).map(|h| h.node_id);
         let (axis, sign) = scroll::main_axis(dx, dy);
-        scroll::route(&self.doc, from, self.scroll_axes, axis, sign)
+        scroll::route(&self.doc, from, self.scroll_axes, axis, sign, stop_at_edge)
     }
 
     /// Scrolls `s`, which the wheel gesture at CSS pixel (`x`, `y`) is

@@ -213,7 +213,14 @@ fn can_move(doc: &BaseDocument, s: Scroller, axes: u8, axis: Axis, sign: f64) ->
 /// cannot, it stops if the box's `overscroll-behavior` is `contain` or
 /// `none`, and goes on outward otherwise. Past the root, and along an axis
 /// the document did not ask for, it is the terminal's.
-pub fn route(doc: &BaseDocument, from: Option<NodeId>, axes: u8, axis: Axis, sign: f64) -> Route {
+pub fn route(
+    doc: &BaseDocument,
+    from: Option<NodeId>,
+    axes: u8,
+    axis: Axis,
+    sign: f64,
+    stop_at_edge: bool,
+) -> Route {
     if sign == 0.0 || axes & axis.bit() == 0 {
         return Route::Terminal;
     }
@@ -265,7 +272,11 @@ pub fn route(doc: &BaseDocument, from: Option<NodeId>, axes: u8, axis: Axis, sig
         }
         cur = next;
     }
-    Route::Terminal
+    if stop_at_edge {
+        Route::Stop
+    } else {
+        Route::Terminal
+    }
 }
 
 /// Whether `id` is an element the user scrolls in a document that scrolls

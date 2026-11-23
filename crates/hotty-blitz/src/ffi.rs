@@ -1468,6 +1468,21 @@ pub unsafe extern "C" fn hotty_host_set_screen(h: *mut HottyHost, alt: bool) {
     guard(h, (), |h| h.host.set_screen(alt))
 }
 
+/// Updates the terminal modes that determine whether a gesture chains at an edge.
+///
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_scroll_modes(
+    h: *mut HottyHost,
+    alt_screen: bool,
+    mouse_tracking: bool,
+) {
+    guard(h, (), |h| {
+        h.host.set_scroll_modes(alt_screen, mouse_tracking)
+    })
+}
+
 /// Picks the first item of the program's menu that has the UTF-8 name
 /// `name`, depth-first (SPEC §10.7). If it is enabled, sends the program
 /// `command` with exactly `{"name": name}` through `fx`'s reply, as

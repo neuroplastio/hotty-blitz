@@ -31,7 +31,8 @@ to the program with `tab=program`; `key=default` gives a key back to the
 host. Reset ends the session and drops its resources. The terminal passes
 the system's reduced-motion setting to `hotty_host_set_reduced_motion`,
 and the refresh rate of the display its window is on to
-`hotty_host_set_refresh_rate`.
+`hotty_host_set_refresh_rate`. It passes the alternate-screen and mouse
+tracking modes to `hotty_host_set_scroll_modes` for scroll chaining.
 
 ## Try it
 
