@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use input::{
-    CellsTouch, CellsTouchOutcome, Event, Key, KeyName, KeyOutcome, Mods, MouseReport, PointerKind,
-    SecondaryOutcome, Touch, TouchOutcome, TouchPhase, WheelOutcome,
+    ButtonOutcome, CellsTouch, CellsTouchOutcome, Event, Key, KeyName, KeyOutcome, Mods,
+    MouseReport, PointerKind, Touch, TouchOutcome, TouchPhase, WheelOutcome,
 };
 pub use menu::{MENU, Shown};
 pub use surface::{Damage, Frame, Timings};
@@ -295,6 +295,9 @@ pub struct Host {
     /// it, which the rest of it follows.
     gesture: Option<Gesture>,
     mouse_tracking: bool,
+    button_hold: Option<ButtonHold>,
+    middle_paste: bool,
+    context_on_release: bool,
     /// The touch under way (Host::touch).
     finger: Option<Finger>,
     /// The touch on the cells under way (Host::cells_touch).
@@ -396,6 +399,14 @@ fn enter(working: &mut String, surface: &str) {
     working.push_str(surface);
 }
 
+/// The first press decides who owns the chord until every button is up.
+struct ButtonHold {
+    button: Option<u32>,
+    surface: String,
+    taken: bool,
+    other: std::collections::BTreeSet<u32>,
+}
+
 /// A touch under way (SPEC §9.1): the surface it began on, where, with
 /// which keys held, the pans the touched element allows while it may still
 /// drag, whose it is so far, and whether it can still be a tap (it has not
@@ -407,9 +418,9 @@ struct Finger {
     pans: (bool, bool),
     touch: Touch,
     tap: bool,
-    /// The touch was a long press the surface took as a secondary press
-    /// (SPEC §9.1): it is the surface's to its end, and reports nothing.
-    secondary: bool,
+    /// The surface took the touch as a context gesture (SPEC §9.1).
+    /// The rest of the touch is the surface's and reports nothing.
+    context_menu: bool,
 }
 
 /// A touch on the cells under way (SPEC §9.6): where it began and where it
@@ -585,6 +596,9 @@ impl Host {
             carets: Vec::new(),
             gesture: None,
             mouse_tracking: false,
+            button_hold: None,
+            middle_paste: false,
+            context_on_release: cfg!(target_os = "windows"),
             finger: None,
             cells_finger: None,
             areas: Default::default(),
@@ -1184,6 +1198,8 @@ impl Host {
         self.areas = Default::default();
         self.version = VERSION;
         self.mouse_tracking = false;
+        self.button_hold = None;
+        self.program_press = false;
         let effects = self.delete_all();
         self.store = self.store.next_session();
         self.gesture = None;
@@ -2034,7 +2050,7 @@ impl Host {
         y: f32,
         mods: Mods,
     ) -> Vec<Effect> {
-        self.pointer_with(surface, kind, x, y, mods, true, 0)
+        self.pointer_routed(surface, kind, x, y, mods, 0).effects
     }
 
     /// [`Host::pointer`], with the platform's count of a press and its
@@ -2051,7 +2067,60 @@ impl Host {
         mods: Mods,
         count: u32,
     ) -> Vec<Effect> {
-        self.pointer_with(surface, kind, x, y, mods, true, count)
+        self.pointer_routed(surface, kind, x, y, mods, count)
+            .effects
+    }
+
+    /// Routes primary pointer input and reports whether the surface took it.
+    pub fn pointer_routed(
+        &mut self,
+        surface: &str,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        mods: Mods,
+        count: u32,
+    ) -> ButtonOutcome {
+        if matches!(kind, PointerKind::Down | PointerKind::Up) {
+            return self.route_button(surface, 0, kind, x, y, mods, false, count);
+        }
+        if let Some(hold) = self.button_hold.as_ref() {
+            let surface = hold.surface.clone();
+            if kind == PointerKind::Leave {
+                let taken = hold.taken;
+                self.button_hold = None;
+                self.program_press = false;
+                let effects = self.pointer_with(&surface, kind, x, y, mods, true, count);
+                return ButtonOutcome { taken, effects };
+            }
+            if hold.taken {
+                let effects = match hold.button {
+                    Some(0) => self.pointer_with(&surface, kind, x, y, mods, true, count),
+                    Some(_) => {
+                        let at = self.button_point(x, y, mods);
+                        self.surfaces
+                            .get_mut(&surface)
+                            .map(|s| {
+                                s.button_move(&at)
+                                    .into_iter()
+                                    .map(|e| Effect::Reply(e.encode(&surface)))
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    }
+                    None => Vec::new(),
+                };
+                return ButtonOutcome {
+                    taken: true,
+                    effects,
+                };
+            }
+            return ButtonOutcome::default();
+        }
+        ButtonOutcome {
+            taken: false,
+            effects: self.pointer_with(surface, kind, x, y, mods, true, count),
+        }
     }
 
     /// [`Host::pointer`], reporting `hover` only when `hover` is true: a
@@ -2112,6 +2181,14 @@ impl Host {
         // button is held, and at the release after everything it caused.
         let hovered = match kind {
             _ if !hover => None,
+            PointerKind::Up
+                if self
+                    .button_hold
+                    .as_ref()
+                    .is_some_and(|h| !h.other.is_empty()) =>
+            {
+                None
+            }
             PointerKind::Down => None,
             PointerKind::Move if s.held() => None,
             _ => s.hovered(cell, self.passthrough),
@@ -2214,7 +2291,7 @@ impl Host {
     ///   terminal's.
     /// - `LongPress`: the terminal took the touch for one before it
     ///   dragged. It never drags, nor taps. Over an element that takes
-    ///   the secondary press it is one ([`Host::secondary`]).
+    ///   the context gesture it is one.
     ///
     /// A touch that drags is a press when it does (SPEC §9.1), at the cell
     /// where it began: `press`, `dragstart`, then what the press causes,
@@ -2256,7 +2333,7 @@ impl Host {
                     pans: pans.unwrap_or((true, true)),
                     touch: out.touch,
                     tap: !backdrop,
-                    secondary: false,
+                    context_menu: false,
                 });
             }
             TouchPhase::Move => {
@@ -2264,7 +2341,7 @@ impl Host {
                 let Some(f) = self.finger.as_mut() else {
                     return out;
                 };
-                if f.secondary {
+                if f.context_menu {
                     out.touch = Touch::Surface;
                     return out;
                 }
@@ -2297,9 +2374,8 @@ impl Host {
                 let Some(f) = self.finger.take() else {
                     return out;
                 };
-                if f.secondary {
-                    // The long press was a secondary press: its lift
-                    // makes no click and nothing else (SPEC §9.1).
+                if f.context_menu {
+                    // The lift after a context gesture makes no click (SPEC §9.1).
                     out.touch = Touch::Surface;
                 } else if f.touch == Touch::Surface {
                     out.touch = Touch::Surface;
@@ -2320,18 +2396,17 @@ impl Host {
                 let Some(f) = self.finger.as_ref() else {
                     return out;
                 };
-                if f.secondary || f.touch == Touch::Surface {
+                if f.context_menu || f.touch == Touch::Surface {
                     out.touch = Touch::Surface;
                     return out;
                 }
-                // A long press over an element that takes the secondary
-                // press is one (SPEC §9.1), unless Shift or Alt is held
-                // (§9.2): the terminal's, as any other long press is.
+                // An opted-in element takes the long press for a context
+                // menu, unless Shift or Alt makes it the terminal's.
                 let (name, tap) = (f.surface.clone(), f.tap);
                 let keys = f.mods;
                 let held = |m: Mods| m.shift || m.alt;
                 let taken = if tap && !held(mods) && !held(keys) {
-                    self.secondary_at(&name, x, y, mods)
+                    self.long_press_at(&name, x, y, mods)
                 } else {
                     None
                 };
@@ -2339,7 +2414,7 @@ impl Host {
                 f.tap = false;
                 match taken {
                     Some(effects) => {
-                        f.secondary = true;
+                        f.context_menu = true;
                         out.touch = Touch::Surface;
                         out.effects = effects;
                     }
@@ -2973,76 +3048,245 @@ impl Host {
         self.owed.extend(owed);
     }
 
-    /// A secondary press at device pixel (`x`, `y`) of `surface`, as the
-    /// platform makes one (SPEC §9, HOST.md §3): the mouse's secondary
-    /// button, a pen's barrel button, or on macOS the primary button with
-    /// Control, which the host passes without `ctrl` in `mods`. Returns
-    /// whether the surface took it ([`SecondaryOutcome::taken`]): the point
-    /// is one it takes ([`Host::takes_pointer`]), the surface is no
-    /// backdrop, neither Shift nor Alt is held, and an element there or
-    /// outward has `secondary` in its `data-on`. Its `press` (button 2, the
-    /// element's `area`, the pointer's cell `c` and `r`, and `mods`) comes
-    /// in the effects, `t` the nearest such element's id (absent without
-    /// one), whatever `p` is.
-    ///
-    /// When taken, the host passes nothing more of the press: no release,
-    /// no moves as a drag, no report to the program, no menu of its own.
-    /// It does nothing else: no click, drag, selection, focus or keyboard
-    /// change, and no `:active`. When not, the press is the terminal's,
-    /// as it would be without hotty: with Shift its own menu, with Alt the
-    /// program's mouse report (SGR button 10), otherwise the cells
-    /// beneath. A press with Alt does here what a primary one does in
-    /// [`Host::pointer`]: the surface is left (`hover` out), the selection
-    /// dropped and the keyboard given back; the rest of the gesture
-    /// (moves, release) is the host's to keep from the surface.
-    pub fn secondary(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> SecondaryOutcome {
-        enter(&mut self.working, surface);
-        if mods.alt && self.secondary_over(surface, x, y) {
-            self.gesture = None;
-            self.clear_selection(None);
-            let effects = self.program_pointer(surface, PointerKind::Down, mods);
-            return SecondaryOutcome {
-                taken: false,
-                effects,
-            };
-        }
-        if mods.shift || mods.alt {
-            return SecondaryOutcome::default();
-        }
-        match self.secondary_at(surface, x, y, mods) {
-            Some(effects) => SecondaryOutcome {
-                taken: true,
-                effects,
-            },
-            None => SecondaryOutcome::default(),
-        }
+    /// Whether the terminal's middle press pastes into a text field.
+    pub fn set_middle_paste(&mut self, enabled: bool) {
+        self.middle_paste = enabled;
     }
 
-    /// Whether a secondary press at device pixel (`x`, `y`) of `surface`
-    /// lands on the surface: placed, no backdrop, and a point it takes.
-    fn secondary_over(&mut self, surface: &str, x: f32, y: f32) -> bool {
+    /// Whether the platform opens context menus on the secondary button's release.
+    pub fn set_context_menu_on_release(&mut self, on_release: bool) {
+        self.context_on_release = on_release;
+    }
+
+    /// A menu key the terminal has already offered as a key.
+    pub fn menu_key(&mut self, surface: &str, shift_f10: bool) -> Vec<Effect> {
+        if self.version == "0.8" {
+            return Vec::new();
+        }
+        enter(&mut self.working, surface);
+        self.surfaces
+            .get_mut(surface)
+            .and_then(|s| s.menu_key(shift_f10))
+            .map(|e| Effect::Reply(e.encode(surface)))
+            .into_iter()
+            .collect()
+    }
+
+    /// A non-primary mouse button, by its DOM number (SPEC §9).
+    /// Moves use [`Host::pointer_routed`], including moves outside the surface.
+    /// Set `context_gesture` for a pen barrel button or a macOS Control-click.
+    /// For a Control-click, pass the modifiers with Control removed.
+    /// A middle press that focuses a field returns [`Effect::Paste`], asking
+    /// the terminal to read what its middle press pastes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn button(
+        &mut self,
+        surface: &str,
+        button: u32,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        mods: Mods,
+        context_gesture: bool,
+    ) -> ButtonOutcome {
+        if button == 0
+            || button == 5
+            || context_gesture && button != 2
+            || !matches!(kind, PointerKind::Down | PointerKind::Up)
+        {
+            return ButtonOutcome::default();
+        }
+        self.route_button(surface, button, kind, x, y, mods, context_gesture, 0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn route_button(
+        &mut self,
+        surface: &str,
+        button: u32,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        mods: Mods,
+        context_gesture: bool,
+        count: u32,
+    ) -> ButtonOutcome {
+        if let Some(hold) = &mut self.button_hold {
+            match kind {
+                PointerKind::Down if hold.button != Some(button) => {
+                    hold.other.insert(button);
+                    return ButtonOutcome {
+                        taken: hold.taken,
+                        effects: Vec::new(),
+                    };
+                }
+                PointerKind::Down if button != 0 || !hold.other.is_empty() => {
+                    return ButtonOutcome {
+                        taken: hold.taken,
+                        effects: Vec::new(),
+                    };
+                }
+                PointerKind::Up if hold.button != Some(button) => {
+                    let taken = hold.other.remove(&button) && hold.taken;
+                    let mut effects = Vec::new();
+                    if hold.button.is_none() && hold.other.is_empty() {
+                        let name = hold.surface.clone();
+                        self.button_hold = None;
+                        if taken && self.is_placed(&name) {
+                            effects =
+                                self.pointer_with(&name, PointerKind::Move, x, y, mods, true, 0);
+                        }
+                    }
+                    return ButtonOutcome { taken, effects };
+                }
+                PointerKind::Up => {
+                    let name = hold.surface.clone();
+                    let taken = hold.taken;
+                    hold.button = None;
+                    let mut effects = if button == 0 {
+                        if taken || self.program_press {
+                            self.pointer_with(&name, kind, x, y, mods, true, count)
+                        } else {
+                            Vec::new()
+                        }
+                    } else if taken {
+                        let at = self.button_point(x, y, mods);
+                        self.surfaces
+                            .get_mut(&name)
+                            .map(|s| {
+                                s.button_up(&at)
+                                    .into_iter()
+                                    .map(|e| Effect::Reply(e.encode(&name)))
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    if self
+                        .button_hold
+                        .as_ref()
+                        .is_some_and(|hold| hold.other.is_empty())
+                    {
+                        self.button_hold = None;
+                        if taken && button != 0 && self.is_placed(&name) {
+                            effects.extend(self.pointer_with(
+                                &name,
+                                PointerKind::Move,
+                                x,
+                                y,
+                                mods,
+                                true,
+                                0,
+                            ));
+                        }
+                    }
+                    return ButtonOutcome { taken, effects };
+                }
+                _ => {}
+            }
+        } else if kind == PointerKind::Up {
+            return ButtonOutcome::default();
+        }
+
+        enter(&mut self.working, surface);
+        self.end_gesture();
+        let over = self.button_over(surface, x, y, button == 0);
+        let mut out = ButtonOutcome::default();
+        if button == 0 {
+            out.taken = over && !mods.alt;
+            if over {
+                out.effects = self.pointer_with(surface, kind, x, y, mods, true, count);
+            }
+        } else if over && mods.alt {
+            self.clear_selection(None);
+            out.effects = self.program_pointer(surface, kind, mods);
+        } else if over && !mods.shift {
+            let at = self.button_point(x, y, mods);
+            if let Some((events, paste)) = self.surfaces.get_mut(surface).and_then(|s| {
+                s.button_down(
+                    button,
+                    &at,
+                    self.version == "0.8",
+                    context_gesture,
+                    self.context_on_release,
+                    self.middle_paste,
+                )
+            }) {
+                out.taken = true;
+                if paste {
+                    self.clear_selection(Some(surface));
+                    for (name, other) in &mut self.surfaces {
+                        if name != surface && other.has_focus() {
+                            out.effects.extend(
+                                other
+                                    .blur()
+                                    .into_iter()
+                                    .map(|e| Effect::Reply(e.encode(name))),
+                            );
+                        }
+                    }
+                    self.menu.stale = true;
+                }
+                out.effects
+                    .extend(events.into_iter().map(|e| Effect::Reply(e.encode(surface))));
+                if paste {
+                    out.effects.push(Effect::Paste);
+                }
+            }
+        }
+        if let Some(s) = self.surfaces.get_mut(surface) {
+            out.effects.splice(
+                0..0,
+                s.focus_events
+                    .drain(..)
+                    .map(|e| Effect::Reply(e.encode(surface))),
+            );
+        }
+        self.button_hold = Some(ButtonHold {
+            button: Some(button),
+            surface: surface.to_string(),
+            taken: out.taken,
+            other: Default::default(),
+        });
+        out
+    }
+
+    fn button_over(&mut self, surface: &str, x: f32, y: f32, primary: bool) -> bool {
         let scale = self.config.metrics.scale;
         self.surfaces.get_mut(surface).is_some_and(|s| {
-            s.placed && !s.backdrop && !s.detached() && s.takes_pointer(x / scale, y / scale)
+            s.placed
+                && !s.backdrop
+                && (primary || !s.detached())
+                && s.takes_pointer(x / scale, y / scale)
         })
     }
 
-    /// The `press` of a secondary press at device pixel (`x`, `y`) of
-    /// `surface`, when it lands there and an element takes it.
-    fn secondary_at(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> Option<Vec<Effect>> {
+    fn button_point(&self, x: f32, y: f32, mods: Mods) -> surface::ButtonPoint {
+        let m = self.config.metrics;
+        surface::ButtonPoint {
+            x: x / m.scale,
+            y: y / m.scale,
+            cell: (
+                (x / m.cell_w.max(1) as f32).floor() as i32,
+                (y / m.cell_h.max(1) as f32).floor() as i32,
+            ),
+            mods,
+        }
+    }
+
+    /// A touch long press goes to the context-menu subscription in either session.
+    fn long_press_at(&mut self, surface: &str, x: f32, y: f32, mods: Mods) -> Option<Vec<Effect>> {
         enter(&mut self.working, surface);
-        if !self.secondary_over(surface, x, y) {
+        if self.button_hold.is_some() || !self.button_over(surface, x, y, false) {
             return None;
         }
-        let m = self.config.metrics;
-        // The cell of the surface the pointer is in, as for a drag's.
-        let cell = (
-            (x / m.cell_w.max(1) as f32).floor() as i32,
-            (y / m.cell_h.max(1) as f32).floor() as i32,
-        );
-        let s = self.surfaces.get_mut(surface)?;
-        let press = s.secondary_press(x / m.scale, y / m.scale, cell, mods)?;
-        Some(vec![Effect::Reply(press.encode(surface))])
+        let at = self.button_point(x, y, mods);
+        let event = self
+            .surfaces
+            .get_mut(surface)?
+            .context_at(&at, self.version == "0.8")?;
+        Some(vec![Effect::Reply(event.encode(surface))])
     }
 
     /// Whether `surface` takes the pointer at device pixel (`x`, `y`) of the

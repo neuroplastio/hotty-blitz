@@ -311,6 +311,7 @@ pub(crate) struct Surface {
     pub window: Option<crate::Window>,
     /// A drag under way (SPEC §9.1).
     drag: Option<Drag>,
+    other_press: Option<OtherPress>,
     /// A touch's tap is being passed as a press and a release
     /// (Host::touch): its press starts no drag (SPEC §9.1).
     pub tapping: bool,
@@ -545,6 +546,30 @@ struct Drag {
     in_target: Steps,
 }
 
+enum OtherAction {
+    Context {
+        on_release: bool,
+    },
+    Aux {
+        origin: (f32, f32),
+        drag: Option<Drag>,
+    },
+    Paste,
+}
+
+struct OtherPress {
+    button: u32,
+    node: NodeId,
+    action: OtherAction,
+}
+
+pub(crate) struct ButtonPoint {
+    pub x: f32,
+    pub y: f32,
+    pub cell: (i32, i32),
+    pub mods: Mods,
+}
+
 /// Where in a dragged element with `data-steps` the pointer is, across and
 /// down, in its steps; none along an axis whose count is 0 (SPEC §9.1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -609,6 +634,7 @@ fn drag_event(
             y: steps.y,
             tx: in_target.x,
             ty: in_target.y,
+            button: None,
         }),
     }
 }
@@ -910,6 +936,7 @@ impl Surface {
             press: false,
             window: None,
             drag: None,
+            other_press: None,
             tapping: false,
             pointer_at: None,
             focus_value: None,
@@ -2021,6 +2048,14 @@ impl Surface {
         // A dropped control's rev and history go with it: Blitz may give
         // its id to another element, whose rev starts at 0 (SPEC §6.4).
         for id in gone {
+            if self.drag.is_none()
+                && self
+                    .other_press
+                    .as_ref()
+                    .is_some_and(|press| press.node == id)
+            {
+                self.other_press = None;
+            }
             if self
                 .focus_value
                 .as_ref()
@@ -2069,8 +2104,9 @@ impl Surface {
         self.focus_value = None;
         self.told = None;
         self.press = false;
-        // A drag under way ends with nothing more reported (SPEC §9.1).
+        // A button gesture under way ends with nothing more reported.
         self.drag = None;
+        self.other_press = None;
         self.move_focus(None);
         self.disable_controls();
         // `:disabled` may restyle anything, not only the controls.
@@ -2686,46 +2722,338 @@ impl Surface {
         self.detached
     }
 
-    /// The secondary press at CSS pixel (`x`, `y`) of the surface, in its
-    /// cell `cell` (SPEC §9): a `press` with button 2 for the nearest
-    /// element with `secondary` in its `data-on`, from the one there
-    /// outward, whose id is `t` (absent where it has none, and `area` with
-    /// it). None where the surface is detached, nothing is there, or no
-    /// element asks. Nothing in the document changes: no hover, focus or
-    /// selection.
-    pub fn secondary_press(
-        &mut self,
-        x: f32,
-        y: f32,
-        cell: (i32, i32),
-        mods: Mods,
-    ) -> Option<Event> {
-        if self.detached {
+    fn pointer_node(&self, at: &ButtonPoint) -> Option<NodeId> {
+        if !self.in_window(at.cell) {
             return None;
         }
-        self.resolve();
-        let (px, py) = self.page(x, y);
-        let mut node = Some(self.doc.hit(px, py)?.node_id);
-        while let Some(n) = node {
-            if self.listens(n, "secondary") {
-                let id = self.id_of(n).filter(|id| !id.is_empty());
-                let area = id
-                    .as_ref()
-                    .and_then(|_| scroll::area(&self.doc, n, self.cell, self.slack()));
-                return Some(Event {
-                    kind: "press",
-                    target: id.unwrap_or_default(),
-                    detail: Some(Detail::Secondary {
-                        area,
-                        c: cell.0,
-                        r: cell.1,
-                        mods: mods.bits(),
-                    }),
-                });
+        let (x, y) = self.page(at.x, at.y);
+        self.doc.hit(x, y).map(|hit| hit.node_id)
+    }
+
+    fn listener(&self, from: NodeId, takes: impl Fn(NodeId) -> bool) -> Option<NodeId> {
+        let mut node = Some(from);
+        while let Some(id) = node {
+            if takes(id) {
+                return Some(id);
             }
-            node = self.doc.get_node(n).and_then(|x| x.parent);
+            node = self.doc.get_node(id)?.parent;
         }
         None
+    }
+
+    fn aux_target(&self, from: NodeId, button: u32) -> Option<NodeId> {
+        if button == 2 {
+            self.listener(from, |id| {
+                self.listens(id, "rightbutton") || self.listens(id, "contextmenu")
+            })
+        } else {
+            self.listener(from, |id| {
+                self.listens(id, "aux")
+                    && self
+                        .doc
+                        .get_node(id)
+                        .is_some_and(|n| hyperlink_url(n, &self.base).is_none())
+            })
+        }
+    }
+
+    fn button_event(
+        &self,
+        node: NodeId,
+        kind: &'static str,
+        cell: Option<(i32, i32)>,
+        mods: Mods,
+        button: Option<u32>,
+    ) -> Event {
+        let target = self.id_of(node).unwrap_or_default();
+        let element = self.doc.get_node(node);
+        let (link, value) = if kind == "auxclick" {
+            let link = element
+                .filter(|n| n.data.is_element_with_tag_name(&local_name!("a")))
+                .and_then(|n| n.attr(local_name!("href")))
+                .map(|href| hotty::Link {
+                    href: href.to_string(),
+                    url: link_url(&self.base, href),
+                });
+            let value = element
+                .and_then(|n| n.attr(local_name!("value")))
+                .map(str::to_string);
+            (link, value)
+        } else {
+            (None, None)
+        };
+        let area = (!target.is_empty() || link.is_some())
+            .then(|| scroll::area(&self.doc, node, self.cell, self.slack()))
+            .flatten();
+        let detail = match (kind, cell) {
+            ("press", Some((c, r))) => Detail::Secondary {
+                area,
+                c,
+                r,
+                mods: mods.bits(),
+            },
+            _ => Detail::PointerButton {
+                area,
+                cell,
+                mods: mods.bits(),
+                button,
+                link,
+                value,
+            },
+        };
+        Event {
+            kind,
+            target,
+            detail: Some(detail),
+        }
+    }
+
+    pub fn context_at(&mut self, at: &ButtonPoint, legacy: bool) -> Option<Event> {
+        self.resolve();
+        let word = if legacy { "secondary" } else { "contextmenu" };
+        let node = self.listener(self.pointer_node(at)?, |id| self.listens(id, word))?;
+        Some(self.button_event(
+            node,
+            if legacy { "press" } else { "contextmenu" },
+            Some(at.cell),
+            at.mods,
+            legacy.then_some(2),
+        ))
+    }
+
+    pub fn menu_key(&mut self, shift_f10: bool) -> Option<Event> {
+        self.resolve();
+        if !self.keyboard || self.prefix {
+            return None;
+        }
+        let focus = self.focused()?;
+        let key = if shift_f10 {
+            "shift+f10"
+        } else {
+            "context_menu"
+        };
+        let keymap = self.keymap(Some(focus), self.control_kind(focus).reader(), false);
+        if keymap.program(key) || keymap.prefix(key) {
+            return None;
+        }
+        let node = self.listener(focus, |id| self.listens(id, "contextmenu"))?;
+        Some(self.button_event(node, "contextmenu", None, Mods::default(), None))
+    }
+
+    pub fn button_down(
+        &mut self,
+        button: u32,
+        at: &ButtonPoint,
+        legacy: bool,
+        context_gesture: bool,
+        context_on_release: bool,
+        middle_paste: bool,
+    ) -> Option<(Vec<Event>, bool)> {
+        self.resolve();
+        let from = self.pointer_node(at)?;
+        let mut events = Vec::new();
+        let mut paste = false;
+        let (node, action) = if legacy {
+            if button != 2 {
+                return None;
+            }
+            let node = self.listener(from, |id| self.listens(id, "secondary"))?;
+            events.push(self.button_event(node, "press", Some(at.cell), at.mods, Some(2)));
+            (node, OtherAction::Context { on_release: false })
+        } else if button == 1
+            && middle_paste
+            && let Some(field) = self.text_field_at(at.x, at.y)
+            && self.can_focus(field, true, false)
+            && !self.listens(field, "aux")
+        {
+            self.middle_focus(field, at, &mut events);
+            paste = true;
+            (field, OtherAction::Paste)
+        } else {
+            let node = if context_gesture {
+                self.listener(from, |id| self.listens(id, "contextmenu"))?
+            } else {
+                self.aux_target(from, button)?
+            };
+            if button == 2 && (context_gesture || !self.listens(node, "rightbutton")) {
+                if !context_on_release {
+                    events.push(self.button_event(
+                        node,
+                        "contextmenu",
+                        Some(at.cell),
+                        at.mods,
+                        None,
+                    ));
+                }
+                (
+                    node,
+                    OtherAction::Context {
+                        on_release: context_on_release,
+                    },
+                )
+            } else {
+                let drag = self
+                    .id_of(node)
+                    .filter(|id| !id.is_empty() && self.listens(node, "drag"))
+                    .map(|id| {
+                        let counts = self.counts_of(&id);
+                        Drag {
+                            counts,
+                            steps: self.steps_at(&id, counts, at.x, at.y).unwrap_or_default(),
+                            start: id.clone(),
+                            target: id,
+                            cell: at.cell,
+                            keys: at.mods,
+                            in_target: Steps::default(),
+                        }
+                    });
+                (
+                    node,
+                    OtherAction::Aux {
+                        origin: (at.x, at.y),
+                        drag,
+                    },
+                )
+            }
+        };
+        self.other_press = Some(OtherPress {
+            button,
+            node,
+            action,
+        });
+        let mut owed = std::mem::take(&mut self.focus_events);
+        owed.extend(events);
+        Some((owed, paste))
+    }
+
+    pub fn button_up(&mut self, at: &ButtonPoint) -> Vec<Event> {
+        self.resolve();
+        let Some(press) = self.other_press.take() else {
+            return Vec::new();
+        };
+        let mut events = std::mem::take(&mut self.focus_events);
+        match press.action {
+            OtherAction::Context { on_release: true } => {
+                events.push(self.button_event(
+                    press.node,
+                    "contextmenu",
+                    Some(at.cell),
+                    at.mods,
+                    None,
+                ));
+            }
+            OtherAction::Aux { .. } => {
+                if let Some(drag) = self.drag.take() {
+                    let target = self.drag_target(self.pointer_node(at), true);
+                    let steps = self.drag_steps(&drag, at.x, at.y);
+                    let in_target = self.target_steps(&target, at.x, at.y);
+                    events.push(drag_event(
+                        "dragend", target, at.cell, at.mods, steps, in_target,
+                    ));
+                } else if self
+                    .pointer_node(at)
+                    .and_then(|id| self.aux_target(id, press.button))
+                    == Some(press.node)
+                {
+                    events.push(self.button_event(
+                        press.node,
+                        "auxclick",
+                        Some(at.cell),
+                        at.mods,
+                        Some(press.button),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        events
+    }
+
+    pub fn button_move(&mut self, at: &ButtonPoint) -> Vec<Event> {
+        self.resolve();
+        let Some(press) = &mut self.other_press else {
+            return Vec::new();
+        };
+        let mut events = std::mem::take(&mut self.focus_events);
+        if let OtherAction::Aux { origin, drag } = &mut press.action
+            && (at.x - origin.0).hypot(at.y - origin.1) >= crate::TAP_SLOP
+            && let Some(drag) = drag.take()
+        {
+            let mut start = drag_event(
+                "dragstart",
+                drag.start.clone(),
+                drag.cell,
+                drag.keys,
+                drag.steps,
+                Steps::default(),
+            );
+            if let Some(Detail::Drag { button, .. }) = &mut start.detail {
+                *button = Some(press.button);
+            }
+            events.push(start);
+            self.drag = Some(drag);
+        }
+        if let Some(mut drag) = self.drag.take() {
+            let target = self.drag_target(self.pointer_node(at), true);
+            let steps = self.drag_steps(&drag, at.x, at.y);
+            let in_target = self.target_steps(&target, at.x, at.y);
+            if target != drag.target
+                || target.is_empty() && at.cell != drag.cell
+                || steps != drag.steps
+                || in_target != drag.in_target
+            {
+                events.push(drag_event(
+                    "drag",
+                    target.clone(),
+                    at.cell,
+                    at.mods,
+                    steps,
+                    in_target,
+                ));
+            }
+            (
+                drag.target,
+                drag.cell,
+                drag.keys,
+                drag.steps,
+                drag.in_target,
+            ) = (target, at.cell, at.mods, steps, in_target);
+            self.drag = Some(drag);
+        }
+        events
+    }
+
+    fn middle_focus(&mut self, field: NodeId, at: &ButtonPoint, events: &mut Vec<Event>) {
+        let watched = self.watch(Some(field));
+        let (x, y) = self.page(at.x, at.y);
+        if let Some(hit) = self.doc.hit(x, y)
+            && let Some(node) = self.doc.get_node(field)
+            && let Some(input) = node.element_data().and_then(|e| e.text_input_data())
+        {
+            let layout = node.final_layout();
+            let scale = self.viewport.2;
+            let mut x = hit.x - layout.border.left - layout.padding.left;
+            let mut y = hit.y - layout.border.top - layout.padding.top;
+            if input.is_multiline {
+                y += input.scroll_offset;
+            } else {
+                x += input.scroll_offset;
+                if let Some(text) = input.editor.try_layout() {
+                    y -= ((layout.content_box_height() - text.height() / text.scale()) / 2.0)
+                        .max(0.0);
+                }
+            }
+            self.doc
+                .with_text_input(field, |mut text| text.move_to_point(x * scale, y * scale));
+        }
+        self.clear_selection();
+        let before = self.doc.get_focussed_node_id();
+        self.doc.set_focus_by_pointer(field);
+        self.touch_chains(before, Some(field));
+        self.keyboard_follows_focus(events);
+        self.wake_caret(Instant::now());
+        self.carets(watched, events);
+        self.dirty = true;
     }
 
     /// Half a device pixel, in CSS pixels: an edge that close to a cell's is
@@ -2939,6 +3267,7 @@ impl Surface {
     /// went away, a new document, or the host lost the pointer): `dragend`,
     /// with no target, at the last cell the program heard of.
     pub fn cancel_drag(&mut self, keys: Mods) -> Option<Event> {
+        self.other_press = None;
         let d = self.drag.take()?;
         let keys = if keys == Mods::default() {
             d.keys
@@ -3037,7 +3366,7 @@ impl Surface {
     /// its release the pointer is the gesture's, and nothing is hovered
     /// for the program (SPEC §9.4).
     pub fn held(&self) -> bool {
-        self.drag.is_some() || !self.buttons.is_empty()
+        self.other_press.is_some() || self.drag.is_some() || !self.buttons.is_empty()
     }
 
     /// Whether `cell` of the surface is in its placement's window.

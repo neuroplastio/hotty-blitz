@@ -29,6 +29,12 @@ struct Mouse {
     y: f32,
     /// While the button is down: whether its press passed through.
     down: Option<bool>,
+    buttons: std::collections::BTreeSet<u32>,
+    primary: String,
+    middle_paste: bool,
+    control_click: bool,
+    alt_screen: bool,
+    alt_taken: Vec<String>,
     /// The finger of touch steps.
     finger: Finger,
     /// The edit commands the program took (`a=edit`, SPEC §10.6), which
@@ -191,8 +197,8 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
     let mut sent = Vec::new();
     // The platform's count of a press and its release (SPEC §9).
     let count = step["count"].as_u64().unwrap_or(1) as u32;
-    let send = |host: &mut Host, s: &str, kind, x, y, sent: &mut Vec<u8>| {
-        for e in host.pointer_counted(s, kind, x, y, mods(step), count) {
+    let append = |effects: Vec<Effect>, sent: &mut Vec<u8>| {
+        for e in effects {
             if let Effect::Reply(b) = e {
                 sent.extend(b);
             }
@@ -203,8 +209,12 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
             let s = step["s"].as_str().unwrap().to_string();
             let at = &step["at"];
             let (x, y) = if let Some(id) = at.as_str() {
-                host.element_centre(&s, id)
-                    .ok_or(format!("no element #{id} to point at"))?
+                let (x, y) = host
+                    .element_centre(&s, id)
+                    .ok_or(format!("no element #{id} to point at"))?;
+                // Between two device pixels, take the one above or left
+                // of the centre.
+                (x.next_down(), y.next_down())
             } else {
                 let m = Config::default().metrics;
                 let (c, r) = (at[0].as_f64().unwrap(), at[1].as_f64().unwrap());
@@ -217,36 +227,14 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
             // is left first, as a terminal leaves it (SPEC §9.4).
             if mouse.down.is_none() && !mouse.surface.is_empty() && mouse.surface != s {
                 let old = std::mem::take(&mut mouse.surface);
-                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut sent);
+                append(
+                    host.pointer(&old, PointerKind::Leave, 0.0, 0.0, mods(step)),
+                    &mut sent,
+                );
             }
             mouse.surface = s;
             (mouse.x, mouse.y) = (x, y);
             PointerKind::Move
-        }
-        // A secondary button (the DOM's number 2) is a platform's gesture
-        // of its own, not the primary's pointer events (conformance/README,
-        // Pointer): `Host::secondary` takes its press, and what it does not
-        // take is the terminal's. Its release is nothing, and the primary
-        // button's state is not touched.
-        "down" | "up" if step.get("button").and_then(Value::as_u64).unwrap_or(0) == 2 => {
-            if step["pointer"] == "down" {
-                let over = host.is_placed(&mouse.surface)
-                    && host.takes_pointer(&mouse.surface, mouse.x, mouse.y);
-                if let Some(want) = step.get("through").and_then(Value::as_bool)
-                    && want != !over
-                {
-                    return Err(format!("through: want {want}, got {}", !over));
-                }
-                if over {
-                    let out = host.secondary(&mouse.surface, mouse.x, mouse.y, mods(step));
-                    for e in out.effects {
-                        if let Effect::Reply(b) = e {
-                            sent.extend(b);
-                        }
-                    }
-                }
-            }
-            return check_events(step, &events(&from_host(&sent)?));
         }
         "down" => PointerKind::Down,
         "up" => PointerKind::Up,
@@ -255,40 +243,97 @@ fn pointer_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), 
         "leave" => {
             let old = std::mem::take(&mut mouse.surface);
             mouse.down = None;
-            if !old.is_empty() {
-                send(host, &old, PointerKind::Leave, 0.0, 0.0, &mut sent);
-            }
+            mouse.buttons.clear();
+            append(
+                host.pointer(&old, PointerKind::Leave, 0.0, 0.0, mods(step)),
+                &mut sent,
+            );
             return check_events(step, &events(&from_host(&sent)?));
         }
         other => return Err(format!("unknown pointer {other}")),
     };
-    let placed = host.is_placed(&mouse.surface);
-    let through = match (kind, mouse.down) {
-        (PointerKind::Down, _) | (_, None) => {
-            !placed || !host.takes_pointer(&mouse.surface, mouse.x, mouse.y)
-        }
-        (_, Some(through)) => through,
+    let modifiers = mods(step);
+    let over =
+        host.is_placed(&mouse.surface) && host.takes_pointer(&mouse.surface, mouse.x, mouse.y);
+    let through = mouse.down.unwrap_or(!over);
+    if let Some(want) = step.get("through").and_then(Value::as_bool)
+        && want != through
+    {
+        return Err(format!("through: want {want}, got {through}"));
+    }
+    let button = step["button"].as_u64().unwrap_or(0) as u32;
+    let context_click = mouse.control_click && button == 0 && modifiers.ctrl;
+    let button_mods = Mods {
+        ctrl: modifiers.ctrl && !context_click,
+        ..modifiers
     };
+    let surface = if through { "" } else { &mouse.surface };
+    let out = match kind {
+        PointerKind::Move if through && mouse.buttons.is_empty() => host.pointer_routed(
+            &mouse.surface,
+            PointerKind::Leave,
+            mouse.x,
+            mouse.y,
+            modifiers,
+            count,
+        ),
+        PointerKind::Down | PointerKind::Up if button != 0 || context_click => host.button(
+            surface,
+            if context_click { 2 } else { button },
+            kind,
+            mouse.x,
+            mouse.y,
+            button_mods,
+            context_click,
+        ),
+        _ => host.pointer_routed(surface, kind, mouse.x, mouse.y, modifiers, count),
+    };
+    let first = mouse.buttons.is_empty();
     match kind {
-        PointerKind::Down => mouse.down = Some(through),
-        PointerKind::Up => mouse.down = None,
-        _ => {}
-    }
-    match step.get("through").and_then(Value::as_bool) {
-        Some(want) if want != through => {
-            return Err(format!("through: want {want}, got {through}"));
+        PointerKind::Down => {
+            if first {
+                mouse.down = Some(through);
+            }
+            mouse.buttons.insert(button);
+        }
+        PointerKind::Up => {
+            mouse.buttons.remove(&button);
+            if mouse.buttons.is_empty() {
+                mouse.down = None;
+            }
         }
         _ => {}
     }
-    // Through, the pointer is over what is below: the surface is left.
-    let kind = if through && kind == PointerKind::Move {
-        PointerKind::Leave
-    } else {
-        kind
-    };
-    if placed && (!through || kind == PointerKind::Leave) {
-        let (s, x, y) = (mouse.surface.clone(), mouse.x, mouse.y);
-        send(host, &s, kind, x, y, &mut sent);
+    let paste = out.effects.contains(&Effect::Paste)
+        || !out.taken
+            && first
+            && kind == PointerKind::Down
+            && button == 1
+            && mouse.middle_paste
+            && !modifiers.alt
+            && (!mouse.reports || modifiers.shift);
+    append(out.effects, &mut sent);
+    if paste {
+        append(host.paste(&mouse.primary).unwrap_or_default(), &mut sent);
+    }
+    if let Some(want) = step.get("mouse") {
+        let got = if !out.taken
+            && mouse.reports
+            && (!modifiers.shift || modifiers.alt)
+            && matches!(kind, PointerKind::Down | PointerKind::Up)
+        {
+            let phase = if kind == PointerKind::Down {
+                "down"
+            } else {
+                "up"
+            };
+            serde_json::json!([[phase, button]])
+        } else {
+            serde_json::json!([])
+        };
+        if got != *want {
+            return Err(format!("mouse: want {want}, got {got}"));
+        }
     }
     check_events(step, &events(&from_host(&sent)?))
 }
@@ -535,7 +580,12 @@ fn write_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
     // calls hotty_host_reset. The vectors also use writes for mouse modes.
     if text.contains("\x1bc") {
         host.reset();
-        *mouse = Mouse::default();
+        *mouse = Mouse {
+            pressed: mouse.pressed,
+            middle_paste: mouse.middle_paste,
+            control_click: mouse.control_click,
+            ..Mouse::default()
+        };
     }
     let mut rest = text;
     while let Some(i) = rest.find("\x1b[?") {
@@ -551,12 +601,18 @@ fn write_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), St
         for mode in rest[..end].split(';') {
             match mode {
                 "9" | "1000" | "1002" | "1003" => mouse.reports = on,
-                "47" | "1047" | "1049" => host.set_screen(on),
+                "47" | "1047" | "1049" => {
+                    if !on {
+                        mouse.alt_taken.clear();
+                    }
+                    mouse.alt_screen = on;
+                }
                 _ => {}
             }
         }
         rest = &rest[end + 1..];
     }
+    host.set_scroll_modes(mouse.alt_screen, mouse.reports);
     Ok(())
 }
 
@@ -622,6 +678,7 @@ fn key_name(name: &str) -> KeyName {
         "PageUp" => KeyName::PageUp,
         "PageDown" => KeyName::PageDown,
         " " => KeyName::Space,
+        "ContextMenu" => KeyName::Other,
         s if s.chars().count() == 1 => KeyName::Char(s.to_string()),
         _ => KeyName::Other,
     }
@@ -831,6 +888,9 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
         touch_step(host, mouse, step)
     } else if step.get("key").is_some() {
         key_step(host, mouse, step)
+    } else if let Some(text) = step["primary"].as_str() {
+        mouse.primary = text.to_string();
+        Ok(())
     } else if step.get("write").is_some() {
         write_step(host, mouse, step)
     } else if step.get("menu").is_some() {
@@ -859,6 +919,7 @@ fn run_step(host: &mut Host, mouse: &mut Mouse, step: &Value) -> Result<(), Stri
             for e in host.handle(cmd) {
                 match e {
                     Effect::Reply(b) => sent.extend(b),
+                    Effect::Edit(names) if mouse.alt_screen => mouse.alt_taken = names,
                     Effect::Edit(names) => mouse.taken = names,
                     _ => {}
                 }

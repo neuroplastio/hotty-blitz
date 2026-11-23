@@ -563,8 +563,8 @@ fn mods(bits: u32) -> Mods {
 
 /// A pointer event at surface pixel `(x, y)`. `kind`: 0 move, 1 down, 2 up, 3 leave;
 /// down and up are the primary button's (SPEC §10.1): pass no other button,
-/// and no touch, which goes to `hotty_host_touch`; a secondary press goes to
-/// `hotty_host_secondary`. `mods`: 1 shift, 2 ctrl,
+/// and no touch, which goes to `hotty_host_touch`; other buttons go to
+/// `hotty_host_button`. `mods`: 1 shift, 2 ctrl,
 /// 4 alt, 8 super. A press also takes the keyboard
 /// from any other surface that has it (SPEC §10.1): its events come through
 /// `fx` too. From a press to its release the pointer is the surface's, for
@@ -590,10 +590,8 @@ pub unsafe extern "C" fn hotty_host_pointer(
     mod_bits: u32,
     count: u32,
     fx: *const HottyEffects,
-) {
-    let Some(surface) = (unsafe { name(surface) }) else {
-        return;
-    };
+) -> bool {
+    let surface = unsafe { name(surface) }.unwrap_or_default();
     let fx = unsafe { fx.as_ref() };
     let kind = match kind {
         1 => PointerKind::Down,
@@ -601,13 +599,12 @@ pub unsafe extern "C" fn hotty_host_pointer(
         3 => PointerKind::Leave,
         _ => PointerKind::Move,
     };
-    guard(h, (), |h| {
+    guard(h, false, |h| {
         let t0 = trace::now();
-        run_effects(
-            h.host
-                .pointer_counted(surface, kind, x, y, mods(mod_bits), count),
-            fx,
-        );
+        let out = h
+            .host
+            .pointer_routed(surface, kind, x, y, mods(mod_bits), count);
+        run_effects(out.effects, fx);
         let k = match kind {
             PointerKind::Down => "down",
             PointerKind::Up => "up",
@@ -615,37 +612,77 @@ pub unsafe extern "C" fn hotty_host_pointer(
             PointerKind::Move => "move",
         };
         trace::span("blitz.pointer", t0, &[("k", Arg::S(k))]);
+        out.taken
     })
 }
 
-/// A secondary press at device pixel `(x, y)` of `surface`, as the platform
-/// makes one (SPEC §9, HOST.md §3): the mouse's secondary button, a pen's
-/// barrel button, or on macOS the primary button with Control, which the
-/// caller passes without `ctrl` in `mods` (as for a pointer event: 1 shift,
-/// 2 ctrl, 4 alt, 8 super). Returns true if the surface took it: the point
-/// is one it takes (`hotty_host_takes_pointer`), the surface is no
-/// backdrop, neither Shift nor Alt is held, and an element there or outward
-/// has `secondary` in its `data-on`. Its `press` (button 2, the element's
-/// area, the pointer's cell, `mods`) comes through `fx`, whatever `p` is.
-/// When true, pass nothing more of that press: no release, no moves as a
-/// drag, no mouse report to the program and no menu of the terminal's; plain
-/// moves still go to `hotty_host_pointer`, for hover. It does nothing else:
-/// no click, drag, selection, or change of the keyboard. When false, the
-/// press is the terminal's, as it would be without hotty: with Shift its own
-/// menu, with Alt the program's mouse report (SGR `CSI < 10`), otherwise the
-/// cells beneath. With Alt the surface is left (`hover` out, through `fx`)
-/// and gives the keyboard back, as a primary press with Alt does.
-/// See `Host::secondary`.
+/// Another button by its DOM number (SPEC §9). Coordinates are device pixels
+/// from the top left of the surface where the press began. Pass kind 1 for
+/// down, 2 for up, or 4/5 for down/up of a pen-barrel gesture or a macOS
+/// Control-click (button 2). For a Control-click, clear the Control modifier.
+/// Return true when the host owns or swallows the
+/// press. Keep sending its moves to `hotty_host_pointer` and its release
+/// here. If `fx->paste` runs, read what the terminal's middle press pastes
+/// and pass it to `hotty_host_paste`.
 ///
 /// # Safety
-/// `h` must be valid; `surface` NUL-terminated; `fx` may be null.
+/// `h` must be valid; `surface` NUL-terminated or null over the cells;
+/// `fx` may be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hotty_host_secondary(
+pub unsafe extern "C" fn hotty_host_button(
     h: *mut HottyHost,
     surface: *const c_char,
+    button: u32,
+    kind: u32,
     x: f32,
     y: f32,
     mod_bits: u32,
+    fx: *const HottyEffects,
+) -> bool {
+    let surface = unsafe { name(surface) }.unwrap_or_default();
+    let fx = unsafe { fx.as_ref() };
+    let phase = match kind {
+        1 | 4 => PointerKind::Down,
+        2 | 5 => PointerKind::Up,
+        _ => return false,
+    };
+    guard(h, false, |h| {
+        let t0 = trace::now();
+        let out = h
+            .host
+            .button(surface, button, phase, x, y, mods(mod_bits), kind >= 4);
+        run_effects(out.effects, fx);
+        trace::span("blitz.button", t0, &[("taken", Arg::U(out.taken as u64))]);
+        out.taken
+    })
+}
+
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_middle_paste(h: *mut HottyHost, enabled: bool) {
+    guard(h, (), |h| h.host.set_middle_paste(enabled))
+}
+
+/// # Safety
+/// `h` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_context_menu_on_release(
+    h: *mut HottyHost,
+    on_release: bool,
+) {
+    guard(h, (), |h| h.host.set_context_menu_on_release(on_release))
+}
+
+/// Offers ContextMenu or Shift+F10 after the surface's normal key routing.
+///
+/// # Safety
+/// `h` and `surface` must be valid; `fx` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_menu_key(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    shift_f10: bool,
     fx: *const HottyEffects,
 ) -> bool {
     let Some(surface) = (unsafe { name(surface) }) else {
@@ -653,15 +690,10 @@ pub unsafe extern "C" fn hotty_host_secondary(
     };
     let fx = unsafe { fx.as_ref() };
     guard(h, false, |h| {
-        let t0 = trace::now();
-        let out = h.host.secondary(surface, x, y, mods(mod_bits));
-        run_effects(out.effects, fx);
-        trace::span(
-            "blitz.secondary",
-            t0,
-            &[("taken", Arg::U(out.taken as u64))],
-        );
-        out.taken
+        let effects = h.host.menu_key(surface, shift_f10);
+        let taken = !effects.is_empty();
+        run_effects(effects, fx);
+        taken
     })
 }
 
@@ -714,8 +746,8 @@ pub unsafe extern "C" fn hotty_host_wheel(
 /// touch), 1 undecided (it may still drag: hold its moves), 2 the surface's
 /// (a drag, or on up a tap, which the surface took as a click where the
 /// finger lifted: do nothing with it). A long press over an element with
-/// `secondary` in its `data-on`, or inside one, with no Shift or Alt held,
-/// is a secondary press (SPEC §9.1): its `press` (button 2, at the finger's
+/// `contextmenu` in its `data-on`, or inside one, with no Shift or Alt held,
+/// requests a menu (SPEC §9.1). Its `contextmenu` (at the finger's
 /// cell) comes through `fx`, phase 4 returns 2, the terminal opens no menu
 /// of its own, and the lift that follows (2 too) makes no click; anywhere
 /// else a long press is the terminal's (0). A touch drags an element that opts in
@@ -1640,7 +1672,7 @@ mod tests {
         host.handle(&cmd(
             &[("a", "doc"), ("s", "x"), ("q", "2")],
             "<style>body{margin:0}b{position:absolute;display:block;left:0;width:80px;height:34px}\
-             </style><b id=i data-on=secondary style=\"top:0\">i</b><b id=n style=\"top:34px\">n</b>",
+             </style><b id=i data-on='secondary contextmenu' style=\"top:0\">i</b><b id=n style=\"top:34px\">n</b>",
         ));
         host.handle(&cmd(
             &[
@@ -1668,9 +1700,13 @@ mod tests {
             menu: None,
         };
         let s = c"x";
-        // The press: `t`, and the body's button 2 and the cell.
+        // Use the 0.8 session for the legacy event's wire shape.
+        let cmd08 = c"a=q:n=1:v=0.8;";
+        unsafe { hotty_host_osc(h, cmd08.as_ptr().cast(), cmd08.to_bytes().len(), &fx) };
+        sent.clear();
         let press = |x: f32, y: f32, mods: u32| {
-            let taken = unsafe { hotty_host_secondary(h, s.as_ptr(), x, y, mods, &fx) };
+            let taken = unsafe { hotty_host_button(h, s.as_ptr(), 2, 1, x, y, mods, &fx) };
+            unsafe { hotty_host_button(h, s.as_ptr(), 2, 2, x, y, mods, &fx) };
             (taken, std::mem::take(unsafe { &mut *sp }))
         };
         let (taken, out) = press(40.0, 20.0, 0);
@@ -1692,7 +1728,8 @@ mod tests {
             let (taken, out) = press(x, y, m);
             assert!(!taken && out.is_empty());
         }
-        assert!(!unsafe { hotty_host_secondary(h, std::ptr::null(), 40.0, 20.0, 0, &fx) });
+        assert!(!unsafe { hotty_host_button(h, std::ptr::null(), 2, 1, 40.0, 20.0, 0, &fx) });
+        unsafe { hotty_host_button(h, std::ptr::null(), 2, 2, 40.0, 20.0, 0, &fx) };
         // A long press: phase 4 returns 2 with the press, and the lift 2.
         let phase = |p: u32, y: f32| {
             let r = unsafe { hotty_host_touch(h, s.as_ptr(), p, 40.0, y, 0, &fx) };
@@ -1708,15 +1745,22 @@ mod tests {
         phase(0, 90.0);
         assert_eq!(phase(4, 90.0), (0, Vec::new()));
         phase(2, 90.0);
-        // Both versions take secondary presses and long presses alike.
+        // Each version reports its own event for the same gestures.
         let query = |v: &str| {
             let body = format!("a=q:n=1:v={v};");
             unsafe { hotty_host_osc(h, body.as_ptr(), body.len(), &fx) };
             std::mem::take(unsafe { &mut *sp })
         };
-        for v in ["0.7", "0.8", "0.7,0.8"] {
+        for v in ["0.8", "0.9", "0.8,0.9"] {
             assert!(String::from_utf8_lossy(&query(v)).contains("a=ok"));
-            assert!(press(40.0, 20.0, 0).0);
+            let (taken, bytes) = press(40.0, 20.0, 0);
+            assert!(taken);
+            let event = if v == "0.8" {
+                "e=press"
+            } else {
+                "e=contextmenu"
+            };
+            assert!(String::from_utf8_lossy(&bytes).contains(event));
             phase(0, 20.0);
             assert_eq!(phase(4, 20.0).0, 2);
             assert_eq!(phase(2, 20.0), (2, Vec::new()));

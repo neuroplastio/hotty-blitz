@@ -1,6 +1,5 @@
-//! A secondary press (SPEC §9, §9.1, §9.2): `Host::secondary` for the
-//! mouse's secondary button and a pen's barrel button, and a touch's long
-//! press. The shared vectors cover the common path; these the corners.
+//! Legacy secondary presses and long presses in a 0.8 session (HOST.md §5.2).
+//! A 0.9 session also exercises the release-time context menu.
 
 mod common;
 
@@ -20,6 +19,7 @@ fn host() -> Host {
         ..Config::default()
     });
     h.set_backdrops(true);
+    h.handle(&cmd(&[("a", "q"), ("v", "0.8")], ""));
     h
 }
 
@@ -104,7 +104,9 @@ fn with(f: impl FnOnce(&mut Mods)) -> Mods {
 
 /// A secondary press at the centre of cell (`c`, `r`).
 fn press(h: &mut Host, c: u32, r: u32, mods: Mods) -> (bool, Vec<Effect>) {
-    let out = h.secondary("x", c as f32 * 10.0 + 5.0, r as f32 * 20.0 + 10.0, mods);
+    let (x, y) = (c as f32 * 10.0 + 5.0, r as f32 * 20.0 + 10.0);
+    let out = h.button("x", 2, PointerKind::Down, x, y, mods, false);
+    h.button("x", 2, PointerKind::Up, x, y, mods, false);
     (out.taken, out.effects)
 }
 
@@ -215,7 +217,10 @@ fn no_opt_in_shift_alt_and_no_surface_are_the_terminals_and_report_nothing() {
             assert!(events(&fx).iter().all(|(e, ..)| e != "press"));
         }
         // A surface there is none of.
-        assert!(!h.secondary("nope", 5.0, 5.0, none()).taken);
+        assert!(
+            !h.button("nope", 2, PointerKind::Down, 5.0, 5.0, none(), false)
+                .taken
+        );
     }
 }
 
@@ -447,4 +452,32 @@ fn a_backdrop_takes_no_long_press() {
     let (held, fx, ..) = long_press(&mut h, 4, 1, none());
     assert_eq!(held, Touch::Terminal);
     assert!(fx.is_empty());
+}
+
+#[test]
+fn a_release_time_menu_keeps_the_pressed_target() {
+    let mut h = host();
+    h.handle(&cmd(&[("a", "q"), ("v", "0.9")], ""));
+    h.set_context_menu_on_release(true);
+    show(&mut h, &DOC.replace("secondary", "contextmenu"), "0", &[]);
+    primary(&mut h, PointerKind::Move, 4, 1);
+
+    let m = Mods::default();
+    let down = h.button("x", 2, PointerKind::Down, 45.0, 30.0, m, false);
+    assert!(down.taken && down.effects.is_empty());
+    assert!(primary(&mut h, PointerKind::Move, 11, 0).is_empty());
+
+    let up = h.button("x", 2, PointerKind::Up, 115.0, 10.0, m, false);
+    assert!(up.taken);
+    assert_eq!(
+        events(&up.effects),
+        [
+            (
+                "contextmenu".into(),
+                "i".into(),
+                json!({"area": {"c": 3, "r": 1, "w": 3, "h": 1}, "c": 11, "r": 0})
+            ),
+            ("hover".into(), "n".into(), json!({"c": 11, "r": 0}))
+        ]
+    );
 }

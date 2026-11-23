@@ -201,11 +201,11 @@ pub struct WheelOutcome {
     pub effects: Vec<Effect>,
 }
 
-/// What became of a secondary press ([`crate::Host::secondary`]).
+/// What became of a mouse button ([`crate::Host::button`]).
 #[derive(Debug, Default)]
-pub struct SecondaryOutcome {
-    /// The surface took it: the host passes nothing more of the press. If
-    /// false, the press is the terminal's.
+pub struct ButtonOutcome {
+    /// True for a button the surface took, including swallowed presses
+    /// and releases during a surface gesture.
     pub taken: bool,
     pub effects: Vec<Effect>,
 }

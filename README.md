@@ -157,16 +157,28 @@ moves, whatever its CSS, and nothing shows a scrollbar.
   `hotty_host_end_gesture` or 150 ms after its last wheel, which
   `hotty_host_next_frame` counts as a deadline.
 
-## Secondary press
+## Pointer buttons
 
-A terminal passes the secondary press (SPEC §9: the mouse's secondary
-button, a pen's barrel button, on macOS the primary button with Control)
-to `hotty_host_secondary` (`Host::secondary`), not `hotty_host_pointer`. It
-returns true when the surface took it, an element there or outward having
-`secondary` in its `data-on`, and then the terminal passes nothing more of
-that press and opens no menu. Otherwise, and with Shift or Alt held, the
-press is the terminal's. It makes no click, drag, selection or change of
-the keyboard.
+The 0.9 C ABI replaces `hotty_host_secondary` with `hotty_host_button`
+and gives `hotty_host_pointer` a boolean return value.
+
+Use `hotty_host_pointer` for the primary button and pointer moves. Pass
+other buttons by their DOM numbers to `hotty_host_button` (SPEC §9).
+Both return whether the surface took the button. While it holds a press,
+feed it moves and releases even outside its window. Pass presses over the
+cells with a null surface so the host can track which side owns the chord.
+
+`contextmenu` requests the platform's menu gesture, `aux` takes other
+buttons, and `rightbutton` takes the secondary button for an auxiliary
+click or drag. Configure release-time menus with
+`hotty_host_set_context_menu_on_release`. A terminal can offer ContextMenu
+and Shift+F10 with `hotty_host_menu_key` after normal key routing. A 0.8
+session reads `secondary` and sends a `press` with button 2.
+
+Where the terminal's middle button pastes, enable it with
+`hotty_host_set_middle_paste`. A press on a field can call the effects'
+`paste` callback to request what the middle button pastes. Deliver that
+text with `hotty_host_paste`.
 
 ## Touch
 
@@ -199,11 +211,11 @@ surface's (2).
   Alt held at touch-down, on no drag element, on a detached surface or
   after a long press never drag. A tap, a touch that never went past the
   slop, is a click where the finger lifted: a press there, never a drag.
-- A long press over an element with `secondary` in its `data-on`, or
-  inside one, with no Shift or Alt, is a secondary press (SPEC §9.1): a
-  `press` with button 2 at the finger's cell, phase 4 returns the
-  surface's (2), and the lift makes no click. Elsewhere it is the
-  terminal's.
+- A long press over or inside an element with `contextmenu` in its
+  `data-on`, with neither Shift nor Alt, sends `contextmenu` at the
+  finger's cell (SPEC §9.1). Phase 4 returns the surface's (2), and the
+  lift makes no click. A 0.8 session sends the same legacy event as its
+  secondary button.
 - A touch hovers nothing.
 
 A touch that begins on the cells, outside every surface or where one lets

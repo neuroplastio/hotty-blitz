@@ -62,6 +62,15 @@ pub enum Detail {
         r: i32,
         mods: Option<u8>,
     },
+    /// A context menu or auxiliary click (SPEC §9).
+    PointerButton {
+        area: Option<Area>,
+        cell: Option<(i32, i32)>,
+        mods: Option<u8>,
+        button: Option<u32>,
+        link: Option<hotty::Link>,
+        value: Option<String>,
+    },
     /// `change` of a checkbox or a radio button: whether it is checked,
     /// its `value` attribute, and the control's rev (SPEC §6.4).
     Checked {
@@ -93,6 +102,7 @@ pub enum Detail {
         y: Option<u64>,
         tx: Option<u64>,
         ty: Option<u64>,
+        button: Option<u32>,
     },
     /// `fit`: the rows `r=auto` would choose now.
     Fit { r: u16 },
@@ -187,6 +197,24 @@ pub fn event(
             e.r = Some(i64::from(*r));
             e.mods = mods(m);
         }
+        Detail::PointerButton {
+            area: a,
+            cell,
+            mods: m,
+            button,
+            link,
+            value,
+        } => {
+            e.area = a.as_ref().map(area);
+            if let Some((c, r)) = cell {
+                e.c = Some(i64::from(*c));
+                e.r = Some(i64::from(*r));
+            }
+            e.mods = mods(m);
+            e.button = *button;
+            e.link = link.clone();
+            e.value = value.clone();
+        }
         Detail::Checked {
             checked,
             value,
@@ -214,7 +242,9 @@ pub fn event(
             y,
             tx,
             ty,
+            button,
         } => {
+            e.button = *button;
             let step = |v: &Option<u64>| v.map(|v| v.min(MAX_INT as u64) as i64);
             e.mods = mods(m);
             e.drag = Some(hotty::Drag {
@@ -290,6 +320,7 @@ mod tests {
         );
         // {"c": -1, "r": 300}: ints in their smallest form, no mods, x or y.
         let drag = Detail::Drag {
+            button: None,
             c: -1,
             r: 300,
             mods: None,
