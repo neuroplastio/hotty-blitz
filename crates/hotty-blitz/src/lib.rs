@@ -1257,6 +1257,11 @@ impl Host {
                 enter(&mut self.working, name);
                 let moving = scrolling(&self.gesture, name, now);
                 let damage = s.render(&metrics, dark, moving, &mut self.renderers);
+                self.owed.extend(
+                    s.focus_events
+                        .drain(..)
+                        .map(|e| Effect::Reply(e.encode(name))),
+                );
                 if let Some(rows) = s.fit_event.take() {
                     match self.fits.iter_mut().find(|(n, _)| n == name) {
                         Some(f) => f.1 = rows,
@@ -1666,6 +1671,8 @@ impl Host {
                 // surface is the program's again, detached before or not.
                 if detached {
                     s.detach();
+                } else if let Some(old) = &mut previous {
+                    s.keep_keyboard_after_doc(old);
                 }
                 self.surfaces.insert(name, s);
                 drop(previous);
@@ -1796,7 +1803,13 @@ impl Host {
                 {
                     self.gesture = None;
                 }
-                s.apply(&ops, &self.config.metrics).map_err(|(i, e)| {
+                let result = s.apply(&ops, &self.config.metrics);
+                effects.extend(
+                    s.focus_events
+                        .drain(..)
+                        .map(|e| Effect::Reply(e.encode(&name))),
+                );
+                result.map_err(|(i, e)| {
                     *failed = Some(i);
                     (e.code, e.detail)
                 })?;
@@ -1875,6 +1888,7 @@ impl Host {
                     return Err(("EINVAL", format!("surface {name} is a backdrop")));
                 }
                 if cmd.action() == "focus" {
+                    s.input_viewport(&self.config);
                     for e in s.focus(cmd.get("t")).map_err(|e| ("ENOTARGET", e))? {
                         effects.push(Effect::Reply(e.encode(&name)));
                     }
@@ -2738,6 +2752,7 @@ impl Host {
             return KeyOutcome::default();
         };
         s.can_paste = self.paste;
+        s.input_viewport(&self.config);
         let (consumed, events) = s.key(key, offer);
         let mut effects: Vec<Effect> = events
             .into_iter()
@@ -2765,7 +2780,9 @@ impl Host {
     pub fn paste(&mut self, text: &str) -> Option<Vec<Effect>> {
         let surface = self.focused_surface()?.to_string();
         enter(&mut self.working, &surface);
-        let events = self.surfaces.get_mut(&surface)?.paste(text)?;
+        let s = self.surfaces.get_mut(&surface)?;
+        s.input_viewport(&self.config);
+        let events = s.paste(text)?;
         Some(
             events
                 .into_iter()

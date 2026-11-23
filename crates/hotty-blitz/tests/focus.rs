@@ -233,3 +233,31 @@ fn the_surface_s_focus_skips_a_hidden_first_control() {
     focus(&mut h, None);
     assert_eq!(focused(&h, &["h", "b"]), ["b"]);
 }
+
+#[test]
+fn skipped_contents_are_not_painted_and_drop_focus() {
+    let mut h = host();
+    show(
+        &mut h,
+        "<style>body{margin:0}.hidden{content-visibility:hidden}          #wrap{height:40px} #child{display:block;width:40px;height:30px;background:red}          button:focus{color:red}</style>         <div id=wrap><button id=child>Inside</button></div><button id=next>Next</button>",
+    );
+    focus(&mut h, Some("child"));
+    assert_eq!(focused(&h, &["child"]), ["child"]);
+    let frame = h.frame("x").unwrap();
+    let at = (frame.width as usize * 2 + 2) * 4;
+    assert_eq!(&frame.rgba[at..at + 3], [255, 0, 0]);
+
+    h.handle(&delta_cmd(
+        &[("s", "x"), ("q", "2")],
+        "attr",
+        Some("wrap"),
+        Some("class"),
+        "hidden",
+    ));
+    render(&mut h);
+    as_a_full_paint(&mut h, "skip contents");
+    assert_ne!(&h.frame("x").unwrap().rgba[at..at + 3], [255, 0, 0]);
+    assert_eq!(h.focused_surface(), Some("x"));
+    tab(&mut h, false);
+    assert_eq!(focused(&h, &["next"]), ["next"]);
+}

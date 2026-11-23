@@ -318,6 +318,7 @@ pub(crate) struct Surface {
     pointer_at: Option<(f32, f32)>,
     /// The focused text input and its value when it gained focus, for `change`.
     focus_value: Option<(NodeId, String)>,
+    pub focus_events: Vec<Event>,
     /// The element the program knows has focus: the last `focus` named it,
     /// or the program's `a=focus` gave it (SPEC §10.1).
     told: Option<NodeId>,
@@ -693,6 +694,20 @@ fn hyperlink_url(node: &blitz_dom::Node, base: &Option<url::Url>) -> Option<Stri
     link_url(base, el.attr(local_name!("href"))?)
 }
 
+fn editable(node: &blitz_dom::Node) -> Option<bool> {
+    let value = node.attr(blitz_dom::LocalName::from("contenteditable"))?;
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("true")
+        || value.eq_ignore_ascii_case("plaintext-only")
+    {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The controls a label can stand for here: those that take focus.
 fn labelable(el: &blitz_dom::ElementData) -> bool {
     match el.name.local.as_ref() {
@@ -898,6 +913,7 @@ impl Surface {
             tapping: false,
             pointer_at: None,
             focus_value: None,
+            focus_events: Vec::new(),
             told: None,
             buttons: MouseEventButtons::None,
             base,
@@ -1192,6 +1208,16 @@ impl Surface {
         }
     }
 
+    pub fn input_viewport(&mut self, config: &Config) {
+        let m = &config.metrics;
+        self.ensure_viewport(
+            m,
+            u32::from(self.cols) * m.cell_w,
+            u32::from(self.rows) * m.cell_h,
+            config.theme.dark,
+        );
+    }
+
     fn resolve(&mut self) {
         // Relative selectors can restyle an ancestor or sibling outside the
         // touched node's damage. Keep the old and new appearance correct.
@@ -1219,11 +1245,17 @@ impl Surface {
         for &id in &self.animated {
             self.damage.touch(&self.doc, id, scale);
         }
-        self.doc.resolve(
-            self.tick
-                .saturating_duration_since(self.started)
-                .as_secs_f64(),
-        );
+        let time = self
+            .tick
+            .saturating_duration_since(self.started)
+            .as_secs_f64();
+        self.doc.resolve(time);
+        if self.fix_focus(true) {
+            if self.doc.relative_selector_invalidation_pending() {
+                self.damage.full = true;
+            }
+            self.doc.resolve(time);
+        }
         // What layout left with less to scroll (the viewport or a box grew,
         // its content shrank), Blitz brought back into range, as a browser
         // does after layout (mods/blitz/scroll-clamp.md).
@@ -1913,6 +1945,7 @@ impl Surface {
                 first.get_or_insert((i, e));
             }
         }
+        self.fix_focus(false);
         self.dirty = true;
         first.map_or(Ok(()), Err)
     }
@@ -1988,6 +2021,13 @@ impl Surface {
         // A dropped control's rev and history go with it: Blitz may give
         // its id to another element, whose rev starts at 0 (SPEC §6.4).
         for id in gone {
+            if self
+                .focus_value
+                .as_ref()
+                .is_some_and(|(node, _)| *node == id)
+            {
+                self.focus_value = None;
+            }
             self.revs.remove(&id);
             self.histories.remove(&id);
             if self.caret_owed.is_some_and(|(n, _)| n == id) {
@@ -2164,6 +2204,12 @@ impl Surface {
         Some(((r.x + r.width / 2.0) as f32, (r.y + r.height / 2.0) as f32))
     }
 
+    pub fn keep_keyboard_after_doc(&mut self, previous: &mut Surface) {
+        self.keyboard = previous.keyboard;
+        self.prefix = previous.prefix;
+        self.given = previous.given.take();
+    }
+
     pub fn has_focus(&self) -> bool {
         self.keyboard
     }
@@ -2289,8 +2335,6 @@ impl Surface {
     }
 
     pub fn focus(&mut self, target: Option<&str>) -> Result<Vec<Event>, String> {
-        let before = self.doc.get_focussed_node_id();
-        let was = self.focused();
         let want = match target {
             Some(id) => Some(
                 self.doc
@@ -2299,25 +2343,23 @@ impl Surface {
             ),
             None => None,
         };
-        let mut events = Vec::new();
-        // Focus that leaves an edited control commits it first (SPEC §9,
-        // `change`); focusing the control again commits nothing.
-        if want.is_some() && want != was {
+        self.resolve();
+        let before = self.doc.get_focussed_node_id();
+        let was = self.focused();
+        let want = if target.is_some() {
+            want.filter(|&id| self.can_focus(id, true, false))
+        } else if was.is_none() {
+            self.focus_order(None).into_iter().next()
+        } else {
+            was
+        };
+        let mut events = std::mem::take(&mut self.focus_events);
+        if let Some(node) = want
+            && Some(node) != was
+        {
             self.finish_change(&mut events);
-            // A `caret` held back goes before it.
             self.carets(Vec::new(), &mut events);
-        }
-        match want {
-            Some(node) => {
-                self.doc.set_focus_to(node);
-            }
-            None => {
-                if self.focused().is_none() {
-                    // The first control rendered, by the styles as they are.
-                    self.resolve();
-                    self.doc.focus_next_node();
-                }
-            }
+            self.doc.set_focus_to(node);
         }
         self.keyboard = true;
         // `a=focus`, with `t` or without, gives the keys back (SPEC §10.5).
@@ -2479,43 +2521,141 @@ impl Surface {
         self.touch_chains(before, after);
     }
 
-    /// What a press on `id` focuses (SPEC §10.1): the nearest element from
-    /// it outward that takes focus (`input`, `select`, `textarea`,
-    /// `button`, a link with an `href`, the first `summary` of a
-    /// `details`, an element with a `tabindex` of 0 or more), unless that
-    /// one is disabled or a hyperlink, which is the terminal's. A label
-    /// stands for its control. None: the press focuses nothing. Editing
-    /// hosts (`contenteditable`) would take focus too; Blitz has none.
-    fn focus_target(&self, mut id: Option<NodeId>) -> Option<NodeId> {
-        if self.detached {
-            return None;
-        }
-        let enabled = |id: NodeId| {
-            self.doc
-                .get_node(id)
-                .and_then(|n| n.element_data())
-                .is_some_and(|e| !e.is_disabled())
+    fn fix_focus(&mut self, layout: bool) -> bool {
+        let Some(id) = self.focused() else {
+            self.focus_value = None;
+            self.told = None;
+            return false;
         };
+        if self.can_focus(id, layout, false) {
+            return false;
+        }
+        let mut events = Vec::new();
+        self.finish_change(&mut events);
+        self.focus_events.extend(events);
+        self.move_focus(None);
+        self.told = None;
+        self.caret_owed = None;
+        self.dirty = true;
+        true
+    }
+
+    fn focusable_kind(&self, id: NodeId, sequential: bool) -> bool {
+        let Some(node) = self.doc.get_node(id) else {
+            return false;
+        };
+        let Some(el) = node.element_data() else {
+            return false;
+        };
+        if hyperlink_url(node, &self.base).is_some()
+            || &*el.name.local == "input"
+                && el
+                    .attr(local_name!("type"))
+                    .is_some_and(|t| t.eq_ignore_ascii_case("hidden"))
+        {
+            return false;
+        }
+        if let Some(tab) = el
+            .attr(local_name!("tabindex"))
+            .and_then(|t| t.trim().parse::<i32>().ok())
+        {
+            return !sequential || tab >= 0;
+        }
+        if labelable(el) {
+            return true;
+        }
+        match el.name.local.as_ref() {
+            "summary" => first_summary(&self.doc, id),
+            "a" | "area" => el.attr(local_name!("href")).is_some(),
+            _ if editable(node) == Some(true) => {
+                let mut parent = node.parent;
+                while let Some(ancestor) = parent.and_then(|n| self.doc.get_node(n)) {
+                    if let Some(editable) = editable(ancestor) {
+                        return !editable;
+                    }
+                    parent = ancestor.parent;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn can_focus(&self, id: NodeId, layout: bool, sequential: bool) -> bool {
+        if self.detached || !self.focusable_kind(id, sequential) {
+            return false;
+        }
+        let Some(node) = self.doc.get_node(id) else {
+            return false;
+        };
+        let Some(el) = node.element_data() else {
+            return false;
+        };
+        let control = labelable(el);
+        if !node.flags.is_in_document()
+            || node.is_inert()
+            || control && el.attr(local_name!("disabled")).is_some()
+        {
+            return false;
+        }
+        if layout
+            && node.primary_styles().is_none_or(|s| {
+                s.get_inherited_box().visibility != style::computed_values::visibility::T::Visible
+                    || s.clone_display().is_contents()
+            })
+        {
+            return false;
+        }
+        let mut child = None;
+        let mut current = Some(id);
+        while let Some(n) = current.and_then(|n| self.doc.get_node(n)) {
+            if let Some(el) = n.element_data() {
+                if layout
+                    && n.primary_styles()
+                        .is_none_or(|s| s.clone_display().is_none())
+                {
+                    return false;
+                }
+                if let Some(child) = child {
+                    if control
+                        && &*el.name.local == "fieldset"
+                        && el.attr(local_name!("disabled")).is_some()
+                        && n.children.iter().copied().find(|&c| {
+                            self.doc.get_node(c).is_some_and(|x| {
+                                x.data.is_element_with_tag_name(&local_name!("legend"))
+                            })
+                        }) != Some(child)
+                    {
+                        return false;
+                    }
+                    if layout
+                        && (n.skips_contents()
+                            || &*el.name.local == "details"
+                                && el.attr(local_name!("open")).is_none()
+                                && !first_summary(&self.doc, child))
+                    {
+                        return false;
+                    }
+                }
+            }
+            child = Some(n.id);
+            current = n.parent;
+        }
+        true
+    }
+
+    /// What a primary press focuses, following the label to its control.
+    fn focus_target(&self, mut id: Option<NodeId>) -> Option<NodeId> {
         while let Some(n) = id {
             let node = self.doc.get_node(n)?;
-            if let Some(el) = node.element_data() {
-                let takes = labelable(el)
-                    || match el.name.local.as_ref() {
-                        "summary" => first_summary(&self.doc, n),
-                        "a" | "area" => el.attr(local_name!("href")).is_some(),
-                        _ => false,
-                    }
-                    || el
-                        .attr(local_name!("tabindex"))
-                        .and_then(|t| t.trim().parse::<i32>().ok())
-                        .is_some_and(|t| t >= 0);
-                if takes {
-                    let hyperlink = hyperlink_url(node, &self.base).is_some();
-                    return (!hyperlink && enabled(n)).then_some(n);
-                }
-                if &*el.name.local == "label" {
-                    return label_control(&self.doc, n).filter(|&c| enabled(c));
-                }
+            if self.focusable_kind(n, true) {
+                return self.can_focus(n, true, true).then_some(n);
+            }
+            if hyperlink_url(node, &self.base).is_some() {
+                return None;
+            }
+            if node.data.is_element_with_tag_name(&local_name!("label")) {
+                return label_control(&self.doc, n).filter(|&c| self.can_focus(c, true, false));
             }
             id = node.parent;
         }
@@ -2679,8 +2819,11 @@ impl Surface {
             PointerKind::Down => self.text_field_at(x, y),
             _ => None,
         };
+        self.resolve();
         let watched = self.watch(also);
-        let (lead, mut events) = self.pointer_inner(kind, x, y, cell, mods);
+        let mut events = std::mem::take(&mut self.focus_events);
+        let (lead, next) = self.pointer_inner(kind, x, y, cell, mods);
+        events.extend(next);
         self.carets(watched, &mut events);
         (lead, events)
     }
@@ -3174,11 +3317,19 @@ impl Surface {
     /// and the program take it in the order §10.2 gives. Whether the
     /// surface used it, and the events it sent.
     pub fn key(&mut self, key: &Key, offer: Offer) -> (bool, Vec<Event>) {
-        if !self.keyboard || self.prefix {
+        if !self.keyboard {
             return (false, Vec::new());
         }
+        if self.dirty && self.focused().is_some() {
+            self.resolve();
+        }
+        let mut events = std::mem::take(&mut self.focus_events);
+        if self.prefix {
+            return (false, events);
+        }
         let watched = self.watch(None);
-        let (used, mut events) = self.plain_key(key, offer);
+        let (used, next) = self.plain_key(key, offer);
+        events.extend(next);
         self.carets(watched, &mut events);
         (used, events)
     }
@@ -3209,39 +3360,31 @@ impl Surface {
         let gives = focused.map_or(Gives::No, |id| self.gives(id, key, kind));
         match (&key.name, kind) {
             (KeyName::Tab, _) if plain && gives == Gives::No => {
-                let before = focused;
-                // Tab passes over what isn't rendered, which a delta since
-                // the last frame may have changed: Blitz reads the styles.
                 self.resolve();
-                let mut events = self.drive_key(key);
-                let after = self.focused();
-                let wrapped = match (before, after) {
-                    (_, None) => true,
-                    (Some(b), Some(a)) => {
-                        let order = self.focus_order();
-                        let pos = |n| order.iter().position(|&x| x == n);
-                        if key.mods.shift {
-                            pos(a) >= pos(b)
-                        } else {
-                            pos(a) <= pos(b)
-                        }
-                    }
-                    (None, Some(_)) => false,
+                let before = self.focused();
+                let mut order = self.focus_order(before);
+                if key.mods.shift {
+                    order.reverse();
+                }
+                let next = if let Some(id) = before {
+                    order
+                        .iter()
+                        .position(|&n| n == id)
+                        .and_then(|i| order.get(i + 1).copied())
+                } else {
+                    order.first().copied()
                 };
-                if wrapped {
-                    // Tab past the last control leaves the surface (SPEC §10.2).
-                    self.finish_change(&mut events);
-                    self.move_focus(None);
+                let mut events = std::mem::take(&mut self.focus_events);
+                self.finish_change(&mut events);
+                self.move_focus(next);
+                if let Some(next) = next {
+                    self.snapshot_focus();
+                    self.tell_focus(&mut events);
+                    self.bring_into_view(next);
+                } else {
                     self.keyboard = false;
                     self.told = None;
                     events.push(keyboard_event("blur"));
-                } else {
-                    self.finish_change(&mut events);
-                    self.snapshot_focus();
-                    self.tell_focus(&mut events);
-                    if let Some(a) = after {
-                        self.bring_into_view(a);
-                    }
                 }
                 self.dirty = true;
                 (true, events)
@@ -3612,6 +3755,9 @@ impl Surface {
     pub fn paste(&mut self, text: &str) -> Option<Vec<Event>> {
         if !self.keyboard {
             return None;
+        }
+        if self.dirty {
+            self.resolve();
         }
         let id = self.focused()?;
         let multiline = match self.control_kind(id) {
@@ -4346,14 +4492,14 @@ impl Surface {
         }
     }
 
-    fn focus_order(&self) -> Vec<NodeId> {
+    fn focus_order(&self, include: Option<NodeId>) -> Vec<NodeId> {
         let mut order = Vec::new();
         let mut stack = vec![self.doc.root_node().id];
         while let Some(id) = stack.pop() {
             let Some(node) = self.doc.get_node(id) else {
                 continue;
             };
-            if node.is_focussable() {
+            if Some(id) == include || self.can_focus(id, true, true) {
                 order.push(id);
             }
             stack.extend(node.children.iter().rev().copied());

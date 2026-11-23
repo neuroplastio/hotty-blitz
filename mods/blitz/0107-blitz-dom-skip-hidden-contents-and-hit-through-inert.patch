@@ -1,0 +1,94 @@
+From 9c04cf0b72de4fbab059fc57a4ce84d301e3c21d Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Mon, 23 Nov 2026 11:46:16 +0100
+Subject: [PATCH] blitz-dom: skip hidden contents and hit through inert
+ subtrees
+
+---
+ packages/blitz-dom/src/layout/construct.rs |  5 +++++
+ packages/blitz-dom/src/layout/damage.rs    |  1 +
+ packages/blitz-dom/src/node/node.rs        | 26 ++++++++++++++++++++++
+ 3 files changed, 32 insertions(+)
+
+diff --git a/packages/blitz-dom/src/layout/construct.rs b/packages/blitz-dom/src/layout/construct.rs
+index fda1ccc96..730134d25 100644
+--- a/packages/blitz-dom/src/layout/construct.rs
++++ b/packages/blitz-dom/src/layout/construct.rs
+@@ -637,6 +637,11 @@ fn collect_layout_children_with_wrap(
+         }
+     }
+ 
++    if doc.nodes[container_node_id].skips_contents() {
++        doc.iter_children_mut(container_node_id, |child, doc| pass_over(&mut doc.nodes, child));
++        return;
++    }
++
+     flush_pseudo_elements(doc, container_node_id);
+ 
+     if let Some(el) = doc.nodes[container_node_id].data.downcast_element() {
+diff --git a/packages/blitz-dom/src/layout/damage.rs b/packages/blitz-dom/src/layout/damage.rs
+index 8f984a301..27317b95f 100644
+--- a/packages/blitz-dom/src/layout/damage.rs
++++ b/packages/blitz-dom/src/layout/damage.rs
+@@ -550,6 +550,7 @@ pub(crate) fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues)
+             || old_box.float != new_box.float
+             || old_box.position != new_box.position
+             || old_box.contain != new_box.contain
++            || old_box.content_visibility != new_box.content_visibility
+             || old.clone_visibility() != new.clone_visibility()
+         {
+             return true;
+diff --git a/packages/blitz-dom/src/node/node.rs b/packages/blitz-dom/src/node/node.rs
+index 37486462c..256cd6ce3 100644
+--- a/packages/blitz-dom/src/node/node.rs
++++ b/packages/blitz-dom/src/node/node.rs
+@@ -599,6 +599,25 @@ impl Node {
+         }
+     }
+ 
++    /// Whether this element is in an inert subtree.
++    pub fn is_inert(&self) -> bool {
++        let mut current = Some(self);
++        while let Some(node) = current {
++            if node.attr(LocalName::from("inert")).is_some() {
++                return true;
++            }
++            current = node.parent_node();
++        }
++        false
++    }
++
++    /// Whether this box skips rendering its contents.
++    pub fn skips_contents(&self) -> bool {
++        self.primary_styles().is_some_and(|style| {
++            style.slow_clone_content_visibility() == style::values::computed::ContentVisibility::Hidden
++        })
++    }
++
+     pub fn is_focussable(&self) -> bool {
+         self.data
+             .downcast_element()
+@@ -614,6 +633,9 @@ impl Node {
+     pub fn is_sequentially_focussable(&self) -> bool {
+         use style::computed_values::visibility::T as Visibility;
+         self.is_focussable()
++            && !self.is_inert()
++            && !std::iter::successors(self.parent_node(), |n| n.parent_node())
++                .any(Node::skips_contents)
+             && self.primary_styles().is_some_and(|style| {
+                 !style.get_box().display.is_none()
+                     && style.get_inherited_box().visibility == Visibility::Visible
+@@ -1597,6 +1619,10 @@ impl Node {
+         use style::computed_values::pointer_events::T as PointerEvents;
+         use style::computed_values::visibility::T as Visibility;
+ 
++        if self.is_inert() {
++            return None;
++        }
++
+         // Don't hit on visbility:hidden elements
+         if let Some(style) = self.primary_styles() {
+             if matches!(
+-- 
+2.56.0
+
