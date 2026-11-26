@@ -607,6 +607,22 @@ pub fn extent(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) 
     if !node.is_element() {
         return extent(doc, node.parent?, scale);
     }
+    let d = layout_extent(doc, id, scale)?;
+    transformed(doc, id, scale, d)
+}
+
+/// What `extent` measures before any CSS transform maps it: where layout
+/// put the node's box and its overflow. A transform that moves only
+/// changes where it paints, not this.
+fn layout_extent(
+    doc: &blitz_dom::BaseDocument,
+    id: blitz_dom::NodeId,
+    scale: f64,
+) -> Option<DevRect> {
+    let node = doc.get_node(id)?;
+    if !node.is_element() {
+        return layout_extent(doc, node.parent?, scale);
+    }
     if !intact(doc, id) {
         return None;
     }
@@ -627,9 +643,18 @@ pub fn extent(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) 
             y1: y + ov.y1,
         });
     }
-    // Client bounds are layout bounds: Blitz applies CSS transforms later,
-    // while painting. Map the damage through the same transforms, from the
-    // node outwards, around each ancestor's untransformed border-box origin.
+    Some(d)
+}
+
+/// Client bounds are layout bounds: Blitz applies CSS transforms later,
+/// while painting. Maps `d` through the same transforms, from the node
+/// outwards, around each ancestor's untransformed border-box origin.
+fn transformed(
+    doc: &blitz_dom::BaseDocument,
+    id: blitz_dom::NodeId,
+    scale: f64,
+    mut d: DevRect,
+) -> Option<DevRect> {
     let mut cur = Some(id);
     while let Some(n) = cur {
         let node = doc.get_node(n)?;
@@ -682,6 +707,10 @@ fn container(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId) -> Option<bli
 /// taller (a fallback font) moves what is aligned with it, and not its own
 /// box. So a touched input whose line changed counts as moved; an input is
 /// touched before its text changes.
+/// Where a node painted, where layout put it, and the box that lays it
+/// out.
+type Recorded = (Option<DevRect>, Option<DevRect>, Option<blitz_dom::NodeId>);
+
 #[derive(Default)]
 pub struct Tracker {
     /// Repaint everything (first frame, resize, new stylesheet, clicks).
@@ -689,7 +718,9 @@ pub struct Tracker {
     touched: Vec<blitz_dom::NodeId>,
     /// Rectangles damaged whatever the layout: the root's scrollbars.
     rects: Vec<DevRect>,
-    old: std::collections::HashMap<blitz_dom::NodeId, (Option<DevRect>, Option<blitz_dom::NodeId>)>,
+    /// A touched node and its ancestors as last painted: where they
+    /// painted, where layout put them, and the box that lays them out.
+    old: std::collections::HashMap<blitz_dom::NodeId, Recorded>,
     /// A touched text input's line as it was (`line_metrics`).
     lines: std::collections::HashMap<blitz_dom::NodeId, (f32, f32)>,
 }
@@ -723,7 +754,10 @@ impl Tracker {
                 return;
             }
             let parent = container(doc, n);
-            self.old.insert(n, (extent(doc, n, scale), parent));
+            self.old.insert(
+                n,
+                (extent(doc, n, scale), layout_extent(doc, n, scale), parent),
+            );
             cur = parent;
         }
     }
@@ -754,8 +788,8 @@ impl Tracker {
             r.y1 -= dy;
         };
         self.rects.iter_mut().for_each(by);
-        for (old, _) in self.old.values_mut() {
-            if let Some(r) = old {
+        for (old, layout, _) in self.old.values_mut() {
+            for r in [old, layout].into_iter().flatten() {
                 by(r);
             }
         }
@@ -784,12 +818,16 @@ impl Tracker {
                 if !done.insert(n) && !first {
                     break;
                 }
-                let (old, parent) = self.old.get(&n).copied().unwrap_or((None, None));
+                let (old, old_layout, parent) =
+                    self.old.get(&n).copied().unwrap_or((None, None, None));
                 let new = extent(doc, n, scale);
                 for r in [old, new].into_iter().flatten() {
                     out.extend(r.to_rect(margin, w, h));
                 }
-                let moved = match (old, new) {
+                // Only a box that layout moved can move others: one a
+                // transform carries paints elsewhere, with its siblings
+                // where they were (a spinner turning).
+                let moved = match (old_layout, layout_extent(doc, n, scale)) {
                     (Some(a), Some(b)) => {
                         (a.x0 - b.x0).abs() > 0.5
                             || (a.y0 - b.y0).abs() > 0.5

@@ -106,7 +106,7 @@ impl Surface {
             }
         }
         self.damage.touch(&self.doc, id, scale);
-        self.dirty = true;
+        self.set_dirty();
         Ok(())
     }
 
@@ -300,7 +300,7 @@ impl Surface {
             if first.is_none() && self.caret_sent {
                 self.caret_owed = Some((id, was));
                 // The next frame sends it.
-                self.dirty = true;
+                self.set_dirty();
                 continue;
             }
             self.caret_sent = true;

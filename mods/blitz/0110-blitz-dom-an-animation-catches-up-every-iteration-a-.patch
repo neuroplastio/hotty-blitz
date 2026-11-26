@@ -1,0 +1,39 @@
+From 4040b85e05b2a92a47ecc40a45f90b32c6293131 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Thu, 26 Nov 2026 20:58:51 +0100
+Subject: [PATCH] blitz-dom: an animation catches up every iteration a gap
+ skipped
+
+A resolve advanced each CSS animation by at most one iteration. After a
+gap longer than an iteration (an embedder that did not resolve for a
+while, a stalled frame), the animation's start stayed iterations behind,
+its progress clamped to the end of the current one, and it showed its
+last keyframe until enough resolves had caught it up, one iteration
+each.
+
+Iterate until the iteration in progress is the one the time falls in.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/blitz-dom/src/stylo/traversal.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/packages/blitz-dom/src/stylo/traversal.rs b/packages/blitz-dom/src/stylo/traversal.rs
+index 06cde0035..0cea284d1 100644
+--- a/packages/blitz-dom/src/stylo/traversal.rs
++++ b/packages/blitz-dom/src/stylo/traversal.rs
+@@ -79,7 +79,10 @@ impl crate::document::BaseDocument {
+                 if animation.state == AnimationState::Pending && animation.started_at <= now {
+                     animation.state = AnimationState::Running;
+                 }
+-                animation.iterate_if_necessary(now);
++                // Every iteration that ended since the last resolve: one
++                // resolve after a gap longer than an iteration must not
++                // show the end of an old one.
++                while animation.iterate_if_necessary(now) {}
+ 
+                 if animation.state == AnimationState::Running && animation.has_ended(now) {
+                     animation.state = AnimationState::Finished;
+-- 
+2.56.0
+

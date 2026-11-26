@@ -13,6 +13,7 @@ pub mod fetch;
 pub mod ffi;
 pub mod fonts;
 pub mod input;
+mod loops;
 mod menu;
 pub mod net;
 pub mod paint;
@@ -891,7 +892,7 @@ impl Host {
         let (cols, rows) = (cells(mw, w), cells(mh, h));
         s.set_size(cols, rows);
         s.placed = true;
-        s.dirty = true;
+        s.set_dirty();
         s.redeliver = true;
         self.menu.effects.push(Effect::Menu {
             surface: MENU.to_string(),
@@ -923,7 +924,7 @@ impl Host {
         let own = self.menu.shown.as_mut().map(|(_, s)| s);
         for s in self.surfaces.values_mut().chain(own) {
             s.replace_host_css(&self.css, &css);
-            s.dirty = true;
+            s.set_dirty();
         }
         self.css = css;
         self.config = config;
@@ -1071,13 +1072,13 @@ impl Host {
         };
         if let Some(s) = shown {
             s.redeliver = true;
-            s.dirty = true;
+            s.set_dirty();
             return;
         }
         enter(&mut self.working, surface);
         if let Some(s) = self.surfaces.get_mut(surface).filter(|s| s.placed) {
             s.redeliver = true;
-            s.dirty = true;
+            s.set_dirty();
         }
     }
 
@@ -1316,11 +1317,13 @@ impl Host {
                 // the frame and its `view`.
                 if wheel_rest_at(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
                     enter(&mut self.working, name);
+                    s.not_only_animation();
                     s.wheel_rest();
                 }
                 // A scroll came to rest: the `view` it held back (SPEC §9.5).
                 if view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now) {
-                    s.dirty = true;
+                    s.not_only_animation();
+                    s.set_dirty();
                 }
                 if !(s.dirty && s.placed) {
                     return;
@@ -1470,6 +1473,13 @@ impl Host {
 
     pub fn frame(&self, name: &str) -> Option<&Frame> {
         self.surfaces.get(name).map(|s| &s.frame)
+    }
+
+    /// How many frames of surface `name` infinite animations drew from
+    /// memory, with nothing resolved or painted: a test's view of it.
+    #[doc(hidden)]
+    pub fn loop_frames(&self, name: &str) -> u64 {
+        self.surfaces.get(name).map_or(0, |s| s.loop_drawn)
     }
 
     /// The resolved value of the CSS `property` on the first element of
@@ -1825,7 +1835,7 @@ impl Host {
                     Some("0") => s.hover = None,
                     _ => {}
                 }
-                s.dirty = true;
+                s.set_dirty();
                 effects.push(Effect::Place {
                     surface: name,
                     cols,
@@ -1963,7 +1973,7 @@ impl Host {
                     for e in s.focus(cmd.get("t")).map_err(|e| ("ENOTARGET", e))? {
                         effects.push(Effect::Reply(e.encode(&name)));
                     }
-                    s.dirty = true;
+                    s.set_dirty();
                     // There is one keyboard: a surface that had it gives it
                     // back, as for a click on another surface (SPEC §10.1).
                     for (other_name, other) in self.surfaces.iter_mut() {
@@ -1971,14 +1981,14 @@ impl Host {
                             for e in other.blur() {
                                 effects.push(Effect::Reply(e.encode(other_name)));
                             }
-                            other.dirty = true;
+                            other.set_dirty();
                         }
                     }
                 } else {
                     for e in s.blur() {
                         effects.push(Effect::Reply(e.encode(&name)));
                     }
-                    s.dirty = true;
+                    s.set_dirty();
                 }
                 Ok((Vec::new(), None))
             }
@@ -2673,7 +2683,7 @@ impl Host {
             if s.has_focus() {
                 enter(&mut self.working, name);
                 effects.extend(s.blur().into_iter().map(|e| Effect::Reply(e.encode(name))));
-                s.dirty = true;
+                s.set_dirty();
             }
         }
         effects
@@ -2806,6 +2816,7 @@ impl Host {
             _ => {
                 for (name, s) in self.surfaces.iter_mut().filter(|(_, s)| s.wheel_owed()) {
                     enter(&mut self.working, name);
+                    s.not_only_animation();
                     s.wheel_rest();
                 }
                 enter(&mut self.working, surface);

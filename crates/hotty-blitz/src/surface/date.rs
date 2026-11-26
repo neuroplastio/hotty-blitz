@@ -365,7 +365,7 @@ impl Surface {
         let (s, e) = ranges[at];
         self.doc.set_text_input(id, &new_text, s, e);
         self.damage.touch(&self.doc, id, self.viewport.2 as f64);
-        self.dirty = true;
+        self.set_dirty();
         let value = date_time::sanitize(ty, &new_text);
         if value == before {
             return Some(Vec::new());

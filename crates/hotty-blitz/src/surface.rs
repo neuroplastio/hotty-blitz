@@ -340,6 +340,16 @@ pub(crate) struct Surface {
     /// The nodes a CSS animation or transition moved at the last resolve:
     /// the next one records where they paint before it moves them again.
     animated: Vec<NodeId>,
+    /// Infinite animations played from memory once seen whole (`loops`).
+    loops: crate::loops::Loops,
+    /// The last `advance` found nothing due but a CSS animation's frame,
+    /// and nothing else has asked for one since.
+    anim_only: bool,
+    /// The damage the last paint asked for, before any widening to the
+    /// whole frame; `None` when the frame was whole.
+    asked_rects: Option<Vec<Rect>>,
+    /// Frames `loops` drew: a test's view of it.
+    pub(crate) loop_drawn: u64,
     /// The document's base URL (SPEC §7.3), when it declares an absolute
     /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
     /// this host fetches nothing from the network.
@@ -934,6 +944,10 @@ impl Surface {
             tick: Instant::now(),
             framed: Instant::now(),
             animated: Vec::new(),
+            loops: Default::default(),
+            anim_only: false,
+            asked_rects: None,
+            loop_drawn: 0,
             store,
             playing: Vec::new(),
             anim_stale: true,
@@ -972,7 +986,7 @@ impl Surface {
             self.playing.push(anim::Playing::new(url, a, now));
         }
         self.anim_stale = true;
-        self.dirty = true;
+        self.set_dirty();
     }
 
     /// Moves every playing image that is seen to its frame at `now`. True
@@ -995,9 +1009,66 @@ impl Surface {
         // a frame: the render this dirty asks for resolves the document at
         // `tick`, and that resolve advances it. When nothing is animating
         // any more, it stops.
-        self.dirty |= css;
-        self.dirty |= changed;
+        if changed {
+            self.set_dirty();
+        }
+        if css && !self.dirty {
+            self.anim_only = true;
+            self.dirty = true;
+        }
         changed
+    }
+
+    /// The next frame must be painted: something besides a CSS animation
+    /// asks for it.
+    pub(crate) fn set_dirty(&mut self) {
+        self.dirty = true;
+        self.anim_only = false;
+    }
+
+    /// Something besides a CSS animation wants the next frame.
+    pub(crate) fn not_only_animation(&mut self) {
+        self.anim_only = false;
+    }
+
+    fn doc_time(&self) -> f64 {
+        self.tick
+            .saturating_duration_since(self.started)
+            .as_secs_f64()
+    }
+
+    /// A frame of infinite animations only, drawn from `loops` when they
+    /// have been seen whole: nothing is resolved or painted. `None` when
+    /// the normal path must paint it.
+    fn render_loops(&mut self, m: &Metrics, w: u32, h: u32, dark: bool) -> Option<Option<Damage>> {
+        let interval = self.frame_interval.as_secs_f64();
+        if !self.anim_only
+            || self.redeliver
+            || self.viewport != (w, h, m.scale, dark, self.reduced_motion)
+            || self.frame.width != w
+            || self.frame.height != h
+            || !self.damage.is_empty()
+            || self.damage.full
+            || !self.loops.ready(interval)
+        {
+            return None;
+        }
+        let t0 = Instant::now();
+        self.anim_only = false;
+        self.dirty = false;
+        self.loop_drawn += 1;
+        self.framed = on_grid(self.framed, self.tick, self.frame_interval);
+        let t = self.doc_time();
+        let rects = self.loops.draw(&mut self.frame.rgba, w, t);
+        if rects.is_empty() {
+            return Some(None);
+        }
+        self.frame.generation += 1;
+        self.frame.timings = Timings {
+            paint_us: t0.elapsed().as_micros() as u32,
+            ..Timings::default()
+        };
+        Some(Some(Damage::Rects(rects)))
     }
 
     /// When the next frame of an animated image that is seen, of
@@ -1057,7 +1128,7 @@ impl Surface {
             && let Some(id) = self.caret_node()
         {
             self.damage.touch(&self.doc, id, self.viewport.2 as f64);
-            self.dirty = true;
+            self.set_dirty();
         }
         self.caret_phase = 0;
         self.doc.set_caret_shown(true);
@@ -1137,7 +1208,7 @@ impl Surface {
     /// Paint the whole surface on the next render.
     pub fn repaint(&mut self) {
         self.damage.full = true;
-        self.dirty = true;
+        self.set_dirty();
     }
 
     /// [`crate::Host::computed_style`].
@@ -1186,7 +1257,7 @@ impl Surface {
     pub fn set_reduced_motion(&mut self, reduce: bool) {
         if self.reduced_motion != reduce {
             self.reduced_motion = reduce;
-            self.dirty = true;
+            self.set_dirty();
             self.damage.full = true;
         }
     }
@@ -1205,7 +1276,7 @@ impl Surface {
         if (cols, rows) != (self.cols, self.rows) {
             self.cols = cols;
             self.rows = rows;
-            self.dirty = true;
+            self.set_dirty();
             self.damage.full = true;
         }
     }
@@ -1374,6 +1445,9 @@ impl Surface {
         if w == 0 || h == 0 {
             return None;
         }
+        if let Some(out) = self.render_loops(m, w, h, dark) {
+            return out;
+        }
         let t0 = std::time::Instant::now();
         let s0 = trace::now();
         self.ensure_viewport(m, w, h, dark);
@@ -1441,7 +1515,35 @@ impl Surface {
         let out = self.paint_damage((w, h), scale, dev, redeliver, renderers, (t0, t1, s1));
         self.doc.set_viewport_scroll(exact);
         self.track_root_scroll();
+        self.watch_loops(scale, w, h);
         out
+    }
+
+    /// After a frame painted on the normal path: what `loops` keeps of it.
+    fn watch_loops(&mut self, scale: f64, w: u32, h: u32) {
+        let external = !std::mem::take(&mut self.anim_only);
+        let asked = self.asked_rects.take();
+        if self.frame.width != w || self.frame.height != h {
+            return;
+        }
+        // A whole frame only starts over: what it moved is not told apart.
+        let animated: &[NodeId] = if asked.is_some() { &self.animated } else { &[] };
+        let t = self.doc_time();
+        self.loops.observe(
+            &self.doc,
+            animated,
+            crate::loops::Pixels {
+                w,
+                h,
+                rgba: &self.frame.rgba,
+            },
+            t,
+            scale,
+            (8.0 * scale).ceil(),
+            self.frame_interval.as_secs_f64(),
+            asked.as_deref(),
+            external || asked.is_none(),
+        );
     }
 
     /// `render`'s paint, at the root's scroll in device pixels `dev`: what
@@ -1490,8 +1592,10 @@ impl Surface {
         let mut asked = (0, 0);
         let rects = if full {
             self.damage.clear();
+            self.asked_rects = None;
             vec![Rect { x: 0, y: 0, w, h }]
         } else if self.damage.is_empty() && uncovered.is_empty() {
+            self.asked_rects = Some(Vec::new());
             // Nothing to paint; a placement still gets the frame as it is.
             return redeliver.then_some(Damage::Full);
         } else {
@@ -1501,6 +1605,7 @@ impl Surface {
             // and a scrollbar's strip meet at a corner, and as one
             // rectangle they would be the whole frame.
             rects.extend(uncovered);
+            self.asked_rects = Some(rects.clone());
             // Many small rectangles can cost more than one full paint: each
             // carries a fixed overhead (the scene walked again, the render
             // context dispatched to its workers). Measured with `hotty
@@ -1821,7 +1926,7 @@ impl Surface {
                 }
             }
         }
-        self.dirty = true;
+        self.set_dirty();
     }
 
     /// Paints rectangle `r` of the surface into the frame.
@@ -1959,7 +2064,7 @@ impl Surface {
             }
         }
         self.fix_focus(false);
-        self.dirty = true;
+        self.set_dirty();
         first.map_or(Ok(()), Err)
     }
 
@@ -2097,7 +2202,7 @@ impl Surface {
         self.disable_controls();
         // `:disabled` may restyle anything, not only the controls.
         self.damage.full = true;
-        self.dirty = true;
+        self.set_dirty();
     }
 
     pub fn is_detached(&self) -> bool {
@@ -2132,7 +2237,7 @@ impl Surface {
     /// it is drawn again, at its new height if it has one.
     pub fn net_arrived(&mut self) {
         self.doc.handle_messages();
-        self.dirty = true;
+        self.set_dirty();
         self.damage.full = true;
         self.anim_stale = true;
     }
@@ -2144,7 +2249,7 @@ impl Surface {
         self.doc.handle_messages();
         self.doc.reload_resource_by_href(href);
         self.doc.handle_messages();
-        self.dirty = true;
+        self.set_dirty();
         self.damage.full = true;
         self.anim_stale = true;
     }
@@ -2300,7 +2405,7 @@ impl Surface {
         }
         self.doc.clear_text_selection();
         self.damage.full = true;
-        self.dirty = true;
+        self.set_dirty();
         true
     }
 
@@ -2506,7 +2611,7 @@ impl Surface {
         if had {
             events.push(keyboard_event("blur"));
         }
-        self.dirty = true;
+        self.set_dirty();
         events
     }
 
@@ -2549,7 +2654,7 @@ impl Surface {
         self.move_focus(None);
         self.told = None;
         self.caret_owed = None;
-        self.dirty = true;
+        self.set_dirty();
         true
     }
 
@@ -3033,7 +3138,7 @@ impl Surface {
         self.keyboard_follows_focus(events);
         self.wake_caret(Instant::now());
         self.carets(watched, events);
-        self.dirty = true;
+        self.set_dirty();
     }
 
     /// Half a device pixel, in CSS pixels: an edge that close to a cell's is
@@ -3565,7 +3670,7 @@ impl Surface {
                 let old = self.doc.get_hover_node_id();
                 self.doc.clear_hover();
                 self.touch_chains(old, None);
-                self.dirty = true;
+                self.set_dirty();
                 return Vec::new();
             }
         };
@@ -3601,7 +3706,7 @@ impl Surface {
             }
             _ => None,
         };
-        self.dirty = true;
+        self.set_dirty();
         if self.detached {
             // It never has the keyboard, and reports nothing: not even the
             // focus Blitz gives a `summary` it toggled.
@@ -3714,7 +3819,7 @@ impl Surface {
                     self.told = None;
                     events.push(keyboard_event("blur"));
                 }
-                self.dirty = true;
+                self.set_dirty();
                 (true, events)
             }
             (KeyName::Escape, _) => (false, Vec::new()),
@@ -3733,7 +3838,7 @@ impl Surface {
                 let id = focused.expect("a text control is focused");
                 match self.field_key(id, key, kind == Control::TextArea, &keymap) {
                     Some(events) => {
-                        self.dirty = true;
+                        self.set_dirty();
                         (true, events)
                     }
                     None => self.scroll_key(key, focused),
@@ -3748,7 +3853,7 @@ impl Surface {
             }
             (KeyName::Space | KeyName::Enter, Control::Activatable) if plain => {
                 let events = focused.map(|id| self.activate(id)).unwrap_or_default();
-                self.dirty = true;
+                self.set_dirty();
                 (true, events)
             }
             (_, Control::Select) => {
@@ -3868,7 +3973,7 @@ impl Surface {
         };
         self.doc.pick_option(id, options[pick]);
         self.damage.touch(&self.doc, id, self.viewport.2 as f64);
-        self.dirty = true;
+        self.set_dirty();
         let rev = field::bump(&mut self.revs, &self.doc, id);
         let mut events = Vec::new();
         if let Some(target) = self.id_of(id) {
@@ -4076,7 +4181,7 @@ impl Surface {
         let mut events = self.replace_selection(id, &text);
         self.edited(id, before, None);
         self.bring_into_view(id);
-        self.dirty = true;
+        self.set_dirty();
         self.carets(watched, &mut events);
         Some(events)
     }
@@ -4225,7 +4330,7 @@ impl Surface {
         self.damage.touch(&self.doc, node, self.viewport.2 as f64);
         self.doc.set_text_input(node, value, anchor, caret);
         self.snapshot_focus();
-        self.dirty = true;
+        self.set_dirty();
         true
     }
 
@@ -4242,7 +4347,7 @@ impl Surface {
         let key = Key::new(KeyName::Other, Mods::default());
         let watched = self.watch(None);
         let mut events = self.field_action(id, &key, action, kind == Control::TextArea, extend);
-        self.dirty = true;
+        self.set_dirty();
         self.carets(watched, &mut events);
         events
     }
@@ -4340,7 +4445,7 @@ impl Surface {
                 self.fade(id, now);
             }
         }
-        self.dirty = true;
+        self.set_dirty();
         if let Some((x, y)) = self.pointer_at
             && !self.held()
             && self.root_bar.drag.is_none()
@@ -4362,7 +4467,7 @@ impl Surface {
         for vertical in [true, false] {
             self.damage.add(paint::root_bar_strip(&self.doc, vertical));
         }
-        self.dirty = true;
+        self.set_dirty();
     }
 
     /// When the scrollbars that fade are next painted: as their fade
@@ -4413,7 +4518,9 @@ impl Surface {
             let interval = self.frame_interval;
             self.faded_at = Some(self.faded_at.map_or(now, |p| on_grid(p, now, interval)));
         }
-        self.dirty |= changed;
+        if changed {
+            self.set_dirty();
+        }
         changed
     }
 
@@ -4717,7 +4824,7 @@ impl Surface {
             self.damage.touch(&self.doc, n, scale);
             self.fade(n, now);
         }
-        self.dirty = true;
+        self.set_dirty();
     }
 
     /// Form submissions arrive as navigations (Blitz submits forms by
