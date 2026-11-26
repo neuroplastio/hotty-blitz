@@ -51,6 +51,8 @@ const STYLE: &str = "<style>
   .tint{position:absolute;top:0;right:0;bottom:0;left:0;background:#48f;opacity:.35;animation:f 800ms ease-in-out infinite}
   .tint ~ *{position:relative}
   .grow{height:10px;width:20px;background:#c66;animation:grow 400ms linear infinite}
+  .fast{margin:0 24px}.fast>svg{width:48px;height:48px;animation-duration:350ms}
+  .orbit{width:8px;height:8px;margin:0 14px;background:#6c6;box-shadow:12px 0 0 #c66;animation:r 400ms linear infinite}
 </style>";
 
 const SPIN: &str = "<span class=spin><svg width=16 height=16 viewBox='0 0 16 16'><circle cx=8 cy=8 r=6 stroke='#6af' stroke-width=2 fill=none stroke-dasharray='24 14'/></svg></span>";
@@ -156,6 +158,33 @@ fn a_large_fade_under_text_plays_as_a_blend() {
         .collect();
     let n = plays_as_painted(&minis, "40", "20", Duration::from_millis(800));
     assert!(n >= 40, "{n} frames from memory");
+}
+
+#[test]
+fn loops_side_by_side_play_each_its_own_period() {
+    // A dot beside a spinner, nearer than the damage tracker merges: kept
+    // as one, their common period (2.8 s) would not fit the budget.
+    let n = plays_as_painted(
+        &format!(
+            "<div class=bar><span class=dot></span><span class=\"spin fast\">{}</span><span>working</span></div>",
+            &SPIN[SPIN.find('>').unwrap() + 1..SPIN.rfind('<').unwrap()]
+        ),
+        "40",
+        "8",
+        Duration::from_millis(2800),
+    );
+    assert!(n >= 300, "{n} frames from memory");
+}
+
+#[test]
+fn a_loop_whose_shadow_reaches_past_its_box_is_painted() {
+    let n = plays_as_painted(
+        "<div class=bar><span class=orbit></span><span>agent working</span></div>",
+        "30",
+        "2",
+        Duration::from_millis(400),
+    );
+    assert_eq!(n, 0, "a shadow outside the kept region is not kept");
 }
 
 #[test]

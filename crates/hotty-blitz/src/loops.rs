@@ -2,8 +2,8 @@
 //! on a surface repeats forever and has been seen through a whole period,
 //! its frames come from what was painted then: no restyle, no paint.
 //!
-//! Each region (the damage of the elements animating there, merged as the
-//! damage tracker merges) keeps one of two things:
+//! Each region (an element animating there, with the edge it antialiases,
+//! or elements whose boxes meet) keeps one of two things:
 //! - `Frames`: its pixels at each phase seen, the nearest drawn. Small
 //!   regions: a spinner, a few typing dots.
 //! - `Fade`: an opacity loop of any size, as the pixels at its lowest and
@@ -12,9 +12,15 @@
 //!   at that phase. Checks taken while watching must match the blend, or
 //!   the region does not count as a fade (something else moves too).
 //!
+//! Regions near each other have their own periods: a pulsing dot beside a
+//! spinner. While watching, the pixels around them (the damage tracker's
+//! margin, which takes in shadows) must not change, or what moves is not
+//! all in the regions.
+//!
 //! Anything else (a frame with a cause besides animation, an animation that
-//! ends, damage outside the regions) drops what is kept, and the next
-//! period is watched again on the normal path.
+//! ends, damage outside what was watched, pixels changing around the
+//! regions) drops what is kept, and the next period is watched again on the
+//! normal path.
 
 use crate::Rect;
 use crate::paint;
@@ -23,8 +29,11 @@ use style::values::computed::{AnimationDirection, AnimationPlayState};
 
 /// Bytes of `Frames` pixels a surface keeps.
 const BUDGET: usize = 8 << 20;
-/// Rectangles this near are one region, as the damage tracker merges.
+/// Rectangles this near are merged by the damage tracker.
 const SLACK: u32 = 16;
+/// The edge kept around an element's box, in CSS pixels: what its
+/// antialiasing touches.
+const EDGE: f64 = 2.0;
 /// How far a fade's checks may be from the blend, per byte.
 const TOLERANCE: i32 = 3;
 /// Checks a fade takes over a period.
@@ -35,6 +44,9 @@ const LONGEST: f64 = 20_000.0;
 #[derive(Default)]
 pub(crate) struct Loops {
     regions: Vec<Region>,
+    /// What the damage tracker repaints around the regions, as it merges,
+    /// with the pixels there at the last frame watched.
+    around: Vec<(Rect, Vec<u8>)>,
     /// Something animates that cannot play from memory: nothing is kept
     /// until a frame with another cause starts over.
     off: bool,
@@ -44,6 +56,8 @@ pub(crate) struct Loops {
 
 struct Region {
     rect: Rect,
+    /// The damage tracker's rectangle for it: `rect` with its margin.
+    wide: Rect,
     nodes: Vec<NodeId>,
     /// Seconds after which the region looks the same again.
     period: f64,
@@ -100,6 +114,7 @@ impl Loops {
     ) {
         if external {
             self.regions.clear();
+            self.around.clear();
             self.off = false;
             self.quiet_from = t;
         }
@@ -111,22 +126,27 @@ impl Loops {
             let Some((period, settle)) = timing(doc, id) else {
                 return self.stop();
             };
-            if let Some(rect) =
-                paint::extent(doc, id, scale).and_then(|d| d.to_rect(margin, px.w, px.h))
-            {
-                found.push((rect, id, period, settle));
+            let Some(d) = paint::extent(doc, id, scale) else {
+                continue;
+            };
+            if let (Some(rect), Some(wide)) = (
+                d.to_rect((EDGE * scale).ceil(), px.w, px.h),
+                d.to_rect(margin, px.w, px.h),
+            ) {
+                found.push((rect, wide, id, period, settle));
             }
         }
-        for (rect, id, period, settle) in found {
+        for (rect, wide, id, period, settle) in found {
             // A transition the element may have started runs out first.
             let settled = self.quiet_from + settle;
             let since = t.max(settled);
-            match self.regions.iter().position(|r| near(r.rect, rect)) {
+            match self.regions.iter().position(|r| overlap(r.rect, rect)) {
                 Some(i)
                     if contains(self.regions[i].rect, rect)
                         && self.regions[i].nodes.contains(&id) =>
                 {
                     let r = &mut self.regions[i];
+                    r.wide = union(r.wide, wide);
                     if r.since < settled {
                         r.restart(since);
                     }
@@ -137,6 +157,7 @@ impl Loops {
                         return self.stop();
                     };
                     r.rect = union(r.rect, rect);
+                    r.wide = union(r.wide, wide);
                     if !r.nodes.contains(&id) {
                         r.nodes.push(id);
                     }
@@ -145,6 +166,7 @@ impl Loops {
                 }
                 None => self.regions.push(Region {
                     rect,
+                    wide,
                     nodes: vec![id],
                     period,
                     since,
@@ -158,7 +180,7 @@ impl Loops {
         let mut i = 0;
         while i < self.regions.len() {
             let Some(j) = (i + 1..self.regions.len())
-                .find(|&j| near(self.regions[i].rect, self.regions[j].rect))
+                .find(|&j| overlap(self.regions[i].rect, self.regions[j].rect))
             else {
                 i += 1;
                 continue;
@@ -169,19 +191,28 @@ impl Loops {
                 return self.stop();
             };
             r.rect = union(r.rect, other.rect);
+            r.wide = union(r.wide, other.wide);
             r.nodes.extend(other.nodes);
             r.period = p;
             r.restart(r.since.max(other.since));
             i = 0;
         }
+        let around = merged(self.regions.iter().map(|r| r.wide).collect());
         if !external {
             // An animation that moves what is outside its regions (its box
             // grows and pushes others) cannot be kept as pixels.
-            let inside = |a: &Rect| self.regions.iter().any(|r| contains(r.rect, *a));
+            let inside = |a: &Rect| around.iter().any(|r| contains(*r, *a));
             if !asked.is_some_and(|rs| rs.iter().all(inside)) {
                 return self.stop();
             }
+            // Nor can one whose ink reaches past its region (a shadow).
+            let same = around.len() == self.around.len()
+                && around.iter().zip(&self.around).all(|(a, b)| *a == b.0);
+            if same && !self.still(&px) {
+                return self.stop();
+            }
         }
+        self.around = around.into_iter().map(|r| (r, take(&px, r))).collect();
         self.choose(interval);
         for r in &mut self.regions {
             if t < r.since {
@@ -201,6 +232,26 @@ impl Loops {
     fn stop(&mut self) {
         self.off = true;
         self.regions.clear();
+        self.around.clear();
+    }
+
+    /// Whether the pixels around the regions are as at the last frame
+    /// watched.
+    fn still(&self, px: &Pixels) -> bool {
+        self.around.iter().all(|(r, before)| {
+            (0..r.h).all(|y| {
+                let row = &before[(y * r.w * 4) as usize..((y + 1) * r.w * 4) as usize];
+                let at = (((r.y + y) * px.w + r.x) * 4) as usize;
+                let now = &px.rgba[at..at + row.len()];
+                row == now
+                    || (0..r.w).all(|x| {
+                        let (cx, cy) = (r.x + x, r.y + y);
+                        let i = (x * 4) as usize;
+                        row[i..i + 4] == now[i..i + 4]
+                            || self.regions.iter().any(|g| inside(g.rect, cx, cy))
+                    })
+            })
+        })
     }
 
     /// Regions that have kept nothing yet decide what they keep: frames while
@@ -521,6 +572,31 @@ fn put(rgba: &mut [u8], w: u32, r: Rect, src: &[u8]) {
         let at = ((r.y as usize + y) * w as usize + r.x as usize) * 4;
         rgba[at..at + row].copy_from_slice(&src[y * row..(y + 1) * row]);
     }
+}
+
+/// Rectangles merged as the damage tracker merges them: those near each
+/// other become their bounding box.
+fn merged(mut rects: Vec<Rect>) -> Vec<Rect> {
+    let mut i = 0;
+    while i < rects.len() {
+        match (i + 1..rects.len()).find(|&j| near(rects[i], rects[j])) {
+            Some(j) => {
+                let o = rects.swap_remove(j);
+                rects[i] = union(rects[i], o);
+                i = 0;
+            }
+            None => i += 1,
+        }
+    }
+    rects
+}
+
+fn overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+fn inside(r: Rect, x: u32, y: u32) -> bool {
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 
 fn near(a: Rect, b: Rect) -> bool {
