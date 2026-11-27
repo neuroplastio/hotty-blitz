@@ -51,6 +51,7 @@ const STYLE: &str = "<style>
   .tint{position:absolute;top:0;right:0;bottom:0;left:0;background:#48f;opacity:.35;animation:f 800ms ease-in-out infinite}
   .tint ~ *{position:relative}
   .grow{height:10px;width:20px;background:#c66;animation:grow 400ms linear infinite}
+  .s2{animation:p 400ms linear infinite .3s}.s3{animation:p 400ms linear infinite .6s}
   .fast{margin:0 24px}.fast>svg{width:48px;height:48px;animation-duration:350ms}
   .orbit{width:8px;height:8px;margin:0 14px;background:#6c6;box-shadow:12px 0 0 #c66;animation:r 400ms linear infinite}
 </style>";
@@ -61,6 +62,18 @@ const SPIN: &str = "<span class=spin><svg width=16 height=16 viewBox='0 0 16 16'
 /// came from memory; every frame of the last of them is checked against a
 /// full paint at the same moment, one period later.
 fn plays_as_painted(body: &str, cols: &str, rows: &str, period: Duration) -> u64 {
+    plays_as_painted_from(body, cols, rows, period, AHEAD)
+}
+
+/// As `plays_as_painted`, the first frame `ahead` past the document's
+/// start.
+fn plays_as_painted_from(
+    body: &str,
+    cols: &str,
+    rows: &str,
+    period: Duration,
+    ahead: Duration,
+) -> u64 {
     let mut h = host();
     h.handle(&cmd(&[("a", "doc"), ("s", "x")], &format!("{STYLE}{body}")));
     h.handle(&cmd(
@@ -70,7 +83,7 @@ fn plays_as_painted(body: &str, cols: &str, rows: &str, period: Duration) -> u64
     render(&mut h);
     let fi = h.frame_interval();
     let per = (period.as_secs_f64() / fi.as_secs_f64()).round() as u32;
-    let mut t = Instant::now() + AHEAD;
+    let mut t = Instant::now() + ahead;
     let mut step = |h: &mut Host| {
         t += fi;
         h.animate(t);
@@ -145,6 +158,20 @@ fn typing_dots_with_delays_play_from_memory() {
         Duration::from_millis(400),
     );
     assert!(n >= 20, "{n} frames from memory");
+}
+
+#[test]
+fn delayed_loops_play_from_memory_once_all_have_started() {
+    // From the document's start: the later dots start while the first is
+    // watched, which stops that watch.
+    let n = plays_as_painted_from(
+        "<div class=bar><span class=t><i class=d1></i><i class=s2></i><i class=s3></i></span><span>typing</span></div>",
+        "30",
+        "2",
+        Duration::from_millis(1200),
+        Duration::ZERO,
+    );
+    assert!(n >= 60, "{n} frames from memory");
 }
 
 #[test]

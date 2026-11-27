@@ -19,8 +19,10 @@
 //!
 //! Anything else (a frame with a cause besides animation, an animation that
 //! ends, damage outside what was watched, pixels changing around the
-//! regions) drops what is kept, and the next period is watched again on the
-//! normal path.
+//! regions) drops what is kept. A frame with another cause starts watching
+//! again at once; otherwise watching starts again after a pause that
+//! doubles each time it stops (an animation that starts after a delay
+//! stops the first watch; one that moves layout stops every watch).
 
 use crate::Rect;
 use crate::paint;
@@ -40,6 +42,8 @@ const TOLERANCE: i32 = 3;
 const CHECKS: usize = 5;
 /// The longest period kept, in milliseconds.
 const LONGEST: f64 = 20_000.0;
+/// Seconds before watching again after the first stop, and the most.
+const RETRY: (f64, f64) = (1.0, 16.0);
 
 #[derive(Default)]
 pub(crate) struct Loops {
@@ -47,9 +51,10 @@ pub(crate) struct Loops {
     /// What the damage tracker repaints around the regions, as it merges,
     /// with the pixels there at the last frame watched.
     around: Vec<(Rect, Vec<u8>)>,
-    /// Something animates that cannot play from memory: nothing is kept
-    /// until a frame with another cause starts over.
-    off: bool,
+    /// The document time before which nothing is watched, after a stop.
+    retry_at: f64,
+    /// The pause after the last stop, 0 when watching worked.
+    backoff: f64,
     /// The document time of the last frame with another cause.
     quiet_from: f64,
 }
@@ -115,16 +120,17 @@ impl Loops {
         if external {
             self.regions.clear();
             self.around.clear();
-            self.off = false;
+            self.retry_at = 0.0;
+            self.backoff = 0.0;
             self.quiet_from = t;
         }
-        if self.off {
+        if t < self.retry_at {
             return;
         }
         let mut found = Vec::new();
         for &id in animated {
             let Some((period, settle)) = timing(doc, id) else {
-                return self.stop();
+                return self.stop(t);
             };
             let Some(d) = paint::extent(doc, id, scale) else {
                 continue;
@@ -154,7 +160,7 @@ impl Loops {
                 Some(i) => {
                     let r = &mut self.regions[i];
                     let Some(p) = lcm(r.period, period) else {
-                        return self.stop();
+                        return self.stop(t);
                     };
                     r.rect = union(r.rect, rect);
                     r.wide = union(r.wide, wide);
@@ -188,7 +194,7 @@ impl Loops {
             let other = self.regions.swap_remove(j);
             let r = &mut self.regions[i];
             let Some(p) = lcm(r.period, other.period) else {
-                return self.stop();
+                return self.stop(t);
             };
             r.rect = union(r.rect, other.rect);
             r.wide = union(r.wide, other.wide);
@@ -203,13 +209,13 @@ impl Loops {
             // grows and pushes others) cannot be kept as pixels.
             let inside = |a: &Rect| around.iter().any(|r| contains(*r, *a));
             if !asked.is_some_and(|rs| rs.iter().all(inside)) {
-                return self.stop();
+                return self.stop(t);
             }
             // Nor can one whose ink reaches past its region (a shadow).
             let same = around.len() == self.around.len()
                 && around.iter().zip(&self.around).all(|(a, b)| *a == b.0);
             if same && !self.still(&px) {
-                return self.stop();
+                return self.stop(t);
             }
         }
         self.around = around.into_iter().map(|r| (r, take(&px, r))).collect();
@@ -219,20 +225,19 @@ impl Loops {
                 continue;
             }
             if !r.keep(doc, &px, t, interval) {
-                self.off = true;
-                self.regions.clear();
-                return;
+                return self.stop(t);
             }
         }
         if self.kept() > BUDGET * 2 {
-            self.stop();
+            self.stop(t);
         }
     }
 
-    fn stop(&mut self) {
-        self.off = true;
+    fn stop(&mut self, t: f64) {
         self.regions.clear();
         self.around.clear();
+        self.backoff = (self.backoff * 2.0).clamp(RETRY.0, RETRY.1);
+        self.retry_at = t + self.backoff;
     }
 
     /// Whether the pixels around the regions are as at the last frame
@@ -290,7 +295,11 @@ impl Loops {
     /// Whether every region has been seen through its period, densely
     /// enough, and fades blend as they should.
     pub(crate) fn ready(&mut self, interval: f64) -> bool {
-        !self.off && !self.regions.is_empty() && self.regions.iter_mut().all(|r| r.ready(interval))
+        let ready = !self.regions.is_empty() && self.regions.iter_mut().all(|r| r.ready(interval));
+        if ready {
+            self.backoff = 0.0;
+        }
+        ready
     }
 
     /// Draws document time `t` from what is kept into `rgba` (a `w` wide
@@ -544,14 +553,17 @@ fn blend(l: u8, h: u8, u: f32) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
+/// `blend` over a region, every frame of a fade: in integers with a
+/// weight of 256ths (within 1 of `blend`), which the compiler vectorizes.
 fn blend_into(rgba: &mut [u8], w: u32, r: Rect, lo: &[u8], hi: &[u8], u: f32) {
     let row = r.w as usize * 4;
+    let k = (u * 256.0).round() as u16;
     for y in 0..r.h as usize {
         let at = ((r.y as usize + y) * w as usize + r.x as usize) * 4;
         let dst = &mut rgba[at..at + row];
         let (l, h) = (&lo[y * row..(y + 1) * row], &hi[y * row..(y + 1) * row]);
         for ((d, &l), &h) in dst.iter_mut().zip(l).zip(h) {
-            *d = blend(l, h, u);
+            *d = ((l as u16 * (256 - k) + h as u16 * k + 128) >> 8) as u8;
         }
     }
 }
