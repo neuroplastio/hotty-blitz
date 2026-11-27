@@ -225,45 +225,207 @@ fn an_animation_that_moves_layout_is_painted() {
     assert_eq!(n, 0, "a loop that moves others is not kept");
 }
 
-#[test]
-fn a_change_beside_the_loop_paints_and_watches_again() {
+/// A delta: its op, target, key and value.
+type Delta<'a> = (&'a str, &'a str, Option<&'a str>, &'a str);
+
+/// Watches `body`'s loops (`period`) until they play from memory, applies
+/// `delta`, and plays on for `periods` periods. Returns how many frames of
+/// the first period after the delta's own frame came from memory, and of
+/// the last. Each frame of the last is checked against a full paint one
+/// period on.
+fn after_change(
+    body: &str,
+    cols: &str,
+    rows: &str,
+    period: Duration,
+    delta: Delta,
+    periods: u32,
+) -> (u64, u64) {
     let mut h = host();
+    h.handle(&cmd(&[("a", "doc"), ("s", "x")], &format!("{STYLE}{body}")));
     h.handle(&cmd(
-        &[("a", "doc"), ("s", "x")],
-        &format!("{STYLE}<div class=bar><span class=dot></span><span id=s>one</span></div>"),
-    ));
-    h.handle(&cmd(
-        &[("a", "place"), ("s", "x"), ("c", "30"), ("r", "2")],
+        &[("a", "place"), ("s", "x"), ("c", cols), ("r", rows)],
         "",
     ));
     render(&mut h);
     let fi = h.frame_interval();
+    let per = (period.as_secs_f64() / fi.as_secs_f64()).round() as u32;
     let mut t = Instant::now() + AHEAD;
-    for _ in 0..80 {
+    let mut step = |h: &mut Host| {
         t += fi;
         h.animate(t);
-        render(&mut h);
+        render(h);
+        h.frame("x").unwrap().rgba.clone()
+    };
+    for _ in 0..3 * per {
+        step(&mut h);
     }
-    assert!(h.loop_frames("x") > 0);
-    let before = h.loop_frames("x");
+    assert!(
+        h.loop_frames("x") > 0,
+        "the loop plays from memory before the change"
+    );
+    let (op, target, key, value) = delta;
     h.handle(&common::delta_cmd(
         &[("s", "x")],
-        "text",
-        Some("s"),
-        None,
-        "two",
+        op,
+        Some(target),
+        key,
+        value,
     ));
-    t += fi;
-    h.animate(t);
-    render(&mut h);
+    let before = h.loop_frames("x");
+    step(&mut h);
     assert_eq!(h.loop_frames("x"), before, "the delta's frame is painted");
-    // Until the loop has been seen through a period again.
-    for _ in 0..10 {
-        t += fi;
-        h.animate(t);
-        render(&mut h);
+    let mut counts = Vec::new();
+    let mut kept = Vec::new();
+    for _ in 0..periods {
+        let before = h.loop_frames("x");
+        kept = (0..per).map(|_| step(&mut h)).collect();
+        counts.push(h.loop_frames("x") - before);
     }
-    assert_eq!(h.loop_frames("x"), before, "a period is watched first");
+    let w = h.frame("x").unwrap().width as usize;
+    for (k, kept) in kept.iter().enumerate() {
+        h.repaint();
+        let painted = step(&mut h);
+        let worst = kept
+            .iter()
+            .zip(&painted)
+            .enumerate()
+            .map(|(i, (a, b))| ((*a as i32 - *b as i32).abs(), i))
+            .max()
+            .unwrap();
+        assert!(
+            worst.0 <= 3,
+            "frame {k}: {} off at pixel ({}, {})",
+            worst.0,
+            worst.1 / 4 % w,
+            worst.1 / 4 / w,
+        );
+    }
+    (counts[0], *counts.last().unwrap())
+}
+
+#[test]
+fn a_change_beside_the_loop_keeps_it() {
+    // The text's damage reaches the dot's region (the tracker merges what
+    // is near), but leaves its pixels and elements alone.
+    let (first, _) = after_change(
+        "<div class=bar><span class=dot></span><span id=s>one</span></div>",
+        "30",
+        "2",
+        Duration::from_millis(400),
+        ("text", "s", None, "two, longer"),
+        1,
+    );
+    // All but the frame after the change, which is watched for a
+    // transition the change started (it moves only from then).
+    assert_eq!(first, 23, "the loop plays on from memory");
+}
+
+#[test]
+fn a_spinner_keeps_its_frames_through_its_tabs_text() {
+    let (first, _) = after_change(
+        &format!(
+            "<div class=bar id=tab>{SPIN}<span><b>shark</b><br><span id=s>Listing files</span></span></div>"
+        ),
+        "30",
+        "3",
+        Duration::from_millis(400),
+        ("text", "s", None, "Reading a file"),
+        1,
+    );
+    assert_eq!(first, 23, "the spinner plays on from memory");
+}
+
+#[test]
+fn a_change_to_what_the_loop_inherits_watches_it_again() {
+    let (first, last) = after_change(
+        "<div class=bar id=s><span class=dot></span><span>one</span></div>",
+        "30",
+        "2",
+        Duration::from_millis(400),
+        ("attr", "s", Some("style"), "background:#334"),
+        3,
+    );
+    assert_eq!(first, 0, "a period is watched first");
+    assert!(last > 0, "then it plays from memory");
+}
+
+#[test]
+fn a_change_inside_the_loop_watches_it_again() {
+    let (first, last) = after_change(
+        "<div class=bar><span class=spin><svg width=16 height=16 viewBox='0 0 16 16'><circle id=s cx=8 cy=8 r=6 stroke='#6af' stroke-width=2 fill=none stroke-dasharray='24 14'/></svg></span><span>building</span></div>",
+        "30",
+        "2",
+        Duration::from_millis(400),
+        ("attr", "s", Some("stroke"), "#c66"),
+        3,
+    );
+    assert_eq!(first, 0, "a period is watched first");
+    assert!(last > 0, "then it plays from memory");
+}
+
+#[test]
+fn a_change_under_the_loop_watches_it_again() {
+    // Not an element of the loop's, but its pixels: the loop's do change.
+    let (first, last) = after_change(
+        "<div class=bar style='position:relative'><i id=s style='position:absolute;left:0;top:0;width:60px;height:26px;background:#333'></i><span class=dot style='position:relative'></span><span style='position:relative'>one</span></div>",
+        "30",
+        "2",
+        Duration::from_millis(400),
+        (
+            "attr",
+            "s",
+            Some("style"),
+            "position:absolute;left:0;top:0;width:60px;height:26px;background:#933",
+        ),
+        3,
+    );
+    assert_eq!(first, 0, "a period is watched first");
+    assert!(last > 0, "then it plays from memory");
+}
+
+#[test]
+fn a_change_over_a_fade_watches_it_again() {
+    let minis: String = (0..3)
+        .map(|i| format!("<div class=mini><div class=tint></div><b id=s{i}>pane {i}</b><p>output line</p></div>"))
+        .collect();
+    let (first, last) = after_change(
+        &minis,
+        "40",
+        "20",
+        Duration::from_millis(800),
+        ("text", "s0", None, "pane zero"),
+        3,
+    );
+    assert!(
+        first < 48,
+        "{first}: the fade the text is over is watched again"
+    );
+    assert!(last > 0, "then it plays from memory");
+}
+
+#[test]
+fn a_transition_beside_the_loop_runs_and_the_loop_plays_on() {
+    // The transition is painted to its end (played from memory, it would
+    // stand still), and the loop needs no pause after it.
+    let (first, last) = after_change(
+        "<div class=bar><span class=dot></span><span id=s style='transition:background-color 150ms linear;padding:2px'>one</span></div>",
+        "30",
+        "2",
+        Duration::from_millis(400),
+        (
+            "attr",
+            "s",
+            Some("style"),
+            "transition:background-color 150ms linear;padding:2px;background-color:#933",
+        ),
+        2,
+    );
+    assert!(
+        (1..24).contains(&first),
+        "{first}: painted while it runs, then from memory"
+    );
+    assert_eq!(last, 24, "the loop plays from memory once it has run");
 }
 
 #[test]
@@ -306,8 +468,8 @@ fn a_change_away_from_the_loop_keeps_it() {
     let kept: Vec<Vec<u8>> = (0..per).map(|_| step(&mut h)).collect();
     assert_eq!(
         h.loop_frames("x") - before,
-        u64::from(per),
-        "the loop plays on from memory"
+        u64::from(per - 1),
+        "the loop plays on from memory, but for the frame watched for a transition"
     );
     // Each as a full paint one period on paints it, the new text included.
     for (k, kept) in kept.iter().enumerate() {

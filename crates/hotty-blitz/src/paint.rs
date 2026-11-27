@@ -614,7 +614,7 @@ pub fn extent(doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) 
 /// What `extent` measures before any CSS transform maps it: where layout
 /// put the node's box and its overflow. A transform that moves only
 /// changes where it paints, not this.
-fn layout_extent(
+pub fn layout_extent(
     doc: &blitz_dom::BaseDocument,
     id: blitz_dom::NodeId,
     scale: f64,
@@ -729,6 +729,8 @@ pub struct Tracker {
     /// What the last `take` damaged for those nodes and the rectangles:
     /// the damage of the frame's other causes, without its animations'.
     taken_changed: Vec<Rect>,
+    /// The nodes the last `take` found changed by those causes.
+    taken_nodes: Vec<blitz_dom::NodeId>,
 }
 
 impl Tracker {
@@ -888,7 +890,7 @@ impl Tracker {
         }
         self.old.clear();
         self.lines.clear();
-        self.changed.clear();
+        self.taken_nodes = self.changed.drain().collect();
         self.full = false;
         self.taken_changed = merge(changed, 16, 64);
         merge(out, 16, 64)
@@ -900,6 +902,12 @@ impl Tracker {
         &self.taken_changed
     }
 
+    /// The nodes behind [`Tracker::taken_changed`]: mutated, restyled or
+    /// hovered.
+    pub fn taken_nodes(&self) -> &[blitz_dom::NodeId] {
+        &self.taken_nodes
+    }
+
     pub fn clear(&mut self) {
         self.touched.clear();
         self.rects.clear();
@@ -907,6 +915,7 @@ impl Tracker {
         self.lines.clear();
         self.changed.clear();
         self.taken_changed.clear();
+        self.taken_nodes.clear();
         self.full = false;
     }
 }

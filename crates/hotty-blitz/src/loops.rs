@@ -17,16 +17,24 @@
 //! margin, which takes in shadows) must not change, or what moves is not
 //! all in the regions.
 //!
-//! A frame with another cause whose damage stays apart from the regions
-//! (text changing elsewhere) keeps them. Anything else (such a frame that
-//! damages a region, an animation that ends, damage outside what was
-//! watched, pixels changing around the regions) drops what is kept. A
-//! frame with another cause starts watching again at once; otherwise watching starts again after a pause that
-//! doubles each time it stops (an animation that starts after a delay
-//! stops the first watch; one that moves layout stops every watch).
+//! A frame with another cause (a delta, a hover, a transition running)
+//! keeps a region its damage stays apart from, and one it reaches but did
+//! not change: its elements are where they were, nothing changed them,
+//! what they inherit from or what they hold, and its pixels are what it
+//! keeps (all of them at a phase it keeps, else those its loop never
+//! moves). As a browser keeps a layer that a change beside it leaves
+//! alone, text changing beside a spinner keeps the spinner's frames.
+//! Such a frame drops the other regions and they are watched again at
+//! once. A transition is painted to its end, and so is the frame after a
+//! change (a transition the change started moves only from then) and its
+//! delay, if one is declared. Anything else (an animation that ends, damage outside what was
+//! watched, pixels changing around the regions) drops what is kept, and
+//! watching starts again after a pause that doubles each time it stops (an
+//! animation that starts after a delay stops the first watch; one that
+//! moves layout stops every watch).
 
 use crate::Rect;
-use crate::paint;
+use crate::paint::{self, DevRect};
 use blitz_dom::{BaseDocument, NodeId};
 use style::values::computed::{AnimationDirection, AnimationPlayState};
 
@@ -60,6 +68,13 @@ pub(crate) struct Loops {
     quiet_from: f64,
     /// Frames of animation only that painted nothing, in a row.
     blank: Blank,
+    /// The last frame watched had a transition running: frames are painted
+    /// until it ends, or it would never move on.
+    transition: bool,
+    /// The document time until which a transition the last change started
+    /// may not have moved yet: the change's own frame does not move it
+    /// (the next one does, and is watched), and one with a delay waits.
+    held_until: f64,
     /// A whole period of everything animating in the document painted
     /// nothing: the surface asks for no frames.
     pub(crate) still: bool,
@@ -88,6 +103,11 @@ struct Region {
     /// The damage tracker's rectangle for it: `rect` with its margin.
     wide: Rect,
     nodes: Vec<NodeId>,
+    /// Where layout put each of `nodes` at the last frame kept.
+    boxes: Vec<Option<DevRect>>,
+    /// The document time of the last frame with another cause it was kept
+    /// through: no transition started on its elements then.
+    kept_through: f64,
     /// Seconds after which the region looks the same again.
     period: f64,
     /// Frames from this document time on are kept.
@@ -130,7 +150,8 @@ impl Loops {
     /// `animated`, the elements its resolve moved; `asked`, the damage it
     /// painted before any was widened to the whole frame (`None` when the
     /// frame was whole); `external`, if anything besides animation caused
-    /// it, what that damaged (`None` when it is not known).
+    /// it, what that damaged and the nodes it changed (`None` when it is
+    /// not known).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe(
         &mut self,
@@ -142,34 +163,68 @@ impl Loops {
         margin: f64,
         interval: f64,
         asked: Option<&[Rect]>,
-        external: Option<Option<&[Rect]>>,
+        external: Option<Option<(&[Rect], &[NodeId])>>,
     ) {
-        // A change that paints nothing kept keeps it all: a clock ticking
-        // beside a pulsing dot.
-        let apart = |rs: &[Rect]| {
-            !self.regions.is_empty()
-                && rs
-                    .iter()
-                    .all(|c| self.regions.iter().all(|r| !overlap(r.rect, *c)))
-        };
-        let kept = external.flatten().is_some_and(apart);
-        let external = external.is_some();
-        if kept {
-            self.still = false;
-        } else if external {
-            self.still = false;
-            self.regions.clear();
-            self.around.clear();
-            self.retry_at = 0.0;
-            self.backoff = 0.0;
-            self.quiet_from = t;
+        // An element only a transition moves changes for a while and stops:
+        // a change as a delta's is, which watching waits out.
+        let mut timed = Vec::with_capacity(animated.len());
+        let (mut moving, mut moved) = (Vec::new(), Vec::new());
+        for &id in animated {
+            if !transition_only(doc, id) {
+                timed.push(id);
+                continue;
+            }
+            moved.push(id);
+            if let Some(r) =
+                paint::extent(doc, id, scale).and_then(|d| d.to_rect(margin, px.w, px.h))
+            {
+                moving.push(r);
+            }
         }
+        // The frame after a transition's last still paints where it was.
+        let settling = std::mem::replace(&mut self.transition, !moved.is_empty());
+        let external = match external {
+            None if moved.is_empty() => None,
+            None => Some(Some((moving, moved))),
+            Some(None) => Some(None),
+            Some(Some((rects, nodes))) => {
+                moving.extend_from_slice(rects);
+                moved.extend_from_slice(nodes);
+                Some(Some((moving, moved)))
+            }
+        };
+        if let Some(change) = &external {
+            self.still = false;
+            self.held_until = self.held_until.max(t + 1.5 * interval + delays(doc));
+            let was = self.regions.len();
+            match change {
+                None => self.regions.clear(),
+                Some((rects, nodes)) => self.regions.retain_mut(|r| {
+                    let kept = rects.iter().all(|c| !overlap(r.rect, *c))
+                        || r.unchanged(doc, &px, t, scale, interval, nodes);
+                    if kept {
+                        r.kept_through = t;
+                    }
+                    kept
+                }),
+            }
+            if was == 0 || self.regions.len() < was {
+                self.around.clear();
+                self.retry_at = 0.0;
+                self.backoff = 0.0;
+                self.quiet_from = t;
+            }
+        }
+        let external = external.is_some();
         if t < self.retry_at {
             return;
         }
         let mut found = Vec::new();
-        for &id in animated {
+        for &id in &timed {
             let Some((period, settle)) = timing(doc, id) else {
+                if crate::trace::on() {
+                    untimed_stamp(doc, id);
+                }
                 return self.stop(t, "timing");
             };
             let Some(d) = paint::extent(doc, id, scale) else {
@@ -193,7 +248,7 @@ impl Loops {
                 {
                     let r = &mut self.regions[i];
                     r.wide = union(r.wide, wide);
-                    if r.since < settled {
+                    if r.since < settled && r.kept_through != t {
                         r.restart(since);
                     }
                 }
@@ -214,6 +269,8 @@ impl Loops {
                     rect,
                     wide,
                     nodes: vec![id],
+                    boxes: Vec::new(),
+                    kept_through: f64::NEG_INFINITY,
                     period,
                     since,
                     last: f64::NEG_INFINITY,
@@ -245,7 +302,7 @@ impl Loops {
             i = 0;
         }
         let around = merged(self.regions.iter().map(|r| r.wide).collect());
-        if !external {
+        if !external && !settling {
             // An animation that moves what is outside its regions (its box
             // grows and pushes others) cannot be kept as pixels.
             let inside = |a: &Rect| around.iter().any(|r| contains(*r, *a));
@@ -265,7 +322,7 @@ impl Loops {
             if t < r.since {
                 continue;
             }
-            if !r.keep(doc, &px, t, interval) {
+            if !r.keep(doc, &px, t, scale, interval) {
                 return self.stop(t, "keep");
             }
         }
@@ -398,10 +455,14 @@ impl Loops {
     }
 
     /// Whether every region has been seen through its period, densely
-    /// enough, and fades blend as they should. When every region keeps the
+    /// enough, fades blend as they should, and no transition runs or may
+    /// start at document time `t`. When every region keeps the
     /// same pixels at every phase, the surface is `still`.
-    pub(crate) fn ready(&mut self, interval: f64) -> bool {
-        let ready = !self.regions.is_empty() && self.regions.iter_mut().all(|r| r.ready(interval));
+    pub(crate) fn ready(&mut self, t: f64, interval: f64) -> bool {
+        let ready = !self.transition
+            && t >= self.held_until
+            && !self.regions.is_empty()
+            && self.regions.iter_mut().all(|r| r.ready(interval));
         if ready {
             self.backoff = 0.0;
             if !self.still && self.regions.iter_mut().all(Region::fixed) {
@@ -471,10 +532,16 @@ impl Region {
     }
 
     /// Keeps this frame; false if the region cannot be kept.
-    fn keep(&mut self, doc: &BaseDocument, px: &Pixels, t: f64, interval: f64) -> bool {
+    fn keep(&mut self, doc: &BaseDocument, px: &Pixels, t: f64, scale: f64, interval: f64) -> bool {
         let phase = t.rem_euclid(self.period);
         let near = interval * 0.3;
         self.last = t;
+        self.boxes.clear();
+        self.boxes.extend(
+            self.nodes
+                .iter()
+                .map(|&id| paint::layout_extent(doc, id, scale)),
+        );
         self.shown = None;
         self.fixed = None;
         match &mut self.kind {
@@ -531,6 +598,80 @@ impl Region {
                     f.linear = None;
                 }
                 true
+            }
+        }
+    }
+
+    /// Whether a frame with another cause, painted at document time `t`
+    /// into `px`, left what it keeps as it was: it is ready, its elements
+    /// are where layout put them, none of `changed` is one of them, holds
+    /// one or is held by one, and its pixels are what it keeps at `t`'s
+    /// phase. Where no frame kept is at that phase, the pixels its loop
+    /// never moves are, and the elements vouch for the rest.
+    fn unchanged(
+        &mut self,
+        doc: &BaseDocument,
+        px: &Pixels,
+        t: f64,
+        scale: f64,
+        interval: f64,
+        changed: &[NodeId],
+    ) -> bool {
+        if !self.ready(interval) || self.boxes.len() != self.nodes.len() {
+            return false;
+        }
+        for (&id, &was) in self.nodes.iter().zip(&self.boxes) {
+            let (Some(now), Some(was)) = (paint::layout_extent(doc, id, scale), was) else {
+                return false;
+            };
+            if !same_box(now, was) || up(doc, id).any(|n| changed.contains(&n)) {
+                return false;
+            }
+        }
+        if changed
+            .iter()
+            .any(|&c| up(doc, c).skip(1).any(|n| self.nodes.contains(&n)))
+        {
+            return false;
+        }
+        let now = take(px, self.rect);
+        let phase = t.rem_euclid(self.period);
+        let close = |a: &[u8], b: &[u8]| {
+            a.iter()
+                .zip(b)
+                .all(|(&x, &y)| (x as i32 - y as i32).abs() <= TOLERANCE)
+        };
+        match &self.kind {
+            Kind::Frames(frames) => {
+                if let Some(f) = frames
+                    .iter()
+                    .find(|f| circular(f.0, phase, self.period) < interval * 0.01)
+                {
+                    return close(&f.1, &now);
+                }
+                let Some((_, first)) = frames.first() else {
+                    return false;
+                };
+                // A pixel the loop never moves is the same in every frame.
+                (0..now.len() / 4).all(|i| {
+                    let p = i * 4..i * 4 + 4;
+                    let moves = frames.iter().any(|f| f.1[p.clone()] != first[p.clone()]);
+                    moves || close(&first[p.clone()], &now[p])
+                })
+            }
+            Kind::Fade(f) => {
+                let (Some(lo), Some(hi), Some(a)) = (
+                    &f.lo,
+                    &f.hi,
+                    self.nodes.first().and_then(|&id| opacity(doc, id)),
+                ) else {
+                    return false;
+                };
+                let u = weight(lo.0, hi.0, a);
+                lo.1.iter()
+                    .zip(&hi.1)
+                    .zip(&now)
+                    .all(|((&l, &h), &p)| (blend(l, h, u) as i32 - p as i32).abs() <= TOLERANCE + 1)
             }
         }
     }
@@ -594,6 +735,62 @@ fn timing(doc: &BaseDocument, id: NodeId) -> Option<(f64, f64)> {
     Some((period?, settle(ui)))
 }
 
+/// The trace's word of why an element's animations are no loop: the
+/// element as its tag and classes, and each animation's name, duration
+/// (ms), iteration count, direction and play state. No text or content.
+fn untimed_stamp(doc: &BaseDocument, id: NodeId) {
+    let Some(node) = doc.get_node(id) else { return };
+    // A ::before or ::after box is named by its element.
+    let (el, pseudo) = match node.element_data() {
+        Some(el) => (Some(el), ""),
+        None => (
+            node.parent
+                .and_then(|p| doc.get_node(p))
+                .and_then(|p| p.element_data()),
+            "::pseudo",
+        ),
+    };
+    let mut who = el.map_or_else(String::new, |el| {
+        let class = el.attr(blitz_dom::local_name!("class")).unwrap_or("");
+        format!(
+            "{}.{}",
+            el.name.local,
+            class.split_whitespace().collect::<Vec<_>>().join(".")
+        )
+    });
+    who.push_str(pseudo);
+    who.truncate(160);
+    let mut what = String::new();
+    if let Some(style) = node.primary_styles() {
+        let ui = style.get_ui();
+        for (i, name) in ui.animation_name_iter().enumerate() {
+            let Some(atom) = name.as_atom() else { continue };
+            let count = ui.animation_iteration_count_mod(i).0;
+            what.push_str(&format!(
+                "{}{} {:.3}ms x{} {:?} {:?}",
+                if what.is_empty() { "" } else { "; " },
+                atom,
+                ui.animation_duration_mod(i).seconds() as f64 * 1000.0,
+                if count.is_infinite() {
+                    "inf".to_string()
+                } else {
+                    count.to_string()
+                },
+                ui.animation_direction_mod(i),
+                ui.animation_play_state_mod(i),
+            ));
+        }
+    }
+    what.truncate(240);
+    crate::trace::instant(
+        "blitz.loops.untimed",
+        &[
+            ("el", crate::trace::Arg::S(&who)),
+            ("anims", crate::trace::Arg::S(&what)),
+        ],
+    );
+}
+
 /// The trace's word that a surface asks for no more frames: what it
 /// animates, over `period` (s), is never seen.
 fn still_stamp(period: f64) {
@@ -634,6 +831,45 @@ fn whole_timing(doc: &BaseDocument) -> Option<(f64, f64)> {
         }
     }
     Some((period?, most))
+}
+
+/// Whether only a transition moves the element: it names no animation.
+fn transition_only(doc: &BaseDocument, id: NodeId) -> bool {
+    doc.get_node(id)
+        .and_then(|n| n.primary_styles())
+        .is_some_and(|s| {
+            !s.get_ui()
+                .animation_name_iter()
+                .any(|a| a.as_atom().is_some())
+        })
+}
+
+/// The longest transition delay the document's styles declare.
+fn delays(doc: &BaseDocument) -> f64 {
+    doc.tree()
+        .iter()
+        .filter_map(|(_, n)| n.primary_styles())
+        .map(|s| {
+            let ui = s.get_ui();
+            (0..ui.transition_property_count())
+                .map(|i| ui.transition_delay_mod(i).seconds() as f64)
+                .fold(0.0, f64::max)
+        })
+        .fold(0.0, f64::max)
+}
+
+/// The node and its ancestors.
+fn up(doc: &BaseDocument, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+    std::iter::successors(Some(id), |&n| doc.get_node(n)?.parent)
+}
+
+/// Whether layout put a box where it was, to within a device pixel's
+/// rounding.
+fn same_box(a: DevRect, b: DevRect) -> bool {
+    (a.x0 - b.x0).abs() <= 0.5
+        && (a.y0 - b.y0).abs() <= 0.5
+        && (a.x1 - b.x1).abs() <= 0.5
+        && (a.y1 - b.y1).abs() <= 0.5
 }
 
 fn opacity(doc: &BaseDocument, id: NodeId) -> Option<f32> {
