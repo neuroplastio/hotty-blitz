@@ -226,7 +226,7 @@ fn an_animation_that_moves_layout_is_painted() {
 }
 
 #[test]
-fn a_change_besides_the_loop_paints_and_watches_again() {
+fn a_change_beside_the_loop_paints_and_watches_again() {
     let mut h = host();
     h.handle(&cmd(
         &[("a", "doc"), ("s", "x")],
@@ -264,4 +264,61 @@ fn a_change_besides_the_loop_paints_and_watches_again() {
         render(&mut h);
     }
     assert_eq!(h.loop_frames("x"), before, "a period is watched first");
+}
+
+#[test]
+fn a_change_away_from_the_loop_keeps_it() {
+    let mut h = host();
+    h.handle(&cmd(
+        &[("a", "doc"), ("s", "x")],
+        &format!(
+            "{STYLE}<div class=bar><span class=dot></span></div><div id=s style='margin-left:150px'>one</div>"
+        ),
+    ));
+    h.handle(&cmd(
+        &[("a", "place"), ("s", "x"), ("c", "60"), ("r", "4")],
+        "",
+    ));
+    render(&mut h);
+    let fi = h.frame_interval();
+    let per = (0.4 / fi.as_secs_f64()).round() as u32;
+    let mut t = Instant::now() + AHEAD;
+    let mut step = |h: &mut Host| {
+        t += fi;
+        h.animate(t);
+        render(h);
+        h.frame("x").unwrap().rgba.clone()
+    };
+    for _ in 0..80 {
+        step(&mut h);
+    }
+    assert!(h.loop_frames("x") > 0);
+    let before = h.loop_frames("x");
+    h.handle(&common::delta_cmd(
+        &[("s", "x")],
+        "text",
+        Some("s"),
+        None,
+        "two",
+    ));
+    step(&mut h);
+    assert_eq!(h.loop_frames("x"), before, "the delta's frame is painted");
+    let kept: Vec<Vec<u8>> = (0..per).map(|_| step(&mut h)).collect();
+    assert_eq!(
+        h.loop_frames("x") - before,
+        u64::from(per),
+        "the loop plays on from memory"
+    );
+    // Each as a full paint one period on paints it, the new text included.
+    for (k, kept) in kept.iter().enumerate() {
+        h.repaint();
+        let painted = step(&mut h);
+        let worst = kept
+            .iter()
+            .zip(&painted)
+            .map(|(a, b)| (*a as i32 - *b as i32).abs())
+            .max()
+            .unwrap();
+        assert!(worst <= 3, "frame {k}: {worst} off");
+    }
 }

@@ -354,6 +354,9 @@ pub(crate) struct Surface {
     /// The damage the last paint asked for, before any widening to the
     /// whole frame; `None` when the frame was whole.
     asked_rects: Option<Vec<Rect>>,
+    /// The part of it with causes besides animation; `None` when the frame
+    /// was whole or a scroll moved its pixels.
+    changed_rects: Option<Vec<Rect>>,
     /// Frames `loops` drew: a test's view of it.
     pub(crate) loop_drawn: u64,
     /// Whether the last frame was played from `loops`, or why not: the
@@ -958,6 +961,7 @@ impl Surface {
             loop_why: Why::Changed,
             anim_only: false,
             asked_rects: None,
+            changed_rects: None,
             loop_drawn: 0,
             store,
             playing: Vec::new(),
@@ -1348,7 +1352,7 @@ impl Surface {
         // resolve animated say where they paint now, first.
         let scale = self.viewport.2 as f64;
         for &id in &self.animated {
-            self.damage.touch(&self.doc, id, scale);
+            self.damage.touch_animated(&self.doc, id, scale);
         }
         let time = self
             .tick
@@ -1376,7 +1380,7 @@ impl Surface {
         // delta's is where it mutates.
         self.animated = self.doc.take_animated_nodes();
         for &id in &self.animated {
-            self.damage.touch(&self.doc, id, scale);
+            self.damage.touch_animated(&self.doc, id, scale);
         }
     }
 
@@ -1544,6 +1548,7 @@ impl Surface {
     fn watch_loops(&mut self, scale: f64, w: u32, h: u32) {
         let external = !std::mem::take(&mut self.anim_only);
         let asked = self.asked_rects.take();
+        let changed = self.changed_rects.take();
         let interval = self.frame_interval.as_secs_f64();
         let t = self.doc_time();
         if self.frame.width != w || self.frame.height != h {
@@ -1565,7 +1570,7 @@ impl Surface {
             (8.0 * scale).ceil(),
             interval,
             asked.as_deref(),
-            external || asked.is_none(),
+            (external || asked.is_none()).then_some(changed.as_deref()),
         );
         let nothing = !external && asked.as_ref().is_some_and(|a| a.is_empty());
         self.loops.blank(&self.doc, t, interval, nothing);
@@ -1618,9 +1623,11 @@ impl Surface {
         let rects = if full {
             self.damage.clear();
             self.asked_rects = None;
+            self.changed_rects = None;
             vec![Rect { x: 0, y: 0, w, h }]
         } else if self.damage.is_empty() && uncovered.is_empty() {
             self.asked_rects = Some(Vec::new());
+            self.changed_rects = Some(Vec::new());
             // Nothing to paint; a placement still gets the frame as it is.
             return redeliver.then_some(Damage::Full);
         } else {
@@ -1631,6 +1638,7 @@ impl Surface {
             // rectangle they would be the whole frame.
             rects.extend(uncovered);
             self.asked_rects = Some(rects.clone());
+            self.changed_rects = (!moved).then(|| self.damage.taken_changed().to_vec());
             // Many small rectangles can cost more than one full paint: each
             // carries a fixed overhead (the scene walked again, the render
             // context dispatched to its workers). Measured with `hotty

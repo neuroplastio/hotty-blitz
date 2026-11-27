@@ -723,6 +723,12 @@ pub struct Tracker {
     old: std::collections::HashMap<blitz_dom::NodeId, Recorded>,
     /// A touched text input's line as it was (`line_metrics`).
     lines: std::collections::HashMap<blitz_dom::NodeId, (f32, f32)>,
+    /// The touched nodes something besides an animation changed (`touch`,
+    /// not only `touch_animated`).
+    changed: std::collections::HashSet<blitz_dom::NodeId>,
+    /// What the last `take` damaged for those nodes and the rectangles:
+    /// the damage of the frame's other causes, without its animations'.
+    taken_changed: Vec<Rect>,
 }
 
 impl Tracker {
@@ -735,6 +741,20 @@ impl Tracker {
     }
 
     pub fn touch(&mut self, doc: &blitz_dom::BaseDocument, id: blitz_dom::NodeId, scale: f64) {
+        if !self.full {
+            self.changed.insert(id);
+        }
+        self.touch_animated(doc, id, scale);
+    }
+
+    /// As `touch`, for a node only an animation moved: its damage is not
+    /// among `taken_changed`.
+    pub fn touch_animated(
+        &mut self,
+        doc: &blitz_dom::BaseDocument,
+        id: blitz_dom::NodeId,
+        scale: f64,
+    ) {
         if self.full {
             return;
         }
@@ -809,9 +829,14 @@ impl Tracker {
             .into_iter()
             .filter_map(|r| r.to_rect(margin, w, h))
             .collect();
+        let mut changed = out.clone();
         let mut done = std::collections::HashSet::new();
-        let touched = std::mem::take(&mut self.touched);
+        let mut touched = std::mem::take(&mut self.touched);
+        // Changed nodes first: a walk stops at what another walked, and the
+        // part it would have added must count as theirs.
+        touched.sort_by_key(|t| !self.changed.contains(t));
         for t in touched {
+            let from = out.len();
             let mut n = t;
             let mut first = true;
             loop {
@@ -857,11 +882,22 @@ impl Tracker {
                     _ => break,
                 }
             }
+            if self.changed.contains(&t) {
+                changed.extend_from_slice(&out[from..]);
+            }
         }
         self.old.clear();
         self.lines.clear();
+        self.changed.clear();
         self.full = false;
+        self.taken_changed = merge(changed, 16, 64);
         merge(out, 16, 64)
+    }
+
+    /// The damage the last `take` found for causes besides animation:
+    /// mutated, restyled or hovered nodes, and the scrollbars.
+    pub fn taken_changed(&self) -> &[Rect] {
+        &self.taken_changed
     }
 
     pub fn clear(&mut self) {
@@ -869,6 +905,8 @@ impl Tracker {
         self.rects.clear();
         self.old.clear();
         self.lines.clear();
+        self.changed.clear();
+        self.taken_changed.clear();
         self.full = false;
     }
 }

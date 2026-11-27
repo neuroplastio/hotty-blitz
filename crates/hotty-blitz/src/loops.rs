@@ -17,10 +17,11 @@
 //! margin, which takes in shadows) must not change, or what moves is not
 //! all in the regions.
 //!
-//! Anything else (a frame with a cause besides animation, an animation that
-//! ends, damage outside what was watched, pixels changing around the
-//! regions) drops what is kept. A frame with another cause starts watching
-//! again at once; otherwise watching starts again after a pause that
+//! A frame with another cause whose damage stays apart from the regions
+//! (text changing elsewhere) keeps them. Anything else (such a frame that
+//! damages a region, an animation that ends, damage outside what was
+//! watched, pixels changing around the regions) drops what is kept. A
+//! frame with another cause starts watching again at once; otherwise watching starts again after a pause that
 //! doubles each time it stops (an animation that starts after a delay
 //! stops the first watch; one that moves layout stops every watch).
 
@@ -128,8 +129,8 @@ impl Loops {
     /// After a frame painted on the normal path at document time `t` (s):
     /// `animated`, the elements its resolve moved; `asked`, the damage it
     /// painted before any was widened to the whole frame (`None` when the
-    /// frame was whole); `external`, whether anything besides animation
-    /// caused it.
+    /// frame was whole); `external`, if anything besides animation caused
+    /// it, what that damaged (`None` when it is not known).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe(
         &mut self,
@@ -141,9 +142,21 @@ impl Loops {
         margin: f64,
         interval: f64,
         asked: Option<&[Rect]>,
-        external: bool,
+        external: Option<Option<&[Rect]>>,
     ) {
-        if external {
+        // A change that paints nothing kept keeps it all: a clock ticking
+        // beside a pulsing dot.
+        let apart = |rs: &[Rect]| {
+            !self.regions.is_empty()
+                && rs
+                    .iter()
+                    .all(|c| self.regions.iter().all(|r| !overlap(r.rect, *c)))
+        };
+        let kept = external.flatten().is_some_and(apart);
+        let external = external.is_some();
+        if kept {
+            self.still = false;
+        } else if external {
             self.still = false;
             self.regions.clear();
             self.around.clear();
