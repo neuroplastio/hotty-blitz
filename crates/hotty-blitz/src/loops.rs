@@ -170,6 +170,9 @@ impl Loops {
         let mut found = Vec::new();
         for &id in animated {
             let Some((period, settle)) = timing(doc, id) else {
+                if crate::trace::on() {
+                    untimed_stamp(doc, id);
+                }
                 return self.stop(t, "timing");
             };
             let Some(d) = paint::extent(doc, id, scale) else {
@@ -592,6 +595,49 @@ fn timing(doc: &BaseDocument, id: NodeId) -> Option<(f64, f64)> {
         });
     }
     Some((period?, settle(ui)))
+}
+
+/// The trace's word of why an element's animations are no loop: the
+/// element as its tag and classes, and each animation's name, duration
+/// (ms), iteration count, direction and play state. No text or content.
+fn untimed_stamp(doc: &BaseDocument, id: NodeId) {
+    let Some(node) = doc.get_node(id) else { return };
+    // A ::before or ::after box is named by its element.
+    let (el, pseudo) = match node.element_data() {
+        Some(el) => (Some(el), ""),
+        None => (
+            node.parent.and_then(|p| doc.get_node(p)).and_then(|p| p.element_data()),
+            "::pseudo",
+        ),
+    };
+    let mut who = el.map_or_else(String::new, |el| {
+        let class = el.attr(blitz_dom::local_name!("class")).unwrap_or("");
+        format!("{}.{}", el.name.local, class.split_whitespace().collect::<Vec<_>>().join("."))
+    });
+    who.push_str(pseudo);
+    who.truncate(160);
+    let mut what = String::new();
+    if let Some(style) = node.primary_styles() {
+        let ui = style.get_ui();
+        for (i, name) in ui.animation_name_iter().enumerate() {
+            let Some(atom) = name.as_atom() else { continue };
+            let count = ui.animation_iteration_count_mod(i).0;
+            what.push_str(&format!(
+                "{}{} {:.3}ms x{} {:?} {:?}",
+                if what.is_empty() { "" } else { "; " },
+                atom,
+                ui.animation_duration_mod(i).seconds() as f64 * 1000.0,
+                if count.is_infinite() { "inf".to_string() } else { count.to_string() },
+                ui.animation_direction_mod(i),
+                ui.animation_play_state_mod(i),
+            ));
+        }
+    }
+    what.truncate(240);
+    crate::trace::instant(
+        "blitz.loops.untimed",
+        &[("el", crate::trace::Arg::S(&who)), ("anims", crate::trace::Arg::S(&what))],
+    );
 }
 
 /// The trace's word that a surface asks for no more frames: what it
