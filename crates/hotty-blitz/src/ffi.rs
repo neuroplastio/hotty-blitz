@@ -1316,6 +1316,25 @@ pub unsafe extern "C" fn hotty_host_set_refresh_rate(h: *mut HottyHost, milliher
     guard(h, (), |h| h.host.set_refresh_rate(millihertz))
 }
 
+/// Whether anybody can see the surface where it is placed
+/// (Host::set_seen): false while the terminal's view is scrolled away from
+/// its placement, or its window is hidden. What plays on an unseen surface
+/// asks for no frames; seen again, it asks at once. Surfaces start seen.
+///
+/// # Safety
+/// `h` must be valid, `surface` NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hotty_host_set_seen(
+    h: *mut HottyHost,
+    surface: *const c_char,
+    seen: bool,
+) {
+    let Some(surface) = (unsafe { name(surface) }) else {
+        return;
+    };
+    guard(h, (), |h| h.host.set_seen(surface, seen))
+}
+
 /// Whether the surface takes the pointer at device pixel (`x`, `y`) of the
 /// surface (Host::takes_pointer). Where it does not, the host hands the
 /// pointer to what is below it (SPEC §9.3).

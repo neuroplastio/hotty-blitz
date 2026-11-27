@@ -31,7 +31,9 @@ to the program with `tab=program`; `key=default` gives a key back to the
 host. Reset ends the session and drops its resources. The terminal passes
 the system's reduced-motion setting to `hotty_host_set_reduced_motion`,
 and the refresh rate of the display its window is on to
-`hotty_host_set_refresh_rate`. It passes the alternate-screen and mouse
+`hotty_host_set_refresh_rate`. It tells `hotty_host_set_seen` when a
+placement scrolls out of view or its window is hidden, so that what plays
+there stops asking for frames. It passes the alternate-screen and mouse
 tracking modes to `hotty_host_set_scroll_modes` for scroll chaining.
 
 ## Try it

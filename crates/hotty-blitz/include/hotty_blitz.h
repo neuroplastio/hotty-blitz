@@ -339,6 +339,14 @@ void hotty_host_set_reduced_motion(hotty_host *h, bool reduce);
  * taken within 24-360 Hz. Call it again when the window moves to another
  * display or that display's mode changes. */
 void hotty_host_set_refresh_rate(hotty_host *h, uint32_t millihertz);
+/* Whether anybody can see the surface where it is placed: false while the
+ * terminal's view is scrolled away from its placement, or its window is
+ * hidden (minimised, covered). What plays on an unseen surface (CSS
+ * animations and transitions, animated images, a caret, fading scrollbars)
+ * asks for no frames through hotty_host_next_frame; commands still render.
+ * Seen again, it asks at once, for a frame at the time it is then; the
+ * terminal shows the last frame meanwhile. Surfaces start seen. */
+void hotty_host_set_seen(hotty_host *h, const char *surface, bool seen);
 /* The host's half of the network policy (SPEC 7.2) in CSP's syntax, as its
  * user grants it: "img-src https://example.com; font-src https:". NULL or
  * empty: none, as a new host starts. The capabilities report it ("net"). A

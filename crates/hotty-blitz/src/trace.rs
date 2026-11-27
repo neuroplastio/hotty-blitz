@@ -153,6 +153,14 @@ pub fn span(name: &str, t0: u64, args: &[(&str, Arg)]) {
     }
 }
 
+/// An instant, now, named `name`. Nothing while stamps are off.
+#[inline]
+pub fn instant(name: &str, args: &[(&str, Arg)]) {
+    if let Some(t) = trace() {
+        line(t, name, clock(), None, args);
+    }
+}
+
 /// A span with a known start and end, both from [`now`].
 #[inline]
 pub fn span_to(name: &str, t0: u64, t1: u64, args: &[(&str, Arg)]) {

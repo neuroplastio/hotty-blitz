@@ -130,7 +130,7 @@ impl Loops {
         let mut found = Vec::new();
         for &id in animated {
             let Some((period, settle)) = timing(doc, id) else {
-                return self.stop(t);
+                return self.stop(t, "timing");
             };
             let Some(d) = paint::extent(doc, id, scale) else {
                 continue;
@@ -160,7 +160,7 @@ impl Loops {
                 Some(i) => {
                     let r = &mut self.regions[i];
                     let Some(p) = lcm(r.period, period) else {
-                        return self.stop(t);
+                        return self.stop(t, "period");
                     };
                     r.rect = union(r.rect, rect);
                     r.wide = union(r.wide, wide);
@@ -194,7 +194,7 @@ impl Loops {
             let other = self.regions.swap_remove(j);
             let r = &mut self.regions[i];
             let Some(p) = lcm(r.period, other.period) else {
-                return self.stop(t);
+                return self.stop(t, "period");
             };
             r.rect = union(r.rect, other.rect);
             r.wide = union(r.wide, other.wide);
@@ -209,13 +209,13 @@ impl Loops {
             // grows and pushes others) cannot be kept as pixels.
             let inside = |a: &Rect| around.iter().any(|r| contains(*r, *a));
             if !asked.is_some_and(|rs| rs.iter().all(inside)) {
-                return self.stop(t);
+                return self.stop(t, "outside");
             }
             // Nor can one whose ink reaches past its region (a shadow).
             let same = around.len() == self.around.len()
                 && around.iter().zip(&self.around).all(|(a, b)| *a == b.0);
             if same && !self.still(&px) {
-                return self.stop(t);
+                return self.stop(t, "ink");
             }
         }
         self.around = around.into_iter().map(|r| (r, take(&px, r))).collect();
@@ -225,19 +225,39 @@ impl Loops {
                 continue;
             }
             if !r.keep(doc, &px, t, interval) {
-                return self.stop(t);
+                return self.stop(t, "keep");
             }
         }
         if self.kept() > BUDGET * 2 {
-            self.stop(t);
+            self.stop(t, "budget");
         }
     }
 
-    fn stop(&mut self, t: f64) {
+    /// Gives up what is kept, and watches again after the back-off.
+    /// `why`, for the trace: `timing` (an animation's period is unknown),
+    /// `period` (the regions' common period is too long), `outside` (damage
+    /// outside the regions), `ink` (the pixels around a region changed),
+    /// `keep` (a frame did not match what is kept), `budget` (too much kept).
+    fn stop(&mut self, t: f64, why: &str) {
         self.regions.clear();
         self.around.clear();
         self.backoff = (self.backoff * 2.0).clamp(RETRY.0, RETRY.1);
         self.retry_at = t + self.backoff;
+        crate::trace::instant(
+            "blitz.loops.stop",
+            &[
+                ("why", crate::trace::Arg::S(why)),
+                (
+                    "retry_ms",
+                    crate::trace::Arg::U((self.backoff * 1000.0) as u64),
+                ),
+            ],
+        );
+    }
+
+    /// Whether it is backing off after a stop at document time `t`.
+    pub(crate) fn waiting(&self, t: f64) -> bool {
+        t < self.retry_at
     }
 
     /// Whether the pixels around the regions are as at the last frame

@@ -230,6 +230,12 @@ pub(crate) struct Surface {
     pub rows: u16,
     pub auto_rows: bool,
     pub placed: bool,
+    /// Placed where nobody sees it (`Host::set_seen`): scrolled out of the
+    /// terminal's view, or in a window that is hidden. What plays on it
+    /// (CSS animations and transitions, animated images, a caret, fading
+    /// scrollbars) asks for no frames until it is seen again, and then
+    /// shows where it has got to by then.
+    pub unseen: bool,
     /// The program asked for `press` (`p=1`, SPEC §5.2): every press in
     /// the window is reported, whatever it lands on.
     pub presses: bool,
@@ -350,6 +356,9 @@ pub(crate) struct Surface {
     asked_rects: Option<Vec<Rect>>,
     /// Frames `loops` drew: a test's view of it.
     pub(crate) loop_drawn: u64,
+    /// Whether the last frame was played from `loops`, or why not: the
+    /// trace's `blitz.deliver`.
+    pub(crate) loop_why: Why,
     /// The document's base URL (SPEC §7.3), when it declares an absolute
     /// http(s) one, for the `url` of link clicks (SPEC §9). It grants nothing:
     /// this host fetches nothing from the network.
@@ -893,6 +902,7 @@ impl Surface {
             rows,
             auto_rows: false,
             placed: false,
+            unseen: false,
             presses: false,
             backdrop: false,
             fit: None,
@@ -945,6 +955,7 @@ impl Surface {
             framed: Instant::now(),
             animated: Vec::new(),
             loops: Default::default(),
+            loop_why: Why::Changed,
             anim_only: false,
             asked_rects: None,
             loop_drawn: 0,
@@ -1042,15 +1053,25 @@ impl Surface {
     /// the normal path must paint it.
     fn render_loops(&mut self, m: &Metrics, w: u32, h: u32, dark: bool) -> Option<Option<Damage>> {
         let interval = self.frame_interval.as_secs_f64();
-        if !self.anim_only
-            || self.redeliver
-            || self.viewport != (w, h, m.scale, dark, self.reduced_motion)
+        self.loop_why = if !self.anim_only {
+            Why::Changed
+        } else if self.redeliver {
+            Why::Redeliver
+        } else if self.viewport != (w, h, m.scale, dark, self.reduced_motion)
             || self.frame.width != w
             || self.frame.height != h
-            || !self.damage.is_empty()
-            || self.damage.full
-            || !self.loops.ready(interval)
         {
+            Why::Viewport
+        } else if !self.damage.is_empty() || self.damage.full {
+            Why::Damage
+        } else if self.loops.waiting(self.doc_time()) {
+            Why::Waiting
+        } else if !self.loops.ready(interval) {
+            Why::Watching
+        } else {
+            Why::Played
+        };
+        if self.loop_why != Why::Played {
             return None;
         }
         let t0 = Instant::now();
@@ -5835,4 +5856,24 @@ mod tests {
         );
         assert!(rebuilt(&after_rename[0], &after_restore[0]));
     }
+}
+
+/// Whether a frame was played from the loops kept, or why not (the trace's
+/// `blitz.deliver` `loop`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Why {
+    /// From memory: nothing resolved or painted.
+    Played = 0,
+    /// Something besides a CSS animation asked for the frame: a command, input, an image.
+    Changed = 1,
+    /// The whole frame is delivered again.
+    Redeliver = 2,
+    /// Its size, scale, colour scheme or reduced motion changed.
+    Viewport = 3,
+    /// Damage is pending.
+    Damage = 4,
+    /// Watching a period before it can play.
+    Watching = 5,
+    /// Backing off after a stop (`blitz.loops.stop`).
+    Waiting = 6,
 }

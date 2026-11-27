@@ -956,6 +956,20 @@ impl Host {
     /// for a rate the terminal cannot tell, is 60 Hz, as a new host starts;
     /// a rate is taken within 24–360 Hz. Call it again when the window
     /// moves to another display, or that display's mode changes.
+    /// Whether anybody can see `surface` where it is placed: false once
+    /// the terminal scrolls its placement out of view, or its window is
+    /// hidden (minimised, covered, on another desktop). An unseen surface
+    /// still takes commands and renders what they change, but what plays
+    /// on it stops asking for frames ([`Host::next_frame`]); seen again,
+    /// it asks at once, for a frame at the time it is then. New surfaces
+    /// are seen. The terminal still shows the last frame where it is, as
+    /// a browser does for a tab in the background.
+    pub fn set_seen(&mut self, surface: &str, seen: bool) {
+        if let Some(s) = self.surfaces.get_mut(surface) {
+            s.unseen = !seen;
+        }
+    }
+
     pub fn set_refresh_rate(&mut self, millihertz: u32) {
         let frame = surface::interval_at(millihertz);
         if frame == self.frame {
@@ -1099,7 +1113,7 @@ impl Host {
             || self.surfaces.iter().any(|(name, s)| {
                 s.placed
                     && (s.dirty
-                        || s.next_frame().is_some_and(|t| t <= now)
+                        || !s.unseen && s.next_frame().is_some_and(|t| t <= now)
                         || view_rest(&self.gesture, name, s, now).is_some_and(|t| t <= now)
                         || wheel_rest_at(&self.gesture, name, s, now).is_some_and(|t| t <= now))
             })
@@ -1125,7 +1139,8 @@ impl Host {
             .flat_map(|(name, s)| {
                 let rest = view_rest(&self.gesture, name, s, now);
                 let wheel = wheel_rest_at(&self.gesture, name, s, now);
-                s.next_frame().into_iter().chain(rest).chain(wheel)
+                let plays = if s.unseen { None } else { s.next_frame() };
+                plays.into_iter().chain(rest).chain(wheel)
             })
             .min()
     }
@@ -1208,7 +1223,7 @@ impl Host {
     /// [`Host::render_dirty`] does it with the current time.
     pub fn animate(&mut self, now: std::time::Instant) {
         for (name, s) in self.surfaces.iter_mut() {
-            if s.placed {
+            if s.placed && !s.unseen {
                 enter(&mut self.working, name);
                 s.advance(now);
             }
@@ -1366,6 +1381,7 @@ impl Host {
                                 ("s", trace::Arg::S(name)),
                                 ("full", trace::Arg::U(full)),
                                 ("px", trace::Arg::U(px)),
+                                ("loop", trace::Arg::U(s.loop_why as u64)),
                             ],
                         );
                     }
