@@ -1,0 +1,230 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hotty Agent <hotty@neuroplast.io>
+Date: Fri, 27 Nov 2026 14:33:47 +0100
+Subject: [PATCH] glifo: decode a bitmap glyph only when the atlas lacks it
+
+A bitmap glyph's PNG was decoded before the atlas was asked for it, to
+learn the strike's size for its transform and cache key, so a glyph the
+atlas held was decoded again on every draw: a colour emoji in text that
+repaints cost a PNG decode each time.
+
+The width and height come from the PNG's IHDR instead, and the strike is
+decoded only on a miss. A PNG whose header can't be read, or that fails
+to decode, falls back to the outline as before.
+---
+ glifo/src/glyph.rs  | 118 ++++++++++++++++++++++++++++++--------------
+ glifo/src/shrink.rs |  11 ++++-
+ 2 files changed, 90 insertions(+), 39 deletions(-)
+
+diff --git a/glifo/src/glyph.rs b/glifo/src/glyph.rs
+index 9516dfe6..76507ada 100644
+--- a/glifo/src/glyph.rs
++++ b/glifo/src/glyph.rs
+@@ -619,13 +619,15 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+ 
+             // ── Bitmap Glyphs ────────────────────────────────────────────
+             let mut bitmap_unavailable_reason = None;
+-            let bitmap_data: Option<(skrifa::bitmap::BitmapGlyph<'_>, Pixmap)> = bitmaps
++            // The strike's size is read from its PNG's header: it is decoded
++            // only when the atlas does not hold the glyph already.
++            let bitmap_data: Option<(skrifa::bitmap::BitmapGlyph<'_>, &[u8], (u16, u16))> = bitmaps
+                 .glyph_for_size(Size::new(draw_props.font_size), glyph_id)
+                 .and_then(|g| match g.data {
+                     #[cfg(feature = "png")]
+-                    BitmapData::Png(data) => match Pixmap::from_png(std::io::Cursor::new(data)) {
+-                        Ok(pixmap) => Some((g, pixmap)),
+-                        Err(_) => {
++                    BitmapData::Png(data) => match png_size(data) {
++                        Some(size) => Some((g, data, size)),
++                        None => {
+                             bitmap_unavailable_reason = Some(GlyphSkipReason::BitmapDecodeFailed);
+                             None
+                         }
+@@ -643,13 +645,13 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+                     }
+                 });
+ 
+-            if let Some((bitmap_glyph, pixmap)) = bitmap_data {
++            if let Some((bitmap_glyph, png, (width, height))) = bitmap_data {
+                 // Bitmaps use the strike's own ppem, not the run's, because the
+                 // image was pre-rendered at that specific size.
+                 let bitmap_ppem = bitmap_glyph.ppem_x;
+                 let outline_transform = calculate_bitmap_transform(
+                     glyph,
+-                    &pixmap,
++                    height,
+                     draw_props,
+                     draw_props.font_size,
+                     font_info.upem,
+@@ -658,7 +660,7 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+                 );
+                 // A bitmap drawn smaller than its strike is drawn from a copy
+                 // shrunk to the pixels it covers, cached under that size.
+-                let shrink = Shrink::new(&outline_transform, &pixmap);
++                let shrink = Shrink::sized(&outline_transform, width, height);
+                 let (outline_transform, size_bits) = match &shrink {
+                     Some(shrink) => (shrink.transform, shrink.size_bits()),
+                     None => (outline_transform, bitmap_ppem.to_bits()),
+@@ -695,34 +697,41 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
+                     continue;
+                 }
+ 
+-                // Cache miss — wrap the decoded pixmap for rendering.
+-                let pixmap = match &shrink {
+-                    Some(shrink) => shrink.apply(&pixmap),
+-                    None => pixmap,
+-                };
+-                let glyph_type = create_bitmap_glyph(pixmap);
+-
+-                let prepared_glyph = PreparedGlyph {
+-                    glyph_type,
+-                    outline_transform,
+-                    relative_paint_transform: Affine::IDENTITY,
+-                    cache_key,
+-                };
+-                match style {
+-                    Style::Fill => fill_glyph(
+-                        renderer,
+-                        prepared_glyph,
+-                        &mut self.atlas_cacher,
+-                        &mut outline_cache_session,
+-                    ),
+-                    Style::Stroke => stroke_glyph(
+-                        renderer,
+-                        prepared_glyph,
+-                        &mut self.atlas_cacher,
+-                        &mut outline_cache_session,
+-                    ),
++                // Cache miss — decode the strike and wrap it for rendering.
++                match decode_png(png) {
++                    Some(pixmap) => {
++                        let pixmap = match &shrink {
++                            Some(shrink) => shrink.apply(&pixmap),
++                            None => pixmap,
++                        };
++                        let glyph_type = create_bitmap_glyph(pixmap);
++
++                        let prepared_glyph = PreparedGlyph {
++                            glyph_type,
++                            outline_transform,
++                            relative_paint_transform: Affine::IDENTITY,
++                            cache_key,
++                        };
++                        match style {
++                            Style::Fill => fill_glyph(
++                                renderer,
++                                prepared_glyph,
++                                &mut self.atlas_cacher,
++                                &mut outline_cache_session,
++                            ),
++                            Style::Stroke => stroke_glyph(
++                                renderer,
++                                prepared_glyph,
++                                &mut self.atlas_cacher,
++                                &mut outline_cache_session,
++                            ),
++                        }
++                        continue;
++                    }
++                    None => {
++                        bitmap_unavailable_reason = Some(GlyphSkipReason::BitmapDecodeFailed);
++                    }
+                 }
+-                continue;
+             }
+ 
+             // ── Outline Glyphs ──────────────────────────────────────────
+@@ -1352,11 +1361,11 @@ fn create_bitmap_glyph(pixmap: Pixmap) -> GlyphType<'static> {
+ /// - Glyph position within the run
+ /// - Bitmap scaling to match requested font size
+ /// - Bearing adjustments (outer and inner)
+-/// - Origin placement (top-left vs bottom-left)
++/// - Origin placement (top-left vs bottom-left), by the bitmap's `height`
+ /// - Special handling for Apple Color Emoji
+ fn calculate_bitmap_transform(
+     glyph: Glyph,
+-    pixmap: &Pixmap,
++    height: u16,
+     draw_props: DrawProps,
+     font_size: f32,
+     upem: f32,
+@@ -1383,7 +1392,7 @@ fn calculate_bitmap_transform(
+         Origin::TopLeft => Vec2::default(),
+         Origin::BottomLeft => Vec2 {
+             x: 0.,
+-            y: -f64::from(pixmap.height()),
++            y: -f64::from(height),
+         },
+     };
+ 
+@@ -2330,8 +2339,43 @@ fn x_y_advances(transform: &Affine) -> (Vec2, Vec2) {
+     )
+ }
+ 
++/// The width and height a PNG's header gives, without decoding it; `None`
++/// if it is not a PNG or does not fit a [`Pixmap`].
++#[cfg(feature = "png")]
++fn png_size(data: &[u8]) -> Option<(u16, u16)> {
++    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
++    if data.len() < 24 || &data[..8] != SIGNATURE || &data[12..16] != b"IHDR" {
++        return None;
++    }
++    let word = |at: usize| u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
++    Some((word(16).try_into().ok()?, word(20).try_into().ok()?))
++}
++
++#[cfg(feature = "png")]
++fn decode_png(data: &[u8]) -> Option<Pixmap> {
++    Pixmap::from_png(std::io::Cursor::new(data)).ok()
++}
++
++#[cfg(not(feature = "png"))]
++fn decode_png(_: &[u8]) -> Option<Pixmap> {
++    None
++}
++
+ #[cfg(test)]
+ mod tests {
++    #[cfg(feature = "png")]
++    #[test]
++    fn a_png_header_gives_its_size() {
++        use super::png_size;
++        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
++        png.extend_from_slice(&136_u32.to_be_bytes());
++        png.extend_from_slice(&128_u32.to_be_bytes());
++        assert_eq!(png_size(&png), Some((136, 128)));
++        assert_eq!(png_size(&png[..20]), None, "cut short");
++        png[1] = b'Q';
++        assert_eq!(png_size(&png), None, "not a PNG");
++    }
++
+     use super::*;
+     use crate::atlas::{AtlasConfig, AtlasPaint};
+     use crate::interface::{DrawSink, GlyphRenderer};
+diff --git a/glifo/src/shrink.rs b/glifo/src/shrink.rs
+index 86f568d9..f70529d9 100644
+--- a/glifo/src/shrink.rs
++++ b/glifo/src/shrink.rs
+@@ -33,13 +33,20 @@ pub(crate) struct Shrink {
+ impl Shrink {
+     /// The shrink of `pixmap` drawn with `transform`, if it is drawn smaller
+     /// on both axes, without skew or rotation or mirroring.
++    #[cfg(test)]
+     pub(crate) fn new(transform: &Affine, pixmap: &Pixmap) -> Option<Self> {
++        Self::sized(transform, pixmap.width(), pixmap.height())
++    }
++
++    /// The shrink of a bitmap `width` by `height` pixels drawn with
++    /// `transform`, as [`Self::new`] says.
++    pub(crate) fn sized(transform: &Affine, width: u16, height: u16) -> Option<Self> {
+         let [a, b, c, d, e, f] = transform.as_coeffs();
+         if b != 0.0 || c != 0.0 || !(a > 0.0 && a < 1.0 && d > 0.0 && d < 1.0) {
+             return None;
+         }
+-        let width = (f64::from(pixmap.width()) * a).round().max(1.0) as u16;
+-        let height = (f64::from(pixmap.height()) * d).round().max(1.0) as u16;
++        let width = (f64::from(width) * a).round().max(1.0) as u16;
++        let height = (f64::from(height) * d).round().max(1.0) as u16;
+         Some(Self {
+             width,
+             height,
