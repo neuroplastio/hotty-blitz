@@ -1115,7 +1115,7 @@ impl Surface {
     /// answers resolves again; when none is left it stops asking, and one
     /// paused stops too.
     fn css_due(&self) -> Option<Instant> {
-        if !self.doc.has_active_animations() {
+        if !self.doc.has_active_animations() || self.loops.still {
             return None;
         }
         let at = self.doc.next_animation_change()?;
@@ -1544,12 +1544,14 @@ impl Surface {
     fn watch_loops(&mut self, scale: f64, w: u32, h: u32) {
         let external = !std::mem::take(&mut self.anim_only);
         let asked = self.asked_rects.take();
+        let interval = self.frame_interval.as_secs_f64();
+        let t = self.doc_time();
         if self.frame.width != w || self.frame.height != h {
+            self.loops.blank(&self.doc, t, interval, false);
             return;
         }
         // A whole frame only starts over: what it moved is not told apart.
         let animated: &[NodeId] = if asked.is_some() { &self.animated } else { &[] };
-        let t = self.doc_time();
         self.loops.observe(
             &self.doc,
             animated,
@@ -1561,10 +1563,12 @@ impl Surface {
             t,
             scale,
             (8.0 * scale).ceil(),
-            self.frame_interval.as_secs_f64(),
+            interval,
             asked.as_deref(),
             external || asked.is_none(),
         );
+        let nothing = !external && asked.as_ref().is_some_and(|a| a.is_empty());
+        self.loops.blank(&self.doc, t, interval, nothing);
     }
 
     /// `render`'s paint, at the root's scroll in device pixels `dev`: what

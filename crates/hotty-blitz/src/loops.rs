@@ -57,6 +57,29 @@ pub(crate) struct Loops {
     backoff: f64,
     /// The document time of the last frame with another cause.
     quiet_from: f64,
+    /// Frames of animation only that painted nothing, in a row.
+    blank: Blank,
+    /// A whole period of everything animating in the document painted
+    /// nothing: the surface asks for no frames.
+    pub(crate) still: bool,
+}
+
+#[derive(Default)]
+enum Blank {
+    /// None yet.
+    #[default]
+    Off,
+    /// Since `since` (document time), through `period`; `last` the last
+    /// such frame, `next` when its resolve said the output may next change.
+    On {
+        since: f64,
+        period: f64,
+        last: f64,
+        next: Option<f64>,
+    },
+    /// What animates does not repeat: nothing is watched until a frame
+    /// paints, or has another cause.
+    Never,
 }
 
 struct Region {
@@ -73,6 +96,9 @@ struct Region {
     kind: Kind,
     /// What was drawn last: a frame's index or a blend's weight.
     shown: Option<i64>,
+    /// Whether what it keeps is the same at every phase (what moves there
+    /// is clipped away), once asked.
+    fixed: Option<bool>,
 }
 
 enum Kind {
@@ -118,6 +144,7 @@ impl Loops {
         external: bool,
     ) {
         if external {
+            self.still = false;
             self.regions.clear();
             self.around.clear();
             self.retry_at = 0.0;
@@ -179,6 +206,7 @@ impl Loops {
                     last: f64::NEG_INFINITY,
                     kind: Kind::Fade(Fade::default()),
                     shown: None,
+                    fixed: None,
                 }),
             }
         }
@@ -233,12 +261,56 @@ impl Loops {
         }
     }
 
+    /// After a frame on the normal path at document time `t`: `nothing`, if
+    /// it was of animation only and painted nothing. Once such frames have
+    /// gone on through a whole period of everything animating in the
+    /// document, none of them late, what the animations move is never seen
+    /// (it plays outside the surface): the surface is `still`, and asks for
+    /// no frames until something else changes it.
+    pub(crate) fn blank(&mut self, doc: &BaseDocument, t: f64, interval: f64, nothing: bool) {
+        if !nothing || !doc.has_active_animations() {
+            self.blank = Blank::Off;
+            self.still = false;
+            return;
+        }
+        let due = doc.next_animation_change();
+        match &mut self.blank {
+            Blank::Never => {}
+            Blank::On {
+                since,
+                period,
+                last,
+                next,
+            } if t <= next.unwrap_or(*last).max(*last) + 2.0 * interval => {
+                *last = t;
+                *next = due;
+                if t >= *since + *period && !self.still {
+                    self.still = true;
+                    still_stamp(*period);
+                }
+            }
+            _ => {
+                self.still = false;
+                self.blank = match whole_timing(doc) {
+                    Some((period, settle)) => Blank::On {
+                        since: t.max(self.quiet_from + settle),
+                        period,
+                        last: t,
+                        next: due,
+                    },
+                    None => Blank::Never,
+                };
+            }
+        }
+    }
+
     /// Gives up what is kept, and watches again after the back-off.
     /// `why`, for the trace: `timing` (an animation's period is unknown),
     /// `period` (the regions' common period is too long), `outside` (damage
     /// outside the regions), `ink` (the pixels around a region changed),
     /// `keep` (a frame did not match what is kept), `budget` (too much kept).
     fn stop(&mut self, t: f64, why: &str) {
+        self.still = false;
         self.regions.clear();
         self.around.clear();
         self.backoff = (self.backoff * 2.0).clamp(RETRY.0, RETRY.1);
@@ -313,11 +385,17 @@ impl Loops {
     }
 
     /// Whether every region has been seen through its period, densely
-    /// enough, and fades blend as they should.
+    /// enough, and fades blend as they should. When every region keeps the
+    /// same pixels at every phase, the surface is `still`.
     pub(crate) fn ready(&mut self, interval: f64) -> bool {
         let ready = !self.regions.is_empty() && self.regions.iter_mut().all(|r| r.ready(interval));
         if ready {
             self.backoff = 0.0;
+            if !self.still && self.regions.iter_mut().all(Region::fixed) {
+                self.still = true;
+                let period = self.regions.iter().map(|r| r.period).fold(0.0, f64::max);
+                still_stamp(period);
+            }
         }
         ready
     }
@@ -364,6 +442,19 @@ impl Region {
         self.last = f64::NEG_INFINITY;
         self.kind = Kind::Fade(Fade::default());
         self.shown = None;
+        self.fixed = None;
+    }
+
+    /// Whether it keeps the same pixels at every phase; asked once it is
+    /// ready, and kept until it keeps another frame.
+    fn fixed(&mut self) -> bool {
+        *self.fixed.get_or_insert_with(|| match &self.kind {
+            Kind::Frames(frames) => frames.windows(2).all(|w| w[0].1 == w[1].1),
+            Kind::Fade(f) => match (&f.lo, &f.hi) {
+                (Some(lo), Some(hi)) => lo.1 == hi.1,
+                _ => false,
+            },
+        })
     }
 
     /// Keeps this frame; false if the region cannot be kept.
@@ -372,6 +463,7 @@ impl Region {
         let near = interval * 0.3;
         self.last = t;
         self.shown = None;
+        self.fixed = None;
         match &mut self.kind {
             Kind::Frames(frames) => {
                 let pixels = take(px, self.rect);
@@ -486,12 +578,49 @@ fn timing(doc: &BaseDocument, id: NodeId) -> Option<(f64, f64)> {
             Some(q) => lcm(q, p)?,
         });
     }
-    let settle = (0..ui.transition_property_count())
+    Some((period?, settle(ui)))
+}
+
+/// The trace's word that a surface asks for no more frames: what it
+/// animates, over `period` (s), is never seen.
+fn still_stamp(period: f64) {
+    crate::trace::instant(
+        "blitz.loops.still",
+        &[("period_ms", crate::trace::Arg::U((period * 1000.0) as u64))],
+    );
+}
+
+/// How long a transition the style starts may run, delay included.
+fn settle(ui: &style::properties::style_structs::UI) -> f64 {
+    (0..ui.transition_property_count())
         .map(|i| {
             (ui.transition_duration_mod(i).seconds() + ui.transition_delay_mod(i).seconds()) as f64
         })
-        .fold(0.0, f64::max);
-    Some((period?, settle))
+        .fold(0.0, f64::max)
+}
+
+/// [`timing`] over the whole document: when everything animating in it
+/// repeats, and how long a transition any element may have started runs.
+fn whole_timing(doc: &BaseDocument) -> Option<(f64, f64)> {
+    let mut period: Option<f64> = None;
+    let mut most = 0.0f64;
+    for (id, node) in doc.tree().iter() {
+        let Some(style) = node.primary_styles() else {
+            continue;
+        };
+        let ui = style.get_ui();
+        if ui.animation_name_iter().any(|a| a.as_atom().is_some()) {
+            let (p, s) = timing(doc, id)?;
+            period = Some(match period {
+                None => p,
+                Some(q) => lcm(q, p)?,
+            });
+            most = most.max(s);
+        } else {
+            most = most.max(settle(ui));
+        }
+    }
+    Some((period?, most))
 }
 
 fn opacity(doc: &BaseDocument, id: NodeId) -> Option<f32> {
